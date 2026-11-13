@@ -58,6 +58,10 @@ type Account struct {
 	// Listings are the sample listing numbers (1..18) this person is the
 	// assigned agent of — or, for the direct seller, the seller of.
 	Listings []int
+	// Profiles are the directory profiles ("kind/slug") this person answers
+	// for: their own agent profile, their agency's profile if they own it, or
+	// their business's profile.
+	Profiles []string
 	// DirectSeller marks the person who sells without an organisation.
 	DirectSeller bool
 }
@@ -76,9 +80,12 @@ var (
 	SampleHomesBulawayo = &Organisation{ID: id("b006"), Name: "Sample Homes Bulawayo", Kind: auth.KindAgency, EnquiryEmail: "enquiries@sample-homes-bulawayo.example.test"}
 )
 
-// Organisations returns every sample organisation.
+// Organisations returns every sample organisation: the six agencies and one
+// organisation per business profile (developers, property managers, hosts and
+// service providers).
 func Organisations() []*Organisation {
-	return []*Organisation{SampleEstates, SecondStreetRealty, SampleCommercial, SampleLandAgents, SampleRealty, SampleHomesBulawayo}
+	agencies := []*Organisation{SampleEstates, SecondStreetRealty, SampleCommercial, SampleLandAgents, SampleRealty, SampleHomesBulawayo}
+	return append(agencies, businessOrganisations()...)
 }
 
 // Emails of the sample accounts added with the 18-listing data set. The
@@ -115,6 +122,18 @@ var (
 
 // Accounts returns every sample account. All are email-verified.
 func Accounts() []Account {
+	accounts := append(peopleAccounts(), businessAccounts()...)
+	for i := range accounts {
+		if accounts[i].Profiles == nil {
+			accounts[i].Profiles = profilesOf(accounts[i].ID, accounts[i].Organisation, accounts[i].MembershipRole)
+		}
+	}
+	return accounts
+}
+
+// peopleAccounts are the consumer, the administrator, the agency people and
+// the direct seller.
+func peopleAccounts() []Account {
 	return []Account{
 		{ID: identity.SeedConsumerUserID, Name: "Casey Consumer", Email: identity.SeedConsumerEmail, AccountRoles: consumerRoles},
 		{ID: identity.SeedAdminUserID, Name: "Sam Admin", Email: identity.SeedAdminEmail, PlatformRole: auth.PlatformSuperAdmin, AccountRoles: consumerRoles},

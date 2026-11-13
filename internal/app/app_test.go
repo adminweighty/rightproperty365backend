@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 
 	"rightproperty365.com/backend/internal/devseed"
+	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/health"
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/markets"
@@ -99,14 +100,15 @@ func (m *captureMailer) resetToken(t *testing.T) string {
 }
 
 type env struct {
-	t        *testing.T
-	handler  http.Handler
-	identity *identity.MemoryStore
-	requests *propertyrequests.MemoryStore
-	mail     *captureMailer
-	logs     *bytes.Buffer
-	now      time.Time
-	seq      int
+	t         *testing.T
+	handler   http.Handler
+	identity  *identity.MemoryStore
+	requests  *propertyrequests.MemoryStore
+	enquiries *businessenquiries.MemoryStore
+	mail      *captureMailer
+	logs      *bytes.Buffer
+	now       time.Time
+	seq       int
 }
 
 func newEnv(t *testing.T) *env {
@@ -125,29 +127,32 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		mutate(&cfg)
 	}
 	e := &env{
-		t:        t,
-		identity: identity.NewMemoryStore(),
-		requests: propertyrequests.NewMemoryStore(),
-		mail:     &captureMailer{},
-		logs:     &bytes.Buffer{},
-		now:      time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC),
+		t:         t,
+		identity:  identity.NewMemoryStore(),
+		requests:  propertyrequests.NewMemoryStore(),
+		enquiries: businessenquiries.NewMemoryStore(),
+		mail:      &captureMailer{},
+		logs:      &bytes.Buffer{},
+		now:       time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC),
 	}
 	hasher := identity.Hasher{MemoryKiB: 64, Time: 1, Threads: 1}
 	devseed.SeedMemoryListings(e.requests)
+	devseed.SeedMemoryProfiles(e.enquiries)
 	if err := devseed.SeedMemoryUsers(context.Background(), e.identity, hasher, seedPassword, e.now); err != nil {
 		t.Fatal(err)
 	}
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	e.handler, err = NewRouter(Deps{
-		Config:   cfg,
-		Logger:   logging.New(e.logs, slog.LevelInfo, "api", cfg.Env),
-		Health:   health.NewHandler(health.StoreMemory, nil, logger),
-		Markets:  markets.NewMemoryStore(),
-		Requests: e.requests,
-		Identity: e.identity,
-		Mailer:   e.mail,
-		Now:      func() time.Time { return e.now },
-		Hasher:   &hasher,
+		Config:    cfg,
+		Logger:    logging.New(e.logs, slog.LevelInfo, "api", cfg.Env),
+		Health:    health.NewHandler(health.StoreMemory, nil, logger),
+		Markets:   markets.NewMemoryStore(),
+		Requests:  e.requests,
+		Enquiries: e.enquiries,
+		Identity:  e.identity,
+		Mailer:    e.mail,
+		Now:       func() time.Time { return e.now },
+		Hasher:    &hasher,
 	})
 	if err != nil {
 		t.Fatal(err)

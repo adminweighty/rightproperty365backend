@@ -1,5 +1,6 @@
 // Command seed writes the DEVELOPMENT sample data (organisations, people,
-// roles and the 18 sample listings; see internal/devseed) into a Postgres
+// roles, the 18 sample listings and the 29 directory profiles; see
+// internal/devseed) into a Postgres
 // database. It is the database counterpart of what cmd/api seeds into its
 // in-memory stores.
 //
@@ -68,7 +69,7 @@ func run() error {
 	if err := devseed.SeedPostgres(ctx, pool, identity.DefaultHasher(), password, time.Now()); err != nil {
 		return err
 	}
-	fmt.Printf("seeded %d organisations, %d accounts and %d listings (password: DEV_SEED_PASSWORD)\n",
-		len(devseed.Organisations()), len(devseed.Accounts()), len(devseed.Listings()))
+	fmt.Printf("seeded %d organisations, %d accounts, %d listings and %d directory profiles (password: DEV_SEED_PASSWORD)\n",
+		len(devseed.Organisations()), len(devseed.Accounts()), len(devseed.Listings()), len(devseed.Profiles()))
 	return nil
 }

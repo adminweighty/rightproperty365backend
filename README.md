@@ -40,7 +40,8 @@ Invoke-RestMethod -Method Post -Uri http://localhost:8080/v1/property-requests -
 ### Development sample data
 
 In development without a database the API seeds its in-memory stores with the data below (defined
-once in `internal/devseed`; the web app's sample data uses the same names). Listing IDs are
+once in `internal/devseed`; the web app's sample data uses the same names): 23 organisations, 28
+accounts, 18 listings and 29 directory profiles. Listing IDs are
 `0195c0de-0000-7000-8000-000000000001` … `…000000000018`: 18 **PUBLISHED** listings in market ZW,
 each with an organisation **and** a named assigned agent, or a direct seller. Listing
 `…000000000099` is **EXPIRED** (requests get `410`).
@@ -50,27 +51,57 @@ All accounts are email-verified and share one password: **`DEV_SEED_PASSWORD` in
 variable is set; otherwise the API logs a warning and creates no users (the listings are still
 seeded).
 
-| Email | Name | Organisation (all `AGENCY`) | Role | Listings assigned |
-| --- | --- | --- | --- | --- |
-| `estates.owner@example.test` | Rudo Moyo | Sample Estates | `OWNER` | none (sees all of the agency's) |
-| `agent@example.test` | Tendai Ncube | Sample Estates | `AGENT` | 1, 2, 5 |
-| `estates.agent2@example.test` | Chipo Dube | Sample Estates | `AGENT` | 7, 10, 17 |
-| `commercial.agent@example.test` | Farai Chikwanha | Sample Commercial | `OWNER` | 3, 13 |
-| `land.agent@example.test` | Nomsa Sibanda | Sample Land Agents | `OWNER` | 4, 14, 15 |
-| `realty.agent@example.test` | Tatenda Mutasa | Sample Realty | `OWNER` | 8, 9, 16, 18 |
-| `bulawayo.agent@example.test` | Sipho Nkomo | Sample Homes Bulawayo | `OWNER` | 11, 12 |
-| `seller@example.test` | Grace Mhlanga | — (direct seller) | account role `PRIVATE_SELLER` | 6 |
-| `consumer@example.test` | Casey Consumer | — | none (plain consumer) | — |
-| `admin@example.test` | Sam Admin | — | platform role `SUPER_ADMIN`; signs in **only** at `POST /v1/admin/auth/login` | — |
-| `agent-b@example.test` | Blake Agent | Second Street Realty | `AGENT` | none — the agency owns no listings (kept for checking that organisations cannot see each other's data) |
+| Email | Name | Organisation | Kind | Role | Listings / profiles |
+| --- | --- | --- | --- | --- | --- |
+| `consumer@example.test` | Casey Consumer | — | — | — | — |
+| `admin@example.test` | Sam Admin | — | — | platform `SUPER_ADMIN` (admin login only) | — |
+| `estates.owner@example.test` | Rudo Moyo | Sample Estates | `AGENCY` | `OWNER` | `agents/rudo-moyo`; `agencies/sample-estates` |
+| `agent@example.test` | Tendai Ncube | Sample Estates | `AGENCY` | `AGENT` | listings 1, 2, 5; `agents/tendai-ncube` |
+| `estates.agent2@example.test` | Chipo Dube | Sample Estates | `AGENCY` | `AGENT` | listings 7, 10, 17; `agents/chipo-dube` |
+| `commercial.agent@example.test` | Farai Chikwanha | Sample Commercial | `AGENCY` | `OWNER` | listings 3, 13; `agents/farai-chikwanha`; `agencies/sample-commercial` |
+| `land.agent@example.test` | Nomsa Sibanda | Sample Land Agents | `AGENCY` | `OWNER` | listings 4, 14, 15; `agents/nomsa-sibanda`; `agencies/sample-land-agents` |
+| `realty.agent@example.test` | Tatenda Mutasa | Sample Realty | `AGENCY` | `OWNER` | listings 8, 9, 16, 18; `agents/tatenda-mutasa`; `agencies/sample-realty` |
+| `bulawayo.agent@example.test` | Sipho Nkomo | Sample Homes Bulawayo | `AGENCY` | `OWNER` | listings 11, 12; `agents/sipho-nkomo`; `agencies/sample-homes-bulawayo` |
+| `seller@example.test` | Grace Mhlanga | — | — | direct seller | listings 6 |
+| `agent-b@example.test` | Blake Agent | Second Street Realty | `AGENCY` | `AGENT` | — |
+| `sample-developments@example.test` | Sample Developments Owner | Sample Developments | `DEVELOPER` | `OWNER` | `developers/sample-developments` |
+| `sample-urban-builders@example.test` | Sample Urban Builders Owner | Sample Urban Builders | `DEVELOPER` | `OWNER` | `developers/sample-urban-builders` |
+| `sample-heights@example.test` | Sample Heights Owner | Sample Heights | `DEVELOPER` | `OWNER` | `developers/sample-heights` |
+| `sample-property-management@example.test` | Sample Property Management Owner | Sample Property Management | `LANDLORD` | `OWNER` | `property-managers/sample-property-management` |
+| `sample-rentals-bulawayo@example.test` | Sample Rentals Bulawayo Owner | Sample Rentals Bulawayo | `LANDLORD` | `OWNER` | `property-managers/sample-rentals-bulawayo` |
+| `sample-falls-stays@example.test` | Sample Falls Stays Owner | Sample Falls Stays | `HOST` | `OWNER` | `hosts/sample-falls-stays` |
+| `sample-showrooms@example.test` | Sample Showrooms Owner | Sample Showrooms | `HOST` | `OWNER` | `hosts/sample-showrooms` |
+| `sample-plumbers@example.test` | Sample Plumbers Owner | Sample Plumbers | `SERVICE_PROVIDER` | `OWNER` | `service-providers/sample-plumbers` |
+| `sample-rapid-plumbing@example.test` | Sample Rapid Plumbing Owner | Sample Rapid Plumbing | `SERVICE_PROVIDER` | `OWNER` | `service-providers/sample-rapid-plumbing` |
+| `sample-electricians@example.test` | Sample Electricians Owner | Sample Electricians | `SERVICE_PROVIDER` | `OWNER` | `service-providers/sample-electricians` |
+| `sample-sparks@example.test` | Sample Sparks Owner | Sample Sparks | `SERVICE_PROVIDER` | `OWNER` | `service-providers/sample-sparks` |
+| `sample-solar-installers@example.test` | Sample Solar Installers Owner | Sample Solar Installers | `SERVICE_PROVIDER` | `OWNER` | `service-providers/sample-solar-installers` |
+| `sample-sun-power@example.test` | Sample Sun Power Owner | Sample Sun Power | `SERVICE_PROVIDER` | `OWNER` | `service-providers/sample-sun-power` |
+| `sample-borehole-drillers@example.test` | Sample Borehole Drillers Owner | Sample Borehole Drillers | `SERVICE_PROVIDER` | `OWNER` | `service-providers/sample-borehole-drillers` |
+| `sample-conveyancers@example.test` | Sample Conveyancers Owner | Sample Conveyancers | `SERVICE_PROVIDER` | `OWNER` | `service-providers/sample-conveyancers` |
+| `sample-valuers@example.test` | Sample Valuers Owner | Sample Valuers | `SERVICE_PROVIDER` | `OWNER` | `service-providers/sample-valuers` |
+| `sample-movers@example.test` | Sample Movers Owner | Sample Movers | `SERVICE_PROVIDER` | `OWNER` | `service-providers/sample-movers` |
+
+"Profiles" are the directory profiles (`kind/slug`) whose enquiries that person receives: an agent's
+own profile, the agency's profile for the agency's owner, or the business's profile. Rudo Moyo has
+no listings assigned and, as `OWNER`, sees all of Sample Estates' requests and enquiries.
+`agent-b` belongs to an agency with no listings and no profile (kept for checking that
+organisations cannot see each other's data).
 
 Account roles of the sample accounts are all `ACTIVE`: `CONSUMER` + `AGENT` for the agents,
-`CONSUMER` + `AGENCY_OWNER` for the owners, `CONSUMER` + `PRIVATE_SELLER` for Grace, `CONSUMER` for
-the consumer and the administrator, and `AGENT` only for `agent-b`.
+`CONSUMER` + `AGENCY_OWNER` for the agency owners, `CONSUMER` + `PRIVATE_SELLER` for Grace,
+`CONSUMER` + `DEVELOPER` / `LANDLORD` / `HOST` / `SERVICE_PROVIDER` for the business owners
+(matching their organisation's kind), `CONSUMER` for the consumer and the administrator, and
+`AGENT` only for `agent-b`.
 
 A request for a listing is routed to its assigned agent and appears in that agent's inbox; the
 agency's `OWNER` sees all of the agency's requests; another `AGENT` of the same agency does not see
 it, and no other agency does. A request for listing 6 goes to Grace, the direct seller.
+
+The 29 directory profiles (same `kind` + `slug` and display name as the web app's
+`src/lib/data/directory.ts`) are all `ACTIVE`: the 5 agencies and 7 agents map to the organisations
+and people above by name, and each of the 17 developers, property managers, hosts and service
+providers is its own organisation with one `OWNER`, `<slug>@example.test`.
 
 #### The same data in Postgres: `cmd/seed`
 
@@ -79,7 +110,7 @@ go run ./cmd/migrate up
 go run ./cmd/seed          # or: make seed
 ```
 
-`cmd/seed` writes the same organisations, accounts, roles and listings into the database at
+`cmd/seed` writes the same organisations, accounts, roles, listings and directory profiles into the database at
 `DATABASE_DIRECT_URL` (or `DATABASE_URL`). It **refuses to run unless `APP_ENV=development` is set
 explicitly and `DEV_SEED_PASSWORD` is set**, runs in one transaction and is idempotent (re-running
 it resets the sample rows, including the shared password, and touches nothing else). Sample
@@ -145,6 +176,8 @@ All configuration comes from environment variables. For local development you ma
 | GET | `/readyz` | Readiness (pings the database when configured; reports the store in use) |
 | GET | `/v1/markets` | Markets: ZW active; BW, ZA, AE planned |
 | POST | `/v1/property-requests` | The single entry point for every customer enquiry (guest or signed-in) |
+| POST | `/v1/business-enquiries` | The only way to contact a directory profile (guest or signed-in) |
+| GET | `/v1/inbox/business-enquiries` | Business enquiries received by the caller's organisation(s) |
 | POST | `/v1/auth/register` | Create an account; always `202 VERIFICATION_SENT` for valid input |
 | POST | `/v1/auth/verify-email` | Consume the emailed token, verify the email and sign in |
 | POST | `/v1/auth/resend-verification` | Always `202 VERIFICATION_SENT` |
@@ -183,6 +216,55 @@ by the worker from the outbox.
   account (anything sent for them is ignored), the user ID is stored as `customer_user_id`, and
   only `guest_contact.phone` is read. The phone stays mandatory for `PHONE`/`WHATSAPP` (field
   `guest_contact.phone`) and `consent.accepted` must be true in both cases.
+
+### Business enquiries: profiles are contacted only by enquiry
+
+Directory profiles — agencies, agents, developers, property managers, hosts and service providers
+— **never expose contact details**. The backend stores no phone number, email address or street
+address for a profile (the `directory_profiles` table has no such columns) and has **no public
+profile endpoints**. The only way to reach a profile is `POST /v1/business-enquiries`:
+
+```json
+{
+  "recipient": { "kind": "service-providers", "slug": "sample-plumbers" },
+  "service": "Burst pipes and leaks",
+  "message": "The geyser is leaking. Can someone come this week?",
+  "preferred_contact_method": "EMAIL",
+  "idempotency_key": "6f1c2f0a-8f0e-4f43-9a55-2f6f3f1f9c11",
+  "guest_contact": { "name": "Tariro Moyo", "email": "tariro@example.com" },
+  "consent": { "privacy_version": "2026-01", "accepted": true }
+}
+```
+
+It follows the property-request rule exactly: one transaction writes the `business_enquiries` row,
+a `business_enquiry_timeline` entry, a `customer_activity` entry and an outbox event
+`BUSINESS_ENQUIRY_CREATED` (identifiers only), and the answer is
+`201 {"enquiry_id","reference":"BE-XXXXXXXX","status":"RECEIVED","created_at"}`. It never claims
+delivery.
+
+- **Idempotency, guests vs signed-in customers, phone and consent rules** – identical to property
+  requests (`200` replay, `409 IDEMPOTENCY_CONFLICT`; `guest_contact.name`/`email` required for
+  guests; only `guest_contact.phone` read for signed-in customers, whose user ID is recorded). The
+  idempotency key space is separate from property requests.
+- **Errors** – `400 VALIDATION_FAILED` (fields `recipient.kind`, `recipient.slug`, `service`,
+  `message`, `preferred_contact_method`, `guest_contact.name|email|phone`, `consent.accepted`),
+  `404 RECIPIENT_NOT_FOUND` for an unknown kind + slug, `410 RECIPIENT_UNAVAILABLE` for a profile
+  that is suspended or not yet verified, `429` from its own per-IP bucket (burst 10, 10/min).
+- **Routing** – to the inbox of the organisation that owns the profile. For kind `agents`: to the
+  named agent, and their agency's `OWNER`/`MANAGER` see it too. If the agent can no longer receive
+  it, it falls back to the agency. If nobody can, the enquiry is still saved and the customer still
+  gets `201 RECEIVED`; internally it is a `ROUTING_EXCEPTION`.
+- **Inbox** – `GET /v1/inbox/business-enquiries` (newest first, capped at 100, **no pagination
+  yet**). `401` when anonymous, `403 FORBIDDEN` without an organisation membership. `OWNER` and
+  `MANAGER` see every enquiry routed to their organisation, including those addressed to its
+  agents' profiles; `AGENT` and `STAFF` see only the enquiries addressed to their own agent
+  profile. Another organisation gets nothing.
+- **Where the customer's contact details go** – they are stored on the enquiry and returned
+  **only** by that inbox, to the authorised recipient. They are never returned by any other
+  endpoint, never put in the outbox payload and never logged.
+- **Nothing is sent to the recipient.** There are no notifications yet: an enquiry is visible in
+  the recipient's inbox and nowhere else. The worker's handler for `BUSINESS_ENQUIRY_CREATED` only
+  logs identifiers.
 
 ## Authentication and sessions
 
@@ -373,6 +455,11 @@ their data with `Principal.OrganisationIDs(...)` (and `PlatformRole.MarketCode` 
   built**; platform administrators sign in with a password only, so the administrator login must
   not be treated as production-ready.
 - **Durable audit trail** – administrator sign-ins are only written to the process log.
+- **Notifying recipients** of property requests and business enquiries (email / WhatsApp /
+  in-app). Today they only appear in the inbox.
+- **Directory profile management and public profile endpoints** – profiles exist only as seeded
+  rows (kind, slug, name, owner); there is no API to create, edit, verify, suspend or list them,
+  and the web app still serves profile content from its own sample data.
 - **Verification / approval workflow for pending roles** – professional account roles stay
   `PENDING_VERIFICATION` forever; nothing reviews, approves, rejects or revokes them, and approval
   would not yet lead to a membership.
@@ -401,13 +488,14 @@ internal/platform/httpx      middleware, error envelope, JSON decoding, rate lim
 internal/platform/auth       Principal + Authenticate / RequireAuth / RequireMembership / RequirePlatformRole
 internal/app                 router wiring (middleware order, routes); end-to-end tests live here
 internal/adminctl            logic of cmd/adminctl (argument and password validation)
-internal/devseed             the development sample data (organisations, people, 18 listings)
+internal/devseed             the development sample data (organisations, people, 18 listings, 29 directory profiles)
 internal/platform/database   pgxpool setup for the pooled runtime URL
 internal/platform/outbox     outbox dispatcher (lease, retry, dead-letter)
 internal/platform/migrate    embedded-SQL migration runner
 internal/modules/health            /healthz, /readyz
 internal/modules/markets           GET /v1/markets
 internal/modules/propertyrequests  POST /v1/property-requests, GET /v1/agent/property-requests (handler, service, store: postgres + memory)
+internal/modules/businessenquiries POST /v1/business-enquiries, GET /v1/inbox/business-enquiries (handler, service, store: postgres + memory)
 internal/modules/identity          /v1/auth/*, /v1/me: accounts, sessions, tokens, roles, Mailer (store: postgres + memory)
 migrations/    embedded SQL (NNNN_name.up.sql / .down.sql)
 api/openapi.yaml             OpenAPI 3.1 contract
@@ -451,6 +539,9 @@ Deliberately no empty stubs. These will be added under `internal/modules/` as th
   **compiled only, never run against a database**.
 - `0004_session_scope` adds `sessions.scope` (`customer` / `admin`, existing rows become
   `customer`) and a constraint that admin sessions are cookie-only. Also **never run**.
+- `0005_business_enquiries` adds `directory_profiles` (no contact columns), `business_enquiries`,
+  `business_enquiry_timeline` and `customer_activity.business_enquiry_id`. Also **never run**,
+  like its store queries.
 - `0001_init` seeds the four markets. It does **not** seed listings: against a real database
   `POST /v1/property-requests` returns 404 until listings exist.
 
@@ -468,14 +559,15 @@ event type, then marks events processed. Failures back off exponentially (30 s d
 1 h) and are dead-lettered (`dead_letter_at`) after 8 attempts.
 
 Delivery is **at-least-once**, so handlers must be idempotent — key side effects on the event ID.
-The only handler today logs `PROPERTY_REQUEST_CREATED`. Without `DATABASE_URL` in development the
+The two handlers today only log `PROPERTY_REQUEST_CREATED` and `BUSINESS_ENQUIRY_CREATED`. Without `DATABASE_URL` in development the
 worker logs that it is idle and waits for shutdown.
 
 ## Operational notes and known limitations
 
 - **Rate limiter is per process.** `POST /v1/property-requests` is limited per client IP (burst 10,
   refill 10/min), `POST /v1/auth/*` shares a second bucket (burst 20, refill 20/min) and
-  `POST /v1/admin/auth/login` has a third (burst 5, refill 5/min), all in-memory token buckets. With more than one API instance each has its own
+  `POST /v1/admin/auth/login` has a third (burst 5, refill 5/min) and `POST /v1/business-enquiries`
+  a fourth (burst 10, refill 10/min), all in-memory token buckets. With more than one API instance each has its own
   buckets, so this **must be replaced by a shared limiter (Redis/Valkey or the edge) before
   autoscaling**.
 - **Client IP.** The limiter and access log use the TCP peer address and deliberately ignore

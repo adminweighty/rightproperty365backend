@@ -14,6 +14,7 @@ import (
 
 	"rightproperty365.com/backend/internal/app"
 	"rightproperty365.com/backend/internal/devseed"
+	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/health"
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/markets"
@@ -50,6 +51,7 @@ func run() error {
 		marketStore   markets.Store
 		requestStore  propertyrequests.Store
 		identityStore identity.Store
+		enquiryStore  businessenquiries.Store
 		healthH       *health.Handler
 	)
 	if cfg.UseMemoryStore() {
@@ -61,6 +63,10 @@ func run() error {
 		// organisation and assigned agent (or its direct seller).
 		devseed.SeedMemoryListings(memRequests)
 		requestStore = memRequests
+		// ...and the 29 directory profiles that can be sent an enquiry.
+		memEnquiries := businessenquiries.NewMemoryStore()
+		devseed.SeedMemoryProfiles(memEnquiries)
+		enquiryStore = memEnquiries
 		healthH = health.NewHandler(health.StoreMemory, nil, logger)
 
 		memIdentity := identity.NewMemoryStore()
@@ -83,6 +89,7 @@ func run() error {
 		marketStore = markets.NewPostgresStore(pool)
 		requestStore = propertyrequests.NewPostgresStore(pool)
 		identityStore = identity.NewPostgresStore(pool)
+		enquiryStore = businessenquiries.NewPostgresStore(pool)
 		healthH = health.NewHandler(health.StorePostgres, pool.Ping, logger)
 	}
 
@@ -97,13 +104,14 @@ func run() error {
 	}
 
 	handler, err := app.NewRouter(app.Deps{
-		Config:   cfg,
-		Logger:   logger,
-		Health:   healthH,
-		Markets:  marketStore,
-		Requests: requestStore,
-		Identity: identityStore,
-		Mailer:   mailer,
+		Config:    cfg,
+		Logger:    logger,
+		Health:    healthH,
+		Markets:   marketStore,
+		Requests:  requestStore,
+		Enquiries: enquiryStore,
+		Identity:  identityStore,
+		Mailer:    mailer,
 	})
 	if err != nil {
 		return err

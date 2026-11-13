@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.5.0
+  version: 0.6.0
   summary: Multi-country property marketplace API (Zimbabwe first).
   description: |
     Versioned REST API for RightProperty365.
@@ -13,6 +13,14 @@ info:
       returned as `trace_id` in error bodies.
     - Timestamps are RFC 3339 in UTC.
     - Request bodies must be `application/json`, at most 64 KB, and must not contain unknown fields.
+
+    Contacting a business or an agent
+    - Directory profiles (agencies, agents, developers, property managers, hosts, service
+      providers) have **no public contact details**: this API never returns a profile's phone
+      number, email address or street address, and has no public profile endpoints. The only way
+      to reach a profile is `POST /v1/business-enquiries`.
+    - The customer's own contact details are stored with the enquiry and returned **only** by
+      `GET /v1/inbox/business-enquiries` to the authorised recipient.
 
     Authentication
     - Sessions are opaque random tokens. The web app receives the token in the HttpOnly cookie
@@ -42,6 +50,7 @@ tags:
   - name: health
   - name: markets
   - name: property-requests
+  - name: business-enquiries
   - name: auth
   - name: account
   - name: organisation-workspace
@@ -308,6 +317,206 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/business-enquiries:
+    post:
+      tags: [business-enquiries]
+      operationId: createBusinessEnquiry
+      summary: Send an enquiry to a directory profile
+      description: |
+        The **only** way to contact a directory profile (an agency, agent, developer, property
+        manager, host or service provider). Profiles never expose a phone number or an email
+        address.
+
+        The enquiry, its timeline entry, the customer activity record and the outbox event
+        `BUSINESS_ENQUIRY_CREATED` (identifiers only, no personal data) are committed in one
+        database transaction; `201` is returned only after that commit. The response status is
+        always `RECEIVED` — acceptance does not mean the recipient has been notified.
+
+        **Recipient.** `recipient.kind` + `recipient.slug` are the profile's public address, for
+        example `service-providers` / `sample-plumbers`.
+
+        **Routing.** The enquiry goes to the inbox of the organisation that owns the profile.
+        For kind `agents` it goes to the named agent, and their agency's OWNER and MANAGER see
+        it too. If nobody can receive it the enquiry is still stored and the customer still gets
+        `201 RECEIVED`; internally it is a `ROUTING_EXCEPTION` for operations to resolve.
+
+        **Idempotency.** As for property requests: a key is required, as `idempotency_key` in
+        the body or the `Idempotency-Key` header (the body wins). Same key and same content →
+        `200` with the original receipt; same key and different content → `409`. The key space
+        is separate from property requests.
+
+        **Guests and signed-in customers.** For a guest, `guest_contact.name` and
+        `guest_contact.email` are required. For a signed-in customer `guest_contact` may be
+        omitted: name and email come from the account (anything sent for them is ignored), the
+        user ID is stored on the enquiry and only `guest_contact.phone` is read. The phone is
+        required when the preferred contact method is PHONE or WHATSAPP. `consent` is always
+        required.
+
+        **Rate limit.** Its own per-IP bucket: bursts of 10 requests, refilled at 10 per minute.
+      security:
+        - {}
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: Alternative to `idempotency_key` in the body. Required if the body omits it.
+          schema:
+            $ref: "#/components/schemas/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BusinessEnquiryCreate"
+            example:
+              recipient:
+                kind: service-providers
+                slug: sample-plumbers
+              service: Burst pipes and leaks
+              message: The geyser is leaking. Can someone come this week?
+              preferred_contact_method: WHATSAPP
+              idempotency_key: 6f1c2f0a-8f0e-4f43-9a55-2f6f3f1f9c11
+              guest_contact:
+                name: Tariro Moyo
+                email: tariro@example.com
+                phone: "+263771234567"
+              consent:
+                privacy_version: "2026-01"
+                accepted: true
+      responses:
+        "201":
+          description: The enquiry was stored.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BusinessEnquiryReceipt"
+        "200":
+          description: Idempotent replay. The key was already used with identical content; the original receipt is returned.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BusinessEnquiryReceipt"
+        "400":
+          description: |
+            `VALIDATION_FAILED` with `error.fields` keyed by `recipient.kind`, `recipient.slug`,
+            `service`, `message`, `preferred_contact_method`, `guest_contact.name`,
+            `guest_contact.email`, `guest_contact.phone`, `consent.accepted`,
+            `consent.privacy_version` or `idempotency_key`; or `INVALID_JSON` (malformed JSON,
+            wrong types, unknown fields).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+              example:
+                error:
+                  code: VALIDATION_FAILED
+                  message: Some fields need your attention.
+                  fields:
+                    message: must be plain text without HTML
+                    guest_contact.phone: is required when the preferred contact method is PHONE or WHATSAPP
+                trace_id: 4b0b8f0e-5d0c-4e0e-9a39-0a5a4f1f6c55
+        "403":
+          $ref: "#/components/responses/CsrfOrigin"
+        "404":
+          description: No profile has this kind and slug (`RECIPIENT_NOT_FOUND`).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: The idempotency key was already used with different content (`IDEMPOTENCY_CONFLICT`).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "410":
+          description: The profile exists but is not accepting enquiries, because it is suspended or not yet verified (`RECIPIENT_UNAVAILABLE`).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/inbox/business-enquiries:
+    get:
+      tags: [business-enquiries]
+      operationId: listReceivedBusinessEnquiries
+      summary: Business enquiries received by the caller's organisation(s)
+      description: |
+        Requires at least one organisation membership (any role): `403 FORBIDDEN` otherwise,
+        `401` when not signed in. Self-declared account roles do not open this route.
+
+        **What is returned** (decided on the server from the caller's memberships; there are no
+        filter parameters):
+        - OWNER and MANAGER see every enquiry routed to their organisation, including those
+          addressed to the profiles of the organisation's agents.
+        - AGENT and STAFF see only the enquiries addressed to their own agent profile.
+
+        Another organisation's enquiries are never returned. `status` is the internal status;
+        because unroutable enquiries have no recipient, `ROUTING_EXCEPTION` never appears here.
+
+        **This is the only place the customer's contact details are returned.**
+
+        Newest first, capped at 100 items. **There is no pagination yet.**
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The enquiries visible to the caller (possibly an empty array).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    maxItems: 100
+                    items:
+                      $ref: "#/components/schemas/ReceivedBusinessEnquiry"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "500":
           $ref: "#/components/responses/InternalError"
         "504":
@@ -1074,6 +1283,8 @@ components:
                 - LISTING_NOT_FOUND
                 - LISTING_UNAVAILABLE
                 - IDEMPOTENCY_CONFLICT
+                - RECIPIENT_NOT_FOUND
+                - RECIPIENT_UNAVAILABLE
                 - UNAUTHENTICATED
                 - FORBIDDEN
                 - CSRF_ORIGIN
@@ -1308,6 +1519,161 @@ components:
           description: Account roles chosen by the person. Duplicates are rejected.
           items:
             $ref: "#/components/schemas/SelectableAccountRole"
+
+    DirectoryKind:
+      type: string
+      description: The directory a profile is listed in; the first segment of its public address.
+      enum: [agencies, agents, developers, property-managers, hosts, service-providers]
+
+    BusinessEnquiryCreate:
+      type: object
+      additionalProperties: false
+      required:
+        - recipient
+        - message
+        - preferred_contact_method
+        - consent
+      properties:
+        recipient:
+          type: object
+          additionalProperties: false
+          required: [kind, slug]
+          properties:
+            kind:
+              $ref: "#/components/schemas/DirectoryKind"
+            slug:
+              type: string
+              maxLength: 80
+              pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+        service:
+          type: string
+          maxLength: 120
+          description: Optional. One of the recipient's listed services. Plain text; HTML and control characters are rejected. An empty string is treated as absent.
+        message:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          description: Plain text. Anything containing HTML tags or control characters is rejected. Leading/trailing whitespace is trimmed.
+        preferred_contact_method:
+          type: string
+          enum: [EMAIL, PHONE, WHATSAPP]
+          description: PHONE and WHATSAPP require `guest_contact.phone`.
+        idempotency_key:
+          $ref: "#/components/schemas/IdempotencyKey"
+        guest_contact:
+          type: object
+          additionalProperties: false
+          description: |
+            Required for guests, with `name` and `email`. Optional for a signed-in customer, for
+            whom only `phone` is read (name and email come from the account).
+          properties:
+            name:
+              type: string
+              minLength: 1
+              maxLength: 120
+            email:
+              type: string
+              format: email
+              maxLength: 254
+            phone:
+              type: string
+              pattern: "^\\+[1-9][0-9]{6,14}$"
+              description: E.164. Optional unless the preferred contact method is PHONE or WHATSAPP.
+        consent:
+          type: object
+          additionalProperties: false
+          required: [privacy_version, accepted]
+          properties:
+            privacy_version:
+              type: string
+              minLength: 1
+              maxLength: 32
+            accepted:
+              type: boolean
+              const: true
+
+    BusinessEnquiryReceipt:
+      type: object
+      required: [enquiry_id, reference, status, created_at]
+      additionalProperties: false
+      properties:
+        enquiry_id:
+          type: string
+          format: uuid
+        reference:
+          type: string
+          pattern: "^BE-[2-9A-HJKMNP-TV-Z]{8}$"
+          description: Human-friendly reference to quote to support.
+          examples: [BE-7K3M9QXD]
+        status:
+          type: string
+          const: RECEIVED
+          description: The enquiry has been stored. It does not indicate that anyone has been notified.
+        created_at:
+          type: string
+          format: date-time
+
+    ReceivedBusinessEnquiry:
+      type: object
+      required:
+        - enquiry_id
+        - reference
+        - recipient
+        - service
+        - message
+        - preferred_contact_method
+        - contact
+        - status
+        - created_at
+      additionalProperties: false
+      properties:
+        enquiry_id:
+          type: string
+          format: uuid
+        reference:
+          type: string
+          pattern: "^BE-[2-9A-HJKMNP-TV-Z]{8}$"
+        recipient:
+          type: object
+          description: The profile the enquiry was addressed to.
+          required: [kind, slug, name]
+          additionalProperties: false
+          properties:
+            kind:
+              $ref: "#/components/schemas/DirectoryKind"
+            slug:
+              type: string
+            name:
+              type: string
+        service:
+          type: [string, "null"]
+          description: The service the customer picked, or null.
+        message:
+          type: string
+        preferred_contact_method:
+          type: string
+          enum: [EMAIL, PHONE, WHATSAPP]
+        contact:
+          type: object
+          description: The customer's contact details. Returned only here, to the authorised recipient.
+          required: [name, email, phone]
+          additionalProperties: false
+          properties:
+            name:
+              type: string
+            email:
+              type: string
+              format: email
+            phone:
+              type: [string, "null"]
+              description: E.164, or null when the customer gave no phone number.
+        status:
+          type: string
+          enum: [RECEIVED]
+          description: Internal status. Only RECEIVED can appear in an inbox today.
+        created_at:
+          type: string
+          format: date-time
 
     OrganisationPropertyRequest:
       type: object

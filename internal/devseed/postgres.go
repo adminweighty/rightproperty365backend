@@ -29,7 +29,7 @@ const (
 // to their defined state (including the shared password). Rows it does not
 // own are never touched. Callers must have passed CheckEnvironment.
 //
-// It requires migrations 0001-0004. If a sample email already belongs to a
+// It requires migrations 0001-0005. If a sample email already belongs to a
 // different user row the run fails and changes nothing.
 //
 // NOTE: compiled but NEVER run — there is no Postgres on the machine this was
@@ -140,6 +140,23 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, hasher identity.Hashe
 			l.ID, l.MarketID, "Sample listing "+l.ID.String()[len(l.ID.String())-2:], l.Status, sampleListingPrice, sampleListingCurrency,
 			l.OrganisationID, l.AgentUserID, l.SellerUserID, publishedAt, l.ExpiresAt, now); err != nil {
 			return fmt.Errorf("seed listing %s: %w", l.ID, err)
+		}
+	}
+
+	for _, p := range Profiles() {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO directory_profiles (id, market_id, kind, slug, name, organisation_id, agent_user_id, status, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, 'ACTIVE', $8, $8)
+			ON CONFLICT (id) DO UPDATE
+			SET market_id = EXCLUDED.market_id, kind = EXCLUDED.kind, slug = EXCLUDED.slug, name = EXCLUDED.name,
+			    organisation_id = EXCLUDED.organisation_id, agent_user_id = EXCLUDED.agent_user_id,
+			    status = 'ACTIVE', updated_at = EXCLUDED.updated_at`,
+			p.ID, markets.ZimbabweID, p.Kind, p.Slug, p.Name, p.Organisation.ID, p.AgentUserID, now); err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+				return fmt.Errorf("seed profile %s: that kind and slug already belong to a different profile in this database", p.Key())
+			}
+			return fmt.Errorf("seed profile %s: %w", p.Key(), err)
 		}
 	}
 

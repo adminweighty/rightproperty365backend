@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/platform/auth"
@@ -34,14 +35,19 @@ func TestSampleDataMapping(t *testing.T) {
 	}
 
 	accounts := Accounts()
-	if len(accounts) != len(want) {
-		t.Fatalf("%d accounts, want %d", len(accounts), len(want))
+	if len(accounts) != len(want)+len(businesses) {
+		t.Fatalf("%d accounts, want %d people + %d business owners", len(accounts), len(want), len(businesses))
 	}
 	ids := map[string]bool{}
 	for _, a := range accounts {
+		if ids[a.ID.String()] {
+			t.Fatalf("duplicate user id %s", a.ID)
+		}
 		w, ok := want[a.Email]
 		if !ok {
-			t.Fatalf("unexpected account %s", a.Email)
+			// A business owner: covered by TestBusinessProfiles.
+			ids[a.ID.String()] = true
+			continue
 		}
 		org := ""
 		if a.Organisation != nil {
@@ -53,9 +59,6 @@ func TestSampleDataMapping(t *testing.T) {
 		if a.Name != w.name || org != w.organisation || a.MembershipRole != w.membership ||
 			strings.Join(a.AccountRoles, ",") != w.accountRoles || !equal(a.Listings, w.listings) {
 			t.Fatalf("%s = %+v, want %+v", a.Email, a, w)
-		}
-		if ids[a.ID.String()] {
-			t.Fatalf("duplicate user id %s", a.ID)
 		}
 		ids[a.ID.String()] = true
 		if (a.PlatformRole != "") != (a.Email == "admin@example.test") {
@@ -194,5 +197,163 @@ func TestCheckEnvironment(t *testing.T) {
 				t.Fatal("the error contains the password")
 			}
 		})
+	}
+}
+
+// The 29 kind + slug pairs and display names are the contract shared with the
+// web app's directory (src/lib/data/directory.ts): its enquiry form posts
+// exactly these.
+func TestProfilesMatchTheWebDirectory(t *testing.T) {
+	want := []struct{ kind, slug, name string }{
+		{"agencies", "sample-estates", "Sample Estates"},
+		{"agencies", "sample-realty", "Sample Realty"},
+		{"agencies", "sample-commercial", "Sample Commercial"},
+		{"agencies", "sample-land-agents", "Sample Land Agents"},
+		{"agencies", "sample-homes-bulawayo", "Sample Homes Bulawayo"},
+		{"agents", "rudo-moyo", "Rudo Moyo"},
+		{"agents", "tendai-ncube", "Tendai Ncube"},
+		{"agents", "chipo-dube", "Chipo Dube"},
+		{"agents", "tatenda-mutasa", "Tatenda Mutasa"},
+		{"agents", "farai-chikwanha", "Farai Chikwanha"},
+		{"agents", "nomsa-sibanda", "Nomsa Sibanda"},
+		{"agents", "sipho-nkomo", "Sipho Nkomo"},
+		{"developers", "sample-developments", "Sample Developments"},
+		{"developers", "sample-urban-builders", "Sample Urban Builders"},
+		{"developers", "sample-heights", "Sample Heights"},
+		{"property-managers", "sample-property-management", "Sample Property Management"},
+		{"property-managers", "sample-rentals-bulawayo", "Sample Rentals Bulawayo"},
+		{"hosts", "sample-falls-stays", "Sample Falls Stays"},
+		{"hosts", "sample-showrooms", "Sample Showrooms"},
+		{"service-providers", "sample-plumbers", "Sample Plumbers"},
+		{"service-providers", "sample-rapid-plumbing", "Sample Rapid Plumbing"},
+		{"service-providers", "sample-electricians", "Sample Electricians"},
+		{"service-providers", "sample-sparks", "Sample Sparks"},
+		{"service-providers", "sample-solar-installers", "Sample Solar Installers"},
+		{"service-providers", "sample-sun-power", "Sample Sun Power"},
+		{"service-providers", "sample-borehole-drillers", "Sample Borehole Drillers"},
+		{"service-providers", "sample-conveyancers", "Sample Conveyancers"},
+		{"service-providers", "sample-valuers", "Sample Valuers"},
+		{"service-providers", "sample-movers", "Sample Movers"},
+	}
+	if len(want) != ProfileCount {
+		t.Fatalf("test table has %d rows, want %d", len(want), ProfileCount)
+	}
+	profiles := Profiles()
+	if len(profiles) != ProfileCount {
+		t.Fatalf("%d profiles, want %d", len(profiles), ProfileCount)
+	}
+	byKey := map[string]Profile{}
+	ids := map[string]bool{}
+	for _, p := range profiles {
+		if _, dup := byKey[p.Key()]; dup || ids[p.ID.String()] {
+			t.Fatalf("duplicate profile %s", p.Key())
+		}
+		byKey[p.Key()], ids[p.ID.String()] = p, true
+		if p.Organisation == nil {
+			t.Fatalf("%s has no owning organisation", p.Key())
+		}
+		if (p.Kind == businessenquiries.KindAgents) != (p.AgentUserID != nil) {
+			t.Fatalf("%s: only agent profiles name an agent", p.Key())
+		}
+	}
+	for _, w := range want {
+		p, ok := byKey[w.kind+"/"+w.slug]
+		if !ok || p.Name != w.name {
+			t.Fatalf("profile %s/%s = %+v, want name %q", w.kind, w.slug, p, w.name)
+		}
+	}
+}
+
+func TestAgencyAndAgentProfileMapping(t *testing.T) {
+	byKey := map[string]Profile{}
+	for _, p := range Profiles() {
+		byKey[p.Key()] = p
+	}
+	emailOf := map[string]string{}
+	for _, a := range Accounts() {
+		emailOf[a.ID.String()] = a.Email
+	}
+	for key, org := range map[string]string{
+		"agencies/sample-estates":        "Sample Estates",
+		"agencies/sample-realty":         "Sample Realty",
+		"agencies/sample-commercial":     "Sample Commercial",
+		"agencies/sample-land-agents":    "Sample Land Agents",
+		"agencies/sample-homes-bulawayo": "Sample Homes Bulawayo",
+	} {
+		if p := byKey[key]; p.Organisation.Name != org || p.Name != org {
+			t.Fatalf("%s is owned by %q, want %q", key, p.Organisation.Name, org)
+		}
+	}
+	for key, w := range map[string][2]string{
+		"agents/rudo-moyo":       {"estates.owner@example.test", "Sample Estates"},
+		"agents/tendai-ncube":    {"agent@example.test", "Sample Estates"},
+		"agents/chipo-dube":      {"estates.agent2@example.test", "Sample Estates"},
+		"agents/tatenda-mutasa":  {"realty.agent@example.test", "Sample Realty"},
+		"agents/farai-chikwanha": {"commercial.agent@example.test", "Sample Commercial"},
+		"agents/nomsa-sibanda":   {"land.agent@example.test", "Sample Land Agents"},
+		"agents/sipho-nkomo":     {"bulawayo.agent@example.test", "Sample Homes Bulawayo"},
+	} {
+		p := byKey[key]
+		if p.AgentUserID == nil || emailOf[p.AgentUserID.String()] != w[0] || p.Organisation.Name != w[1] {
+			t.Fatalf("%s -> agent %q in %q, want %q in %q", key, emailOf[p.AgentUserID.String()], p.Organisation.Name, w[0], w[1])
+		}
+	}
+}
+
+func TestBusinessProfiles(t *testing.T) {
+	wantKinds := map[string][2]string{
+		businessenquiries.KindDevelopers:       {"DEVELOPER", "DEVELOPER"},
+		businessenquiries.KindPropertyManagers: {"LANDLORD", "LANDLORD"},
+		businessenquiries.KindHosts:            {"HOST", "HOST"},
+		businessenquiries.KindServiceProviders: {"SERVICE_PROVIDER", "SERVICE_PROVIDER"},
+	}
+	accounts := map[string]Account{}
+	for _, a := range Accounts() {
+		accounts[a.Email] = a
+	}
+	n := 0
+	orgs := map[string]bool{}
+	for _, p := range Profiles() {
+		w, ok := wantKinds[p.Kind]
+		if !ok {
+			continue
+		}
+		n++
+		if orgs[p.Organisation.ID.String()] {
+			t.Fatalf("%s shares an organisation with another profile", p.Key())
+		}
+		orgs[p.Organisation.ID.String()] = true
+		a, ok := accounts[p.Slug+"@example.test"]
+		if !ok {
+			t.Fatalf("%s has no owner account %s@example.test", p.Key(), p.Slug)
+		}
+		if p.Organisation.Kind != w[0] || p.Organisation.Name != p.Name || a.Organisation.ID != p.Organisation.ID ||
+			a.MembershipRole != "OWNER" || strings.Join(a.AccountRoles, ",") != "CONSUMER,"+w[1] ||
+			len(a.Profiles) != 1 || a.Profiles[0] != p.Key() || len(a.Listings) != 0 {
+			t.Fatalf("%s: organisation %+v, owner %+v", p.Key(), p.Organisation, a)
+		}
+	}
+	if n != 17 {
+		t.Fatalf("%d business profiles, want 17", n)
+	}
+	if got := accounts["sample-plumbers@example.test"].Name; got != "Sample Plumbers Owner" {
+		t.Fatalf("owner name = %q", got)
+	}
+}
+
+func TestSeedMemoryProfiles(t *testing.T) {
+	store := businessenquiries.NewMemoryStore()
+	SeedMemoryProfiles(store)
+	for _, p := range Profiles() {
+		got, err := store.GetProfile(context.Background(), p.Kind, p.Slug)
+		if err != nil {
+			t.Fatalf("%s: %v", p.Key(), err)
+		}
+		if got.Status != businessenquiries.ProfileActive || businessenquiries.ResolveRecipient(got) == nil {
+			t.Fatalf("%s is not ACTIVE with a recipient: %+v", p.Key(), got)
+		}
+		if r := businessenquiries.ResolveRecipient(got); (r.UserID != nil) != (p.Kind == businessenquiries.KindAgents) {
+			t.Fatalf("%s: only agent profiles route to a person", p.Key())
+		}
 	}
 }

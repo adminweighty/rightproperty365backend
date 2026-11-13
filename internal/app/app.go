@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/health"
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/markets"
@@ -29,6 +30,11 @@ const (
 	propertyRequestsPerMinute = 10
 	propertyRequestsBurst     = 10
 
+	// Per-IP limit on POST /v1/business-enquiries, its own bucket: bursts of
+	// 10, refilled at 10 per minute.
+	businessEnquiriesPerMinute = 10
+	businessEnquiriesBurst     = 10
+
 	// Per-IP limit shared by every POST /v1/auth/* route (its own bucket,
 	// separate from property requests): bursts of 20, refilled at 20 per minute.
 	// This is the only brute-force protection today; there is no per-account
@@ -44,13 +50,14 @@ const (
 
 // Deps is everything the router needs.
 type Deps struct {
-	Config   config.Config
-	Logger   *slog.Logger
-	Health   *health.Handler
-	Markets  markets.Store
-	Requests propertyrequests.Store
-	Identity identity.Store
-	Mailer   identity.Mailer
+	Config    config.Config
+	Logger    *slog.Logger
+	Health    *health.Handler
+	Markets   markets.Store
+	Requests  propertyrequests.Store
+	Enquiries businessenquiries.Store
+	Identity  identity.Store
+	Mailer    identity.Mailer
 
 	// Optional overrides used by tests.
 	Now    func() time.Time
@@ -63,9 +70,11 @@ func NewRouter(d Deps) (http.Handler, error) {
 
 	identityOpts := []identity.Option{identity.WithAdminSessionTTLs(cfg.AdminSessionTTL, cfg.AdminSessionIdleTTL)}
 	var requestOpts []propertyrequests.Option
+	var enquiryOpts []businessenquiries.Option
 	if d.Now != nil {
 		identityOpts = append(identityOpts, identity.WithClock(d.Now))
 		requestOpts = append(requestOpts, propertyrequests.WithClock(d.Now))
+		enquiryOpts = append(enquiryOpts, businessenquiries.WithClock(d.Now))
 	}
 	if d.Hasher != nil {
 		identityOpts = append(identityOpts, identity.WithHasher(*d.Hasher))
@@ -79,9 +88,11 @@ func NewRouter(d Deps) (http.Handler, error) {
 	identityH := identity.NewHandler(identitySvc, logger, secure)
 	marketsH := markets.NewHandler(d.Markets, logger)
 	requestsH := propertyrequests.NewHandler(propertyrequests.NewService(d.Requests, requestOpts...), logger)
+	enquiriesH := businessenquiries.NewHandler(businessenquiries.NewService(d.Enquiries, enquiryOpts...), logger)
 	authn := auth.NewMiddleware(identitySvc, cfg.CORSAllowedOrigins, logger)
 
 	requestLimiter := httpx.NewRateLimiter(propertyRequestsPerMinute, propertyRequestsBurst)
+	enquiryLimiter := httpx.NewRateLimiter(businessEnquiriesPerMinute, businessEnquiriesBurst)
 	authLimiter := httpx.NewRateLimiter(AuthRequestsPerMinute, AuthRequestsBurst)
 	adminAuthLimiter := httpx.NewRateLimiter(AdminAuthRequestsPerMinute, AdminAuthRequestsBurst)
 
@@ -108,6 +119,15 @@ func NewRouter(d Deps) (http.Handler, error) {
 
 		// Open to guests and signed-in customers alike.
 		r.With(requestLimiter.Middleware).Post("/property-requests", requestsH.Create)
+
+		// The only way to contact a directory profile. Open to guests and
+		// signed-in customers alike.
+		r.With(enquiryLimiter.Middleware).Post("/business-enquiries", enquiriesH.Create)
+
+		// Enquiries received by the caller's organisation. Any membership may
+		// enter; the handler scopes the data to the caller's organisations
+		// and, for agents and staff, to their own agent profile.
+		r.With(auth.RequireMembership()).Get("/inbox/business-enquiries", enquiriesH.Inbox)
 
 		r.Route("/auth", func(r chi.Router) {
 			r.Use(authLimiter.Middleware)

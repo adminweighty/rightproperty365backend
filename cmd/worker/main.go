@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/database"
@@ -55,6 +56,7 @@ func run() error {
 
 	dispatcher := outbox.NewDispatcher(outbox.NewPostgresQueue(pool), logger, outbox.Config{})
 	dispatcher.Register(propertyrequests.EventPropertyRequestCreated, propertyRequestCreated(logger))
+	dispatcher.Register(businessenquiries.EventBusinessEnquiryCreated, businessEnquiryCreated(logger))
 
 	err = dispatcher.Run(ctx)
 	logger.Info("worker stopped")
@@ -70,6 +72,20 @@ func propertyRequestCreated(logger *slog.Logger) outbox.Handler {
 		logger.InfoContext(ctx, "PROPERTY_REQUEST_CREATED",
 			slog.String("event_id", ev.ID.String()),
 			slog.String("property_request_id", ev.AggregateID.String()),
+			slog.Int("attempt", ev.Attempts),
+		)
+		return nil
+	})
+}
+
+// businessEnquiryCreated is the placeholder consumer for new business
+// enquiries. It only logs identifiers; the payload carries no personal data.
+// The same idempotency rule applies when real notifications are added.
+func businessEnquiryCreated(logger *slog.Logger) outbox.Handler {
+	return outbox.HandlerFunc(func(ctx context.Context, ev outbox.Event) error {
+		logger.InfoContext(ctx, "BUSINESS_ENQUIRY_CREATED",
+			slog.String("event_id", ev.ID.String()),
+			slog.String("business_enquiry_id", ev.AggregateID.String()),
 			slog.Int("attempt", ev.Attempts),
 		)
 		return nil
