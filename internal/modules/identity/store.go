@@ -10,12 +10,14 @@ import (
 // Store persists users, their roles, sessions and one-time tokens. Token and
 // session lookups are always by SHA-256 digest; raw tokens are never stored.
 type Store interface {
-	// CreateUser atomically creates the account and its registration consent
-	// record. It returns ErrEmailTaken when the email is already registered.
+	// CreateUser atomically creates the account, its registration consent
+	// record and its account roles. It returns ErrEmailTaken when the email is
+	// already registered.
 	CreateUser(ctx context.Context, u NewUser) error
 
-	// UpdatePendingRegistration replaces the name, password and consent of an
-	// account whose email is still UNVERIFIED and invalidates its outstanding
+	// UpdatePendingRegistration replaces the name, password, consent and
+	// account-role selection of an account whose email is still UNVERIFIED and
+	// invalidates its outstanding
 	// verification tokens, so only the most recent registration can complete.
 	// It returns ErrNotFound if the account is missing or already verified.
 	UpdatePendingRegistration(ctx context.Context, u NewUser) error

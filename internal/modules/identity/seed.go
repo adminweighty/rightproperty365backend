@@ -37,13 +37,15 @@ var (
 // SeedDevelopment adds the development organisations and four VERIFIED users
 // sharing one password:
 //
-//   - consumer@example.test — no roles
+//   - consumer@example.test — no memberships; account role CONSUMER
 //   - agent@example.test    — AGENT at "Sample Estates" (AGENCY, market ZW),
 //     the organisation sampleOrganisationID that receives requests for the
-//     sample listings
-//   - admin@example.test    — SUPER_ADMIN
+//     sample listings; account roles CONSUMER + AGENT
+//   - admin@example.test    — SUPER_ADMIN; account role CONSUMER
 //   - agent-b@example.test  — AGENT at a second organisation that owns no
-//     listings (for scoping checks)
+//     listings (for scoping checks); account role AGENT
+//
+// Seeded account roles are all ACTIVE.
 //
 // The password is never logged.
 func (s *MemoryStore) SeedDevelopment(ctx context.Context, hasher Hasher, password string, sampleOrganisationID uuid.UUID, now time.Time) error {
@@ -63,16 +65,21 @@ func (s *MemoryStore) SeedDevelopment(ctx context.Context, hasher Hasher, passwo
 	for _, u := range []struct {
 		id          uuid.UUID
 		name, email string
+		roles       []string
 	}{
-		{SeedConsumerUserID, "Casey Consumer", SeedConsumerEmail},
-		{SeedAgentUserID, "Alex Agent", SeedAgentEmail},
-		{SeedAdminUserID, "Sam Admin", SeedAdminEmail},
-		{SeedAgentBUserID, "Blake Agent", SeedAgentBEmail},
+		{SeedConsumerUserID, "Casey Consumer", SeedConsumerEmail, []string{AccountRoleConsumer}},
+		{SeedAgentUserID, "Alex Agent", SeedAgentEmail, []string{AccountRoleConsumer, AccountRoleAgent}},
+		{SeedAdminUserID, "Sam Admin", SeedAdminEmail, []string{AccountRoleConsumer}},
+		{SeedAgentBUserID, "Blake Agent", SeedAgentBEmail, []string{AccountRoleAgent}},
 	} {
 		verified := now
+		accountRoles := make([]AccountRole, 0, len(u.roles))
+		for _, role := range u.roles {
+			accountRoles = append(accountRoles, AccountRole{Role: role, Status: AccountRoleActive})
+		}
 		if err := s.CreateUser(ctx, NewUser{
 			ID: u.id, Name: u.name, Email: u.email, PasswordHash: hash,
-			PrivacyVersion: seedPrivacyVersion, EmailVerifiedAt: &verified, CreatedAt: now,
+			PrivacyVersion: seedPrivacyVersion, AccountRoles: accountRoles, EmailVerifiedAt: &verified, CreatedAt: now,
 		}); err != nil {
 			return fmt.Errorf("seed %s: %w", u.email, err)
 		}

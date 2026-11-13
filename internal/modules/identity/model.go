@@ -10,6 +10,8 @@ package identity
 
 import (
 	"errors"
+	"slices"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -39,6 +41,73 @@ const (
 
 // User statuses (users.status).
 const StatusActive = "ACTIVE"
+
+// Account roles a person may choose for themselves at registration.
+//
+// An account role is a SELF-DECLARED statement of how someone intends to use
+// the platform. It is not an authorisation: it creates no organisation and no
+// membership, grants no access to any organisation's data, and is never
+// consulted by auth.RequireMembership or auth.RequirePlatformRole. Platform
+// roles (SUPER_ADMIN etc.) are a separate vocabulary and can never be chosen.
+const (
+	AccountRoleConsumer        = "CONSUMER"
+	AccountRoleTenant          = "TENANT"
+	AccountRolePrivateSeller   = "PRIVATE_SELLER"
+	AccountRoleLandlord        = "LANDLORD"
+	AccountRoleHost            = "HOST"
+	AccountRoleDeveloper       = "DEVELOPER"
+	AccountRoleServiceProvider = "SERVICE_PROVIDER"
+	AccountRoleAgent           = "AGENT"
+	AccountRoleAgencyStaff     = "AGENCY_STAFF"
+	AccountRoleAgencyAdmin     = "AGENCY_ADMIN"
+	AccountRoleAgencyOwner     = "AGENCY_OWNER"
+)
+
+// Account role statuses. Only ACTIVE and PENDING_VERIFICATION are set today;
+// the database also allows REJECTED and REVOKED for the future approval workflow.
+const (
+	AccountRoleActive              = "ACTIVE"
+	AccountRolePendingVerification = "PENDING_VERIFICATION"
+)
+
+// selectableAccountRoles is the registration allowlist, in the order the API
+// returns account roles. Anything not listed here is rejected.
+var selectableAccountRoles = []string{
+	AccountRoleConsumer, AccountRoleTenant, AccountRolePrivateSeller, AccountRoleLandlord,
+	AccountRoleHost, AccountRoleDeveloper, AccountRoleServiceProvider, AccountRoleAgent,
+	AccountRoleAgencyStaff, AccountRoleAgencyAdmin, AccountRoleAgencyOwner,
+}
+
+// SelectableAccountRoles returns the registration allowlist in API order.
+func SelectableAccountRoles() []string { return slices.Clone(selectableAccountRoles) }
+
+// initialAccountRoleStatus is the status a self-selected role starts in:
+// CONSUMER and TENANT need no vetting and are ACTIVE (the account still cannot
+// sign in until its email is verified); every professional role is only a
+// request and waits as PENDING_VERIFICATION.
+func initialAccountRoleStatus(role string) string {
+	if role == AccountRoleConsumer || role == AccountRoleTenant {
+		return AccountRoleActive
+	}
+	return AccountRolePendingVerification
+}
+
+// AccountRole is one self-declared role and its status.
+type AccountRole struct {
+	Role   string
+	Status string
+}
+
+// sortAccountRoles orders roles as in the allowlist (unknown values last).
+func sortAccountRoles(roles []AccountRole) {
+	rank := func(role string) int {
+		if i := slices.Index(selectableAccountRoles, role); i >= 0 {
+			return i
+		}
+		return len(selectableAccountRoles)
+	}
+	sort.SliceStable(roles, func(i, j int) bool { return rank(roles[i].Role) < rank(roles[j].Role) })
+}
 
 // Consent types recorded in user_consents.
 const ConsentPrivacyNotice = "PRIVACY_NOTICE"
@@ -72,6 +141,8 @@ type User struct {
 	EmailVerifiedAt *time.Time
 	PlatformRoles   []auth.PlatformRole
 	Memberships     []auth.Membership
+	// AccountRoles are self-declared and informational only (see AccountRole*).
+	AccountRoles []AccountRole
 }
 
 // Verified reports whether the email address has been verified.
@@ -86,6 +157,8 @@ type NewUser struct {
 	PasswordHash   string
 	MarketingOptIn bool
 	PrivacyVersion string
+	// AccountRoles is the validated role selection with initial statuses.
+	AccountRoles []AccountRole
 	// EmailVerifiedAt is nil for normal registration (set by seeds only).
 	EmailVerifiedAt *time.Time
 	CreatedAt       time.Time
@@ -111,6 +184,13 @@ type UserView struct {
 	EmailVerified bool               `json:"email_verified"`
 	PlatformRoles []PlatformRoleView `json:"platform_roles"`
 	Memberships   []MembershipView   `json:"memberships"`
+	AccountRoles  []AccountRoleView  `json:"account_roles"`
+}
+
+// AccountRoleView is one self-declared account role. It conveys no access.
+type AccountRoleView struct {
+	Role   string `json:"role"`
+	Status string `json:"status"`
 }
 
 // PlatformRoleView is one platform role; market_code is null unless the role
@@ -135,6 +215,12 @@ func (u User) View() UserView {
 		ID: u.ID, Name: u.Name, Email: u.Email, EmailVerified: u.Verified(),
 		PlatformRoles: make([]PlatformRoleView, 0, len(u.PlatformRoles)),
 		Memberships:   make([]MembershipView, 0, len(u.Memberships)),
+		AccountRoles:  make([]AccountRoleView, 0, len(u.AccountRoles)),
+	}
+	roles := slices.Clone(u.AccountRoles)
+	sortAccountRoles(roles)
+	for _, r := range roles {
+		v.AccountRoles = append(v.AccountRoles, AccountRoleView{Role: r.Role, Status: r.Status})
 	}
 	for _, r := range u.PlatformRoles {
 		pr := PlatformRoleView{Role: r.Role}

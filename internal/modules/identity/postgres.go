@@ -15,6 +15,7 @@ import (
 )
 
 // Constraint names from migrations/0001_init.up.sql and 0002_identity.up.sql.
+// Account roles live in user_account_roles (0003_account_roles).
 const (
 	uniqueViolation      = "23505"
 	usersEmailConstraint = "users_email_lower_key"
@@ -65,6 +66,22 @@ func insertConsent(ctx context.Context, q querier, u NewUser) error {
 	return nil
 }
 
+// replaceAccountRoles makes roles the user's complete set of account roles.
+func replaceAccountRoles(ctx context.Context, q querier, u NewUser) error {
+	if _, err := q.Exec(ctx, `DELETE FROM user_account_roles WHERE user_id = $1`, u.ID); err != nil {
+		return fmt.Errorf("clear account roles: %w", err)
+	}
+	for _, r := range u.AccountRoles {
+		if _, err := q.Exec(ctx, `
+			INSERT INTO user_account_roles (id, user_id, role, status, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $5)`,
+			uuid.New(), u.ID, r.Role, r.Status, u.CreatedAt); err != nil {
+			return fmt.Errorf("insert account role: %w", err)
+		}
+	}
+	return nil
+}
+
 // CreateUser implements Store.
 func (s *PostgresStore) CreateUser(ctx context.Context, u NewUser) error {
 	return s.inTx(ctx, func(tx pgx.Tx) error {
@@ -78,6 +95,9 @@ func (s *PostgresStore) CreateUser(ctx context.Context, u NewUser) error {
 				return ErrEmailTaken
 			}
 			return fmt.Errorf("insert user: %w", err)
+		}
+		if err := replaceAccountRoles(ctx, tx, u); err != nil {
+			return err
 		}
 		return insertConsent(ctx, tx, u)
 	})
@@ -101,6 +121,9 @@ func (s *PostgresStore) UpdatePendingRegistration(ctx context.Context, u NewUser
 			UPDATE email_verification_tokens SET used_at = $2
 			WHERE user_id = $1 AND used_at IS NULL`, u.ID, u.CreatedAt); err != nil {
 			return fmt.Errorf("invalidate verification tokens: %w", err)
+		}
+		if err := replaceAccountRoles(ctx, tx, u); err != nil {
+			return err
 		}
 		return insertConsent(ctx, tx, u)
 	})
@@ -161,6 +184,22 @@ func (s *PostgresStore) loadUser(ctx context.Context, where string, arg any) (Us
 	if err != nil {
 		return User{}, fmt.Errorf("load memberships: %w", err)
 	}
+
+	// Self-declared account roles (informational; never used for authorisation).
+	rows, err = s.pool.Query(ctx, `
+		SELECT role, status FROM user_account_roles WHERE user_id = $1 ORDER BY role`, u.ID)
+	if err != nil {
+		return User{}, fmt.Errorf("load account roles: %w", err)
+	}
+	u.AccountRoles, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (AccountRole, error) {
+		var r AccountRole
+		err := row.Scan(&r.Role, &r.Status)
+		return r, err
+	})
+	if err != nil {
+		return User{}, fmt.Errorf("load account roles: %w", err)
+	}
+	sortAccountRoles(u.AccountRoles)
 	return u, nil
 }
 

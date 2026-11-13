@@ -22,6 +22,7 @@ type MemoryStore struct {
 	organisations map[uuid.UUID]MemoryOrganisation
 	memberships   []memoryMembership
 	platformRoles map[uuid.UUID][]auth.PlatformRole
+	accountRoles  map[uuid.UUID][]AccountRole
 	sessions      map[string]*Session // key: hex token hash
 	verifications map[string]*memoryToken
 	resets        map[string]*memoryToken
@@ -69,6 +70,7 @@ func NewMemoryStore() *MemoryStore {
 		byEmail:       make(map[string]uuid.UUID),
 		organisations: make(map[uuid.UUID]MemoryOrganisation),
 		platformRoles: make(map[uuid.UUID][]auth.PlatformRole),
+		accountRoles:  make(map[uuid.UUID][]AccountRole),
 		sessions:      make(map[string]*Session),
 		verifications: make(map[string]*memoryToken),
 		resets:        make(map[string]*memoryToken),
@@ -85,6 +87,8 @@ func (s *MemoryStore) view(u *memoryUser) User {
 		out.EmailVerifiedAt = &t
 	}
 	out.PlatformRoles = append([]auth.PlatformRole(nil), s.platformRoles[u.ID]...)
+	out.AccountRoles = append([]AccountRole(nil), s.accountRoles[u.ID]...)
+	sortAccountRoles(out.AccountRoles)
 	out.Memberships = nil
 	for _, m := range s.memberships {
 		if m.UserID != u.ID {
@@ -117,6 +121,7 @@ func (s *MemoryStore) CreateUser(_ context.Context, u NewUser) error {
 		MarketingOptIn: u.MarketingOptIn,
 	}
 	s.byEmail[u.Email] = u.ID
+	s.accountRoles[u.ID] = append([]AccountRole(nil), u.AccountRoles...)
 	s.consents = append(s.consents, MemoryConsent{UserID: u.ID, ConsentType: ConsentPrivacyNotice, Version: u.PrivacyVersion, AcceptedAt: u.CreatedAt})
 	return nil
 }
@@ -130,6 +135,7 @@ func (s *MemoryStore) UpdatePendingRegistration(_ context.Context, u NewUser) er
 		return ErrNotFound
 	}
 	user.Name, user.PasswordHash, user.MarketingOptIn = u.Name, u.PasswordHash, u.MarketingOptIn
+	s.accountRoles[u.ID] = append([]AccountRole(nil), u.AccountRoles...)
 	s.consents = append(s.consents, MemoryConsent{UserID: u.ID, ConsentType: ConsentPrivacyNotice, Version: u.PrivacyVersion, AcceptedAt: u.CreatedAt})
 	for _, t := range s.verifications {
 		if t.UserID == u.ID && t.UsedAt == nil {

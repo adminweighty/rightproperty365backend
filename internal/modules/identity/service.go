@@ -2,10 +2,12 @@ package identity
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -34,6 +36,68 @@ type RegisterInput struct {
 	Password       string        `json:"password"`
 	Consent        *ConsentInput `json:"consent"`
 	MarketingOptIn bool          `json:"marketing_opt_in"`
+	// Roles is the account-role selection. It is kept raw so that a wrong
+	// shape (not an array, a non-string entry) is reported as a validation
+	// error on the "roles" field instead of a generic INVALID_JSON.
+	Roles json.RawMessage `json:"roles"`
+}
+
+// Messages for the "roles" field. Plain language: they are shown to people.
+const (
+	msgRolesRequired   = "Choose at least one role."
+	msgRoleNotAllowed  = "That role cannot be chosen at sign-up."
+	msgRoleUnknown     = "Choose roles from the options provided."
+	msgRolesDuplicated = "Each role can only be chosen once."
+)
+
+// parseAccountRoles validates the role selection against the allowlist and
+// returns it in allowlist order with initial statuses, or a message for the
+// "roles" field. The allowlist is the only thing that admits a value: platform
+// administrator roles and anything else unknown are refused, as are duplicates.
+func parseAccountRoles(raw json.RawMessage) ([]AccountRole, string) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, msgRolesRequired
+	}
+	var entries []json.RawMessage
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return nil, msgRoleUnknown // not an array
+	}
+	if len(entries) == 0 {
+		return nil, msgRolesRequired
+	}
+	chosen := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		var role string
+		if err := json.Unmarshal(entry, &role); err != nil || string(entry) == "null" {
+			return nil, msgRoleUnknown // not a string
+		}
+		switch {
+		case isPlatformRole(role):
+			return nil, msgRoleNotAllowed
+		case !slices.Contains(selectableAccountRoles, role):
+			return nil, msgRoleUnknown
+		case slices.Contains(chosen, role):
+			return nil, msgRolesDuplicated
+		}
+		chosen = append(chosen, role)
+	}
+	roles := make([]AccountRole, 0, len(chosen))
+	for _, role := range chosen {
+		roles = append(roles, AccountRole{Role: role, Status: initialAccountRoleStatus(role)})
+	}
+	sortAccountRoles(roles)
+	return roles, ""
+}
+
+// isPlatformRole reports whether role is a platform administrator role. It
+// only selects the wording of the rejection; the allowlist does the rejecting.
+func isPlatformRole(role string) bool {
+	switch role {
+	case auth.PlatformSuperAdmin, auth.PlatformAdmin, auth.PlatformMarketAdmin, auth.PlatformFinanceAdmin,
+		auth.PlatformContentAdmin, auth.PlatformModerator, auth.PlatformSupport:
+		return true
+	}
+	return false
 }
 
 // ConsentInput records acceptance of a specific privacy notice version.
@@ -129,12 +193,15 @@ func isPrintableASCII(s string) bool {
 // whether or not the email already has an account, and the password is hashed
 // before the lookup so both paths cost about the same.
 //   - new email: account created, verification sent;
-//   - existing UNVERIFIED account: its name/password are replaced by this
-//     registration and earlier verification links stop working, then a new
+//   - existing UNVERIFIED account: its name, password and role selection are
+//     replaced by this registration and earlier verification links stop working, then a new
 //     verification is sent (so a stranger who registered someone else's
 //     address first cannot keep their own password on it);
 //   - existing VERIFIED account: nothing changes; the owner gets a "you
 //     already have an account" email.
+//
+// The selected account roles only record what the person says they are: no
+// organisation or membership is created and no access is granted.
 //
 // Register never signs the caller in.
 func (s *Service) Register(ctx context.Context, in RegisterInput) error {
@@ -175,6 +242,10 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) error {
 			fields["consent.privacy_version"] = "is not a valid privacy notice version"
 		}
 	}
+	accountRoles, msg := parseAccountRoles(in.Roles)
+	if msg != "" {
+		fields["roles"] = msg
+	}
 	if len(fields) > 0 {
 		return &ValidationError{Fields: fields}
 	}
@@ -186,7 +257,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) error {
 	now := s.clock()
 	nu := NewUser{
 		Name: name, Email: email, PasswordHash: passwordHash,
-		MarketingOptIn: in.MarketingOptIn, PrivacyVersion: privacyVersion, CreatedAt: now,
+		MarketingOptIn: in.MarketingOptIn, PrivacyVersion: privacyVersion, AccountRoles: accountRoles, CreatedAt: now,
 	}
 
 	existing, err := s.store.UserByEmail(ctx, email)

@@ -49,12 +49,12 @@ Development seed users (in-memory store only, and only when `APP_ENV=development
 email-verified and share the password in `DEV_SEED_PASSWORD` — see [`.env.example`](.env.example)
 for the development value. If the variable is unset the API logs a warning and creates no users.
 
-| Email | Roles |
-| --- | --- |
-| `consumer@example.test` | none (plain consumer) |
-| `agent@example.test` | `AGENT` at **Sample Estates** (`AGENCY`, market ZW) — the organisation that receives requests for listings 1–5 |
-| `admin@example.test` | platform role `SUPER_ADMIN` |
-| `agent-b@example.test` | `AGENT` at **Second Street Realty**, which owns no listings (for checking that organisations cannot see each other's data) |
+| Email | Membership / platform role | Account roles (all `ACTIVE`) |
+| --- | --- | --- |
+| `consumer@example.test` | none | `CONSUMER` |
+| `agent@example.test` | `AGENT` at **Sample Estates** (`AGENCY`, market ZW) — the organisation that receives requests for listings 1–5 | `CONSUMER`, `AGENT` |
+| `admin@example.test` | platform role `SUPER_ADMIN` | `CONSUMER` |
+| `agent-b@example.test` | `AGENT` at **Second Street Realty**, which owns no listings (for checking that organisations cannot see each other's data) | `AGENT` |
 
 Sign in and read the organisation inbox (PowerShell; `-SessionVariable` keeps the cookie, and the
 `Origin` header is required on cookie-authenticated POSTs):
@@ -174,7 +174,10 @@ by the worker from the outbox.
   both cases), and `403 EMAIL_NOT_VERIFIED` only after the correct password.
 - **Registering an email that already exists** – verified account: nothing changes and the owner
   gets a "you already have an account" email. Unverified account: the new registration replaces
-  the pending name and password and earlier verification links stop working.
+  the pending name, password and role selection and earlier verification links stop working.
+- **Roles at registration** – `roles` is required (see "Role model" below): 1–11 values from a
+  server-side allowlist. Platform administrator roles, unknown values, non-string entries and
+  **duplicates are rejected** with `400 VALIDATION_FAILED` and a message under `fields.roles`.
 - **One-time tokens** – email verification (24 h) and password reset (1 h) are single-use and
   stored as SHA-256. A successful reset also marks the email verified, because the link proves
   control of the mailbox.
@@ -191,8 +194,27 @@ by the worker from the outbox.
 
 ### Role model
 
-Everyone is implicitly a **consumer**; there is no consumer role to assign. Extra capabilities come
-from two places, both returned by `GET /v1/me`:
+There are three separate things, all returned by `GET /v1/me`, and only two of them grant anything:
+
+| | What it is | Who sets it | Grants access? |
+| --- | --- | --- | --- |
+| `account_roles` | What the person says they are, chosen at registration | The person | **No** |
+| `memberships` | A role in one organisation and market | Not self-service (database / dev seed today) | Yes — to that organisation's data |
+| `platform_roles` | Platform staff role | Not self-service (database / dev seed today) | Yes — platform administration |
+
+**Account roles** are chosen at registration from this allowlist (exact API codes): `CONSUMER`,
+`TENANT`, `PRIVATE_SELLER`, `LANDLORD`, `HOST`, `DEVELOPER`, `SERVICE_PROVIDER`, `AGENT`,
+`AGENCY_STAFF`, `AGENCY_ADMIN`, `AGENCY_OWNER`. Each has a status: `CONSUMER` and `TENANT` are
+`ACTIVE`; every other role is stored as `PENDING_VERIFICATION` (the database also reserves
+`REJECTED` and `REVOKED`; nothing sets them yet). Platform roles can never be chosen.
+
+Selecting a professional role at sign-up **only records a request**. It does not create an
+organisation or a membership, gives no access to any organisation's data, and is never consulted by
+`RequireMembership` or `RequirePlatformRole` — a self-registered "AGENT" gets `403 FORBIDDEN` from
+`GET /v1/agent/property-requests` until someone gives them a real membership. No authorisation
+decision reads account roles.
+
+Memberships and platform roles use these vocabularies:
 
 | Kind | Values | Scope |
 | --- | --- | --- |
@@ -226,8 +248,11 @@ requests routed to a direct seller are never returned. Newest first, capped at 1
 
 - **MFA** – the specification requires it for admin roles; platform admins currently sign in with
   a password only.
-- **Organisation invitations, agent onboarding and verification** – memberships and platform
-  roles can only be created directly in the database (or by the development seed).
+- **Verification / approval workflow for pending roles** – professional account roles stay
+  `PENDING_VERIFICATION` forever; nothing reviews, approves, rejects or revokes them, and approval
+  would not yet lead to a membership.
+- **Organisation creation and invitations** – memberships and platform roles can only be created
+  directly in the database (or by the development seed).
 - **Account deletion** and data export.
 - **Consent preference centre** – registration consent is recorded, but there is no way to review
   or change consents (including `marketing_opt_in`) afterwards.
@@ -292,6 +317,9 @@ Deliberately no empty stubs. These will be added under `internal/modules/` as th
   **This migration and the Postgres identity/inbox queries have only been compiled, never run
   against a database** (no Postgres on the development machine) — run them against a scratch
   database before relying on them.
+- `0003_account_roles` adds `user_account_roles` (self-declared roles with a status) and records
+  every pre-existing user as `CONSUMER` / `ACTIVE`. Like `0002`, it and its store queries are
+  **compiled only, never run against a database**.
 - `0001_init` seeds the four markets. It does **not** seed listings: against a real database
   `POST /v1/property-requests` returns 404 until listings exist.
 

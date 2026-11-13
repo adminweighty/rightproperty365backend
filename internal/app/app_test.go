@@ -261,6 +261,12 @@ type userBody struct {
 		MarketCode       string `json:"market_code"`
 		Role             string `json:"role"`
 	} `json:"memberships"`
+	AccountRoles []accountRoleBody `json:"account_roles"`
+}
+
+type accountRoleBody struct {
+	Role   string `json:"role"`
+	Status string `json:"status"`
 }
 
 type authBody struct {
@@ -313,6 +319,7 @@ func registerBody(email string) obj {
 	return obj{
 		"name": "Rudo Ncube", "email": email, "password": "correct-horse-battery",
 		"consent": obj{"privacy_version": "2026-01", "accepted": true},
+		"roles":   []string{"CONSUMER"},
 	}
 }
 
@@ -462,6 +469,7 @@ func TestRegisterValidation(t *testing.T) {
 		{"consent missing", func(b obj) { delete(b, "consent") }, "consent.accepted"},
 		{"consent not accepted", func(b obj) { b["consent"] = obj{"privacy_version": "2026-01", "accepted": false} }, "consent.accepted"},
 		{"privacy version missing", func(b obj) { b["consent"] = obj{"accepted": true} }, "consent.privacy_version"},
+		{"roles missing", func(b obj) { delete(b, "roles") }, "roles"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -595,7 +603,7 @@ func TestSeedUsersAndMeShape(t *testing.T) {
 	t.Run("consumer", func(t *testing.T) {
 		rec := e.get("/v1/me", withCookie(e.loginCookie(identity.SeedConsumerEmail, seedPassword)))
 		wantStatus(t, rec, http.StatusOK)
-		want := `{"user":{"id":"` + identity.SeedConsumerUserID.String() + `","name":"Casey Consumer","email":"consumer@example.test","email_verified":true,"platform_roles":[],"memberships":[]}}`
+		want := `{"user":{"id":"` + identity.SeedConsumerUserID.String() + `","name":"Casey Consumer","email":"consumer@example.test","email_verified":true,"platform_roles":[],"memberships":[],"account_roles":[{"role":"CONSUMER","status":"ACTIVE"}]}}`
 		if got := strings.TrimSpace(rec.Body.String()); got != want {
 			t.Fatalf("body = %s\nwant   %s", got, want)
 		}
@@ -605,7 +613,8 @@ func TestSeedUsersAndMeShape(t *testing.T) {
 		rec := e.get("/v1/me", withCookie(e.loginCookie(identity.SeedAgentEmail, seedPassword)))
 		wantStatus(t, rec, http.StatusOK)
 		want := `"platform_roles":[],"memberships":[{"organisation_id":"` + propertyrequests.SeedOrganisationID.String() +
-			`","organisation_name":"Sample Estates","organisation_kind":"AGENCY","market_code":"ZW","role":"AGENT"}]`
+			`","organisation_name":"Sample Estates","organisation_kind":"AGENCY","market_code":"ZW","role":"AGENT"}],` +
+			`"account_roles":[{"role":"CONSUMER","status":"ACTIVE"},{"role":"AGENT","status":"ACTIVE"}]`
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("body = %s\nwant to contain %s", rec.Body, want)
 		}
@@ -614,7 +623,7 @@ func TestSeedUsersAndMeShape(t *testing.T) {
 	t.Run("admin", func(t *testing.T) {
 		rec := e.get("/v1/me", withCookie(e.loginCookie(identity.SeedAdminEmail, seedPassword)))
 		wantStatus(t, rec, http.StatusOK)
-		if want := `"platform_roles":[{"role":"SUPER_ADMIN","market_code":null}],"memberships":[]`; !strings.Contains(rec.Body.String(), want) {
+		if want := `"platform_roles":[{"role":"SUPER_ADMIN","market_code":null}],"memberships":[],"account_roles":[{"role":"CONSUMER","status":"ACTIVE"}]`; !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("body = %s\nwant to contain %s", rec.Body, want)
 		}
 	})
@@ -1151,5 +1160,254 @@ func TestAuthenticatedPropertyRequest(t *testing.T) {
 		if reqs[len(reqs)-1].CustomerUserID != nil {
 			t.Fatal("guest request must not carry a customer user id")
 		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Account roles chosen at registration
+// ---------------------------------------------------------------------------
+
+// me returns the `user` object of GET /v1/me for a cookie session.
+func (e *env) me(c *http.Cookie) (userBody, string) {
+	e.t.Helper()
+	rec := e.get("/v1/me", withCookie(c))
+	wantStatus(e.t, rec, http.StatusOK)
+	return decode[struct {
+		User userBody `json:"user"`
+	}](e.t, rec).User, rec.Body.String()
+}
+
+func TestRegisterWithAccountRoles(t *testing.T) {
+	e := newEnv(t)
+	body := registerBody("multi@example.com")
+	// Deliberately not in allowlist order: the API returns a stable order.
+	body["roles"] = []string{"AGENT", "CONSUMER", "LANDLORD", "TENANT"}
+
+	rec := e.post("/v1/auth/register", body)
+	wantStatus(t, rec, http.StatusAccepted)
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"status":"VERIFICATION_SENT"}` {
+		t.Fatalf("body = %s", got)
+	}
+
+	rec = e.post("/v1/auth/verify-email", obj{"token": e.mail.verifyToken(t)})
+	wantStatus(t, rec, http.StatusOK)
+	want := []accountRoleBody{
+		{"CONSUMER", "ACTIVE"}, {"TENANT", "ACTIVE"},
+		{"LANDLORD", "PENDING_VERIFICATION"}, {"AGENT", "PENDING_VERIFICATION"},
+	}
+	check := func(where string, u userBody) {
+		t.Helper()
+		if len(u.AccountRoles) != len(want) {
+			t.Fatalf("%s: account_roles = %+v, want %+v", where, u.AccountRoles, want)
+		}
+		for i := range want {
+			if u.AccountRoles[i] != want[i] {
+				t.Fatalf("%s: account_roles = %+v, want %+v", where, u.AccountRoles, want)
+			}
+		}
+		// A requested professional role is not a membership or a platform role.
+		if len(u.Memberships) != 0 || len(u.PlatformRoles) != 0 {
+			t.Fatalf("%s: selecting roles must not create memberships or platform roles: %+v", where, u)
+		}
+	}
+	check("verify-email", decode[authBody](t, rec).User)
+
+	cookie := sessionCookie(rec)
+	meUser, raw := e.me(cookie)
+	check("/v1/me", meUser)
+	if !strings.Contains(raw, `"memberships":[],"account_roles":[{"role":"CONSUMER","status":"ACTIVE"},`) {
+		t.Fatalf("unexpected /v1/me body: %s", raw)
+	}
+
+	login := e.post("/v1/auth/login", obj{"email": "multi@example.com", "password": "correct-horse-battery", "token_delivery": "bearer"})
+	wantStatus(t, login, http.StatusOK)
+	check("login", decode[authBody](t, login).User)
+}
+
+func TestRegisterRolesValidation(t *testing.T) {
+	const (
+		required   = "Choose at least one role."
+		notAllowed = "That role cannot be chosen at sign-up."
+		unknown    = "Choose roles from the options provided."
+		duplicated = "Each role can only be chosen once."
+	)
+	tests := []struct {
+		name    string
+		roles   any // nil = omit the field
+		wantMsg string
+	}{
+		{"missing", nil, required},
+		{"null", json.RawMessage("null"), required},
+		{"empty array", []string{}, required},
+		{"unknown value", []string{"CONSUMER", "WIZARD"}, unknown},
+		{"lower case is not an allowlisted code", []string{"consumer"}, unknown},
+		{"empty string", []string{""}, unknown},
+		{"membership role name", []string{"OWNER"}, unknown},
+		{"organisation kind that is not an account role", []string{"AGENCY"}, unknown},
+		{"non-string entry", []any{"CONSUMER", 7}, unknown},
+		{"null entry", []any{"CONSUMER", nil}, unknown},
+		{"object entry", []any{obj{"role": "CONSUMER"}}, unknown},
+		{"not an array", "CONSUMER", unknown},
+		{"duplicate", []string{"CONSUMER", "AGENT", "CONSUMER"}, duplicated},
+		{"platform role hidden behind a duplicate", []string{"CONSUMER", "CONSUMER", "SUPER_ADMIN"}, duplicated},
+	}
+	// Every platform administrator role, alone and mixed with a valid one.
+	for _, role := range []string{
+		auth.PlatformSuperAdmin, auth.PlatformAdmin, auth.PlatformMarketAdmin, auth.PlatformFinanceAdmin,
+		auth.PlatformContentAdmin, auth.PlatformModerator, auth.PlatformSupport,
+	} {
+		tests = append(tests,
+			struct {
+				name    string
+				roles   any
+				wantMsg string
+			}{"platform role " + role, []string{role}, notAllowed},
+			struct {
+				name    string
+				roles   any
+				wantMsg string
+			}{"platform role " + role + " with CONSUMER", []string{"CONSUMER", role}, notAllowed},
+		)
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t)
+			before := e.identity.UserCount()
+			body := registerBody("roles@example.com")
+			if tt.roles == nil {
+				delete(body, "roles")
+			} else {
+				body["roles"] = tt.roles
+			}
+			env := wantError(t, e.post("/v1/auth/register", body), http.StatusBadRequest, httpx.CodeValidationFailed)
+			if got := env.Error.Fields["roles"]; got != tt.wantMsg || len(env.Error.Fields) != 1 {
+				t.Fatalf("fields = %v, want only roles=%q", env.Error.Fields, tt.wantMsg)
+			}
+			if e.identity.UserCount() != before {
+				t.Fatal("a rejected registration created a user")
+			}
+			if v, _, _ := e.mail.counts(); v != 0 {
+				t.Fatal("a rejected registration sent a verification email")
+			}
+		})
+	}
+
+	t.Run("every allowlisted role at once is accepted", func(t *testing.T) {
+		e := newEnv(t)
+		all := identity.SelectableAccountRoles()
+		if len(all) != 11 {
+			t.Fatalf("allowlist has %d roles, want 11", len(all))
+		}
+		body := registerBody("everything@example.com")
+		body["roles"] = all
+		wantStatus(t, e.post("/v1/auth/register", body), http.StatusAccepted)
+		rec := e.post("/v1/auth/verify-email", obj{"token": e.mail.verifyToken(t)})
+		wantStatus(t, rec, http.StatusOK)
+		got := decode[authBody](t, rec).User.AccountRoles
+		if len(got) != len(all) {
+			t.Fatalf("account_roles = %+v", got)
+		}
+		for i, r := range got {
+			wantStatusName := "PENDING_VERIFICATION"
+			if r.Role == "CONSUMER" || r.Role == "TENANT" {
+				wantStatusName = "ACTIVE"
+			}
+			if r.Role != all[i] || r.Status != wantStatusName {
+				t.Fatalf("account_roles[%d] = %+v, want %s %s", i, r, all[i], wantStatusName)
+			}
+		}
+	})
+}
+
+// Choosing AGENT at sign-up is only a request: it must not open the
+// organisation workspace or create a membership.
+func TestSelfDeclaredAgentHasNoAccess(t *testing.T) {
+	e := newEnv(t)
+	wantStatus(t, e.post("/v1/property-requests", e.propertyRequest(1)), http.StatusCreated)
+
+	body := registerBody("wannabe@example.com")
+	body["roles"] = []string{"AGENT", "AGENCY_OWNER", "AGENCY_ADMIN", "AGENCY_STAFF"}
+	wantStatus(t, e.post("/v1/auth/register", body), http.StatusAccepted)
+	rec := e.post("/v1/auth/verify-email", obj{"token": e.mail.verifyToken(t)})
+	wantStatus(t, rec, http.StatusOK)
+	cookie := sessionCookie(rec)
+
+	user, _ := e.me(cookie)
+	if len(user.Memberships) != 0 || len(user.PlatformRoles) != 0 {
+		t.Fatalf("self-declared roles created access: %+v", user)
+	}
+	if len(user.AccountRoles) != 4 {
+		t.Fatalf("account_roles = %+v", user.AccountRoles)
+	}
+	for _, r := range user.AccountRoles {
+		if r.Status != "PENDING_VERIFICATION" {
+			t.Fatalf("professional role %s must be PENDING_VERIFICATION, got %s", r.Role, r.Status)
+		}
+	}
+
+	wantError(t, e.get("/v1/agent/property-requests", withCookie(cookie)), http.StatusForbidden, httpx.CodeForbidden)
+	bearer := e.loginBearer("wannabe@example.com", "correct-horse-battery")
+	wantError(t, e.get("/v1/agent/property-requests", withBearer(bearer)), http.StatusForbidden, httpx.CodeForbidden)
+
+	// The real member is unaffected, and an ACTIVE seeded AGENT account role
+	// without a membership in that organisation still sees nothing of it.
+	inbox := decode[inboxBody](t, e.get("/v1/agent/property-requests", withBearer(e.loginBearer(identity.SeedAgentEmail, seedPassword))))
+	if len(inbox.Items) != 1 {
+		t.Fatalf("member inbox = %d items, want 1", len(inbox.Items))
+	}
+	inbox = decode[inboxBody](t, e.get("/v1/agent/property-requests", withBearer(e.loginBearer(identity.SeedAgentBEmail, seedPassword))))
+	if len(inbox.Items) != 0 {
+		t.Fatal("organisation B saw organisation A's requests")
+	}
+}
+
+func TestRegisterExistingEmailWithRoles(t *testing.T) {
+	t.Run("verified account: 202 and its roles are untouched", func(t *testing.T) {
+		e := newEnv(t)
+		before := e.identity.UserCount()
+		body := registerBody(identity.SeedConsumerEmail)
+		body["roles"] = []string{"CONSUMER", "AGENCY_OWNER", "LANDLORD"}
+		rec := e.post("/v1/auth/register", body)
+		wantStatus(t, rec, http.StatusAccepted)
+		if got := strings.TrimSpace(rec.Body.String()); got != `{"status":"VERIFICATION_SENT"}` {
+			t.Fatalf("body = %s", got)
+		}
+		if e.identity.UserCount() != before {
+			t.Fatal("a second user was created for an existing email")
+		}
+		user, _ := e.me(e.loginCookie(identity.SeedConsumerEmail, seedPassword))
+		if len(user.AccountRoles) != 1 || user.AccountRoles[0] != (accountRoleBody{"CONSUMER", "ACTIVE"}) {
+			t.Fatalf("account_roles of the existing account changed: %+v", user.AccountRoles)
+		}
+	})
+
+	t.Run("unverified account: 202 and the latest selection replaces the pending one", func(t *testing.T) {
+		e := newEnv(t)
+		first := registerBody("pending-roles@example.com")
+		first["roles"] = []string{"CONSUMER", "AGENT"}
+		wantStatus(t, e.post("/v1/auth/register", first), http.StatusAccepted)
+		count := e.identity.UserCount()
+
+		second := registerBody("pending-roles@example.com")
+		second["roles"] = []string{"TENANT", "HOST"}
+		wantStatus(t, e.post("/v1/auth/register", second), http.StatusAccepted)
+		if e.identity.UserCount() != count {
+			t.Fatal("a second user was created for an existing email")
+		}
+
+		rec := e.post("/v1/auth/verify-email", obj{"token": e.mail.verifyToken(t)})
+		wantStatus(t, rec, http.StatusOK)
+		got := decode[authBody](t, rec).User.AccountRoles
+		if len(got) != 2 || got[0] != (accountRoleBody{"TENANT", "ACTIVE"}) || got[1] != (accountRoleBody{"HOST", "PENDING_VERIFICATION"}) {
+			t.Fatalf("account_roles = %+v, want TENANT ACTIVE + HOST PENDING_VERIFICATION", got)
+		}
+	})
+
+	t.Run("invalid roles are rejected even for an existing email", func(t *testing.T) {
+		e := newEnv(t)
+		body := registerBody(identity.SeedConsumerEmail)
+		body["roles"] = []string{"SUPPORT"}
+		wantError(t, e.post("/v1/auth/register", body), http.StatusBadRequest, httpx.CodeValidationFailed)
 	})
 }

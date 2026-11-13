@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.2.0
+  version: 0.3.0
   summary: Multi-country property marketplace API (Zimbabwe first).
   description: |
     Versioned REST API for RightProperty365.
@@ -318,12 +318,23 @@ paths:
         Enumeration-safe: for valid input the answer is always `202 VERIFICATION_SENT`, whether
         or not the email already has an account.
         - New email: the account is created and a verification link is sent.
-        - Existing unverified account: its name and password are replaced by this registration,
-          earlier verification links stop working and a new link is sent.
+        - Existing unverified account: its name, password and role selection are replaced by this
+          registration, earlier verification links stop working and a new link is sent.
         - Existing verified account: nothing changes; the owner is told by email that they
           already have an account.
 
         The verification link is `{WEB_BASE_URL}/verify-email?token=...` and is valid for 24 hours.
+
+        **Account roles.** `roles` is required: 1 to 11 values from the allowlist in
+        `SelectableAccountRole`, enforced on the server. A missing or empty array, a platform
+        administrator role (`SUPER_ADMIN`, `PLATFORM_ADMIN`, `MARKET_ADMIN`, `FINANCE_ADMIN`,
+        `CONTENT_ADMIN`, `MODERATOR`, `SUPPORT`), any other unknown value, a non-string entry or a
+        **duplicate** is rejected with `400 VALIDATION_FAILED` and a plain-language message in
+        `error.fields.roles`. `CONSUMER` and `TENANT` become `ACTIVE`; every other role is recorded
+        as `PENDING_VERIFICATION`.
+
+        Selecting a professional role only records a request. It does **not** create an
+        organisation or a membership and grants no access to any organisation's data.
       requestBody:
         required: true
         content:
@@ -338,13 +349,14 @@ paths:
                 privacy_version: "2026-01"
                 accepted: true
               marketing_opt_in: false
+              roles: [CONSUMER, LANDLORD, AGENT]
       responses:
         "202":
           $ref: "#/components/responses/VerificationSent"
         "400":
           description: |
             `VALIDATION_FAILED` with `error.fields` keyed by `name`, `email`, `password`,
-            `consent.accepted` or `consent.privacy_version`; or `INVALID_JSON`.
+            `consent.accepted`, `consent.privacy_version` or `roles`; or `INVALID_JSON`.
           headers:
             X-Request-Id:
               $ref: "#/components/headers/X-Request-Id"
@@ -359,6 +371,7 @@ paths:
                   fields:
                     password: must be at least 10 characters
                     consent.accepted: must be true
+                    roles: That role cannot be chosen at sign-up.
                 trace_id: 4b0b8f0e-5d0c-4e0e-9a39-0a5a4f1f6c55
         "403":
           $ref: "#/components/responses/CsrfOrigin"
@@ -683,6 +696,11 @@ paths:
                       organisation_kind: AGENCY
                       market_code: ZW
                       role: AGENT
+                  account_roles:
+                    - role: CONSUMER
+                      status: ACTIVE
+                    - role: AGENT
+                      status: ACTIVE
         "401":
           $ref: "#/components/responses/Unauthenticated"
         "500":
@@ -932,10 +950,10 @@ components:
     User:
       type: object
       description: |
-        The signed-in user. Everyone is implicitly a consumer; extra capabilities come only
-        from `memberships` (organisation-scoped) and `platform_roles`. Both arrays are always
-        present (empty, never null).
-      required: [id, name, email, email_verified, platform_roles, memberships]
+        The signed-in user. Capabilities come only from `memberships` (organisation-scoped) and
+        `platform_roles`. `account_roles` are self-declared at registration and grant nothing.
+        All three arrays are always present (empty, never null).
+      required: [id, name, email, email_verified, platform_roles, memberships, account_roles]
       additionalProperties: false
       properties:
         id:
@@ -958,6 +976,47 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Membership"
+        account_roles:
+          type: array
+          description: Self-declared account roles, in allowlist order. Informational only.
+          items:
+            $ref: "#/components/schemas/AccountRole"
+
+    SelectableAccountRole:
+      type: string
+      description: |
+        The roles a person may choose for themselves at registration. Platform administrator
+        roles are not in this list and can never be chosen.
+      enum:
+        - CONSUMER
+        - TENANT
+        - PRIVATE_SELLER
+        - LANDLORD
+        - HOST
+        - DEVELOPER
+        - SERVICE_PROVIDER
+        - AGENT
+        - AGENCY_STAFF
+        - AGENCY_ADMIN
+        - AGENCY_OWNER
+
+    AccountRole:
+      type: object
+      description: |
+        A role the user chose at registration, with its status. It is **not** an authorisation:
+        it creates no organisation or membership and gives no access to organisation data
+        (see `memberships`) or to platform administration (see `platform_roles`).
+      required: [role, status]
+      additionalProperties: false
+      properties:
+        role:
+          $ref: "#/components/schemas/SelectableAccountRole"
+        status:
+          type: string
+          enum: [ACTIVE, PENDING_VERIFICATION]
+          description: |
+            `ACTIVE` for CONSUMER and TENANT. `PENDING_VERIFICATION` for every professional role
+            until an approval workflow exists.
 
     PlatformRoleAssignment:
       type: object
@@ -1037,7 +1096,7 @@ components:
     RegisterRequest:
       type: object
       additionalProperties: false
-      required: [name, email, password, consent]
+      required: [name, email, password, consent, roles]
       properties:
         name:
           type: string
@@ -1064,6 +1123,14 @@ components:
         marketing_opt_in:
           type: boolean
           default: false
+        roles:
+          type: array
+          minItems: 1
+          maxItems: 11
+          uniqueItems: true
+          description: Account roles chosen by the person. Duplicates are rejected.
+          items:
+            $ref: "#/components/schemas/SelectableAccountRole"
 
     OrganisationPropertyRequest:
       type: object
