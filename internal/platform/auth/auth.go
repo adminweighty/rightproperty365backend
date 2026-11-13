@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -22,6 +23,15 @@ const SessionCookieName = "rp_session"
 const (
 	ViaCookie = "cookie"
 	ViaBearer = "bearer"
+)
+
+// Session scopes. A customer session is what the public login issues. An
+// admin session is issued only by the administrator login, only to accounts
+// holding a platform role, only as a cookie, and is much shorter-lived.
+// Platform-role checks require an admin session.
+const (
+	ScopeCustomer = "customer"
+	ScopeAdmin    = "admin"
 )
 
 // Organisation kinds.
@@ -52,6 +62,17 @@ const (
 	PlatformModerator    = "MODERATOR"
 	PlatformSupport      = "SUPPORT"
 )
+
+// AllPlatformRoles returns every platform role.
+func AllPlatformRoles() []string {
+	return []string{
+		PlatformSuperAdmin, PlatformAdmin, PlatformMarketAdmin, PlatformFinanceAdmin,
+		PlatformContentAdmin, PlatformModerator, PlatformSupport,
+	}
+}
+
+// IsPlatformRole reports whether role is a platform role.
+func IsPlatformRole(role string) bool { return slices.Contains(AllPlatformRoles(), role) }
 
 // ErrNoSession is returned by a SessionResolver when the token is unknown,
 // expired or revoked. The caller is then treated as anonymous.
@@ -86,6 +107,10 @@ type Principal struct {
 	// says whether its token arrived in the cookie or as a bearer token.
 	SessionID uuid.UUID
 	Via       string
+	// SessionScope is ScopeCustomer or ScopeAdmin; SessionExpiresAt is the
+	// session's absolute expiry.
+	SessionScope     string
+	SessionExpiresAt time.Time
 }
 
 // HasMembership reports whether the principal holds at least one membership
@@ -112,10 +137,15 @@ func (p *Principal) OrganisationIDs(roles ...string) []uuid.UUID {
 	return ids
 }
 
-// HasPlatformRole reports whether the principal holds one of roles in any
-// market. SUPER_ADMIN satisfies every platform-role check. Handlers acting on
-// market data must additionally check MarketCode for MARKET_ADMIN.
+// HasPlatformRole reports whether the principal may ACT with one of roles: it
+// must hold the role (in any market; SUPER_ADMIN satisfies every check) AND be
+// signed in through the administrator login (admin-scope session). A platform
+// role on a customer-scope session grants nothing. Handlers acting on market
+// data must additionally check MarketCode for MARKET_ADMIN.
 func (p *Principal) HasPlatformRole(roles ...string) bool {
+	if p.SessionScope != ScopeAdmin {
+		return false
+	}
 	for _, r := range p.PlatformRoles {
 		if r.Role == PlatformSuperAdmin || slices.Contains(roles, r.Role) {
 			return true

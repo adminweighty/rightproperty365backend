@@ -53,7 +53,7 @@ for the development value. If the variable is unset the API logs a warning and c
 | --- | --- | --- |
 | `consumer@example.test` | none | `CONSUMER` |
 | `agent@example.test` | `AGENT` at **Sample Estates** (`AGENCY`, market ZW) — the organisation that receives requests for listings 1–5 | `CONSUMER`, `AGENT` |
-| `admin@example.test` | platform role `SUPER_ADMIN` | `CONSUMER` |
+| `admin@example.test` | platform role `SUPER_ADMIN` — signs in **only** at `POST /v1/admin/auth/login` | `CONSUMER` |
 | `agent-b@example.test` | `AGENT` at **Second Street Realty**, which owns no listings (for checking that organisations cannot see each other's data) | `AGENT` |
 
 Sign in and read the organisation inbox (PowerShell; `-SessionVariable` keeps the cookie, and the
@@ -101,6 +101,9 @@ All configuration comes from environment variables. For local development you ma
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `WEB_BASE_URL` | `http://localhost:3000` | Frontend base URL used to build the links in verification / password-reset emails |
 | `DEV_SEED_PASSWORD` | _(empty)_ | Development only: shared password of the seed users. Ignored outside `APP_ENV=development`; never logged |
+| `ADMIN_SESSION_TTL` | `12h` | Absolute lifetime of an administrator session (Go duration, 1m–24h) |
+| `ADMIN_SESSION_IDLE_TTL` | `30m` | Administrator inactivity timeout (Go duration; must not exceed `ADMIN_SESSION_TTL`) |
+| `ADMINCTL_PASSWORD` | _(empty)_ | `cmd/adminctl` only: the administrator password, as an alternative to stdin |
 
 ## Endpoints
 
@@ -117,7 +120,9 @@ All configuration comes from environment variables. For local development you ma
 | POST | `/v1/auth/logout` | Revoke the current session; `204` even when not signed in |
 | POST | `/v1/auth/password-reset/request` | Always `202 RESET_SENT` |
 | POST | `/v1/auth/password-reset/confirm` | Set a new password; revokes all of the user's sessions |
-| GET | `/v1/me` | The signed-in user with platform roles and memberships |
+| GET | `/v1/me` | The signed-in user (roles, memberships) and the session (`scope`, `expires_at`) |
+| POST | `/v1/admin/auth/login` | Administrator sign-in (platform-role accounts only; cookie only) |
+| GET | `/v1/admin/me` | Same as `/v1/me`, but requires an admin-scope session and a platform role |
 | GET | `/v1/agent/property-requests` | Requests received by the caller's organisation(s) |
 
 Every error uses one envelope, and `trace_id` equals the `X-Request-Id` response header:
@@ -192,6 +197,80 @@ by the worker from the outbox.
 - Logs carry `user_id` on every line of an authenticated request. Passwords, tokens and cookie
   values are never logged (except the development mail link described above).
 
+### Administrator login and session scopes
+
+Platform administrators have their own login, and every session has a **scope**:
+
+| | `customer` | `admin` |
+| --- | --- | --- |
+| Issued by | `POST /v1/auth/login`, `POST /v1/auth/verify-email` | `POST /v1/admin/auth/login` only |
+| Who | any verified account **without** a platform role | verified accounts **with** a platform role |
+| Delivery | cookie or bearer | cookie only — never a bearer token, and an admin token sent as `Authorization: Bearer` does not authenticate |
+| Lifetime | 30 days absolute, 14 days idle | 12 h absolute, 30 min idle (`ADMIN_SESSION_TTL`, `ADMIN_SESSION_IDLE_TTL`) |
+| Rate limit (per IP) | burst 20, 20/min across `/v1/auth/*` | burst 5, 5/min, separate bucket |
+
+- `POST /v1/admin/auth/login` takes `{email, password}` and answers
+  `{"user": {...}, "session": {"scope":"admin","expires_at":"..."}}`. `token_delivery` is not
+  accepted (strict JSON → `400 INVALID_JSON`) and `access_token` is never returned.
+- **It does not reveal who is an administrator.** Unknown email, wrong password, a consumer, a
+  self-registered professional and an unverified account all get the same
+  `401 INVALID_CREDENTIALS` body, after exactly one Argon2 verification (real or dummy).
+- **Administrators cannot use the customer login**: `POST /v1/auth/login` answers the same generic
+  `401` for any account holding a platform role, and `POST /v1/auth/verify-email` verifies such an
+  account but starts no session (it returns `user` only).
+- **`RequirePlatformRole` requires an admin-scope session.** A platform role on a customer-scope
+  session grants nothing (`403 FORBIDDEN`). `GET /v1/admin/me` is the one admin-only route so far
+  and exists to prove the gate.
+- An admin session stops working as soon as its user no longer holds a platform role. `last_seen`
+  is refreshed at most once a minute (and never less often than a tenth of the idle window).
+- `GET /v1/me` and the login responses include `session.scope` so the frontend can tell which kind
+  of session it has. Sign out of either with `POST /v1/auth/logout`.
+- **No email password reset for administrators.** `POST /v1/auth/password-reset/request` still
+  answers `202` for a platform-role account but sends nothing: without MFA, a compromised mailbox
+  must not become an administrator takeover. Use `adminctl set-password`.
+- **Platform roles cannot be obtained through any public endpoint.** Registration only accepts the
+  account-role allowlist; the only writers of platform roles are `cmd/adminctl` and the
+  development seed.
+- **Audit (log-only).** Every administrator sign-in attempt writes one structured log line with
+  `"audit":true`: `event` (`admin_sign_in`), `outcome` (`success`/`failure`), an internal `reason`
+  on failure, `user_id` when the account is known, `email_sha256`, `ip` and `trace_id`. A refused
+  customer-login attempt on a platform account and a refused password-reset request are logged the
+  same way. The submitted email is logged as a **SHA-256 fingerprint, not as text**: what people
+  type into a login form is personal data and is sometimes a password pasted into the wrong field;
+  the fingerprint still groups repeated attempts and lets you test a known address. The password is
+  never logged. **This is not a durable audit record** — there is no audit table; the lines live
+  only wherever the process logs are shipped and retained. Requests rejected earlier (rate limit
+  `429`, malformed body `400`) are in the access log but have no audit line.
+
+> **The administrator login is not production-ready.** The specification requires MFA for
+> administrator roles and MFA is not built. Until it is, an administrator account is protected by
+> a password, a per-IP rate limit and a short session only.
+
+#### Creating administrators: `adminctl`
+
+Against a real database the first administrator is created with `cmd/adminctl` (Postgres only; it
+uses `DATABASE_DIRECT_URL`, or `DATABASE_URL` when that is unset, and fails with a clear message
+when neither is set):
+
+```powershell
+go run ./cmd/adminctl create --email ops@example.com --name "Ops Admin" --role SUPER_ADMIN
+go run ./cmd/adminctl create --email zw@example.com --name "ZW Admin" --role MARKET_ADMIN --market ZW
+go run ./cmd/adminctl set-password --email ops@example.com
+```
+
+- The password is typed at a no-echo prompt (asked twice), piped on stdin, or taken from the
+  `ADMINCTL_PASSWORD` environment variable. It is **never a flag**, never echoed and never logged.
+  Same rule as everywhere else: 10–128 characters, stored as Argon2id.
+- `create` marks the email verified, accepts only the seven platform roles, requires `--market`
+  for `MARKET_ADMIN` (and rejects it otherwise), and **refuses an email that already has an
+  account** — it does not promote existing customer accounts.
+- `set-password` works only for accounts holding a platform role and revokes all of that
+  account's sessions.
+- **The database path of `adminctl` has never been run** (no Postgres on the development machine);
+  only its argument and password validation is unit-tested, against the in-memory store.
+- In development without a database there is nothing to create: use the seeded
+  `admin@example.test` (`SUPER_ADMIN`).
+
 ### Role model
 
 There are three separate things, all returned by `GET /v1/me`, and only two of them grant anything:
@@ -246,8 +325,10 @@ requests routed to a direct seller are never returned. Newest first, capped at 1
 
 ### Not built yet
 
-- **MFA** – the specification requires it for admin roles; platform admins currently sign in with
-  a password only.
+- **MFA for administrators** – the specification requires it for admin roles and it is **not
+  built**; platform administrators sign in with a password only, so the administrator login must
+  not be treated as production-ready.
+- **Durable audit trail** – administrator sign-ins are only written to the process log.
 - **Verification / approval workflow for pending roles** – professional account roles stay
   `PENDING_VERIFICATION` forever; nothing reviews, approves, rejects or revokes them, and approval
   would not yet lead to a membership.
@@ -268,11 +349,13 @@ requests routed to a direct seller are never returned. Newest first, capped at 1
 cmd/api        HTTP API binary
 cmd/worker     background worker (outbox dispatcher)
 cmd/migrate    migration runner: up | down | status
+cmd/adminctl   create platform administrators / set their password (Postgres only)
 internal/platform/config     env configuration + validation
 internal/platform/logging    slog JSON logger, request-ID propagation
 internal/platform/httpx      middleware, error envelope, JSON decoding, rate limiter
 internal/platform/auth       Principal + Authenticate / RequireAuth / RequireMembership / RequirePlatformRole
 internal/app                 router wiring (middleware order, routes); end-to-end tests live here
+internal/adminctl            logic of cmd/adminctl (argument and password validation)
 internal/platform/database   pgxpool setup for the pooled runtime URL
 internal/platform/outbox     outbox dispatcher (lease, retry, dead-letter)
 internal/platform/migrate    embedded-SQL migration runner
@@ -320,6 +403,8 @@ Deliberately no empty stubs. These will be added under `internal/modules/` as th
 - `0003_account_roles` adds `user_account_roles` (self-declared roles with a status) and records
   every pre-existing user as `CONSUMER` / `ACTIVE`. Like `0002`, it and its store queries are
   **compiled only, never run against a database**.
+- `0004_session_scope` adds `sessions.scope` (`customer` / `admin`, existing rows become
+  `customer`) and a constraint that admin sessions are cookie-only. Also **never run**.
 - `0001_init` seeds the four markets. It does **not** seed listings: against a real database
   `POST /v1/property-requests` returns 404 until listings exist.
 
@@ -343,8 +428,8 @@ worker logs that it is idle and waits for shutdown.
 ## Operational notes and known limitations
 
 - **Rate limiter is per process.** `POST /v1/property-requests` is limited per client IP (burst 10,
-  refill 10/min) and `POST /v1/auth/*` shares a second bucket (burst 20, refill 20/min), both
-  in-memory token buckets. With more than one API instance each has its own
+  refill 10/min), `POST /v1/auth/*` shares a second bucket (burst 20, refill 20/min) and
+  `POST /v1/admin/auth/login` has a third (burst 5, refill 5/min), all in-memory token buckets. With more than one API instance each has its own
   buckets, so this **must be replaced by a shared limiter (Redis/Valkey or the edge) before
   autoscaling**.
 - **Client IP.** The limiter and access log use the TCP peer address and deliberately ignore

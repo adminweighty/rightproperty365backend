@@ -300,9 +300,9 @@ func (s *PostgresStore) ResetPassword(ctx context.Context, tokenHash []byte, pas
 // CreateSession implements Store.
 func (s *PostgresStore) CreateSession(ctx context.Context, sess Session) error {
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO sessions (id, user_id, token_hash, delivery, created_at, last_seen_at, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		sess.ID, sess.UserID, sess.TokenHash, sess.Delivery, sess.CreatedAt, sess.LastSeenAt, sess.ExpiresAt)
+		INSERT INTO sessions (id, user_id, token_hash, delivery, created_at, last_seen_at, expires_at, scope)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		sess.ID, sess.UserID, sess.TokenHash, sess.Delivery, sess.CreatedAt, sess.LastSeenAt, sess.ExpiresAt, sess.Scope)
 	return err
 }
 
@@ -310,9 +310,9 @@ func (s *PostgresStore) CreateSession(ctx context.Context, sess Session) error {
 func (s *PostgresStore) SessionByTokenHash(ctx context.Context, tokenHash []byte) (Session, error) {
 	var sess Session
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, user_id, token_hash, delivery, created_at, last_seen_at, expires_at, revoked_at
+		SELECT id, user_id, token_hash, delivery, created_at, last_seen_at, expires_at, revoked_at, scope
 		FROM sessions WHERE token_hash = $1`, tokenHash).
-		Scan(&sess.ID, &sess.UserID, &sess.TokenHash, &sess.Delivery, &sess.CreatedAt, &sess.LastSeenAt, &sess.ExpiresAt, &sess.RevokedAt)
+		Scan(&sess.ID, &sess.UserID, &sess.TokenHash, &sess.Delivery, &sess.CreatedAt, &sess.LastSeenAt, &sess.ExpiresAt, &sess.RevokedAt, &sess.Scope)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, ErrNotFound
 	}
@@ -337,4 +337,83 @@ func (s *PostgresStore) RevokeSession(ctx context.Context, id uuid.UUID, now tim
 		UPDATE sessions SET revoked_at = $2
 		WHERE id = $1 AND revoked_at IS NULL`, id, now)
 	return err
+}
+
+// CreatePlatformAdmin creates a verified administrator account holding one
+// platform role, in one transaction. It is used only by cmd/adminctl; no HTTP
+// endpoint can reach it. ErrEmailTaken if the email already has an account,
+// ErrMarketNotFound if the market code is unknown.
+//
+// NOTE: compiled but not yet exercised against a real database.
+func (s *PostgresStore) CreatePlatformAdmin(ctx context.Context, a NewPlatformAdmin) error {
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		var marketID *uuid.UUID
+		if a.MarketCode != "" {
+			var id uuid.UUID
+			err := tx.QueryRow(ctx, `SELECT id FROM markets WHERE code = $1`, a.MarketCode).Scan(&id)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrMarketNotFound
+			}
+			if err != nil {
+				return fmt.Errorf("look up market: %w", err)
+			}
+			marketID = &id
+		}
+		_, err := tx.Exec(ctx, `
+			INSERT INTO users (id, email, full_name, status, password_hash, email_verified_at, created_at, updated_at)
+			VALUES ($1, $2, $3, 'ACTIVE', $4, $5, $5, $5)`,
+			a.ID, a.Email, a.Name, a.PasswordHash, a.CreatedAt)
+		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation && pgErr.ConstraintName == usersEmailConstraint {
+				return ErrEmailTaken
+			}
+			return fmt.Errorf("insert user: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO platform_role_assignments (id, user_id, role, market_id, created_at)
+			VALUES ($1, $2, $3, $4, $5)`,
+			uuid.New(), a.ID, a.Role, marketID, a.CreatedAt); err != nil {
+			return fmt.Errorf("insert platform role: %w", err)
+		}
+		return nil
+	})
+}
+
+// SetPlatformAdminPassword replaces an administrator's password, invalidates
+// their outstanding reset tokens and revokes all their sessions, in one
+// transaction. ErrNotFound if no such account, ErrNotPlatformAdmin if it holds
+// no platform role (customers use the password-reset flow instead).
+//
+// NOTE: compiled but not yet exercised against a real database.
+func (s *PostgresStore) SetPlatformAdminPassword(ctx context.Context, email, passwordHash string, now time.Time) error {
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		var (
+			userID  uuid.UUID
+			isAdmin bool
+		)
+		err := tx.QueryRow(ctx, `
+			SELECT u.id, EXISTS (SELECT 1 FROM platform_role_assignments a WHERE a.user_id = u.id)
+			FROM users u WHERE lower(u.email) = $1
+			FOR UPDATE OF u`, email).Scan(&userID, &isAdmin)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("look up user: %w", err)
+		}
+		if !isAdmin {
+			return ErrNotPlatformAdmin
+		}
+		if _, err := tx.Exec(ctx, `UPDATE users SET password_hash = $2, updated_at = $3 WHERE id = $1`, userID, passwordHash, now); err != nil {
+			return fmt.Errorf("set password: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE password_reset_tokens SET used_at = $2 WHERE user_id = $1 AND used_at IS NULL`, userID, now); err != nil {
+			return fmt.Errorf("invalidate reset tokens: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE sessions SET revoked_at = $2 WHERE user_id = $1 AND revoked_at IS NULL`, userID, now); err != nil {
+			return fmt.Errorf("revoke sessions: %w", err)
+		}
+		return nil
+	})
 }

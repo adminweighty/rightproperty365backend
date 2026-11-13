@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -271,7 +272,8 @@ type accountRoleBody struct {
 
 type authBody struct {
 	User    userBody `json:"user"`
-	Session struct {
+	Session *struct {
+		Scope     string    `json:"scope"`
 		ExpiresAt time.Time `json:"expires_at"`
 	} `json:"session"`
 	AccessToken string `json:"access_token"`
@@ -303,6 +305,18 @@ func (e *env) loginCookie(email, password string) *http.Cookie {
 	c := sessionCookie(rec)
 	if c == nil {
 		e.t.Fatal("login did not set the session cookie")
+	}
+	return c
+}
+
+// adminLogin signs a platform administrator in at the administrator endpoint.
+func (e *env) adminLogin(email, password string, opts ...reqOpt) *http.Cookie {
+	e.t.Helper()
+	rec := e.post("/v1/admin/auth/login", obj{"email": email, "password": password}, opts...)
+	wantStatus(e.t, rec, http.StatusOK)
+	c := sessionCookie(rec)
+	if c == nil {
+		e.t.Fatal("admin login did not set the session cookie")
 	}
 	return c
 }
@@ -603,7 +617,7 @@ func TestSeedUsersAndMeShape(t *testing.T) {
 	t.Run("consumer", func(t *testing.T) {
 		rec := e.get("/v1/me", withCookie(e.loginCookie(identity.SeedConsumerEmail, seedPassword)))
 		wantStatus(t, rec, http.StatusOK)
-		want := `{"user":{"id":"` + identity.SeedConsumerUserID.String() + `","name":"Casey Consumer","email":"consumer@example.test","email_verified":true,"platform_roles":[],"memberships":[],"account_roles":[{"role":"CONSUMER","status":"ACTIVE"}]}}`
+		want := `{"user":{"id":"` + identity.SeedConsumerUserID.String() + `","name":"Casey Consumer","email":"consumer@example.test","email_verified":true,"platform_roles":[],"memberships":[],"account_roles":[{"role":"CONSUMER","status":"ACTIVE"}]},"session":{"scope":"customer","expires_at":"2026-12-01T09:00:00Z"}}`
 		if got := strings.TrimSpace(rec.Body.String()); got != want {
 			t.Fatalf("body = %s\nwant   %s", got, want)
 		}
@@ -621,7 +635,7 @@ func TestSeedUsersAndMeShape(t *testing.T) {
 	})
 
 	t.Run("admin", func(t *testing.T) {
-		rec := e.get("/v1/me", withCookie(e.loginCookie(identity.SeedAdminEmail, seedPassword)))
+		rec := e.get("/v1/me", withCookie(e.adminLogin(identity.SeedAdminEmail, seedPassword)))
 		wantStatus(t, rec, http.StatusOK)
 		if want := `"platform_roles":[{"role":"SUPER_ADMIN","market_code":null}],"memberships":[],"account_roles":[{"role":"CONSUMER","status":"ACTIVE"}]`; !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("body = %s\nwant to contain %s", rec.Body, want)
@@ -937,7 +951,7 @@ func TestAgentInbox(t *testing.T) {
 	})
 
 	t.Run("platform admin without a membership is 403", func(t *testing.T) {
-		wantError(t, e.get("/v1/agent/property-requests", withBearer(e.loginBearer(identity.SeedAdminEmail, seedPassword))),
+		wantError(t, e.get("/v1/agent/property-requests", withCookie(e.adminLogin(identity.SeedAdminEmail, seedPassword))),
 			http.StatusForbidden, httpx.CodeForbidden)
 	})
 
@@ -1410,4 +1424,370 @@ func TestRegisterExistingEmailWithRoles(t *testing.T) {
 		body["roles"] = []string{"SUPPORT"}
 		wantError(t, e.post("/v1/auth/register", body), http.StatusBadRequest, httpx.CodeValidationFailed)
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Administrator login and session scopes
+// ---------------------------------------------------------------------------
+
+type meBody struct {
+	User    userBody `json:"user"`
+	Session struct {
+		Scope     string    `json:"scope"`
+		ExpiresAt time.Time `json:"expires_at"`
+	} `json:"session"`
+}
+
+// selfRegister creates and verifies an account through the public API.
+func (e *env) selfRegister(email string, roles ...string) *http.Cookie {
+	e.t.Helper()
+	body := registerBody(email)
+	body["roles"] = roles
+	wantStatus(e.t, e.post("/v1/auth/register", body), http.StatusAccepted)
+	rec := e.post("/v1/auth/verify-email", obj{"token": e.mail.verifyToken(e.t)})
+	wantStatus(e.t, rec, http.StatusOK)
+	return sessionCookie(rec)
+}
+
+func TestAdminLogin(t *testing.T) {
+	e := newEnv(t)
+	rec := e.post("/v1/admin/auth/login", obj{"email": " Admin@Example.test ", "password": seedPassword})
+	wantStatus(t, rec, http.StatusOK)
+
+	if strings.Contains(rec.Body.String(), "access_token") {
+		t.Fatalf("admin login must never return a bearer token: %s", rec.Body)
+	}
+	body := decode[authBody](t, rec)
+	if body.Session == nil || body.Session.Scope != "admin" || !body.Session.ExpiresAt.Equal(e.now.Add(12*time.Hour)) {
+		t.Fatalf("session = %+v, want scope admin expiring in 12h", body.Session)
+	}
+	if body.User.Email != identity.SeedAdminEmail || len(body.User.PlatformRoles) != 1 || body.User.PlatformRoles[0].Role != "SUPER_ADMIN" {
+		t.Fatalf("unexpected user: %+v", body.User)
+	}
+	c := sessionCookie(rec)
+	if c == nil || !c.HttpOnly || c.SameSite != http.SameSiteLaxMode || c.Path != "/" || c.MaxAge != 12*3600 {
+		t.Fatalf("unexpected admin cookie: %+v", c)
+	}
+	for _, sess := range e.identity.Sessions() {
+		if sess.UserID == identity.SeedAdminUserID && (sess.Scope != auth.ScopeAdmin || sess.Delivery != identity.DeliveryCookie) {
+			t.Fatalf("admin session stored as scope=%s delivery=%s", sess.Scope, sess.Delivery)
+		}
+	}
+
+	for _, path := range []string{"/v1/admin/me", "/v1/me"} {
+		rec := e.get(path, withCookie(c))
+		wantStatus(t, rec, http.StatusOK)
+		me := decode[meBody](t, rec)
+		if me.Session.Scope != "admin" || !me.Session.ExpiresAt.Equal(e.now.Add(12*time.Hour)) || me.User.Email != identity.SeedAdminEmail {
+			t.Fatalf("%s = %s", path, rec.Body)
+		}
+	}
+
+	// Customer sessions report their scope too.
+	login := e.post("/v1/auth/login", obj{"email": identity.SeedConsumerEmail, "password": seedPassword})
+	if lb := decode[authBody](t, login); lb.Session == nil || lb.Session.Scope != "customer" {
+		t.Fatalf("customer login session = %+v", lb.Session)
+	}
+
+	// Signing out is the ordinary logout; the session is revoked.
+	wantStatus(t, e.post("/v1/auth/logout", nil, browser(c)), http.StatusNoContent)
+	wantError(t, e.get("/v1/admin/me", withCookie(c)), http.StatusUnauthorized, httpx.CodeUnauthenticated)
+
+	// Audit lines: success recorded, never the password or the raw email.
+	logs := e.logs.String()
+	if !strings.Contains(logs, `"audit":true,"event":"admin_sign_in","outcome":"success"`) {
+		t.Fatalf("no audit line for the successful admin sign-in")
+	}
+	if strings.Contains(logs, seedPassword) || strings.Contains(logs, c.Value) {
+		t.Fatal("logs contain the password or the session token")
+	}
+}
+
+func TestAdminLoginConfigurableLifetime(t *testing.T) {
+	e := newEnvWithConfig(t, func(c *config.Config) {
+		c.AdminSessionTTL = 2 * time.Hour
+		c.AdminSessionIdleTTL = 10 * time.Minute
+	})
+	rec := e.post("/v1/admin/auth/login", obj{"email": identity.SeedAdminEmail, "password": seedPassword})
+	wantStatus(t, rec, http.StatusOK)
+	if got := decode[authBody](t, rec).Session.ExpiresAt; !got.Equal(e.now.Add(2 * time.Hour)) {
+		t.Fatalf("expires_at = %s, want +2h", got)
+	}
+	c := sessionCookie(rec)
+	e.now = e.now.Add(10 * time.Minute)
+	wantError(t, e.get("/v1/admin/me", withCookie(c)), http.StatusUnauthorized, httpx.CodeUnauthenticated)
+}
+
+// Every refusal at the administrator login is the same 401 with the same
+// body, so the endpoint does not reveal who is an administrator.
+func TestAdminLoginRefusalsAreIdentical(t *testing.T) {
+	e := newEnv(t)
+	e.selfRegister("pro@example.com", "CONSUMER", "AGENT", "AGENCY_OWNER")
+	wantStatus(t, e.post("/v1/auth/register", registerBody("unverified@example.com")), http.StatusAccepted)
+
+	const rid = "fixed-request-id"
+	attempt := func(path, email, password string, n int) *httptest.ResponseRecorder {
+		// A distinct client IP per attempt keeps this clear of the rate limits.
+		return e.post(path, obj{"email": email, "password": password},
+			withHeader(httpx.HeaderRequestID, rid), withIP(fmt.Sprintf("198.51.100.%d", n)))
+	}
+
+	reference := attempt("/v1/admin/auth/login", identity.SeedAdminEmail, "definitely-wrong-pw", 1)
+	wantError(t, reference, http.StatusUnauthorized, identity.CodeInvalidCredentials)
+
+	tests := []struct {
+		name, path, email, password string
+	}{
+		{"admin endpoint: unknown email", "/v1/admin/auth/login", "nobody@example.com", "definitely-wrong-pw"},
+		{"admin endpoint: consumer with the right password", "/v1/admin/auth/login", identity.SeedConsumerEmail, seedPassword},
+		{"admin endpoint: organisation agent with the right password", "/v1/admin/auth/login", identity.SeedAgentEmail, seedPassword},
+		{"admin endpoint: self-registered professional with the right password", "/v1/admin/auth/login", "pro@example.com", "correct-horse-battery"},
+		{"admin endpoint: unverified account with the right password", "/v1/admin/auth/login", "unverified@example.com", "correct-horse-battery"},
+		{"customer endpoint: admin with the right password", "/v1/auth/login", identity.SeedAdminEmail, seedPassword},
+		{"customer endpoint: admin with a wrong password", "/v1/auth/login", identity.SeedAdminEmail, "definitely-wrong-pw"},
+		{"customer endpoint: consumer with a wrong password", "/v1/auth/login", identity.SeedConsumerEmail, "definitely-wrong-pw"},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := attempt(tt.path, tt.email, tt.password, i+2)
+			wantError(t, rec, http.StatusUnauthorized, identity.CodeInvalidCredentials)
+			if rec.Body.String() != reference.Body.String() {
+				t.Fatalf("body differs from a wrong-password response:\n%s\n%s", rec.Body, reference.Body)
+			}
+			if sessionCookie(rec) != nil || strings.Contains(rec.Body.String(), "access_token") {
+				t.Fatal("a refused login must not issue a session")
+			}
+		})
+	}
+
+	t.Run("customer endpoint refuses the admin with bearer delivery too", func(t *testing.T) {
+		rec := e.post("/v1/auth/login", obj{"email": identity.SeedAdminEmail, "password": seedPassword, "token_delivery": "bearer"},
+			withHeader(httpx.HeaderRequestID, rid), withIP("198.51.100.50"))
+		wantError(t, rec, http.StatusUnauthorized, identity.CodeInvalidCredentials)
+		if rec.Body.String() != reference.Body.String() {
+			t.Fatalf("body differs: %s", rec.Body)
+		}
+	})
+
+	t.Run("no admin session exists after all of that", func(t *testing.T) {
+		for _, sess := range e.identity.Sessions() {
+			if sess.Scope == auth.ScopeAdmin || sess.UserID == identity.SeedAdminUserID {
+				t.Fatalf("unexpected session: %+v", sess)
+			}
+		}
+	})
+
+	logs := e.logs.String()
+	for _, want := range []string{
+		`"event":"admin_sign_in","outcome":"failure"`, `"reason":"wrong_password"`, `"reason":"unknown_email"`,
+		`"reason":"not_a_platform_account"`, `"ip":"198.51.100.1"`, `"trace_id":"` + rid + `"`,
+		`"event":"customer_sign_in_refused_platform_account"`,
+	} {
+		if !strings.Contains(logs, want) {
+			t.Fatalf("audit log is missing %s", want)
+		}
+	}
+	for _, secret := range []string{seedPassword, "definitely-wrong-pw", "correct-horse-battery", "nobody@example.com", identity.SeedAdminEmail} {
+		if strings.Contains(logs, secret) {
+			t.Fatalf("audit log contains %q", secret)
+		}
+	}
+}
+
+func TestAdminLoginIsCookieOnly(t *testing.T) {
+	e := newEnv(t)
+
+	// token_delivery is not part of this endpoint: strict JSON rejects it.
+	rec := e.post("/v1/admin/auth/login", obj{"email": identity.SeedAdminEmail, "password": seedPassword, "token_delivery": "bearer"})
+	wantError(t, rec, http.StatusBadRequest, httpx.CodeInvalidJSON)
+	if sessionCookie(rec) != nil {
+		t.Fatal("no session may be issued")
+	}
+	env := wantError(t, e.post("/v1/admin/auth/login", obj{}), http.StatusBadRequest, httpx.CodeValidationFailed)
+	if len(env.Error.Fields) != 2 {
+		t.Fatalf("fields = %v", env.Error.Fields)
+	}
+
+	// The admin cookie's token presented as a bearer credential is not a login.
+	c := e.adminLogin(identity.SeedAdminEmail, seedPassword)
+	wantStatus(t, e.get("/v1/admin/me", withCookie(c)), http.StatusOK)
+	wantError(t, e.get("/v1/admin/me", withBearer(c.Value)), http.StatusUnauthorized, httpx.CodeUnauthenticated)
+	wantError(t, e.get("/v1/me", withBearer(c.Value)), http.StatusUnauthorized, httpx.CodeUnauthenticated)
+	// A cookie-authenticated admin POST still needs an allowlisted Origin.
+	wantError(t, e.post("/v1/auth/logout", nil, withCookie(c)), http.StatusForbidden, httpx.CodeCSRFOrigin)
+}
+
+func TestAdminGate(t *testing.T) {
+	e := newEnv(t)
+
+	t.Run("anonymous is 401", func(t *testing.T) {
+		wantError(t, e.get("/v1/admin/me"), http.StatusUnauthorized, httpx.CodeUnauthenticated)
+	})
+
+	t.Run("customer sessions are 403", func(t *testing.T) {
+		for _, c := range []*http.Cookie{
+			e.loginCookie(identity.SeedConsumerEmail, seedPassword),
+			e.loginCookie(identity.SeedAgentEmail, seedPassword),
+			e.selfRegister("wannabe-admin@example.com", "AGENCY_OWNER", "AGENCY_ADMIN"),
+		} {
+			wantError(t, e.get("/v1/admin/me", withCookie(c)), http.StatusForbidden, httpx.CodeForbidden)
+		}
+		wantError(t, e.get("/v1/admin/me", withBearer(e.loginBearer(identity.SeedConsumerEmail, seedPassword))),
+			http.StatusForbidden, httpx.CodeForbidden)
+	})
+
+	// A customer-scope session cannot be obtained by a platform-role account
+	// through the API, so build one directly in the store: even then the
+	// platform role must not count.
+	t.Run("platform role on a customer-scope session is 403", func(t *testing.T) {
+		for _, delivery := range []string{identity.DeliveryCookie, identity.DeliveryBearer} {
+			token := strings.Repeat("c", 42) + delivery[:1] // 43 characters, like a real token
+			sum := sha256.Sum256([]byte(token))
+			if err := e.identity.CreateSession(context.Background(), identity.Session{
+				ID: uuid.New(), UserID: identity.SeedAdminUserID, TokenHash: sum[:], Scope: auth.ScopeCustomer, Delivery: delivery,
+				CreatedAt: e.now, LastSeenAt: e.now, ExpiresAt: e.now.Add(time.Hour),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			opt := withCookie(&http.Cookie{Name: auth.SessionCookieName, Value: token})
+			if delivery == identity.DeliveryBearer {
+				opt = withBearer(token)
+			}
+			wantError(t, e.get("/v1/admin/me", opt), http.StatusForbidden, httpx.CodeForbidden)
+
+			rec := e.get("/v1/me", opt)
+			wantStatus(t, rec, http.StatusOK)
+			me := decode[meBody](t, rec)
+			if me.Session.Scope != "customer" || len(me.User.PlatformRoles) != 1 {
+				t.Fatalf("/v1/me = %s", rec.Body)
+			}
+		}
+	})
+
+	t.Run("admin session with a platform role is 200", func(t *testing.T) {
+		wantStatus(t, e.get("/v1/admin/me", withCookie(e.adminLogin(identity.SeedAdminEmail, seedPassword))), http.StatusOK)
+	})
+}
+
+func TestAdminSessionExpiry(t *testing.T) {
+	t.Run("idle for 30 minutes", func(t *testing.T) {
+		e := newEnv(t)
+		c := e.adminLogin(identity.SeedAdminEmail, seedPassword)
+		e.now = e.now.Add(29 * time.Minute)
+		wantStatus(t, e.get("/v1/admin/me", withCookie(c)), http.StatusOK) // refreshes last_seen
+		e.now = e.now.Add(29 * time.Minute)
+		wantStatus(t, e.get("/v1/admin/me", withCookie(c)), http.StatusOK)
+		e.now = e.now.Add(30 * time.Minute)
+		wantError(t, e.get("/v1/admin/me", withCookie(c)), http.StatusUnauthorized, httpx.CodeUnauthenticated)
+		wantError(t, e.get("/v1/me", withCookie(c)), http.StatusUnauthorized, httpx.CodeUnauthenticated)
+	})
+
+	t.Run("absolute 12 hours even when active", func(t *testing.T) {
+		e := newEnv(t)
+		c := e.adminLogin(identity.SeedAdminEmail, seedPassword)
+		for range 47 { // every 15 minutes up to 11h45m
+			e.now = e.now.Add(15 * time.Minute)
+			wantStatus(t, e.get("/v1/admin/me", withCookie(c)), http.StatusOK)
+		}
+		e.now = e.now.Add(15 * time.Minute)
+		wantError(t, e.get("/v1/admin/me", withCookie(c)), http.StatusUnauthorized, httpx.CodeUnauthenticated)
+	})
+
+	t.Run("a customer session is unaffected by the admin lifetimes", func(t *testing.T) {
+		e := newEnv(t)
+		c := e.loginCookie(identity.SeedConsumerEmail, seedPassword)
+		e.now = e.now.Add(13 * time.Hour)
+		wantStatus(t, e.get("/v1/me", withCookie(c)), http.StatusOK)
+	})
+
+	t.Run("last_seen is refreshed often enough for a 30-minute idle window", func(t *testing.T) {
+		e := newEnv(t)
+		start := e.now
+		c := e.adminLogin(identity.SeedAdminEmail, seedPassword)
+		lastSeen := func() time.Time {
+			for _, s := range e.identity.Sessions() {
+				if s.UserID == identity.SeedAdminUserID {
+					return s.LastSeenAt
+				}
+			}
+			t.Fatal("session not found")
+			return time.Time{}
+		}
+		e.now = start.Add(59 * time.Second)
+		wantStatus(t, e.get("/v1/admin/me", withCookie(c)), http.StatusOK)
+		if !lastSeen().Equal(start) {
+			t.Fatalf("last_seen written after 59s: %s", lastSeen())
+		}
+		e.now = start.Add(61 * time.Second)
+		wantStatus(t, e.get("/v1/admin/me", withCookie(c)), http.StatusOK)
+		if !lastSeen().Equal(e.now) {
+			t.Fatalf("last_seen = %s, want %s", lastSeen(), e.now)
+		}
+	})
+}
+
+func TestAdminLoginRateLimit(t *testing.T) {
+	e := newEnv(t)
+	body := obj{"email": identity.SeedAdminEmail, "password": "definitely-wrong-pw"}
+	for range AdminAuthRequestsBurst {
+		wantError(t, e.post("/v1/admin/auth/login", body), http.StatusUnauthorized, identity.CodeInvalidCredentials)
+	}
+	// Even the correct password is now refused for this IP.
+	rec := e.post("/v1/admin/auth/login", obj{"email": identity.SeedAdminEmail, "password": seedPassword})
+	wantError(t, rec, http.StatusTooManyRequests, httpx.CodeRateLimited)
+	if rec.Header().Get("Retry-After") == "" || sessionCookie(rec) != nil {
+		t.Fatal("429 must carry Retry-After and no session")
+	}
+	// The customer auth bucket and other IPs are separate.
+	e.loginCookie(identity.SeedConsumerEmail, seedPassword)
+	e.adminLogin(identity.SeedAdminEmail, seedPassword, withIP("203.0.113.9"))
+}
+
+func TestAdminPasswordResetSendsNothing(t *testing.T) {
+	e := newEnv(t)
+	rec := e.post("/v1/auth/password-reset/request", obj{"email": identity.SeedAdminEmail})
+	wantStatus(t, rec, http.StatusAccepted)
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"status":"RESET_SENT"}` {
+		t.Fatalf("body = %s", got)
+	}
+	if _, resets, _ := e.mail.counts(); resets != 0 {
+		t.Fatalf("a reset email was sent for a platform-role account")
+	}
+	// Ordinary accounts still get theirs.
+	wantStatus(t, e.post("/v1/auth/password-reset/request", obj{"email": identity.SeedConsumerEmail}), http.StatusAccepted)
+	if _, resets, _ := e.mail.counts(); resets != 1 {
+		t.Fatalf("reset emails = %d, want 1", resets)
+	}
+	e.adminLogin(identity.SeedAdminEmail, seedPassword) // password unchanged
+}
+
+// A platform-role account that verifies its email is verified but NOT signed
+// in: administrators only get a session from the administrator login.
+func TestVerifyEmailDoesNotSignInPlatformAccount(t *testing.T) {
+	e := newEnv(t)
+	wantStatus(t, e.post("/v1/auth/register", registerBody("promoted@example.com")), http.StatusAccepted)
+	token := e.mail.verifyToken(t)
+	user, err := e.identity.UserByEmail(context.Background(), "promoted@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.identity.AddPlatformRole(user.ID, auth.PlatformSupport, ""); err != nil {
+		t.Fatal(err)
+	}
+	before := len(e.identity.Sessions())
+
+	rec := e.post("/v1/auth/verify-email", obj{"token": token})
+	wantStatus(t, rec, http.StatusOK)
+	if sessionCookie(rec) != nil || strings.Contains(rec.Body.String(), `"session"`) || strings.Contains(rec.Body.String(), "access_token") {
+		t.Fatalf("a platform-role account must not be signed in by verify-email: %s", rec.Body)
+	}
+	body := decode[authBody](t, rec)
+	if body.Session != nil || !body.User.EmailVerified || body.User.Email != "promoted@example.com" {
+		t.Fatalf("unexpected body: %s", rec.Body)
+	}
+	if len(e.identity.Sessions()) != before {
+		t.Fatal("a session was created")
+	}
+	// Now verified, the account can use the administrator login.
+	e.adminLogin("promoted@example.com", "correct-horse-battery")
 }

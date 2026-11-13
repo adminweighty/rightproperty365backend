@@ -33,6 +33,10 @@ FROM runtime AS worker
 COPY --from=build /out/worker /app/worker
 ENTRYPOINT ["/app/worker"]
 
+FROM runtime AS adminctl
+COPY --from=build /out/adminctl /app/adminctl
+ENTRYPOINT ["/app/adminctl"]
+
 FROM runtime AS migrate
 COPY --from=build /out/migrate /app/migrate
 ENTRYPOINT ["/app/migrate"]

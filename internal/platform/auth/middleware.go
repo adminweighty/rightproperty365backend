@@ -70,6 +70,14 @@ func (m *Middleware) Authenticate(next http.Handler) http.Handler {
 			return
 		}
 
+		// Admin sessions exist only as cookies. The same token presented as a
+		// bearer credential (which would skip the CSRF origin rule) is not a
+		// valid login.
+		if via == ViaBearer && p.SessionScope == ScopeAdmin {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		if via == ViaCookie && !safeMethod(r.Method) {
 			if _, ok := m.origins[r.Header.Get("Origin")]; !ok {
 				httpx.WriteError(w, r, http.StatusForbidden, httpx.CodeCSRFOrigin, "This request must come from an allowed origin.", nil)
@@ -126,8 +134,10 @@ func RequireMembership(roles ...string) func(http.Handler) http.Handler {
 	}
 }
 
-// RequirePlatformRole requires one of the given platform roles (SUPER_ADMIN
-// always qualifies): 401 when anonymous, 403 FORBIDDEN otherwise. For
+// RequirePlatformRole requires an ADMIN-scope session whose user holds one of
+// the given platform roles (SUPER_ADMIN always qualifies): 401 when anonymous,
+// 403 FORBIDDEN otherwise — including for a platform-role holder signed in
+// with a customer-scope session. For
 // MARKET_ADMIN the handler must still compare PlatformRole.MarketCode with
 // the market being acted on.
 func RequirePlatformRole(roles ...string) func(http.Handler) http.Handler {

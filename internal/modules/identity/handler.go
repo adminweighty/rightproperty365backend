@@ -23,7 +23,7 @@ const (
 	statusResetSent        = "RESET_SENT"
 )
 
-// Handler serves /v1/auth/* and /v1/me.
+// Handler serves /v1/auth/*, /v1/admin/auth/login, /v1/me and /v1/admin/me.
 type Handler struct {
 	svc          *Service
 	logger       *slog.Logger
@@ -41,18 +41,22 @@ type statusResponse struct {
 }
 
 type sessionView struct {
+	Scope     string    `json:"scope"`
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
 type authResponse struct {
-	User    UserView    `json:"user"`
-	Session sessionView `json:"session"`
+	User UserView `json:"user"`
+	// Session is absent only when email verification deliberately did not
+	// sign the caller in (platform-role accounts).
+	Session *sessionView `json:"session,omitempty"`
 	// AccessToken is present only for token_delivery "bearer".
 	AccessToken string `json:"access_token,omitempty"`
 }
 
 type meResponse struct {
-	User UserView `json:"user"`
+	User    UserView    `json:"user"`
+	Session sessionView `json:"session"`
 }
 
 // fail maps service errors to responses.
@@ -72,13 +76,13 @@ func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 	}
 }
 
-func (h *Handler) setSessionCookie(w http.ResponseWriter, token string, expiresAt time.Time) {
+func (h *Handler) setSessionCookie(w http.ResponseWriter, token string, expiresAt time.Time, ttl time.Duration) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     auth.SessionCookieName,
 		Value:    token,
 		Path:     "/",
 		Expires:  expiresAt,
-		MaxAge:   int(SessionAbsoluteTTL / time.Second),
+		MaxAge:   int(ttl / time.Second),
 		HttpOnly: true,
 		Secure:   h.secureCookie,
 		SameSite: http.SameSiteLaxMode,
@@ -101,11 +105,14 @@ func (h *Handler) clearSessionCookie(w http.ResponseWriter) {
 // writeAuth answers a successful login/verification: the token goes either
 // into the HttpOnly cookie or into the body, never both.
 func (h *Handler) writeAuth(w http.ResponseWriter, res AuthResult) {
-	body := authResponse{User: res.User.View(), Session: sessionView{ExpiresAt: res.ExpiresAt.UTC()}}
-	if res.Delivery == DeliveryBearer {
-		body.AccessToken = res.Token
-	} else {
-		h.setSessionCookie(w, res.Token, res.ExpiresAt)
+	body := authResponse{User: res.User.View()}
+	if !res.NoSession {
+		body.Session = &sessionView{Scope: res.Scope, ExpiresAt: res.ExpiresAt.UTC()}
+		if res.Delivery == DeliveryBearer {
+			body.AccessToken = res.Token
+		} else {
+			h.setSessionCookie(w, res.Token, res.ExpiresAt, res.TTL)
+		}
 	}
 	httpx.WriteJSON(w, http.StatusOK, body)
 }
@@ -173,6 +180,29 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	h.writeAuth(w, res)
 }
 
+// AdminLogin handles POST /v1/admin/auth/login. The body is {email, password}
+// only: strict JSON decoding rejects token_delivery (400 INVALID_JSON), and
+// the response never carries access_token.
+func (h *Handler) AdminLogin(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	if !httpx.DecodeJSON(w, r, &in) {
+		return
+	}
+	res, err := h.svc.AdminLogin(r.Context(), in.Email, in.Password, httpx.ClientIP(r))
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	h.setSessionCookie(w, res.Token, res.ExpiresAt, res.TTL)
+	httpx.WriteJSON(w, http.StatusOK, authResponse{
+		User:    res.User.View(),
+		Session: &sessionView{Scope: res.Scope, ExpiresAt: res.ExpiresAt.UTC()},
+	})
+}
+
 // Logout handles POST /v1/auth/logout: revokes the current session (cookie or
 // bearer), clears the cookie and answers 204 even when nobody is signed in.
 func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
@@ -219,7 +249,8 @@ func (h *Handler) ConfirmPasswordReset(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// Me handles GET /v1/me (behind auth.RequireAuth).
+// Me handles GET /v1/me (behind auth.RequireAuth) and GET /v1/admin/me
+// (additionally behind auth.RequirePlatformRole).
 func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	p := auth.FromContext(r.Context())
 	if p == nil {
@@ -231,5 +262,8 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteInternalError(w, r, h.logger, err)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, meResponse{User: user.View()})
+	httpx.WriteJSON(w, http.StatusOK, meResponse{
+		User:    user.View(),
+		Session: sessionView{Scope: p.SessionScope, ExpiresAt: p.SessionExpiresAt.UTC()},
+	})
 }

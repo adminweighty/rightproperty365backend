@@ -29,6 +29,11 @@ const (
 	// only refreshes it when the stored value is at least this old.
 	SessionTouchInterval = time.Minute
 
+	// Administrator sessions are deliberately short. Defaults; configurable
+	// with ADMIN_SESSION_TTL and ADMIN_SESSION_IDLE_TTL.
+	DefaultAdminSessionTTL     = 12 * time.Hour
+	DefaultAdminSessionIdleTTL = 30 * time.Minute
+
 	VerificationTokenTTL = 24 * time.Hour
 	ResetTokenTTL        = time.Hour
 )
@@ -122,6 +127,11 @@ var (
 	ErrNotFound = errors.New("not found")
 	// ErrEmailTaken is returned by Store.CreateUser when the email is in use.
 	ErrEmailTaken = errors.New("email already registered")
+	// ErrMarketNotFound is returned when a market code does not exist.
+	ErrMarketNotFound = errors.New("market not found")
+	// ErrNotPlatformAdmin is returned when an administrator-only operation
+	// names an account that holds no platform role.
+	ErrNotPlatformAdmin = errors.New("account holds no platform role")
 )
 
 // ValidationError carries per-field messages for a 400 response.
@@ -164,11 +174,26 @@ type NewUser struct {
 	CreatedAt       time.Time
 }
 
+// NewPlatformAdmin is an administrator account created by cmd/adminctl (or a
+// seed): already verified, holding exactly one platform role. Platform roles
+// are never obtainable through the public API.
+type NewPlatformAdmin struct {
+	ID           uuid.UUID
+	Name         string
+	Email        string
+	PasswordHash string
+	Role         string
+	MarketCode   string // required for MARKET_ADMIN, empty otherwise
+	CreatedAt    time.Time
+}
+
 // Session is a server-side session. Only the SHA-256 of its token is stored.
 type Session struct {
-	ID         uuid.UUID
-	UserID     uuid.UUID
-	TokenHash  []byte
+	ID        uuid.UUID
+	UserID    uuid.UUID
+	TokenHash []byte
+	// Scope is auth.ScopeCustomer or auth.ScopeAdmin.
+	Scope      string
 	Delivery   string
 	CreatedAt  time.Time
 	LastSeenAt time.Time
@@ -244,5 +269,11 @@ type AuthResult struct {
 	User      User
 	Token     string // raw session token; handed to the client exactly once
 	Delivery  string
+	Scope     string
 	ExpiresAt time.Time
+	// TTL is the session's absolute lifetime (cookie Max-Age).
+	TTL time.Duration
+	// NoSession is true when the operation succeeded but deliberately did not
+	// sign the caller in (email verification of a platform-role account).
+	NoSession bool
 }

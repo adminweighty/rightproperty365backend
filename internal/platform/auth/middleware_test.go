@@ -40,8 +40,10 @@ func errorCode(t *testing.T, rec *httptest.ResponseRecorder) string {
 
 func TestAuthenticate(t *testing.T) {
 	const origin = "http://localhost:3000"
-	user := &Principal{UserID: uuid.New(), Name: "A", Email: "a@example.test"}
-	mw := NewMiddleware(fakeResolver{"good": user}, []string{origin}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	user := &Principal{UserID: uuid.New(), Name: "A", Email: "a@example.test", SessionScope: ScopeCustomer}
+	admin := &Principal{UserID: uuid.New(), Name: "Admin", Email: "admin@example.test", SessionScope: ScopeAdmin,
+		PlatformRoles: []PlatformRole{{Role: PlatformSuperAdmin}}}
+	mw := NewMiddleware(fakeResolver{"good": user, "admin": admin}, []string{origin}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 
 	tests := []struct {
 		name       string
@@ -67,6 +69,10 @@ func TestAuthenticate(t *testing.T) {
 		{name: "bearer POST without Origin is exempt", method: http.MethodPost, bearer: "good", wantStatus: 200, wantUser: true, wantVia: ViaBearer},
 		{name: "anonymous POST with unknown cookie is not a CSRF failure", method: http.MethodPost, cookie: "nope", wantStatus: 200},
 		{name: "resolver failure", method: http.MethodGet, bearer: "boom", wantStatus: 500, wantCode: httpx.CodeInternal},
+		{name: "admin session by cookie", method: http.MethodGet, cookie: "admin", wantStatus: 200, wantUser: true, wantVia: ViaCookie},
+		{name: "admin session token as bearer does not authenticate", method: http.MethodGet, bearer: "admin", wantStatus: 200},
+		{name: "admin session token as bearer POST does not authenticate", method: http.MethodPost, bearer: "admin", wantStatus: 200},
+		{name: "admin cookie POST without Origin", method: http.MethodPost, cookie: "admin", wantStatus: 403, wantCode: httpx.CodeCSRFOrigin},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -106,11 +112,16 @@ func TestAuthenticate(t *testing.T) {
 
 func TestRequire(t *testing.T) {
 	orgA, orgB := uuid.New(), uuid.New()
-	consumer := &Principal{UserID: uuid.New()}
-	agent := &Principal{UserID: uuid.New(), Memberships: []Membership{{OrganisationID: orgA, Role: RoleAgent}}}
-	owner := &Principal{UserID: uuid.New(), Memberships: []Membership{{OrganisationID: orgB, Role: RoleOwner}}}
-	support := &Principal{UserID: uuid.New(), PlatformRoles: []PlatformRole{{Role: PlatformSupport}}}
-	super := &Principal{UserID: uuid.New(), PlatformRoles: []PlatformRole{{Role: PlatformSuperAdmin}}}
+	consumer := &Principal{UserID: uuid.New(), SessionScope: ScopeCustomer}
+	agent := &Principal{UserID: uuid.New(), SessionScope: ScopeCustomer, Memberships: []Membership{{OrganisationID: orgA, Role: RoleAgent}}}
+	owner := &Principal{UserID: uuid.New(), SessionScope: ScopeCustomer, Memberships: []Membership{{OrganisationID: orgB, Role: RoleOwner}}}
+	support := &Principal{UserID: uuid.New(), SessionScope: ScopeAdmin, PlatformRoles: []PlatformRole{{Role: PlatformSupport}}}
+	super := &Principal{UserID: uuid.New(), SessionScope: ScopeAdmin, PlatformRoles: []PlatformRole{{Role: PlatformSuperAdmin}}}
+	// Platform-role holders on a customer-scope (or scope-less) session.
+	superCustomer := &Principal{UserID: uuid.New(), SessionScope: ScopeCustomer, PlatformRoles: []PlatformRole{{Role: PlatformSuperAdmin}}}
+	supportNoScope := &Principal{UserID: uuid.New(), PlatformRoles: []PlatformRole{{Role: PlatformSupport}}}
+	// An admin-scope session whose user holds no platform role.
+	adminScopeNoRole := &Principal{UserID: uuid.New(), SessionScope: ScopeAdmin}
 
 	tests := []struct {
 		name       string
@@ -133,6 +144,10 @@ func TestRequire(t *testing.T) {
 		{"platform: wrong role", RequirePlatformRole(PlatformFinanceAdmin), support, 403, httpx.CodeForbidden},
 		{"platform: right role", RequirePlatformRole(PlatformFinanceAdmin, PlatformSupport), support, 200, ""},
 		{"platform: super admin", RequirePlatformRole(PlatformFinanceAdmin), super, 200, ""},
+		{"platform: any role list", RequirePlatformRole(AllPlatformRoles()...), support, 200, ""},
+		{"platform: super admin on a customer session", RequirePlatformRole(AllPlatformRoles()...), superCustomer, 403, httpx.CodeForbidden},
+		{"platform: role without a session scope", RequirePlatformRole(PlatformSupport), supportNoScope, 403, httpx.CodeForbidden},
+		{"platform: admin scope without a role", RequirePlatformRole(AllPlatformRoles()...), adminScopeNoRole, 403, httpx.CodeForbidden},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

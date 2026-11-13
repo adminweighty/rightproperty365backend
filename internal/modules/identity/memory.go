@@ -313,6 +313,50 @@ func (s *MemoryStore) AddPlatformRole(userID uuid.UUID, role, marketCode string)
 	return nil
 }
 
+// CreatePlatformAdmin creates a verified administrator account holding one
+// platform role (used by cmd/adminctl's tests; the real target is Postgres).
+func (s *MemoryStore) CreatePlatformAdmin(_ context.Context, a NewPlatformAdmin) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, taken := s.byEmail[a.Email]; taken {
+		return ErrEmailTaken
+	}
+	verified := a.CreatedAt
+	s.users[a.ID] = &memoryUser{User: User{
+		ID: a.ID, Name: a.Name, Email: a.Email, Status: StatusActive,
+		PasswordHash: a.PasswordHash, EmailVerifiedAt: &verified,
+	}}
+	s.byEmail[a.Email] = a.ID
+	s.platformRoles[a.ID] = []auth.PlatformRole{{Role: a.Role, MarketCode: a.MarketCode}}
+	return nil
+}
+
+// SetPlatformAdminPassword replaces an administrator's password, invalidates
+// their reset tokens and revokes all their sessions.
+func (s *MemoryStore) SetPlatformAdminPassword(_ context.Context, email, passwordHash string, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id, ok := s.byEmail[email]
+	if !ok {
+		return ErrNotFound
+	}
+	if len(s.platformRoles[id]) == 0 {
+		return ErrNotPlatformAdmin
+	}
+	s.users[id].PasswordHash = passwordHash
+	for _, t := range s.resets {
+		if t.UserID == id && t.UsedAt == nil {
+			t.UsedAt = &now
+		}
+	}
+	for _, sess := range s.sessions {
+		if sess.UserID == id && sess.RevokedAt == nil {
+			sess.RevokedAt = &now
+		}
+	}
+	return nil
+}
+
 // UserCount returns the number of accounts (test helper).
 func (s *MemoryStore) UserCount() int {
 	s.mu.Lock()

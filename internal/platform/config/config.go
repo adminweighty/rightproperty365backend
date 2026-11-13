@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -24,6 +25,11 @@ const (
 	maxDBMaxConns      = 100
 	defaultCORSOrigins = "http://localhost:3000"
 	defaultWebBaseURL  = "http://localhost:3000"
+
+	defaultAdminSessionTTL     = 12 * time.Hour
+	defaultAdminSessionIdleTTL = 30 * time.Minute
+	// Hard ceiling so a typo cannot create week-long administrator sessions.
+	maxAdminSessionTTL = 24 * time.Hour
 )
 
 // Config is the validated runtime configuration shared by the API and worker.
@@ -43,6 +49,10 @@ type Config struct {
 	// DevSeedPassword is the shared password of the development seed users.
 	// It is only ever populated when Env is development and must never be logged.
 	DevSeedPassword string
+	// AdminSessionTTL and AdminSessionIdleTTL bound administrator sessions
+	// (absolute lifetime and inactivity timeout).
+	AdminSessionTTL     time.Duration
+	AdminSessionIdleTTL time.Duration
 }
 
 // UseMemoryStore reports whether the process should run on the in-memory
@@ -113,6 +123,29 @@ func FromLookup(get func(string) string) (Config, error) {
 	// so a stray value can never create known-password accounts.
 	if cfg.Env == EnvDevelopment {
 		cfg.DevSeedPassword = get("DEV_SEED_PASSWORD")
+	}
+
+	cfg.AdminSessionTTL, cfg.AdminSessionIdleTTL = defaultAdminSessionTTL, defaultAdminSessionIdleTTL
+	for _, d := range []struct {
+		key string
+		dst *time.Duration
+	}{
+		{"ADMIN_SESSION_TTL", &cfg.AdminSessionTTL},
+		{"ADMIN_SESSION_IDLE_TTL", &cfg.AdminSessionIdleTTL},
+	} {
+		raw := val(d.key, "")
+		if raw == "" {
+			continue
+		}
+		v, err := time.ParseDuration(raw)
+		if err != nil || v < time.Minute || v > maxAdminSessionTTL {
+			errs = append(errs, fmt.Errorf("%s must be a Go duration between 1m and %s, for example 12h or 30m", d.key, maxAdminSessionTTL))
+			continue
+		}
+		*d.dst = v
+	}
+	if cfg.AdminSessionIdleTTL > cfg.AdminSessionTTL {
+		errs = append(errs, errors.New("ADMIN_SESSION_IDLE_TTL must not be longer than ADMIN_SESSION_TTL"))
 	}
 
 	level, err := parseLevel(val("LOG_LEVEL", "info"))

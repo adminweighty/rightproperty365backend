@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.3.0
+  version: 0.4.0
   summary: Multi-country property marketplace API (Zimbabwe first).
   description: |
     Versioned REST API for RightProperty365.
@@ -19,7 +19,12 @@ info:
       `rp_session` (SameSite=Lax, Path=/, Secure outside development); mobile clients log in with
       `"token_delivery": "bearer"`, receive `access_token` in the body and send
       `Authorization: Bearer <token>`. When an `Authorization` header is present the cookie is ignored.
-    - A session lasts at most 30 days and ends after 14 days without use. An invalid, expired or
+    - Sessions have a **scope**. `customer` sessions come from `POST /v1/auth/login` (and
+      `verify-email`). `admin` sessions come only from `POST /v1/admin/auth/login`, only for
+      accounts holding a platform role, only as a cookie, and last 12 hours at most with a
+      30-minute inactivity timeout (both configurable on the server). Platform-role checks require
+      an `admin` session; accounts holding a platform role cannot sign in at the customer login.
+    - A customer session lasts at most 30 days and ends after 14 days without use. An invalid, expired or
       revoked token is treated as "not signed in" (routes that need a user answer `401 UNAUTHENTICATED`).
     - CORS: allowlisted origins may send credentials (`Access-Control-Allow-Credentials: true`,
       never with `*`). Browser clients must use `credentials: "include"`.
@@ -40,6 +45,7 @@ tags:
   - name: auth
   - name: account
   - name: organisation-workspace
+  - name: admin
 
 paths:
   /healthz:
@@ -395,6 +401,10 @@ paths:
         Consumes the single-use token from the verification email (valid for 24 hours), marks the
         email verified and starts a session. By default the session is delivered in the
         `rp_session` cookie; `"token_delivery": "bearer"` returns `access_token` instead.
+
+        Exception: if the account holds a platform role, the email is verified but **no session
+        is started** — the response is `200` with `user` only (no `session`, no cookie, no
+        `access_token`). Administrators sign in only at `POST /v1/admin/auth/login`.
       requestBody:
         required: true
         content:
@@ -480,6 +490,10 @@ paths:
         An unknown email and a wrong password are indistinguishable (`401 INVALID_CREDENTIALS`,
         same body, comparable timing). `403 EMAIL_NOT_VERIFIED` is returned only when the
         password is correct.
+
+        **Platform administrators cannot sign in here.** An account holding a platform role gets
+        the same `401 INVALID_CREDENTIALS` whatever the password; it must use
+        `POST /v1/admin/auth/login`.
       requestBody:
         required: true
         content:
@@ -502,7 +516,7 @@ paths:
         "400":
           $ref: "#/components/responses/ValidationFailed"
         "401":
-          description: Unknown email or wrong password (`INVALID_CREDENTIALS`).
+          description: Unknown email, wrong password, or an account holding a platform role (`INVALID_CREDENTIALS`).
           headers:
             X-Request-Id:
               $ref: "#/components/headers/X-Request-Id"
@@ -571,6 +585,9 @@ paths:
       description: |
         Always `202` for a well-formed email, whether or not an account exists. The link is
         `{WEB_BASE_URL}/reset-password?token=...`, single-use and valid for 1 hour.
+
+        No email is sent for an account holding a platform role (still `202`): administrator
+        passwords are changed with the `adminctl` command, not by email.
       requestBody:
         required: true
         content:
@@ -670,20 +687,18 @@ paths:
         - bearerToken: []
       responses:
         "200":
-          description: The current user with their platform roles and organisation memberships.
+          description: The current user with their roles, and the session that authenticated the request.
           headers:
             X-Request-Id:
               $ref: "#/components/headers/X-Request-Id"
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: false
-                required: [user]
-                properties:
-                  user:
-                    $ref: "#/components/schemas/User"
+                $ref: "#/components/schemas/Me"
               example:
+                session:
+                  scope: customer
+                  expires_at: "2026-12-13T21:25:22.210025Z"
                 user:
                   id: 0195c0de-0000-7000-8000-00000000d002
                   name: Alex Agent
@@ -703,6 +718,131 @@ paths:
                       status: ACTIVE
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/admin/auth/login:
+    post:
+      tags: [admin]
+      operationId: adminLogin
+      summary: Sign in as a platform administrator
+      description: |
+        Succeeds only for a verified account that holds at least one platform role
+        (`SUPER_ADMIN`, `PLATFORM_ADMIN`, `MARKET_ADMIN`, `FINANCE_ADMIN`, `CONTENT_ADMIN`,
+        `MODERATOR`, `SUPPORT`). It issues an **admin-scope** session in the same `rp_session`
+        cookie (12 hours absolute, 30 minutes idle by default).
+
+        Every other outcome — unknown email, wrong password, an ordinary customer, a
+        self-registered professional, an unverified account — is the same
+        `401 INVALID_CREDENTIALS` with an identical body and comparable timing (one Argon2
+        verification always runs), so the endpoint does not reveal which accounts are
+        administrators.
+
+        **Cookie only.** There is no `token_delivery` here: sending it is rejected with
+        `400 INVALID_JSON` (unknown field) and `access_token` is never returned. An admin session
+        token presented as `Authorization: Bearer` does not authenticate.
+
+        **Rate limit.** Its own per-IP bucket: bursts of 5, refilled at 5 per minute.
+
+        Sign out with `POST /v1/auth/logout`. Sign-in attempts are written to the server log as
+        audit lines (log-only; not a durable audit record). **MFA is not implemented.**
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+      responses:
+        "200":
+          description: Signed in. Sets the `rp_session` cookie (admin scope). Never contains `access_token`.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            Set-Cookie:
+              description: "`rp_session=<token>; Path=/; HttpOnly; SameSite=Lax` (plus `Secure` outside development), Max-Age = the admin session lifetime."
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+              example:
+                user:
+                  id: 0195c0de-0000-7000-8000-00000000d003
+                  name: Sam Admin
+                  email: admin@example.test
+                  email_verified: true
+                  platform_roles:
+                    - role: SUPER_ADMIN
+                      market_code: null
+                  memberships: []
+                  account_roles:
+                    - role: CONSUMER
+                      status: ACTIVE
+                session:
+                  scope: admin
+                  expires_at: "2026-11-14T21:00:00Z"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          description: |
+            `INVALID_CREDENTIALS`: unknown email, wrong password, or an account that is not a
+            verified platform administrator. The body is the same in every case.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          $ref: "#/components/responses/CsrfOrigin"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/admin/me:
+    get:
+      tags: [admin]
+      operationId: getAdminMe
+      summary: The signed-in platform administrator
+      description: |
+        Same body as `GET /v1/me`, but only for an **admin-scope** session whose user holds a
+        platform role. A customer-scope session is `403 FORBIDDEN` even if its user holds a
+        platform role.
+      security:
+        - cookieSession: []
+      responses:
+        "200":
+          description: The administrator and their admin session.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "500":
           $ref: "#/components/responses/InternalError"
         "504":
@@ -772,7 +912,8 @@ components:
       scheme: bearer
       description: |
         Mobile/API session: the opaque `access_token` returned by login with
-        `"token_delivery": "bearer"`. Not a JWT. Exempt from the CSRF origin check.
+        `"token_delivery": "bearer"`. Not a JWT. Exempt from the CSRF origin check. Customer
+        scope only: admin sessions are never issued or accepted as bearer tokens.
 
   headers:
     X-Request-Id:
@@ -800,6 +941,7 @@ components:
       description: |
         Signed in. With cookie delivery the response sets `rp_session` and has no
         `access_token`; with bearer delivery it has `access_token` and sets no cookie.
+        (`verify-email` for an account holding a platform role returns `user` only.)
       headers:
         X-Request-Id:
           $ref: "#/components/headers/X-Request-Id"
@@ -1052,7 +1194,25 @@ components:
           type: string
           enum: [OWNER, MANAGER, AGENT, STAFF]
 
-    AuthResult:
+    Session:
+      type: object
+      required: [scope, expires_at]
+      additionalProperties: false
+      properties:
+        scope:
+          type: string
+          enum: [customer, admin]
+          description: |
+            `customer` for the public login; `admin` for the administrator login. Platform-role
+            routes require `admin`.
+        expires_at:
+          type: string
+          format: date-time
+          description: |
+            Absolute expiry: 30 days after sign-in for `customer` (which also ends after 14 days
+            without use), 12 hours for `admin` (which also ends after 30 minutes without use).
+
+    Me:
       type: object
       required: [user, session]
       additionalProperties: false
@@ -1060,14 +1220,21 @@ components:
         user:
           $ref: "#/components/schemas/User"
         session:
-          type: object
-          required: [expires_at]
-          additionalProperties: false
-          properties:
-            expires_at:
-              type: string
-              format: date-time
-              description: Absolute expiry (30 days after sign-in). The session also ends after 14 days without use.
+          $ref: "#/components/schemas/Session"
+
+    AuthResult:
+      type: object
+      required: [user]
+      additionalProperties: false
+      properties:
+        user:
+          $ref: "#/components/schemas/User"
+        session:
+          allOf:
+            - $ref: "#/components/schemas/Session"
+          description: |
+            Always present for login. Absent only when `verify-email` verified an account that
+            holds a platform role (no session is started for those).
         access_token:
           type: string
           description: Opaque session token. Present only when `token_delivery` is `bearer`.

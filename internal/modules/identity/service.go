@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"rightproperty365.com/backend/internal/platform/auth"
+	"rightproperty365.com/backend/internal/platform/logging"
 )
 
 const (
@@ -72,7 +73,7 @@ func parseAccountRoles(raw json.RawMessage) ([]AccountRole, string) {
 			return nil, msgRoleUnknown // not a string
 		}
 		switch {
-		case isPlatformRole(role):
+		case auth.IsPlatformRole(role):
 			return nil, msgRoleNotAllowed
 		case !slices.Contains(selectableAccountRoles, role):
 			return nil, msgRoleUnknown
@@ -87,17 +88,6 @@ func parseAccountRoles(raw json.RawMessage) ([]AccountRole, string) {
 	}
 	sortAccountRoles(roles)
 	return roles, ""
-}
-
-// isPlatformRole reports whether role is a platform administrator role. It
-// only selects the wording of the rejection; the allowlist does the rejecting.
-func isPlatformRole(role string) bool {
-	switch role {
-	case auth.PlatformSuperAdmin, auth.PlatformAdmin, auth.PlatformMarketAdmin, auth.PlatformFinanceAdmin,
-		auth.PlatformContentAdmin, auth.PlatformModerator, auth.PlatformSupport:
-		return true
-	}
-	return false
 }
 
 // ConsentInput records acceptance of a specific privacy notice version.
@@ -117,6 +107,9 @@ type Service struct {
 	// dummyHash is verified against when a login names an unknown account, so
 	// that the response takes as long as a real password check.
 	dummyHash string
+	// Lifetimes of administrator sessions.
+	adminTTL     time.Duration
+	adminIdleTTL time.Duration
 }
 
 // Option customises a Service (used by tests).
@@ -128,9 +121,25 @@ func WithClock(now func() time.Time) Option { return func(s *Service) { s.now = 
 // WithHasher overrides the password hashing parameters.
 func WithHasher(h Hasher) Option { return func(s *Service) { s.hasher = h } }
 
+// WithAdminSessionTTLs overrides the absolute and idle lifetime of
+// administrator sessions. Non-positive values keep the defaults.
+func WithAdminSessionTTLs(absolute, idle time.Duration) Option {
+	return func(s *Service) {
+		if absolute > 0 {
+			s.adminTTL = absolute
+		}
+		if idle > 0 {
+			s.adminIdleTTL = idle
+		}
+	}
+}
+
 // NewService builds a Service.
 func NewService(store Store, mailer Mailer, links Links, logger *slog.Logger, opts ...Option) (*Service, error) {
-	s := &Service{store: store, mailer: mailer, links: links, hasher: DefaultHasher(), logger: logger, now: time.Now}
+	s := &Service{
+		store: store, mailer: mailer, links: links, hasher: DefaultHasher(), logger: logger, now: time.Now,
+		adminTTL: DefaultAdminSessionTTL, adminIdleTTL: DefaultAdminSessionIdleTTL,
+	}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -360,14 +369,22 @@ func (s *Service) VerifyEmail(ctx context.Context, token, delivery string) (Auth
 		return AuthResult{}, ErrInvalidToken
 	}
 	s.logger.InfoContext(ctx, "email verified", slog.String("verified_user_id", user.ID.String()))
-	return s.startSession(ctx, user, delivery, now)
+	if len(user.PlatformRoles) > 0 {
+		// Administrators only ever get a session from the administrator login.
+		return AuthResult{User: user, NoSession: true}, nil
+	}
+	return s.startSession(ctx, user, delivery, auth.ScopeCustomer, now)
 }
 
 // Login checks the credentials and starts a session.
 //
 // Unknown email and wrong password are indistinguishable (ErrInvalidCredentials,
-// and an Argon2 verification runs in both cases). ErrEmailNotVerified is only
-// returned once the correct password has been presented.
+// and exactly one Argon2 verification runs in every case). ErrEmailNotVerified
+// is only returned once the correct password has been presented.
+//
+// Accounts holding a platform role are refused here with the same
+// ErrInvalidCredentials, whatever the password: administrators sign in only
+// through AdminLogin.
 func (s *Service) Login(ctx context.Context, email, password, delivery string) (AuthResult, error) {
 	delivery, err := normalizeDelivery(delivery)
 	fields := map[string]string{}
@@ -397,13 +414,108 @@ func (s *Service) Login(ctx context.Context, email, password, delivery string) (
 	if err != nil {
 		return AuthResult{}, fmt.Errorf("verify password for user %s: %w", user.ID, err)
 	}
+	if len(user.PlatformRoles) > 0 {
+		// Decided only after the password check so timing does not reveal it.
+		s.audit(ctx, slog.LevelWarn, "customer_sign_in_refused_platform_account", "failure",
+			slog.String("user_id", user.ID.String()), slog.Bool("password_correct", ok))
+		return AuthResult{}, ErrInvalidCredentials
+	}
 	if !ok {
 		return AuthResult{}, ErrInvalidCredentials
 	}
 	if !user.Verified() {
 		return AuthResult{}, ErrEmailNotVerified
 	}
-	return s.startSession(ctx, user, delivery, s.clock())
+	return s.startSession(ctx, user, delivery, auth.ScopeCustomer, s.clock())
+}
+
+// audit writes one structured, log-only audit line marked audit=true. It is
+// NOT a durable audit record: it lives wherever the process logs go.
+func (s *Service) audit(ctx context.Context, level slog.Level, event, outcome string, attrs ...slog.Attr) {
+	base := []slog.Attr{
+		slog.Bool("audit", true),
+		slog.String("event", event),
+		slog.String("outcome", outcome),
+		slog.String("trace_id", logging.RequestID(ctx)),
+	}
+	s.logger.LogAttrs(ctx, level, "audit", append(base, attrs...)...)
+}
+
+// emailFingerprint is the hex SHA-256 of the normalised email. Audit lines
+// carry this instead of the submitted text: what people type into a login
+// form is personal data and is sometimes a password pasted into the wrong
+// field. The fingerprint still lets operators group repeated attempts on one
+// address and test whether a specific known address was targeted.
+func emailFingerprint(email string) string {
+	return fmt.Sprintf("%x", hashToken(email))
+}
+
+// AdminLogin signs a platform administrator in. It succeeds only for an
+// active, verified account that holds at least one platform role and always
+// issues an admin-scope COOKIE session (never a bearer token).
+//
+// Every failure — unknown email, wrong password, an ordinary customer or
+// self-registered professional, an unverified or inactive account — is the
+// same ErrInvalidCredentials, and exactly one Argon2 verification (real or
+// dummy) runs before the outcome is decided, so the endpoint does not reveal
+// which accounts are administrators. Success and failure are both audited.
+func (s *Service) AdminLogin(ctx context.Context, email, password, clientIP string) (AuthResult, error) {
+	email = NormalizeEmail(email)
+	fields := map[string]string{}
+	if email == "" {
+		fields["email"] = "is required"
+	}
+	if password == "" {
+		fields["password"] = "is required"
+	}
+	if len(fields) > 0 {
+		return AuthResult{}, &ValidationError{Fields: fields}
+	}
+
+	user, err := s.store.UserByEmail(ctx, email)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return AuthResult{}, fmt.Errorf("look up user: %w", err)
+	}
+	found := err == nil
+
+	hash := s.dummyHash
+	if found && user.PasswordHash != "" {
+		hash = user.PasswordHash
+	}
+	ok, err := VerifyPassword(hash, password)
+	if err != nil {
+		return AuthResult{}, fmt.Errorf("verify password: %w", err)
+	}
+
+	// The reason is for the audit line only; the client always sees the same 401.
+	reason := ""
+	switch {
+	case !found:
+		reason = "unknown_email"
+	case user.PasswordHash == "" || !ok:
+		reason = "wrong_password"
+	case user.Status != StatusActive:
+		reason = "account_not_active"
+	case len(user.PlatformRoles) == 0:
+		reason = "not_a_platform_account"
+	case !user.Verified():
+		reason = "email_not_verified"
+	}
+	attrs := []slog.Attr{slog.String("email_sha256", emailFingerprint(email)), slog.String("ip", clientIP)}
+	if found {
+		attrs = append(attrs, slog.String("user_id", user.ID.String()))
+	}
+	if reason != "" {
+		s.audit(ctx, slog.LevelWarn, "admin_sign_in", "failure", append(attrs, slog.String("reason", reason))...)
+		return AuthResult{}, ErrInvalidCredentials
+	}
+
+	res, err := s.startSession(ctx, user, DeliveryCookie, auth.ScopeAdmin, s.clock())
+	if err != nil {
+		return AuthResult{}, err
+	}
+	s.audit(ctx, slog.LevelInfo, "admin_sign_in", "success", attrs...)
+	return res, nil
 }
 
 func normalizeDelivery(delivery string) (string, error) {
@@ -416,7 +528,26 @@ func normalizeDelivery(delivery string) (string, error) {
 	return "", &ValidationError{Fields: map[string]string{"token_delivery": "must be cookie or bearer"}}
 }
 
-func (s *Service) startSession(ctx context.Context, user User, delivery string, now time.Time) (AuthResult, error) {
+// sessionTTLs returns the absolute and idle lifetime for a session scope.
+func (s *Service) sessionTTLs(scope string) (absolute, idle time.Duration) {
+	if scope == auth.ScopeAdmin {
+		return s.adminTTL, s.adminIdleTTL
+	}
+	return SessionAbsoluteTTL, SessionIdleTTL
+}
+
+// touchInterval is how stale last_seen may get before a request refreshes it:
+// a minute for customer sessions, and never more than a tenth of the idle
+// window so a short administrator idle timeout stays accurate.
+func touchInterval(idle time.Duration) time.Duration {
+	return min(SessionTouchInterval, idle/10)
+}
+
+func (s *Service) startSession(ctx context.Context, user User, delivery, scope string, now time.Time) (AuthResult, error) {
+	if scope == auth.ScopeAdmin && delivery != DeliveryCookie {
+		return AuthResult{}, errors.New("admin sessions are cookie-only")
+	}
+	ttl, _ := s.sessionTTLs(scope)
 	token, hash, err := newToken()
 	if err != nil {
 		return AuthResult{}, err
@@ -426,15 +557,15 @@ func (s *Service) startSession(ctx context.Context, user User, delivery string, 
 		return AuthResult{}, fmt.Errorf("generate session id: %w", err)
 	}
 	sess := Session{
-		ID: id, UserID: user.ID, TokenHash: hash, Delivery: delivery,
-		CreatedAt: now, LastSeenAt: now, ExpiresAt: now.Add(SessionAbsoluteTTL),
+		ID: id, UserID: user.ID, TokenHash: hash, Scope: scope, Delivery: delivery,
+		CreatedAt: now, LastSeenAt: now, ExpiresAt: now.Add(ttl),
 	}
 	if err := s.store.CreateSession(ctx, sess); err != nil {
 		return AuthResult{}, fmt.Errorf("create session: %w", err)
 	}
 	s.logger.InfoContext(ctx, "session started",
-		slog.String("session_user_id", user.ID.String()), slog.String("delivery", delivery))
-	return AuthResult{User: user, Token: token, Delivery: delivery, ExpiresAt: sess.ExpiresAt}, nil
+		slog.String("session_user_id", user.ID.String()), slog.String("delivery", delivery), slog.String("scope", scope))
+	return AuthResult{User: user, Token: token, Delivery: delivery, Scope: scope, ExpiresAt: sess.ExpiresAt, TTL: ttl}, nil
 }
 
 // Logout revokes one session.
@@ -444,6 +575,10 @@ func (s *Service) Logout(ctx context.Context, sessionID uuid.UUID) error {
 
 // RequestPasswordReset emails a reset link when email belongs to an active
 // account and silently does nothing otherwise.
+//
+// Accounts holding a platform role never get a reset email: there is no MFA
+// yet, so a compromised mailbox must not become an administrator takeover.
+// Their passwords are changed with cmd/adminctl.
 func (s *Service) RequestPasswordReset(ctx context.Context, email string) error {
 	email = NormalizeEmail(email)
 	if !validEmail(email) {
@@ -456,6 +591,9 @@ func (s *Service) RequestPasswordReset(ctx context.Context, email string) error 
 	case err != nil:
 		return fmt.Errorf("look up user: %w", err)
 	case user.Status != StatusActive:
+		return nil
+	case len(user.PlatformRoles) > 0:
+		s.audit(ctx, slog.LevelWarn, "password_reset_refused_platform_account", "refused", slog.String("user_id", user.ID.String()))
 		return nil
 	}
 	now := s.clock()
@@ -511,9 +649,11 @@ func (s *Service) User(ctx context.Context, id uuid.UUID) (User, error) {
 }
 
 // ResolveSession implements auth.SessionResolver. A session is valid while it
-// is not revoked, younger than SessionAbsoluteTTL, used within SessionIdleTTL
-// and its user is active. last_seen is refreshed at most once per
-// SessionTouchInterval, not on every request.
+// is not revoked, before its absolute expiry, used within the idle window of
+// its scope (14 days for customers, 30 minutes by default for administrators)
+// and its user is active. An admin-scope session is also invalid as soon as
+// its user no longer holds a platform role. last_seen is refreshed at most
+// once per touchInterval, not on every request.
 func (s *Service) ResolveSession(ctx context.Context, token string) (*auth.Principal, error) {
 	if !plausibleToken(token) {
 		return nil, auth.ErrNoSession
@@ -525,8 +665,12 @@ func (s *Service) ResolveSession(ctx context.Context, token string) (*auth.Princ
 	if err != nil {
 		return nil, fmt.Errorf("load session: %w", err)
 	}
+	if sess.Scope != auth.ScopeCustomer && sess.Scope != auth.ScopeAdmin {
+		return nil, auth.ErrNoSession
+	}
+	_, idle := s.sessionTTLs(sess.Scope)
 	now := s.clock()
-	if sess.RevokedAt != nil || !now.Before(sess.ExpiresAt) || !now.Before(sess.LastSeenAt.Add(SessionIdleTTL)) {
+	if sess.RevokedAt != nil || !now.Before(sess.ExpiresAt) || !now.Before(sess.LastSeenAt.Add(idle)) {
 		return nil, auth.ErrNoSession
 	}
 	user, err := s.store.UserByID(ctx, sess.UserID)
@@ -539,7 +683,10 @@ func (s *Service) ResolveSession(ctx context.Context, token string) (*auth.Princ
 	if user.Status != StatusActive {
 		return nil, auth.ErrNoSession
 	}
-	if now.Sub(sess.LastSeenAt) >= SessionTouchInterval {
+	if sess.Scope == auth.ScopeAdmin && len(user.PlatformRoles) == 0 {
+		return nil, auth.ErrNoSession
+	}
+	if now.Sub(sess.LastSeenAt) >= touchInterval(idle) {
 		if err := s.store.TouchSession(ctx, sess.ID, now); err != nil {
 			// Not worth failing the request over; the idle timer just runs on.
 			s.logger.WarnContext(ctx, "could not refresh session last_seen", slog.String("error", err.Error()))
@@ -548,6 +695,6 @@ func (s *Service) ResolveSession(ctx context.Context, token string) (*auth.Princ
 	return &auth.Principal{
 		UserID: user.ID, Name: user.Name, Email: user.Email,
 		PlatformRoles: user.PlatformRoles, Memberships: user.Memberships,
-		SessionID: sess.ID,
+		SessionID: sess.ID, SessionScope: sess.Scope, SessionExpiresAt: sess.ExpiresAt,
 	}, nil
 }

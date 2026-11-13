@@ -35,6 +35,11 @@ const (
 	// lockout yet.
 	AuthRequestsPerMinute = 20
 	AuthRequestsBurst     = 20
+
+	// Per-IP limit on POST /v1/admin/auth/login, its own and much stricter
+	// bucket: bursts of 5, refilled at 5 per minute.
+	AdminAuthRequestsPerMinute = 5
+	AdminAuthRequestsBurst     = 5
 )
 
 // Deps is everything the router needs.
@@ -56,7 +61,7 @@ type Deps struct {
 func NewRouter(d Deps) (http.Handler, error) {
 	cfg, logger := d.Config, d.Logger
 
-	var identityOpts []identity.Option
+	identityOpts := []identity.Option{identity.WithAdminSessionTTLs(cfg.AdminSessionTTL, cfg.AdminSessionIdleTTL)}
 	var requestOpts []propertyrequests.Option
 	if d.Now != nil {
 		identityOpts = append(identityOpts, identity.WithClock(d.Now))
@@ -78,6 +83,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 
 	requestLimiter := httpx.NewRateLimiter(propertyRequestsPerMinute, propertyRequestsBurst)
 	authLimiter := httpx.NewRateLimiter(AuthRequestsPerMinute, AuthRequestsBurst)
+	adminAuthLimiter := httpx.NewRateLimiter(AdminAuthRequestsPerMinute, AdminAuthRequestsBurst)
 
 	r := chi.NewRouter()
 	r.Use(
@@ -115,6 +121,15 @@ func NewRouter(d Deps) (http.Handler, error) {
 		})
 
 		r.With(auth.RequireAuth).Get("/me", identityH.Me)
+
+		// Platform administration. Signing in has its own endpoint and rate
+		// limit; signing out is POST /v1/auth/logout like any other session.
+		// Everything else under /admin requires an ADMIN-scope session whose
+		// user holds a platform role.
+		r.Route("/admin", func(r chi.Router) {
+			r.With(adminAuthLimiter.Middleware).Post("/auth/login", identityH.AdminLogin)
+			r.With(auth.RequireAuth, auth.RequirePlatformRole(auth.AllPlatformRoles()...)).Get("/me", identityH.Me)
+		})
 
 		// Organisation workspace: any membership may enter; the handler scopes
 		// the data to the caller's own organisations and role.

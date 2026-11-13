@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func lookup(m map[string]string) func(string) string {
@@ -27,6 +28,36 @@ func TestFromLookupDefaults(t *testing.T) {
 	}
 	if cfg.WebBaseURL != "http://localhost:3000" || cfg.DevSeedPassword != "" {
 		t.Fatalf("unexpected identity defaults: web=%q seedSet=%v", cfg.WebBaseURL, cfg.DevSeedPassword != "")
+	}
+}
+
+func TestFromLookupAdminSessions(t *testing.T) {
+	cfg, err := FromLookup(lookup(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AdminSessionTTL != 12*time.Hour || cfg.AdminSessionIdleTTL != 30*time.Minute {
+		t.Fatalf("defaults: ttl=%s idle=%s", cfg.AdminSessionTTL, cfg.AdminSessionIdleTTL)
+	}
+
+	cfg, err = FromLookup(lookup(map[string]string{"ADMIN_SESSION_TTL": "8h", "ADMIN_SESSION_IDLE_TTL": "15m"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AdminSessionTTL != 8*time.Hour || cfg.AdminSessionIdleTTL != 15*time.Minute {
+		t.Fatalf("overrides: ttl=%s idle=%s", cfg.AdminSessionTTL, cfg.AdminSessionIdleTTL)
+	}
+
+	for name, env := range map[string]map[string]string{
+		"not a duration": {"ADMIN_SESSION_TTL": "12"},
+		"too long":       {"ADMIN_SESSION_TTL": "720h"},
+		"too short":      {"ADMIN_SESSION_IDLE_TTL": "5s"},
+		"negative":       {"ADMIN_SESSION_IDLE_TTL": "-30m"},
+		"idle above ttl": {"ADMIN_SESSION_TTL": "1h", "ADMIN_SESSION_IDLE_TTL": "2h"},
+	} {
+		if _, err := FromLookup(lookup(env)); err == nil || !strings.Contains(err.Error(), "ADMIN_SESSION") {
+			t.Fatalf("%s: expected an ADMIN_SESSION error, got %v", name, err)
+		}
 	}
 }
 
