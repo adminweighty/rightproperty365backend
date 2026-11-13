@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"rightproperty365.com/backend/internal/app"
+	"rightproperty365.com/backend/internal/devseed"
 	"rightproperty365.com/backend/internal/modules/health"
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/markets"
@@ -55,7 +56,11 @@ func run() error {
 		// config.Load guarantees this branch is only reachable in development.
 		logger.Warn("DATABASE_URL is not set: using IN-MEMORY stores. Data is lost on restart and the worker cannot see it. Development only.")
 		marketStore = markets.NewMemoryStore()
-		requestStore = propertyrequests.NewMemoryStore()
+		memRequests := propertyrequests.NewMemoryStore()
+		// Development sample data: 18 published listings, each with its
+		// organisation and assigned agent (or its direct seller).
+		devseed.SeedMemoryListings(memRequests)
+		requestStore = memRequests
 		healthH = health.NewHandler(health.StoreMemory, nil, logger)
 
 		memIdentity := identity.NewMemoryStore()
@@ -63,12 +68,10 @@ func run() error {
 		if cfg.DevSeedPassword == "" {
 			logger.Warn("DEV_SEED_PASSWORD is not set: development seed users were NOT created (copy .env.example to .env to get them)")
 		} else {
-			// The seed organisation is the one that receives requests for the sample listings.
-			if err := memIdentity.SeedDevelopment(ctx, identity.DefaultHasher(), cfg.DevSeedPassword, propertyrequests.SeedOrganisationID, time.Now()); err != nil {
+			if err := devseed.SeedMemoryUsers(ctx, memIdentity, identity.DefaultHasher(), cfg.DevSeedPassword, time.Now()); err != nil {
 				return fmt.Errorf("seed development users: %w", err)
 			}
-			logger.Info("development seed users created (password from DEV_SEED_PASSWORD)",
-				slog.Any("emails", []string{identity.SeedConsumerEmail, identity.SeedAgentEmail, identity.SeedAdminEmail, identity.SeedAgentBEmail}))
+			logger.Info("development seed users created (password from DEV_SEED_PASSWORD)", slog.Any("emails", devseed.Emails()))
 		}
 	} else {
 		pool, err := database.NewPool(ctx, cfg.DatabaseURL, cfg.DBMaxConns)

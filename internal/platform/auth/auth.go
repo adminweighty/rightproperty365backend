@@ -74,6 +74,20 @@ func AllPlatformRoles() []string {
 // IsPlatformRole reports whether role is a platform role.
 func IsPlatformRole(role string) bool { return slices.Contains(AllPlatformRoles(), role) }
 
+// AccountRolePrivateSeller is the self-declared "I sell my own property"
+// account role. It is the only account role any route looks at, and only to
+// let its holder open their (possibly empty) seller inbox.
+const AccountRolePrivateSeller = "PRIVATE_SELLER"
+
+// AccountRole is a role the user chose for themselves at registration, with
+// its status. It is carried on the Principal for display and for the one
+// documented use above. It is NOT an authorisation: it must never select or
+// widen the data a route returns. Use Memberships and PlatformRoles for that.
+type AccountRole struct {
+	Role   string
+	Status string
+}
+
 // ErrNoSession is returned by a SessionResolver when the token is unknown,
 // expired or revoked. The caller is then treated as anonymous.
 var ErrNoSession = errors.New("no valid session")
@@ -102,6 +116,8 @@ type Principal struct {
 	Email         string
 	PlatformRoles []PlatformRole
 	Memberships   []Membership
+	// AccountRoles are self-declared and grant no access; see AccountRole.
+	AccountRoles []AccountRole
 
 	// SessionID identifies the session that authenticated this request and Via
 	// says whether its token arrived in the cookie or as a bearer token.
@@ -118,6 +134,17 @@ type Principal struct {
 func (p *Principal) HasMembership(roles ...string) bool {
 	for _, m := range p.Memberships {
 		if len(roles) == 0 || slices.Contains(roles, m.Role) {
+			return true
+		}
+	}
+	return false
+}
+
+// HasAccountRole reports whether the principal declared role, in any status.
+// See AccountRole: this is not an authorisation check.
+func (p *Principal) HasAccountRole(role string) bool {
+	for _, r := range p.AccountRoles {
+		if r.Role == role {
 			return true
 		}
 	}

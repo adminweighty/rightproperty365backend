@@ -43,6 +43,10 @@ type Store interface {
 	// ListInbox returns the requests visible under scope (see InboxScope),
 	// newest first, at most scope.Limit.
 	ListInbox(ctx context.Context, scope InboxScope) ([]InboxItem, error)
+
+	// IsDirectSeller reports whether the user is the direct seller of at
+	// least one listing (in any status).
+	IsDirectSeller(ctx context.Context, userID uuid.UUID) (bool, error)
 }
 
 // timelineEvent is one row of request_timeline.

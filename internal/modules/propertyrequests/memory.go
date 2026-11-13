@@ -66,8 +66,11 @@ type MemoryOutboxEvent struct {
 	CreatedAt   time.Time
 }
 
-// NewMemoryStore returns a store seeded with six PUBLISHED Zimbabwe listings
-// (1-5 owned by an organisation, 6 by a direct seller) and one EXPIRED listing.
+// NewMemoryStore returns a store holding a small built-in fixture: six
+// PUBLISHED Zimbabwe listings (1-5 owned by an organisation with no assigned
+// agent, 6 by a direct seller) and one EXPIRED listing. In development the API
+// replaces these with the full sample data set from internal/devseed (18
+// listings, each with a named agent or seller).
 func NewMemoryStore() *MemoryStore {
 	s := &MemoryStore{
 		listings: make(map[uuid.UUID]Listing),
@@ -169,13 +172,20 @@ func (s *MemoryStore) ListInbox(_ context.Context, scope InboxScope) ([]InboxIte
 
 	items := []InboxItem{}
 	for _, req := range s.requests {
-		if req.Recipient == nil || req.Recipient.OrganisationID == nil {
-			continue // direct seller or routing exception: nobody's organisation inbox
+		if req.Recipient == nil {
+			continue // routing exception: in nobody's inbox
 		}
-		org := *req.Recipient.OrganisationID
 		assignee := req.Recipient.UserID
-		visible := slices.Contains(scope.ManagedOrganisationIDs, org) ||
-			(slices.Contains(scope.MemberOrganisationIDs, org) && (assignee == nil || *assignee == scope.UserID))
+		visible := false
+		if req.Recipient.OrganisationID != nil {
+			org := *req.Recipient.OrganisationID
+			visible = slices.Contains(scope.ManagedOrganisationIDs, org) ||
+				(slices.Contains(scope.MemberOrganisationIDs, org) && (assignee == nil || *assignee == scope.UserID))
+		}
+		// Routed to the caller as the direct seller of the listing.
+		if req.Recipient.Type == RecipientSeller && assignee != nil && *assignee == scope.UserID {
+			visible = true
+		}
 		if !visible {
 			continue
 		}
@@ -203,6 +213,18 @@ func (s *MemoryStore) ListInbox(_ context.Context, scope InboxScope) ([]InboxIte
 		items = items[:scope.Limit]
 	}
 	return items, nil
+}
+
+// IsDirectSeller implements Store.
+func (s *MemoryStore) IsDirectSeller(_ context.Context, userID uuid.UUID) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, l := range s.listings {
+		if l.SellerUserID != nil && *l.SellerUserID == userID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // Requests returns a copy of the stored requests (test helper).

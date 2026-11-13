@@ -57,7 +57,7 @@ const StatusActive = "ACTIVE"
 const (
 	AccountRoleConsumer        = "CONSUMER"
 	AccountRoleTenant          = "TENANT"
-	AccountRolePrivateSeller   = "PRIVATE_SELLER"
+	AccountRolePrivateSeller   = auth.AccountRolePrivateSeller
 	AccountRoleLandlord        = "LANDLORD"
 	AccountRoleHost            = "HOST"
 	AccountRoleDeveloper       = "DEVELOPER"

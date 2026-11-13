@@ -37,24 +37,55 @@ $body = @{
 Invoke-RestMethod -Method Post -Uri http://localhost:8080/v1/property-requests -ContentType "application/json" -Body $body
 ```
 
-In-memory seed data (development only):
+### Development sample data
 
-| Listing ID | State | Recipient |
-| --- | --- | --- |
-| `0195c0de-0000-7000-8000-000000000001` … `…000005` | PUBLISHED, market ZW | organisation inbox |
-| `0195c0de-0000-7000-8000-000000000006` | PUBLISHED, market ZW | direct seller |
-| `0195c0de-0000-7000-8000-000000000099` | EXPIRED (returns 410) | — |
+In development without a database the API seeds its in-memory stores with the data below (defined
+once in `internal/devseed`; the web app's sample data uses the same names). Listing IDs are
+`0195c0de-0000-7000-8000-000000000001` … `…000000000018`: 18 **PUBLISHED** listings in market ZW,
+each with an organisation **and** a named assigned agent, or a direct seller. Listing
+`…000000000099` is **EXPIRED** (requests get `410`).
 
-Development seed users (in-memory store only, and only when `APP_ENV=development`). All four are
-email-verified and share the password in `DEV_SEED_PASSWORD` — see [`.env.example`](.env.example)
-for the development value. If the variable is unset the API logs a warning and creates no users.
+All accounts are email-verified and share one password: **`DEV_SEED_PASSWORD` in
+[`.env.example`](.env.example)**. They are created only when `APP_ENV=development` and that
+variable is set; otherwise the API logs a warning and creates no users (the listings are still
+seeded).
 
-| Email | Membership / platform role | Account roles (all `ACTIVE`) |
-| --- | --- | --- |
-| `consumer@example.test` | none | `CONSUMER` |
-| `agent@example.test` | `AGENT` at **Sample Estates** (`AGENCY`, market ZW) — the organisation that receives requests for listings 1–5 | `CONSUMER`, `AGENT` |
-| `admin@example.test` | platform role `SUPER_ADMIN` — signs in **only** at `POST /v1/admin/auth/login` | `CONSUMER` |
-| `agent-b@example.test` | `AGENT` at **Second Street Realty**, which owns no listings (for checking that organisations cannot see each other's data) | `AGENT` |
+| Email | Name | Organisation (all `AGENCY`) | Role | Listings assigned |
+| --- | --- | --- | --- | --- |
+| `estates.owner@example.test` | Rudo Moyo | Sample Estates | `OWNER` | none (sees all of the agency's) |
+| `agent@example.test` | Tendai Ncube | Sample Estates | `AGENT` | 1, 2, 5 |
+| `estates.agent2@example.test` | Chipo Dube | Sample Estates | `AGENT` | 7, 10, 17 |
+| `commercial.agent@example.test` | Farai Chikwanha | Sample Commercial | `OWNER` | 3, 13 |
+| `land.agent@example.test` | Nomsa Sibanda | Sample Land Agents | `OWNER` | 4, 14, 15 |
+| `realty.agent@example.test` | Tatenda Mutasa | Sample Realty | `OWNER` | 8, 9, 16, 18 |
+| `bulawayo.agent@example.test` | Sipho Nkomo | Sample Homes Bulawayo | `OWNER` | 11, 12 |
+| `seller@example.test` | Grace Mhlanga | — (direct seller) | account role `PRIVATE_SELLER` | 6 |
+| `consumer@example.test` | Casey Consumer | — | none (plain consumer) | — |
+| `admin@example.test` | Sam Admin | — | platform role `SUPER_ADMIN`; signs in **only** at `POST /v1/admin/auth/login` | — |
+| `agent-b@example.test` | Blake Agent | Second Street Realty | `AGENT` | none — the agency owns no listings (kept for checking that organisations cannot see each other's data) |
+
+Account roles of the sample accounts are all `ACTIVE`: `CONSUMER` + `AGENT` for the agents,
+`CONSUMER` + `AGENCY_OWNER` for the owners, `CONSUMER` + `PRIVATE_SELLER` for Grace, `CONSUMER` for
+the consumer and the administrator, and `AGENT` only for `agent-b`.
+
+A request for a listing is routed to its assigned agent and appears in that agent's inbox; the
+agency's `OWNER` sees all of the agency's requests; another `AGENT` of the same agency does not see
+it, and no other agency does. A request for listing 6 goes to Grace, the direct seller.
+
+#### The same data in Postgres: `cmd/seed`
+
+```powershell
+go run ./cmd/migrate up
+go run ./cmd/seed          # or: make seed
+```
+
+`cmd/seed` writes the same organisations, accounts, roles and listings into the database at
+`DATABASE_DIRECT_URL` (or `DATABASE_URL`). It **refuses to run unless `APP_ENV=development` is set
+explicitly and `DEV_SEED_PASSWORD` is set**, runs in one transaction and is idempotent (re-running
+it resets the sample rows, including the shared password, and touches nothing else). Sample
+listings get a placeholder title and price, because this backend does not own listing content yet.
+**It has never been run** — there is no Postgres on the development machine; only its
+environment guard is unit-tested. Treat the first run as a test.
 
 Sign in and read the organisation inbox (PowerShell; `-SessionVariable` keeps the cookie, and the
 `Origin` header is required on cookie-authenticated POSTs):
@@ -81,6 +112,7 @@ Registering a new account in development does not send email: the API **logs** t
 | Test | `go test ./...` |
 | Build all | `go build ./...` |
 | Migrations | `go run ./cmd/migrate up` / `down` / `status` |
+| Sample data into Postgres (development only) | `go run ./cmd/seed` |
 
 A `Makefile` wraps the same commands for environments that have `make`.
 
@@ -123,7 +155,7 @@ All configuration comes from environment variables. For local development you ma
 | GET | `/v1/me` | The signed-in user (roles, memberships) and the session (`scope`, `expires_at`) |
 | POST | `/v1/admin/auth/login` | Administrator sign-in (platform-role accounts only; cookie only) |
 | GET | `/v1/admin/me` | Same as `/v1/me`, but requires an admin-scope session and a platform role |
-| GET | `/v1/agent/property-requests` | Requests received by the caller's organisation(s) |
+| GET | `/v1/agent/property-requests` | Requests received by the caller: their organisation's (scoped by role) and/or their own as a direct seller |
 
 Every error uses one envelope, and `trace_id` equals the `X-Request-Id` response header:
 
@@ -290,7 +322,12 @@ There are three separate things, all returned by `GET /v1/me`, and only two of t
 Selecting a professional role at sign-up **only records a request**. It does not create an
 organisation or a membership, gives no access to any organisation's data, and is never consulted by
 `RequireMembership` or `RequirePlatformRole` — a self-registered "AGENT" gets `403 FORBIDDEN` from
-`GET /v1/agent/property-requests` until someone gives them a real membership. No authorisation
+`GET /v1/agent/property-requests` until someone gives them a real membership.
+
+There is exactly **one** place an account role affects access: a user who declared
+`PRIVATE_SELLER` (in any status) may open `GET /v1/agent/property-requests`. That only lets a
+would-be seller see an inbox that is **empty** until they actually are the direct seller of a
+listing; the account role never selects or widens the data returned. No other authorisation
 decision reads account roles.
 
 Memberships and platform roles use these vocabularies:
@@ -317,11 +354,18 @@ The middleware only answers "may this caller use the route at all". Handlers mus
 their data with `Principal.OrganisationIDs(...)` (and `PlatformRole.MarketCode` for
 `MARKET_ADMIN`).
 
-`GET /v1/agent/property-requests` shows how: `OWNER`/`MANAGER` see every request whose recipient
-organisation is one of theirs; `AGENT`/`STAFF` see the requests of their organisation that are
-assigned to them personally or to the organisation inbox. Requests of other organisations and
-requests routed to a direct seller are never returned. Newest first, capped at 100 —
-**no pagination yet**.
+`GET /v1/agent/property-requests` shows how.
+
+- **Who may call it:** a user with any organisation membership, **or** the direct seller of at
+  least one listing, **or** a user who declared the `PRIVATE_SELLER` account role. Everyone else
+  gets `403 FORBIDDEN` (`401` when anonymous).
+- **What it returns** (the union, built only from the caller's user ID and memberships):
+  `OWNER`/`MANAGER` see every request whose recipient organisation is one of theirs;
+  `AGENT`/`STAFF` see the requests of their organisation that are assigned to them personally or
+  to the organisation inbox, not those assigned to a colleague; a direct seller sees the requests
+  routed to them for their own listings.
+- Requests of other organisations and of other sellers are never returned. Newest first, capped at
+  100 — **no pagination yet**.
 
 ### Not built yet
 
@@ -350,12 +394,14 @@ cmd/api        HTTP API binary
 cmd/worker     background worker (outbox dispatcher)
 cmd/migrate    migration runner: up | down | status
 cmd/adminctl   create platform administrators / set their password (Postgres only)
+cmd/seed       development sample data into Postgres (refuses outside APP_ENV=development)
 internal/platform/config     env configuration + validation
 internal/platform/logging    slog JSON logger, request-ID propagation
 internal/platform/httpx      middleware, error envelope, JSON decoding, rate limiter
 internal/platform/auth       Principal + Authenticate / RequireAuth / RequireMembership / RequirePlatformRole
 internal/app                 router wiring (middleware order, routes); end-to-end tests live here
 internal/adminctl            logic of cmd/adminctl (argument and password validation)
+internal/devseed             the development sample data (organisations, people, 18 listings)
 internal/platform/database   pgxpool setup for the pooled runtime URL
 internal/platform/outbox     outbox dispatcher (lease, retry, dead-letter)
 internal/platform/migrate    embedded-SQL migration runner

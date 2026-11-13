@@ -178,6 +178,15 @@ func passwordProblem(password string) string {
 	return ""
 }
 
+// CheckPassword reports why password is not acceptable (10 to 128
+// characters), or nil. The message never contains the password.
+func CheckPassword(password string) error {
+	if msg := passwordProblem(password); msg != "" {
+		return errors.New(msg)
+	}
+	return nil
+}
+
 func hasControlChars(s string) bool {
 	for _, r := range s {
 		if unicode.IsControl(r) {
@@ -695,6 +704,15 @@ func (s *Service) ResolveSession(ctx context.Context, token string) (*auth.Princ
 	return &auth.Principal{
 		UserID: user.ID, Name: user.Name, Email: user.Email,
 		PlatformRoles: user.PlatformRoles, Memberships: user.Memberships,
-		SessionID: sess.ID, SessionScope: sess.Scope, SessionExpiresAt: sess.ExpiresAt,
+		AccountRoles: principalAccountRoles(user.AccountRoles),
+		SessionID:    sess.ID, SessionScope: sess.Scope, SessionExpiresAt: sess.ExpiresAt,
 	}, nil
+}
+
+func principalAccountRoles(roles []AccountRole) []auth.AccountRole {
+	out := make([]auth.AccountRole, 0, len(roles))
+	for _, r := range roles {
+		out = append(out, auth.AccountRole{Role: r.Role, Status: r.Status})
+	}
+	return out
 }

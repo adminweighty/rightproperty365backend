@@ -131,9 +131,11 @@ func NewRouter(d Deps) (http.Handler, error) {
 			r.With(auth.RequireAuth, auth.RequirePlatformRole(auth.AllPlatformRoles()...)).Get("/me", identityH.Me)
 		})
 
-		// Organisation workspace: any membership may enter; the handler scopes
-		// the data to the caller's own organisations and role.
-		r.With(auth.RequireMembership()).Get("/agent/property-requests", requestsH.Inbox)
+		// Request inbox for organisation members and direct sellers. The
+		// handler decides who may enter (membership, direct seller, or a
+		// declared PRIVATE_SELLER) and scopes the data to the caller's own
+		// organisations, role and listings.
+		r.With(auth.RequireAuth).Get("/agent/property-requests", requestsH.Inbox)
 	})
 	return r, nil
 }

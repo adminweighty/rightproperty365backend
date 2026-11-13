@@ -189,9 +189,9 @@ func (s *PostgresStore) Create(ctx context.Context, req NewRequest) (Record, boo
 }
 
 // ListInbox implements Store. Organisation IDs are passed as text arrays and
-// cast in SQL; the visibility rule is documented on InboxScope. Requests with
-// no recipient organisation (direct sellers, routing exceptions) can never
-// match because both branches compare recipient_organisation_id.
+// cast in SQL; the visibility rule is documented on InboxScope. Routing
+// exceptions have neither a recipient organisation nor a recipient user, so no
+// branch can match them; a direct-seller request matches only its own seller.
 //
 // NOTE: compiled but not yet exercised against a real database.
 func (s *PostgresStore) ListInbox(ctx context.Context, scope InboxScope) ([]InboxItem, error) {
@@ -206,6 +206,7 @@ func (s *PostgresStore) ListInbox(ctx context.Context, scope InboxScope) ([]Inbo
 		WHERE pr.recipient_organisation_id IN (SELECT unnest($1::text[])::uuid)
 		   OR (pr.recipient_organisation_id IN (SELECT unnest($2::text[])::uuid)
 		       AND (pr.recipient_user_id IS NULL OR pr.recipient_user_id = $3))
+		   OR (pr.recipient_type = 'SELLER' AND pr.recipient_user_id = $3)
 		ORDER BY pr.created_at DESC, pr.id DESC
 		LIMIT $4`,
 		uuidStrings(scope.ManagedOrganisationIDs), uuidStrings(scope.MemberOrganisationIDs), scope.UserID, scope.Limit)
@@ -227,4 +228,13 @@ func uuidStrings(ids []uuid.UUID) []string {
 		out[i] = id.String()
 	}
 	return out
+}
+
+// IsDirectSeller implements Store.
+//
+// NOTE: compiled but not yet exercised against a real database.
+func (s *PostgresStore) IsDirectSeller(ctx context.Context, userID uuid.UUID) (bool, error) {
+	var ok bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM listings WHERE seller_user_id = $1)`, userID).Scan(&ok)
+	return ok, err
 }

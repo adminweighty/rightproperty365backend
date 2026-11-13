@@ -79,15 +79,36 @@ type inboxResponse struct {
 	Items []InboxItem `json:"items"`
 }
 
-// Inbox lists the requests received by the caller's organisation(s). The
-// route sits behind auth.RequireMembership; the scope below is derived solely
-// from the caller's memberships, so a member of one organisation can never
-// read another organisation's requests or those routed to a direct seller.
+// Inbox lists the requests received by the caller: those of their
+// organisation(s), scoped by role, plus those routed to them as the direct
+// seller of a listing.
+//
+// Who may call it (401 when anonymous, otherwise 403 unless one holds):
+//   - the caller has an organisation membership; or
+//   - the caller is the direct seller of at least one listing; or
+//   - the caller declared the PRIVATE_SELLER account role (any status).
+//
+// The third case is the single place an account role affects access, and all
+// it does is let a would-be seller open an inbox that is empty until they
+// actually sell something. WHAT is returned never depends on account roles:
+// the scope below is built only from the caller's user ID and memberships, so
+// nobody can read another organisation's or another seller's requests.
 func (h *Handler) Inbox(w http.ResponseWriter, r *http.Request) {
 	p := auth.FromContext(r.Context())
 	if p == nil {
 		httpx.WriteError(w, r, http.StatusUnauthorized, httpx.CodeUnauthenticated, "You need to sign in to do this.", nil)
 		return
+	}
+	if !p.HasMembership() && !p.HasAccountRole(auth.AccountRolePrivateSeller) {
+		seller, err := h.svc.IsDirectSeller(r.Context(), p.UserID)
+		if err != nil {
+			httpx.WriteInternalError(w, r, h.logger, err)
+			return
+		}
+		if !seller {
+			httpx.WriteError(w, r, http.StatusForbidden, httpx.CodeForbidden, "You do not have permission to do this.", nil)
+			return
+		}
 	}
 	items, err := h.svc.Inbox(r.Context(), InboxScope{
 		UserID:                 p.UserID,

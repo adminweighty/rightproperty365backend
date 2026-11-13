@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"rightproperty365.com/backend/internal/devseed"
 	"rightproperty365.com/backend/internal/modules/health"
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/markets"
@@ -131,7 +133,8 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		now:      time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC),
 	}
 	hasher := identity.Hasher{MemoryKiB: 64, Time: 1, Threads: 1}
-	if err := e.identity.SeedDevelopment(context.Background(), hasher, seedPassword, propertyrequests.SeedOrganisationID, e.now); err != nil {
+	devseed.SeedMemoryListings(e.requests)
+	if err := devseed.SeedMemoryUsers(context.Background(), e.identity, hasher, seedPassword, e.now); err != nil {
 		t.Fatal(err)
 	}
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
@@ -1031,20 +1034,27 @@ func TestAgentInboxRoleScoping(t *testing.T) {
 	addUser("staff@example.com", auth.RoleStaff)
 	otherAgent := addUser("other-agent@example.com", auth.RoleAgent)
 
+	// Listings outside the seeded 1..18 range, so the seed's own assignments
+	// do not interfere: 30 has no assigned agent (organisation inbox), 31 is
+	// assigned to other-agent, 32 cannot be received by anybody.
 	e.requests.PutListing(propertyrequests.Listing{
-		ID: propertyrequests.SeedListingID(7), MarketID: markets.ZimbabweID, Status: propertyrequests.ListingStatusPublished,
+		ID: propertyrequests.SeedListingID(30), MarketID: markets.ZimbabweID, Status: propertyrequests.ListingStatusPublished,
+		OrganisationID: &orgA, OrganisationEligible: true,
+	})
+	e.requests.PutListing(propertyrequests.Listing{
+		ID: propertyrequests.SeedListingID(31), MarketID: markets.ZimbabweID, Status: propertyrequests.ListingStatusPublished,
 		OrganisationID: &orgA, OrganisationEligible: true, AgentUserID: &otherAgent, AgentEligible: true,
 	})
 	// A listing nobody can receive: stored as ROUTING_EXCEPTION, in no inbox.
 	e.requests.PutListing(propertyrequests.Listing{
-		ID: propertyrequests.SeedListingID(8), MarketID: markets.ZimbabweID, Status: propertyrequests.ListingStatusPublished,
+		ID: propertyrequests.SeedListingID(32), MarketID: markets.ZimbabweID, Status: propertyrequests.ListingStatusPublished,
 		OrganisationID: &orgA, OrganisationEligible: false,
 	})
 
-	wantStatus(t, e.post("/v1/property-requests", e.propertyRequest(1)), http.StatusCreated) // organisation inbox
-	wantStatus(t, e.post("/v1/property-requests", e.propertyRequest(7)), http.StatusCreated) // assigned to other-agent
-	wantStatus(t, e.post("/v1/property-requests", e.propertyRequest(8)), http.StatusCreated) // routing exception
-	wantStatus(t, e.post("/v1/property-requests", e.propertyRequest(6)), http.StatusCreated) // direct seller
+	wantStatus(t, e.post("/v1/property-requests", e.propertyRequest(30)), http.StatusCreated) // organisation inbox
+	wantStatus(t, e.post("/v1/property-requests", e.propertyRequest(31)), http.StatusCreated) // assigned to other-agent
+	wantStatus(t, e.post("/v1/property-requests", e.propertyRequest(32)), http.StatusCreated) // routing exception
+	wantStatus(t, e.post("/v1/property-requests", e.propertyRequest(6)), http.StatusCreated)  // direct seller
 
 	listings := func(email string) map[string]bool {
 		t.Helper()
@@ -1059,13 +1069,14 @@ func TestAgentInboxRoleScoping(t *testing.T) {
 		}
 		return got
 	}
-	l1, l7 := propertyrequests.SeedListingID(1).String(), propertyrequests.SeedListingID(7).String()
+	l1, l7 := propertyrequests.SeedListingID(30).String(), propertyrequests.SeedListingID(31).String()
 
 	tests := []struct {
 		email string
 		want  []string
 	}{
 		{"owner@example.com", []string{l1, l7}},
+		{devseed.EstatesOwnerEmail, []string{l1, l7}}, // the seeded owner of the same organisation
 		{"manager@example.com", []string{l1, l7}},
 		{"other-agent@example.com", []string{l1, l7}},
 		{identity.SeedAgentEmail, []string{l1}}, // not the one assigned to a colleague
@@ -1443,8 +1454,11 @@ func (e *env) selfRegister(email string, roles ...string) *http.Cookie {
 	e.t.Helper()
 	body := registerBody(email)
 	body["roles"] = roles
-	wantStatus(e.t, e.post("/v1/auth/register", body), http.StatusAccepted)
-	rec := e.post("/v1/auth/verify-email", obj{"token": e.mail.verifyToken(e.t)})
+	// A fresh client IP per registration keeps helpers clear of the auth rate limit.
+	e.seq++
+	ip := withIP(fmt.Sprintf("192.0.2.%d", 100+e.seq%100))
+	wantStatus(e.t, e.post("/v1/auth/register", body, ip), http.StatusAccepted)
+	rec := e.post("/v1/auth/verify-email", obj{"token": e.mail.verifyToken(e.t)}, ip)
 	wantStatus(e.t, rec, http.StatusOK)
 	return sessionCookie(rec)
 }
@@ -1790,4 +1804,216 @@ func TestVerifyEmailDoesNotSignInPlatformAccount(t *testing.T) {
 	}
 	// Now verified, the account can use the administrator login.
 	e.adminLogin("promoted@example.com", "correct-horse-battery")
+}
+
+// ---------------------------------------------------------------------------
+// Sample data: every listing belongs to a named agent or seller
+// ---------------------------------------------------------------------------
+
+// inboxListings returns the listing numbers in the caller's inbox.
+func (e *env) inboxListings(email string) []int {
+	e.t.Helper()
+	rec := e.get("/v1/agent/property-requests", withBearer(e.loginBearer(email, seedPassword)))
+	wantStatus(e.t, rec, http.StatusOK)
+	var got []int
+	for _, it := range decode[inboxBody](e.t, rec).Items {
+		n := 0
+		for i := 1; i <= 99; i++ {
+			if propertyrequests.SeedListingID(i).String() == it.ListingID {
+				n = i
+				break
+			}
+		}
+		got = append(got, n)
+	}
+	sort.Ints(got)
+	return got
+}
+
+func sameInts(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestSeededInboxScoping(t *testing.T) {
+	e := newEnv(t)
+	// One request each for: Tendai's 1, Chipo's 7 (same agency), Farai's 3
+	// (another agency), Grace's 6 (direct seller).
+	for i, n := range []int{1, 7, 3, 6} {
+		e.now = e.now.Add(time.Duration(i) * time.Second)
+		wantStatus(t, e.post("/v1/property-requests", e.propertyRequest(n)), http.StatusCreated)
+	}
+
+	tests := []struct {
+		who, email string
+		want       []int
+	}{
+		{"Tendai (AGENT, Sample Estates) sees his own, not his colleague's", identity.SeedAgentEmail, []int{1}},
+		{"Chipo (AGENT, Sample Estates) sees hers, not her colleague's", devseed.EstatesAgent2Email, []int{7}},
+		{"Rudo (OWNER, Sample Estates) sees all of the agency's", devseed.EstatesOwnerEmail, []int{1, 7}},
+		{"Farai (OWNER, Sample Commercial) sees none of Sample Estates'", devseed.CommercialAgentEmail, []int{3}},
+		{"Nomsa (OWNER, Sample Land Agents) sees nothing", devseed.LandAgentEmail, nil},
+		{"Tatenda (OWNER, Sample Realty) sees nothing", devseed.RealtyAgentEmail, nil},
+		{"Sipho (OWNER, Sample Homes Bulawayo) sees nothing", devseed.BulawayoAgentEmail, nil},
+		{"Blake (AGENT, Second Street Realty) sees nothing", identity.SeedAgentBEmail, nil},
+		{"Grace (direct seller) sees her listing's request only", devseed.SellerEmail, []int{6}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.who, func(t *testing.T) {
+			if got := e.inboxListings(tt.email); !sameInts(got, tt.want) {
+				t.Fatalf("inbox listings = %v, want %v", got, tt.want)
+			}
+		})
+	}
+
+	t.Run("consumer is 403, anonymous is 401", func(t *testing.T) {
+		wantError(t, e.get("/v1/agent/property-requests", withBearer(e.loginBearer(identity.SeedConsumerEmail, seedPassword))),
+			http.StatusForbidden, httpx.CodeForbidden)
+		wantError(t, e.get("/v1/agent/property-requests"), http.StatusUnauthorized, httpx.CodeUnauthenticated)
+	})
+
+	t.Run("Grace's inbox item carries the usual shape", func(t *testing.T) {
+		rec := e.get("/v1/agent/property-requests", withBearer(e.loginBearer(devseed.SellerEmail, seedPassword)))
+		inbox := decode[inboxBody](t, rec)
+		if len(inbox.Items) != 1 || inbox.Items[0].Status != "RECEIVED" || inbox.Items[0].Contact.Email != "tariro@example.com" ||
+			!strings.HasPrefix(inbox.Items[0].Reference, "RP-") {
+			t.Fatalf("unexpected inbox: %s", rec.Body)
+		}
+	})
+
+	t.Run("Grace's /v1/me", func(t *testing.T) {
+		user, _ := e.me(e.loginCookie(devseed.SellerEmail, seedPassword))
+		if user.Name != "Grace Mhlanga" || len(user.Memberships) != 0 || len(user.AccountRoles) != 2 ||
+			user.AccountRoles[1] != (accountRoleBody{"PRIVATE_SELLER", "ACTIVE"}) {
+			t.Fatalf("unexpected user: %+v", user)
+		}
+	})
+}
+
+// The PRIVATE_SELLER account role may open the inbox, but never widens what
+// it contains; no other account role opens it at all.
+func TestSellerInboxAccess(t *testing.T) {
+	e := newEnv(t)
+	for _, n := range []int{1, 6, 7} {
+		wantStatus(t, e.post("/v1/property-requests", e.propertyRequest(n)), http.StatusCreated)
+	}
+
+	t.Run("self-registered PENDING PRIVATE_SELLER gets 200 with zero items", func(t *testing.T) {
+		c := e.selfRegister("newseller@example.com", "PRIVATE_SELLER")
+		user, _ := e.me(c)
+		if len(user.AccountRoles) != 1 || user.AccountRoles[0] != (accountRoleBody{"PRIVATE_SELLER", "PENDING_VERIFICATION"}) {
+			t.Fatalf("account_roles = %+v", user.AccountRoles)
+		}
+		rec := e.get("/v1/agent/property-requests", withCookie(c))
+		wantStatus(t, rec, http.StatusOK)
+		if got := strings.TrimSpace(rec.Body.String()); got != `{"items":[]}` {
+			t.Fatalf("body = %s, want an empty items array", got)
+		}
+	})
+
+	t.Run("every other self-declared role is still 403", func(t *testing.T) {
+		for i, role := range identity.SelectableAccountRoles() {
+			if role == "PRIVATE_SELLER" {
+				continue
+			}
+			c := e.selfRegister(fmt.Sprintf("declared%d@example.com", i), role)
+			wantError(t, e.get("/v1/agent/property-requests", withCookie(c)), http.StatusForbidden, httpx.CodeForbidden)
+		}
+	})
+
+	t.Run("all professional roles together, without PRIVATE_SELLER, are 403", func(t *testing.T) {
+		c := e.selfRegister("allpro@example.com", "AGENT", "AGENCY_OWNER", "AGENCY_ADMIN", "AGENCY_STAFF", "LANDLORD", "HOST", "DEVELOPER", "SERVICE_PROVIDER")
+		wantError(t, e.get("/v1/agent/property-requests", withCookie(c)), http.StatusForbidden, httpx.CodeForbidden)
+	})
+
+	t.Run("a direct seller without the account role sees their own listing only", func(t *testing.T) {
+		c := e.selfRegister("quiet-seller@example.com", "CONSUMER")
+		user, _ := e.me(c)
+		wantError(t, e.get("/v1/agent/property-requests", withCookie(c)), http.StatusForbidden, httpx.CodeForbidden)
+
+		seller := uuid.MustParse(user.ID)
+		e.requests.PutListing(propertyrequests.Listing{
+			ID: propertyrequests.SeedListingID(40), MarketID: markets.ZimbabweID, Status: propertyrequests.ListingStatusPublished,
+			SellerUserID: &seller, SellerEligible: true,
+		})
+		rec := e.get("/v1/agent/property-requests", withCookie(c))
+		wantStatus(t, rec, http.StatusOK)
+		if len(decode[inboxBody](t, rec).Items) != 0 {
+			t.Fatalf("no request was made for their listing yet: %s", rec.Body)
+		}
+		wantStatus(t, e.post("/v1/property-requests", e.propertyRequest(40)), http.StatusCreated)
+		inbox := decode[inboxBody](t, e.get("/v1/agent/property-requests", withCookie(c)))
+		if len(inbox.Items) != 1 || inbox.Items[0].ListingID != propertyrequests.SeedListingID(40).String() {
+			t.Fatalf("inbox = %+v", inbox.Items)
+		}
+	})
+
+	t.Run("a member who is also a direct seller gets the union", func(t *testing.T) {
+		tendai := identity.SeedAgentUserID
+		e.requests.PutListing(propertyrequests.Listing{
+			ID: propertyrequests.SeedListingID(41), MarketID: markets.ZimbabweID, Status: propertyrequests.ListingStatusPublished,
+			SellerUserID: &tendai, SellerEligible: true,
+		})
+		wantStatus(t, e.post("/v1/property-requests", e.propertyRequest(41)), http.StatusCreated)
+		if got := e.inboxListings(identity.SeedAgentEmail); !sameInts(got, []int{1, 41}) {
+			t.Fatalf("Tendai's inbox = %v, want [1 41]", got)
+		}
+		// Nobody else gains anything from it.
+		if got := e.inboxListings(devseed.EstatesAgent2Email); !sameInts(got, []int{7}) {
+			t.Fatalf("Chipo's inbox = %v, want [7]", got)
+		}
+		if got := e.inboxListings(devseed.EstatesOwnerEmail); !sameInts(got, []int{1, 7}) {
+			t.Fatalf("Rudo's inbox = %v, want [1 7]", got)
+		}
+		if got := e.inboxListings(devseed.SellerEmail); !sameInts(got, []int{6}) {
+			t.Fatalf("Grace's inbox = %v, want [6]", got)
+		}
+	})
+}
+
+// Every one of the 18 sample listings accepts a request and routes it to the
+// person the sample data names.
+func TestEverySampleListingRoutesToItsOwner(t *testing.T) {
+	e := newEnv(t)
+	want := map[int]string{}
+	for _, a := range devseed.Accounts() {
+		for _, n := range a.Listings {
+			want[n] = a.Email
+		}
+	}
+	if len(want) != devseed.ListingCount {
+		t.Fatalf("%d listings are assigned, want %d", len(want), devseed.ListingCount)
+	}
+	for n := 1; n <= devseed.ListingCount; n++ {
+		// A distinct client IP per request keeps this clear of the rate limit.
+		wantStatus(t, e.post("/v1/property-requests", e.propertyRequest(n), withIP(fmt.Sprintf("198.51.100.%d", n))), http.StatusCreated)
+	}
+	byEmail := map[string][]int{}
+	for n, email := range want {
+		byEmail[email] = append(byEmail[email], n)
+	}
+	// Rudo owns the agency: he sees Tendai's and Chipo's.
+	byEmail[devseed.EstatesOwnerEmail] = []int{1, 2, 5, 7, 10, 17}
+	for email, listings := range byEmail {
+		sort.Ints(listings)
+		if got := e.inboxListings(email); !sameInts(got, listings) {
+			t.Fatalf("%s inbox = %v, want %v", email, got, listings)
+		}
+	}
+	for _, req := range e.requests.Requests() {
+		if req.Status != propertyrequests.StatusReceived || req.Recipient == nil || req.Recipient.UserID == nil {
+			t.Fatalf("listing %s was not routed to a person: %+v", req.ListingID, req.Recipient)
+		}
+	}
+	// The expired sample listing still refuses requests.
+	body := e.propertyRequest(1)
+	body["listing_id"] = devseed.ExpiredListingID.String()
+	wantError(t, e.post("/v1/property-requests", body, withIP("198.51.100.99")), http.StatusGone, propertyrequests.CodeListingUnavailable)
 }

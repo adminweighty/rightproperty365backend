@@ -168,16 +168,19 @@ type NewRequest struct {
 // MaxInboxItems caps GET /v1/agent/property-requests until it is paginated.
 const MaxInboxItems = 100
 
-// InboxScope says which requests a member may see. It is built on the server
-// from the caller's memberships and is the ONLY thing that selects rows:
-//   - every request whose recipient organisation is in ManagedOrganisationIDs
-//     (the caller is OWNER or MANAGER there);
-//   - requests whose recipient organisation is in MemberOrganisationIDs (the
-//     caller is AGENT or STAFF there) and that are assigned to the caller
-//     personally or to the organisation inbox (no assigned user).
+// InboxScope says which requests a caller may see. It is built on the server
+// from the caller's identity and memberships and is the ONLY thing that
+// selects rows. A request is visible when ANY of these holds (the union):
+//   - its recipient organisation is in ManagedOrganisationIDs (the caller is
+//     OWNER or MANAGER there);
+//   - its recipient organisation is in MemberOrganisationIDs (the caller is
+//     AGENT or STAFF there) and it is assigned to the caller personally or to
+//     the organisation inbox (no assigned user);
+//   - it was routed to the caller as the DIRECT SELLER of the listing
+//     (recipient type SELLER and recipient user = UserID).
 //
-// Requests without a recipient organisation (direct sellers, routing
-// exceptions) are never matched.
+// Routing exceptions (no recipient) are never matched, and neither are other
+// people's direct-seller requests. Account roles play no part here.
 type InboxScope struct {
 	UserID                 uuid.UUID
 	ManagedOrganisationIDs []uuid.UUID

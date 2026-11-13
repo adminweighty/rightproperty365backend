@@ -137,9 +137,6 @@ func (s *Service) Inbox(ctx context.Context, scope InboxScope) ([]InboxItem, err
 	if scope.Limit <= 0 || scope.Limit > MaxInboxItems {
 		scope.Limit = MaxInboxItems
 	}
-	if len(scope.ManagedOrganisationIDs) == 0 && len(scope.MemberOrganisationIDs) == 0 {
-		return []InboxItem{}, nil
-	}
 	items, err := s.store.ListInbox(ctx, scope)
 	if err != nil {
 		return nil, fmt.Errorf("list inbox: %w", err)
@@ -148,6 +145,15 @@ func (s *Service) Inbox(ctx context.Context, scope InboxScope) ([]InboxItem, err
 		items = []InboxItem{}
 	}
 	return items, nil
+}
+
+// IsDirectSeller reports whether the user sells at least one listing directly.
+func (s *Service) IsDirectSeller(ctx context.Context, userID uuid.UUID) (bool, error) {
+	ok, err := s.store.IsDirectSeller(ctx, userID)
+	if err != nil {
+		return false, fmt.Errorf("check direct seller: %w", err)
+	}
+	return ok, nil
 }
 
 // ResolveRecipient picks who receives a request: the assigned agent, else the

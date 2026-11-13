@@ -1,7 +1,7 @@
 # Convenience targets. On Windows without make, run the underlying go commands
 # directly (see README.md).
 
-.PHONY: run worker migrate-up migrate-down migrate-status fmt fmt-check vet test build check docker-api docker-worker docker-migrate
+.PHONY: run worker migrate-up migrate-down migrate-status seed fmt fmt-check vet test build check docker-api docker-worker docker-migrate
 
 run:
 	go run ./cmd/api
@@ -17,6 +17,11 @@ migrate-down:
 
 migrate-status:
 	go run ./cmd/migrate status
+
+# Development sample data into Postgres. Refuses to run unless
+# APP_ENV=development and DEV_SEED_PASSWORD is set. Idempotent.
+seed:
+	go run ./cmd/seed
 
 fmt:
 	gofmt -w .

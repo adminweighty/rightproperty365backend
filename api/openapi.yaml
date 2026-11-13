@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.4.0
+  version: 0.5.0
   summary: Multi-country property marketplace API (Zimbabwe first).
   description: |
     Versioned REST API for RightProperty365.
@@ -852,19 +852,29 @@ paths:
     get:
       tags: [organisation-workspace]
       operationId: listOrganisationPropertyRequests
-      summary: Property requests received by the caller's organisation(s)
+      summary: Property requests received by the caller (organisation member or direct seller)
       description: |
-        Requires at least one organisation membership (any role).
+        **Who may call it.** `200` when the signed-in user
+        - has at least one organisation membership (any role), **or**
+        - is the direct seller of at least one listing, **or**
+        - holds the `PRIVATE_SELLER` account role (in any status, including
+          `PENDING_VERIFICATION`).
 
-        **Scope** (decided on the server from the caller's memberships; there are no filter
-        parameters):
-        - OWNER and MANAGER see every request whose recipient organisation is one of theirs.
-        - AGENT and STAFF see the requests of their organisation that are assigned to them
-          personally or to the organisation inbox (no assigned agent).
+        Otherwise `403 FORBIDDEN`; `401` when not signed in. Any other self-declared account role
+        (for example `AGENT` without a membership) does not open this route.
 
-        Requests of other organisations and requests routed to a direct seller are never
-        returned. `status` is the internal status; because unroutable requests have no
-        recipient organisation, `ROUTING_EXCEPTION` never appears here.
+        **What is returned** (decided on the server from the caller's user ID and memberships;
+        there are no filter parameters). The union of:
+        - for OWNER and MANAGER: every request whose recipient organisation is one of theirs;
+        - for AGENT and STAFF: the requests of their organisation that are assigned to them
+          personally or to the organisation inbox (no assigned agent) — not those assigned to a
+          colleague;
+        - for a direct seller: the requests routed to them for their own listings.
+
+        The `PRIVATE_SELLER` account role only opens the route. It never adds data: a user who
+        declared it but sells nothing gets an empty `items` array. Requests of other
+        organisations and of other sellers are never returned. `status` is the internal status;
+        because unroutable requests have no recipient, `ROUTING_EXCEPTION` never appears here.
 
         Newest first, capped at 100 items. **There is no pagination yet.**
       security:
@@ -972,7 +982,7 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
     Forbidden:
-      description: Signed in but not allowed to use this route (`FORBIDDEN`).
+      description: "Signed in but not allowed to use this route (`FORBIDDEN`)."
       headers:
         X-Request-Id:
           $ref: "#/components/headers/X-Request-Id"
