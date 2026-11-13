@@ -72,9 +72,22 @@ type Input struct {
 	IdempotencyKey         string        `json:"idempotency_key"`
 	GuestContact           *GuestContact `json:"guest_contact"`
 	Consent                *Consent      `json:"consent"`
+
+	// Customer is the authenticated caller, set by the handler from the
+	// session and never read from the body. Nil for a guest request.
+	Customer *Customer `json:"-"`
 }
 
-// GuestContact identifies an unauthenticated customer.
+// Customer is the signed-in user submitting a request. Name and email come
+// from the account, not from the request body.
+type Customer struct {
+	UserID uuid.UUID
+	Name   string
+	Email  string
+}
+
+// GuestContact identifies an unauthenticated customer. For an authenticated
+// customer the whole object is optional and only Phone is read.
 type GuestContact struct {
 	Name  string `json:"name"`
 	Email string `json:"email"`
@@ -139,13 +152,58 @@ type NewRequest struct {
 	PreferredSlot          *time.Time // UTC
 	IdempotencyKey         string
 	RequestHash            string // hex SHA-256 of the canonicalised payload
-	GuestName              string
-	GuestEmail             string
-	GuestPhone             string // "" when not provided
-	PrivacyVersion         string
-	ConsentAcceptedAt      time.Time  // UTC
-	Recipient              *Recipient // nil when routing failed
-	CreatedAt              time.Time  // UTC, microsecond precision
+	// CustomerUserID is the authenticated customer, nil for a guest.
+	CustomerUserID *uuid.UUID
+	// Contact details: supplied by a guest, or a snapshot of the account's
+	// name and email (plus an optional phone) for an authenticated customer.
+	GuestName         string
+	GuestEmail        string
+	GuestPhone        string // "" when not provided
+	PrivacyVersion    string
+	ConsentAcceptedAt time.Time  // UTC
+	Recipient         *Recipient // nil when routing failed
+	CreatedAt         time.Time  // UTC, microsecond precision
+}
+
+// MaxInboxItems caps GET /v1/agent/property-requests until it is paginated.
+const MaxInboxItems = 100
+
+// InboxScope says which requests a member may see. It is built on the server
+// from the caller's memberships and is the ONLY thing that selects rows:
+//   - every request whose recipient organisation is in ManagedOrganisationIDs
+//     (the caller is OWNER or MANAGER there);
+//   - requests whose recipient organisation is in MemberOrganisationIDs (the
+//     caller is AGENT or STAFF there) and that are assigned to the caller
+//     personally or to the organisation inbox (no assigned user).
+//
+// Requests without a recipient organisation (direct sellers, routing
+// exceptions) are never matched.
+type InboxScope struct {
+	UserID                 uuid.UUID
+	ManagedOrganisationIDs []uuid.UUID
+	MemberOrganisationIDs  []uuid.UUID
+	Limit                  int
+}
+
+// InboxItem is one request as shown to the receiving organisation. Status is
+// the internal status.
+type InboxItem struct {
+	RequestID              uuid.UUID    `json:"request_id"`
+	Reference              string       `json:"reference"`
+	ListingID              uuid.UUID    `json:"listing_id"`
+	RequestType            string       `json:"request_type"`
+	Status                 string       `json:"status"`
+	Message                string       `json:"message"`
+	PreferredContactMethod string       `json:"preferred_contact_method"`
+	Contact                InboxContact `json:"contact"`
+	CreatedAt              time.Time    `json:"created_at"`
+}
+
+// InboxContact is how to reach the customer. Phone is null when not given.
+type InboxContact struct {
+	Name  string  `json:"name"`
+	Email string  `json:"email"`
+	Phone *string `json:"phone"`
 }
 
 // Record is the persisted identity of a request, used for idempotent replay.

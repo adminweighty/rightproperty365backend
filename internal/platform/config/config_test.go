@@ -25,6 +25,33 @@ func TestFromLookupDefaults(t *testing.T) {
 	if !cfg.UseMemoryStore() {
 		t.Fatal("development without DATABASE_URL should use the memory store")
 	}
+	if cfg.WebBaseURL != "http://localhost:3000" || cfg.DevSeedPassword != "" {
+		t.Fatalf("unexpected identity defaults: web=%q seedSet=%v", cfg.WebBaseURL, cfg.DevSeedPassword != "")
+	}
+}
+
+func TestFromLookupIdentity(t *testing.T) {
+	const db = "postgres://user:pw@example.neon.tech/db"
+
+	dev, err := FromLookup(lookup(map[string]string{"WEB_BASE_URL": "http://localhost:4000/", "DEV_SEED_PASSWORD": "seed-value"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dev.WebBaseURL != "http://localhost:4000" || dev.DevSeedPassword != "seed-value" {
+		t.Fatalf("development: web=%q seedSet=%v", dev.WebBaseURL, dev.DevSeedPassword != "")
+	}
+
+	prod, err := FromLookup(lookup(map[string]string{"APP_ENV": "production", "DATABASE_URL": db, "DEV_SEED_PASSWORD": "seed-value"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prod.DevSeedPassword != "" {
+		t.Fatal("DEV_SEED_PASSWORD must be ignored outside development")
+	}
+
+	if _, err := FromLookup(lookup(map[string]string{"WEB_BASE_URL": "localhost:3000"})); err == nil || !strings.Contains(err.Error(), "WEB_BASE_URL") {
+		t.Fatalf("expected a WEB_BASE_URL error, got %v", err)
+	}
 }
 
 func TestFromLookup(t *testing.T) {

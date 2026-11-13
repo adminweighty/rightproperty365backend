@@ -78,12 +78,15 @@ func (s *statusRecorder) Write(b []byte) (int, error) {
 func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
 // AccessLog writes one structured line per request. Query strings are not
-// logged because they may carry personal data.
+// logged because they may carry personal data. It installs the user-ID slot
+// (logging.WithUserIDSlot) so the line carries user_id when the request was
+// authenticated further down the stack.
 func AccessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 			rec := &statusRecorder{ResponseWriter: w}
+			r = r.WithContext(logging.WithUserIDSlot(r.Context()))
 			next.ServeHTTP(rec, r)
 
 			status := rec.status
@@ -151,8 +154,9 @@ func SecurityHeaders(hsts bool) func(http.Handler) http.Handler {
 	}
 }
 
-// CORS implements an exact-match origin allowlist. Credentials are not
-// allowed; revisit when cookie-based sessions are introduced.
+// CORS implements an exact-match origin allowlist. Allowlisted origins may
+// send credentials (the session cookie): the response then echoes that exact
+// origin, never "*", together with Access-Control-Allow-Credentials.
 func CORS(allowedOrigins []string) func(http.Handler) http.Handler {
 	allowed := make(map[string]struct{}, len(allowedOrigins))
 	for _, o := range allowedOrigins {
@@ -169,6 +173,7 @@ func CORS(allowedOrigins []string) func(http.Handler) http.Handler {
 
 			if origin != "" && ok {
 				h.Set("Access-Control-Allow-Origin", origin)
+				h.Set("Access-Control-Allow-Credentials", "true")
 				h.Set("Access-Control-Expose-Headers", corsExposeHeaders)
 			}
 			if !preflight {

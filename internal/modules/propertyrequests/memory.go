@@ -3,6 +3,8 @@ package propertyrequests
 import (
 	"context"
 	"fmt"
+	"slices"
+	"sort"
 	"sync"
 	"time"
 
@@ -51,7 +53,8 @@ type MemoryActivityEntry struct {
 	RequestID    uuid.UUID
 	ListingID    uuid.UUID
 	ActivityType string
-	GuestEmail   string
+	UserID       *uuid.UUID // set for an authenticated customer
+	GuestEmail   string     // set for a guest
 	CreatedAt    time.Time
 }
 
@@ -144,13 +147,62 @@ func (s *MemoryStore) Create(_ context.Context, req NewRequest) (Record, bool, e
 	for _, ev := range timelineFor(req) {
 		s.timeline = append(s.timeline, MemoryTimelineEntry{RequestID: req.ID, EventType: ev.EventType, ActorType: ev.ActorType, CreatedAt: req.CreatedAt})
 	}
-	s.activity = append(s.activity, MemoryActivityEntry{
-		RequestID: req.ID, ListingID: req.ListingID, ActivityType: ActivityRequestSubmitted, GuestEmail: req.GuestEmail, CreatedAt: req.CreatedAt,
-	})
+	activity := MemoryActivityEntry{
+		RequestID: req.ID, ListingID: req.ListingID, ActivityType: ActivityRequestSubmitted, CreatedAt: req.CreatedAt,
+	}
+	if req.CustomerUserID != nil {
+		activity.UserID = req.CustomerUserID
+	} else {
+		activity.GuestEmail = req.GuestEmail
+	}
+	s.activity = append(s.activity, activity)
 	s.outbox = append(s.outbox, MemoryOutboxEvent{
 		EventType: EventPropertyRequestCreated, AggregateID: req.ID, Payload: payload, CreatedAt: req.CreatedAt,
 	})
 	return rec, true, nil
+}
+
+// ListInbox implements Store with the same visibility rule as the Postgres query.
+func (s *MemoryStore) ListInbox(_ context.Context, scope InboxScope) ([]InboxItem, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	items := []InboxItem{}
+	for _, req := range s.requests {
+		if req.Recipient == nil || req.Recipient.OrganisationID == nil {
+			continue // direct seller or routing exception: nobody's organisation inbox
+		}
+		org := *req.Recipient.OrganisationID
+		assignee := req.Recipient.UserID
+		visible := slices.Contains(scope.ManagedOrganisationIDs, org) ||
+			(slices.Contains(scope.MemberOrganisationIDs, org) && (assignee == nil || *assignee == scope.UserID))
+		if !visible {
+			continue
+		}
+		item := InboxItem{
+			RequestID: req.ID, Reference: req.Reference, ListingID: req.ListingID,
+			RequestType: req.RequestType, Status: req.Status, Message: req.Message,
+			PreferredContactMethod: req.PreferredContactMethod,
+			Contact:                InboxContact{Name: req.GuestName, Email: req.GuestEmail},
+			CreatedAt:              req.CreatedAt,
+		}
+		if req.GuestPhone != "" {
+			phone := req.GuestPhone
+			item.Contact.Phone = &phone
+		}
+		items = append(items, item)
+	}
+	// Newest first; UUIDv7 IDs break ties in creation order.
+	sort.SliceStable(items, func(i, j int) bool {
+		if !items[i].CreatedAt.Equal(items[j].CreatedAt) {
+			return items[i].CreatedAt.After(items[j].CreatedAt)
+		}
+		return items[i].RequestID.String() > items[j].RequestID.String()
+	})
+	if scope.Limit > 0 && len(items) > scope.Limit {
+		items = items[:scope.Limit]
+	}
+	return items, nil
 }
 
 // Requests returns a copy of the stored requests (test helper).

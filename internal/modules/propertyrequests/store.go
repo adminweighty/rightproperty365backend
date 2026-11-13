@@ -39,6 +39,10 @@ type Store interface {
 	// returned with created=false. ErrReferenceCollision means the reference
 	// is taken and the caller should retry with a new one.
 	Create(ctx context.Context, req NewRequest) (rec Record, created bool, err error)
+
+	// ListInbox returns the requests visible under scope (see InboxScope),
+	// newest first, at most scope.Limit.
+	ListInbox(ctx context.Context, scope InboxScope) ([]InboxItem, error)
 }
 
 // timelineEvent is one row of request_timeline.

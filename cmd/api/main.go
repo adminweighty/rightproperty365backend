@@ -12,28 +12,17 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-
+	"rightproperty365.com/backend/internal/app"
 	"rightproperty365.com/backend/internal/modules/health"
+	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/database"
-	"rightproperty365.com/backend/internal/platform/httpx"
 	"rightproperty365.com/backend/internal/platform/logging"
 )
 
-const (
-	maxBodyBytes    = 64 << 10 // 64 KB
-	requestTimeout  = 15 * time.Second
-	shutdownTimeout = 20 * time.Second
-
-	// Per-IP limit on POST /v1/property-requests: bursts of 10, refilled at
-	// 10 per minute. In-memory and per-process — see httpx.RateLimiter; it must
-	// become a shared limiter before the API is autoscaled.
-	propertyRequestsPerMinute = 10
-	propertyRequestsBurst     = 10
-)
+const shutdownTimeout = 20 * time.Second
 
 func main() {
 	if err := run(); err != nil {
@@ -57,9 +46,10 @@ func run() error {
 	defer stop()
 
 	var (
-		marketStore  markets.Store
-		requestStore propertyrequests.Store
-		healthH      *health.Handler
+		marketStore   markets.Store
+		requestStore  propertyrequests.Store
+		identityStore identity.Store
+		healthH       *health.Handler
 	)
 	if cfg.UseMemoryStore() {
 		// config.Load guarantees this branch is only reachable in development.
@@ -67,6 +57,19 @@ func run() error {
 		marketStore = markets.NewMemoryStore()
 		requestStore = propertyrequests.NewMemoryStore()
 		healthH = health.NewHandler(health.StoreMemory, nil, logger)
+
+		memIdentity := identity.NewMemoryStore()
+		identityStore = memIdentity
+		if cfg.DevSeedPassword == "" {
+			logger.Warn("DEV_SEED_PASSWORD is not set: development seed users were NOT created (copy .env.example to .env to get them)")
+		} else {
+			// The seed organisation is the one that receives requests for the sample listings.
+			if err := memIdentity.SeedDevelopment(ctx, identity.DefaultHasher(), cfg.DevSeedPassword, propertyrequests.SeedOrganisationID, time.Now()); err != nil {
+				return fmt.Errorf("seed development users: %w", err)
+			}
+			logger.Info("development seed users created (password from DEV_SEED_PASSWORD)",
+				slog.Any("emails", []string{identity.SeedConsumerEmail, identity.SeedAgentEmail, identity.SeedAdminEmail, identity.SeedAgentBEmail}))
+		}
 	} else {
 		pool, err := database.NewPool(ctx, cfg.DatabaseURL, cfg.DBMaxConns)
 		if err != nil {
@@ -76,36 +79,36 @@ func run() error {
 		logger.Info("database pool ready", slog.Int("max_conns", int(cfg.DBMaxConns)))
 		marketStore = markets.NewPostgresStore(pool)
 		requestStore = propertyrequests.NewPostgresStore(pool)
+		identityStore = identity.NewPostgresStore(pool)
 		healthH = health.NewHandler(health.StorePostgres, pool.Ping, logger)
 	}
 
-	marketsH := markets.NewHandler(marketStore, logger)
-	requestsH := propertyrequests.NewHandler(propertyrequests.NewService(requestStore), logger)
-	requestLimiter := httpx.NewRateLimiter(propertyRequestsPerMinute, propertyRequestsBurst)
+	// Email: development logs the links; elsewhere nothing is sent until a
+	// provider is chosen (the mailer then warns without logging any token).
+	var mailer identity.Mailer
+	if cfg.Env == config.EnvDevelopment {
+		mailer = identity.NewDevMailer(logger)
+	} else {
+		logger.Warn("no email provider is configured: verification and password-reset emails will NOT be sent")
+		mailer = identity.NewUnconfiguredMailer(logger)
+	}
 
-	r := chi.NewRouter()
-	r.Use(
-		httpx.RequestID,
-		httpx.AccessLog(logger),
-		httpx.Recover(logger),
-		httpx.SecurityHeaders(cfg.Env != config.EnvDevelopment),
-		httpx.CORS(cfg.CORSAllowedOrigins),
-		httpx.BodyLimit(maxBodyBytes),
-		httpx.Timeout(requestTimeout),
-	)
-	r.NotFound(httpx.NotFound)
-	r.MethodNotAllowed(httpx.MethodNotAllowed)
-
-	r.Get("/healthz", healthH.Live)
-	r.Get("/readyz", healthH.Ready)
-	r.Route("/v1", func(r chi.Router) {
-		r.Get("/markets", marketsH.List)
-		r.With(requestLimiter.Middleware).Post("/property-requests", requestsH.Create)
+	handler, err := app.NewRouter(app.Deps{
+		Config:   cfg,
+		Logger:   logger,
+		Health:   healthH,
+		Markets:  marketStore,
+		Requests: requestStore,
+		Identity: identityStore,
+		Mailer:   mailer,
 	})
+	if err != nil {
+		return err
+	}
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           r,
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,

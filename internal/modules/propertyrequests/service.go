@@ -97,6 +97,7 @@ func (s *Service) Create(ctx context.Context, in Input, headerIdempotencyKey str
 		PreferredSlot:          v.slot,
 		IdempotencyKey:         v.idempotencyKey,
 		RequestHash:            hash,
+		CustomerUserID:         v.customerUserID,
 		GuestName:              v.name,
 		GuestEmail:             v.email,
 		GuestPhone:             v.phone,
@@ -128,6 +129,25 @@ func (s *Service) Create(ctx context.Context, in Input, headerIdempotencyKey str
 		return result(rec, false), nil
 	}
 	return Result{}, errors.New("could not allocate a unique reference")
+}
+
+// Inbox lists the requests visible under scope, newest first, capped at
+// MaxInboxItems. There is no pagination yet.
+func (s *Service) Inbox(ctx context.Context, scope InboxScope) ([]InboxItem, error) {
+	if scope.Limit <= 0 || scope.Limit > MaxInboxItems {
+		scope.Limit = MaxInboxItems
+	}
+	if len(scope.ManagedOrganisationIDs) == 0 && len(scope.MemberOrganisationIDs) == 0 {
+		return []InboxItem{}, nil
+	}
+	items, err := s.store.ListInbox(ctx, scope)
+	if err != nil {
+		return nil, fmt.Errorf("list inbox: %w", err)
+	}
+	if items == nil {
+		items = []InboxItem{}
+	}
+	return items, nil
 }
 
 // ResolveRecipient picks who receives a request: the assigned agent, else the

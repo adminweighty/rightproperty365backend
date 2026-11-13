@@ -12,7 +12,8 @@ Requires Go 1.26+. Without `DATABASE_URL` the API runs in development mode on **
 (seeded sample data, lost on restart) and logs a warning saying so.
 
 ```powershell
-go run ./cmd/api          # listens on http://localhost:8080
+Copy-Item .env.example .env   # optional, but needed for the development seed users (see below)
+go run ./cmd/api              # listens on http://localhost:8080
 ```
 
 ```powershell
@@ -44,6 +45,31 @@ In-memory seed data (development only):
 | `0195c0de-0000-7000-8000-000000000006` | PUBLISHED, market ZW | direct seller |
 | `0195c0de-0000-7000-8000-000000000099` | EXPIRED (returns 410) | — |
 
+Development seed users (in-memory store only, and only when `APP_ENV=development`). All four are
+email-verified and share the password in `DEV_SEED_PASSWORD` — see [`.env.example`](.env.example)
+for the development value. If the variable is unset the API logs a warning and creates no users.
+
+| Email | Roles |
+| --- | --- |
+| `consumer@example.test` | none (plain consumer) |
+| `agent@example.test` | `AGENT` at **Sample Estates** (`AGENCY`, market ZW) — the organisation that receives requests for listings 1–5 |
+| `admin@example.test` | platform role `SUPER_ADMIN` |
+| `agent-b@example.test` | `AGENT` at **Second Street Realty**, which owns no listings (for checking that organisations cannot see each other's data) |
+
+Sign in and read the organisation inbox (PowerShell; `-SessionVariable` keeps the cookie, and the
+`Origin` header is required on cookie-authenticated POSTs):
+
+```powershell
+$pw = (Get-Content .env.example | Select-String '^DEV_SEED_PASSWORD=').Line.Split('=', 2)[1]
+$login = @{ email = "agent@example.test"; password = $pw } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://localhost:8080/v1/auth/login -ContentType "application/json" -Body $login -SessionVariable s
+Invoke-RestMethod -Uri http://localhost:8080/v1/me -WebSession $s
+Invoke-RestMethod -Uri http://localhost:8080/v1/agent/property-requests -WebSession $s
+```
+
+Registering a new account in development does not send email: the API **logs** the link, e.g.
+`"msg":"DEV MAIL (not sent): verify-email link", "link":"http://localhost:3000/verify-email?token=..."`.
+
 ### Everyday commands
 
 | Task | Command |
@@ -73,6 +99,8 @@ All configuration comes from environment variables. For local development you ma
 | `DB_MAX_CONNS` | `8` | Per-process pool cap (1–100). API and worker each have their own pool |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated exact origins; wildcards are rejected |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
+| `WEB_BASE_URL` | `http://localhost:3000` | Frontend base URL used to build the links in verification / password-reset emails |
+| `DEV_SEED_PASSWORD` | _(empty)_ | Development only: shared password of the seed users. Ignored outside `APP_ENV=development`; never logged |
 
 ## Endpoints
 
@@ -81,7 +109,16 @@ All configuration comes from environment variables. For local development you ma
 | GET | `/healthz` | Liveness (always 200) |
 | GET | `/readyz` | Readiness (pings the database when configured; reports the store in use) |
 | GET | `/v1/markets` | Markets: ZW active; BW, ZA, AE planned |
-| POST | `/v1/property-requests` | The single entry point for every customer enquiry |
+| POST | `/v1/property-requests` | The single entry point for every customer enquiry (guest or signed-in) |
+| POST | `/v1/auth/register` | Create an account; always `202 VERIFICATION_SENT` for valid input |
+| POST | `/v1/auth/verify-email` | Consume the emailed token, verify the email and sign in |
+| POST | `/v1/auth/resend-verification` | Always `202 VERIFICATION_SENT` |
+| POST | `/v1/auth/login` | Sign in (`token_delivery`: `cookie` default, or `bearer`) |
+| POST | `/v1/auth/logout` | Revoke the current session; `204` even when not signed in |
+| POST | `/v1/auth/password-reset/request` | Always `202 RESET_SENT` |
+| POST | `/v1/auth/password-reset/confirm` | Set a new password; revokes all of the user's sessions |
+| GET | `/v1/me` | The signed-in user with platform roles and memberships |
+| GET | `/v1/agent/property-requests` | Requests received by the caller's organisation(s) |
 
 Every error uses one envelope, and `trace_id` equals the `X-Request-Id` response header:
 
@@ -104,7 +141,101 @@ by the worker from the outbox.
   direct seller. If none is eligible the request is still saved and the customer still gets
   `201 RECEIVED`; internally it is stored as `ROUTING_EXCEPTION` for operations to resolve.
 - **Wording** – the API only ever says `RECEIVED`. It never claims a request was delivered.
-- Until authentication exists, all requests are guest requests and `consent.accepted` must be true.
+- **Guests and signed-in customers** – authentication is optional. A guest must send
+  `guest_contact` (name, email). A signed-in customer may omit it: name and email come from the
+  account (anything sent for them is ignored), the user ID is stored as `customer_user_id`, and
+  only `guest_contact.phone` is read. The phone stays mandatory for `PHONE`/`WHATSAPP` (field
+  `guest_contact.phone`) and `consent.accepted` must be true in both cases.
+
+## Authentication and sessions
+
+- **Passwords** – Argon2id (`golang.org/x/crypto/argon2`, 19 MiB, 2 passes), stored as a PHC
+  string (`$argon2id$v=19$m=...,t=...,p=...$salt$hash`) and compared in constant time. 10–128
+  characters.
+- **Sessions** – opaque 32-byte random tokens (base64url). Only the SHA-256 is stored. A session
+  ends 30 days after sign-in (absolute) or after 14 days without use (idle); `last_seen` is
+  written at most once a minute, not on every request. Sessions are revocable (logout, password
+  reset).
+- **Web** – the token lives in the HttpOnly cookie `rp_session` (`SameSite=Lax`, `Path=/`,
+  `Secure` unless `APP_ENV=development`). The frontend must call the API with
+  `credentials: "include"`.
+- **Mobile / API clients** – log in with `"token_delivery": "bearer"`: the response carries
+  `access_token`, no cookie is set, and the client sends `Authorization: Bearer <token>`. When an
+  `Authorization` header is present the cookie is ignored.
+- **CORS** – allowlisted origins get `Access-Control-Allow-Credentials: true` with their exact
+  origin echoed (never `*`).
+- **CSRF** – a request authenticated by the **cookie** with a method other than GET/HEAD/OPTIONS
+  must carry an allowlisted `Origin` header, else `403 CSRF_ORIGIN`. Bearer requests are exempt
+  (browsers never attach that header by themselves). With curl, add
+  `-H "Origin: http://localhost:3000"` to cookie-authenticated POSTs.
+- **No account enumeration** – register, resend-verification and password-reset/request give the
+  same answer whether or not the email has an account; login answers `401 INVALID_CREDENTIALS`
+  with an identical body for an unknown email and a wrong password (an Argon2 verification runs in
+  both cases), and `403 EMAIL_NOT_VERIFIED` only after the correct password.
+- **Registering an email that already exists** – verified account: nothing changes and the owner
+  gets a "you already have an account" email. Unverified account: the new registration replaces
+  the pending name and password and earlier verification links stop working.
+- **One-time tokens** – email verification (24 h) and password reset (1 h) are single-use and
+  stored as SHA-256. A successful reset also marks the email verified, because the link proves
+  control of the mailbox.
+- **Rate limit** – all `POST /v1/auth/*` routes share one per-IP bucket (burst 20, refill 20/min),
+  separate from the property-request bucket.
+- **Email delivery** – behind a `Mailer` interface. Development logs one line with the link
+  (`http://localhost:3000/verify-email?token=...`, `.../reset-password?token=...`, base from
+  `WEB_BASE_URL`). In staging/production **no provider is wired in yet**: nothing is sent and a
+  warning is logged without the recipient or token. Delivery is **synchronous and not durable** —
+  if a send fails the email is lost and the customer must ask again. **Which email provider to use
+  is an open decision**; once chosen, delivery should move behind the outbox.
+- Logs carry `user_id` on every line of an authenticated request. Passwords, tokens and cookie
+  values are never logged (except the development mail link described above).
+
+### Role model
+
+Everyone is implicitly a **consumer**; there is no consumer role to assign. Extra capabilities come
+from two places, both returned by `GET /v1/me`:
+
+| Kind | Values | Scope |
+| --- | --- | --- |
+| Organisation kind | `AGENCY`, `LANDLORD`, `HOST`, `DEVELOPER`, `SERVICE_PROVIDER` | — |
+| Membership role | `OWNER`, `MANAGER`, `AGENT`, `STAFF` | one organisation + market |
+| Platform role | `SUPER_ADMIN`, `PLATFORM_ADMIN`, `MARKET_ADMIN`, `FINANCE_ADMIN`, `CONTENT_ADMIN`, `MODERATOR`, `SUPPORT` | global, except `MARKET_ADMIN` which carries a `market_code` |
+
+Authorisation is always decided on the server from the session. `internal/platform/auth` provides
+the middleware every module uses:
+
+- `Authenticate` – resolves the cookie or bearer token into a `Principal` (`UserID`, `Name`,
+  `Email`, `PlatformRoles`, `Memberships`) in the request context; an invalid or expired token is
+  simply anonymous.
+- `RequireAuth` – `401 UNAUTHENTICATED`.
+- `RequireMembership(roles...)` – `403 FORBIDDEN` unless the caller holds one of the roles in some
+  organisation (any membership when no roles are given).
+- `RequirePlatformRole(roles...)` – `403 FORBIDDEN` unless the caller holds one of the platform
+  roles; `SUPER_ADMIN` always qualifies.
+
+The middleware only answers "may this caller use the route at all". Handlers must still scope
+their data with `Principal.OrganisationIDs(...)` (and `PlatformRole.MarketCode` for
+`MARKET_ADMIN`).
+
+`GET /v1/agent/property-requests` shows how: `OWNER`/`MANAGER` see every request whose recipient
+organisation is one of theirs; `AGENT`/`STAFF` see the requests of their organisation that are
+assigned to them personally or to the organisation inbox. Requests of other organisations and
+requests routed to a direct seller are never returned. Newest first, capped at 100 —
+**no pagination yet**.
+
+### Not built yet
+
+- **MFA** – the specification requires it for admin roles; platform admins currently sign in with
+  a password only.
+- **Organisation invitations, agent onboarding and verification** – memberships and platform
+  roles can only be created directly in the database (or by the development seed).
+- **Account deletion** and data export.
+- **Consent preference centre** – registration consent is recorded, but there is no way to review
+  or change consents (including `marketing_opt_in`) afterwards.
+- **Durable email delivery** and a real email provider (see above).
+- **Login lockout** beyond the per-IP rate limit (no per-account throttling or lockout).
+- Session management for users (list / revoke other devices), password change while signed in,
+  and email change.
+- Pagination and filters on the organisation inbox.
 
 ## Layout
 
@@ -115,12 +246,15 @@ cmd/migrate    migration runner: up | down | status
 internal/platform/config     env configuration + validation
 internal/platform/logging    slog JSON logger, request-ID propagation
 internal/platform/httpx      middleware, error envelope, JSON decoding, rate limiter
+internal/platform/auth       Principal + Authenticate / RequireAuth / RequireMembership / RequirePlatformRole
+internal/app                 router wiring (middleware order, routes); end-to-end tests live here
 internal/platform/database   pgxpool setup for the pooled runtime URL
 internal/platform/outbox     outbox dispatcher (lease, retry, dead-letter)
 internal/platform/migrate    embedded-SQL migration runner
 internal/modules/health            /healthz, /readyz
 internal/modules/markets           GET /v1/markets
-internal/modules/propertyrequests  POST /v1/property-requests (handler, service, store: postgres + memory)
+internal/modules/propertyrequests  POST /v1/property-requests, GET /v1/agent/property-requests (handler, service, store: postgres + memory)
+internal/modules/identity          /v1/auth/*, /v1/me: accounts, sessions, tokens, roles, Mailer (store: postgres + memory)
 migrations/    embedded SQL (NNNN_name.up.sql / .down.sql)
 api/openapi.yaml             OpenAPI 3.1 contract
 deploy/docker/Dockerfile     one multi-stage file, targets: api, worker, migrate
@@ -134,7 +268,8 @@ handler, service and store interface.
 
 Deliberately no empty stubs. These will be added under `internal/modules/` as they are built:
 
-- `identity` – accounts, sessions, roles, organisation membership management
+- `identity` (exists) still lacks organisation membership management, invitations and MFA — see
+  "Not built yet"
 - `listings` – listing CRUD, search, publication cycles, expiry/relisting
 - `media` – image/document upload to object storage (MinIO locally)
 - `billing` – plans, payments, invoices (exact decimal money + ISO 4217)
@@ -150,6 +285,13 @@ Deliberately no empty stubs. These will be added under `internal/modules/` as th
   session-level advisory lock and runs multi-statement scripts. Applied versions are tracked in
   `schema_migrations`.
 - Money is `numeric` + ISO 4217 currency code; all timestamps are `timestamptz` stored in UTC.
+- `0002_identity` adds credentials and verification to `users`, `user_consents`, organisation
+  `kind`, the `OWNER/MANAGER/AGENT/STAFF` membership roles with a market, `platform_role_assignments`,
+  `sessions`, `email_verification_tokens` and `password_reset_tokens`. It renames the old `ADMIN`
+  membership role to `MANAGER`; its down migration is lossy (`MANAGER`→`ADMIN`, `STAFF`→`AGENT`).
+  **This migration and the Postgres identity/inbox queries have only been compiled, never run
+  against a database** (no Postgres on the development machine) — run them against a scratch
+  database before relying on them.
 - `0001_init` seeds the four markets. It does **not** seed listings: against a real database
   `POST /v1/property-requests` returns 404 until listings exist.
 
@@ -173,14 +315,16 @@ worker logs that it is idle and waits for shutdown.
 ## Operational notes and known limitations
 
 - **Rate limiter is per process.** `POST /v1/property-requests` is limited per client IP (burst 10,
-  refill 10/min) by an in-memory token bucket. With more than one API instance each has its own
+  refill 10/min) and `POST /v1/auth/*` shares a second bucket (burst 20, refill 20/min), both
+  in-memory token buckets. With more than one API instance each has its own
   buckets, so this **must be replaced by a shared limiter (Redis/Valkey or the edge) before
   autoscaling**.
 - **Client IP.** The limiter and access log use the TCP peer address and deliberately ignore
   `X-Forwarded-For`. Behind a load balancer every client would share the balancer's IP; add
   trusted-proxy handling in `httpx.ClientIP` when the deployment topology is known.
-- **Idempotency keys are global** while all requests are guests. Scope them per customer once
-  authentication exists.
+- **Idempotency keys are still global.** The customer's user ID is part of the compared content, so
+  a key reused by a different customer is a `409`, never a replay of someone else's receipt; the
+  key space itself is not yet partitioned per customer.
 - `trace_id` is the request ID for now; it becomes a real trace ID when tracing is introduced.
 - Logs are JSON on stdout. Message text and contact details are personal data and are never logged.
 

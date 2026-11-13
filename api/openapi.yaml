@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.1.0
+  version: 0.2.0
   summary: Multi-country property marketplace API (Zimbabwe first).
   description: |
     Versioned REST API for RightProperty365.
@@ -13,7 +13,23 @@ info:
       returned as `trace_id` in error bodies.
     - Timestamps are RFC 3339 in UTC.
     - Request bodies must be `application/json`, at most 64 KB, and must not contain unknown fields.
-    - There is no authentication yet: all property requests are guest requests.
+
+    Authentication
+    - Sessions are opaque random tokens. The web app receives the token in the HttpOnly cookie
+      `rp_session` (SameSite=Lax, Path=/, Secure outside development); mobile clients log in with
+      `"token_delivery": "bearer"`, receive `access_token` in the body and send
+      `Authorization: Bearer <token>`. When an `Authorization` header is present the cookie is ignored.
+    - A session lasts at most 30 days and ends after 14 days without use. An invalid, expired or
+      revoked token is treated as "not signed in" (routes that need a user answer `401 UNAUTHENTICATED`).
+    - CORS: allowlisted origins may send credentials (`Access-Control-Allow-Credentials: true`,
+      never with `*`). Browser clients must use `credentials: "include"`.
+    - CSRF: a request authenticated by the **cookie** with a method other than GET/HEAD/OPTIONS must
+      carry an allowlisted `Origin` header, otherwise it is rejected with `403 CSRF_ORIGIN`. Bearer
+      requests are exempt.
+    - Authorisation is decided on the server from the session's organisation memberships and
+      platform roles. Nothing in a request body, query string or header can widen it.
+    - Every `POST /v1/auth/*` route shares one per-IP rate limit (bursts of 20, refilled at 20 per
+      minute), separate from the property-request limit.
 servers:
   - url: http://localhost:8080
     description: Local development
@@ -21,6 +37,9 @@ tags:
   - name: health
   - name: markets
   - name: property-requests
+  - name: auth
+  - name: account
+  - name: organisation-workspace
 
 paths:
   /healthz:
@@ -139,6 +158,18 @@ paths:
         normalisation (trimmed strings, lower-cased email, slot converted to UTC).
 
         **Rate limit.** Per client IP: bursts of 10 requests, refilled at 10 per minute.
+
+        **Guests and signed-in customers.** Authentication is optional. For a guest,
+        `guest_contact` (name and email) is required. For a signed-in customer `guest_contact`
+        may be omitted: name and email are taken from the account (any name/email sent in
+        `guest_contact` is ignored), the customer's user ID is stored on the request, and only
+        `guest_contact.phone` is read. In both cases the phone is required when the preferred
+        contact method is PHONE or WHATSAPP (reported as field `guest_contact.phone`) and
+        `consent` is required. The same idempotency key used by a different customer is a `409`.
+      security:
+        - {}
+        - cookieSession: []
+        - bearerToken: []
       parameters:
         - name: Idempotency-Key
           in: header
@@ -210,6 +241,8 @@ paths:
                     message: must be plain text without HTML
                     consent.accepted: must be true
                 trace_id: 4b0b8f0e-5d0c-4e0e-9a39-0a5a4f1f6c55
+        "403":
+          $ref: "#/components/responses/CsrfOrigin"
         "404":
           description: The listing does not exist (`LISTING_NOT_FOUND`).
           headers:
@@ -274,7 +307,455 @@ paths:
         "504":
           $ref: "#/components/responses/Timeout"
 
+  /v1/auth/register:
+    post:
+      tags: [auth]
+      operationId: register
+      summary: Create an account
+      description: |
+        Creates an unverified account and sends a verification email. **Does not sign in.**
+
+        Enumeration-safe: for valid input the answer is always `202 VERIFICATION_SENT`, whether
+        or not the email already has an account.
+        - New email: the account is created and a verification link is sent.
+        - Existing unverified account: its name and password are replaced by this registration,
+          earlier verification links stop working and a new link is sent.
+        - Existing verified account: nothing changes; the owner is told by email that they
+          already have an account.
+
+        The verification link is `{WEB_BASE_URL}/verify-email?token=...` and is valid for 24 hours.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+            example:
+              name: Rudo Ncube
+              email: rudo@example.com
+              password: correct-horse-battery
+              consent:
+                privacy_version: "2026-01"
+                accepted: true
+              marketing_opt_in: false
+      responses:
+        "202":
+          $ref: "#/components/responses/VerificationSent"
+        "400":
+          description: |
+            `VALIDATION_FAILED` with `error.fields` keyed by `name`, `email`, `password`,
+            `consent.accepted` or `consent.privacy_version`; or `INVALID_JSON`.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+              example:
+                error:
+                  code: VALIDATION_FAILED
+                  message: Some fields need your attention.
+                  fields:
+                    password: must be at least 10 characters
+                    consent.accepted: must be true
+                trace_id: 4b0b8f0e-5d0c-4e0e-9a39-0a5a4f1f6c55
+        "403":
+          $ref: "#/components/responses/CsrfOrigin"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/auth/verify-email:
+    post:
+      tags: [auth]
+      operationId: verifyEmail
+      summary: Verify an email address and sign in
+      description: |
+        Consumes the single-use token from the verification email (valid for 24 hours), marks the
+        email verified and starts a session. By default the session is delivered in the
+        `rp_session` cookie; `"token_delivery": "bearer"` returns `access_token` instead.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [token]
+              properties:
+                token:
+                  type: string
+                token_delivery:
+                  $ref: "#/components/schemas/TokenDelivery"
+      responses:
+        "200":
+          $ref: "#/components/responses/Authenticated"
+        "400":
+          description: |
+            `INVALID_TOKEN` (unknown, expired or already used), `VALIDATION_FAILED` (missing
+            `token`, bad `token_delivery`) or `INVALID_JSON`.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          $ref: "#/components/responses/CsrfOrigin"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/auth/resend-verification:
+    post:
+      tags: [auth]
+      operationId: resendVerification
+      summary: Send the verification email again
+      description: |
+        Always `202` for a well-formed email. A new link is sent only when the address belongs to
+        an account that is not verified yet; otherwise nothing happens.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmailRequest"
+      responses:
+        "202":
+          $ref: "#/components/responses/VerificationSent"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "403":
+          $ref: "#/components/responses/CsrfOrigin"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/auth/login:
+    post:
+      tags: [auth]
+      operationId: login
+      summary: Sign in
+      description: |
+        `token_delivery` selects how the session token is returned:
+        - `cookie` (default): sets the HttpOnly `rp_session` cookie; no token in the body.
+        - `bearer`: returns `access_token` in the body and sets **no** cookie.
+
+        An unknown email and a wrong password are indistinguishable (`401 INVALID_CREDENTIALS`,
+        same body, comparable timing). `403 EMAIL_NOT_VERIFIED` is returned only when the
+        password is correct.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                token_delivery:
+                  $ref: "#/components/schemas/TokenDelivery"
+      responses:
+        "200":
+          $ref: "#/components/responses/Authenticated"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          description: Unknown email or wrong password (`INVALID_CREDENTIALS`).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: |
+            `EMAIL_NOT_VERIFIED` (correct password, email not verified yet), or `CSRF_ORIGIN`
+            when a valid session cookie was sent without an allowlisted `Origin`.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      summary: Sign out
+      description: |
+        Revokes the current session (cookie or bearer) and clears the cookie. Answers `204` even
+        when nobody is signed in. No request body.
+      security:
+        - {}
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "204":
+          description: Signed out. The `rp_session` cookie is cleared.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            Set-Cookie:
+              description: Expires the `rp_session` cookie.
+              schema:
+                type: string
+        "403":
+          $ref: "#/components/responses/CsrfOrigin"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/auth/password-reset/request:
+    post:
+      tags: [auth]
+      operationId: requestPasswordReset
+      summary: Ask for a password-reset email
+      description: |
+        Always `202` for a well-formed email, whether or not an account exists. The link is
+        `{WEB_BASE_URL}/reset-password?token=...`, single-use and valid for 1 hour.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmailRequest"
+      responses:
+        "202":
+          description: Accepted.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: RESET_SENT
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "403":
+          $ref: "#/components/responses/CsrfOrigin"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/auth/password-reset/confirm:
+    post:
+      tags: [auth]
+      operationId: confirmPasswordReset
+      summary: Set a new password with a reset token
+      description: |
+        Sets the new password and revokes **all** of that user's sessions (every device must
+        sign in again). The `rp_session` cookie of the calling browser is cleared. Because the
+        token was delivered to the mailbox, a successful reset also marks the email verified.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [token, password]
+              properties:
+                token:
+                  type: string
+                password:
+                  $ref: "#/components/schemas/NewPassword"
+      responses:
+        "204":
+          description: Password changed; all sessions revoked.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+        "400":
+          description: |
+            `INVALID_TOKEN` (unknown, expired or already used), `VALIDATION_FAILED` (field
+            `password` or `token`) or `INVALID_JSON`. A rejected password does not consume the token.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          $ref: "#/components/responses/CsrfOrigin"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/me:
+    get:
+      tags: [account]
+      operationId: getMe
+      summary: The signed-in user
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The current user with their platform roles and organisation memberships.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [user]
+                properties:
+                  user:
+                    $ref: "#/components/schemas/User"
+              example:
+                user:
+                  id: 0195c0de-0000-7000-8000-00000000d002
+                  name: Alex Agent
+                  email: agent@example.test
+                  email_verified: true
+                  platform_roles: []
+                  memberships:
+                    - organisation_id: 0195c0de-0000-7000-8000-00000000b001
+                      organisation_name: Sample Estates
+                      organisation_kind: AGENCY
+                      market_code: ZW
+                      role: AGENT
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/agent/property-requests:
+    get:
+      tags: [organisation-workspace]
+      operationId: listOrganisationPropertyRequests
+      summary: Property requests received by the caller's organisation(s)
+      description: |
+        Requires at least one organisation membership (any role).
+
+        **Scope** (decided on the server from the caller's memberships; there are no filter
+        parameters):
+        - OWNER and MANAGER see every request whose recipient organisation is one of theirs.
+        - AGENT and STAFF see the requests of their organisation that are assigned to them
+          personally or to the organisation inbox (no assigned agent).
+
+        Requests of other organisations and requests routed to a direct seller are never
+        returned. `status` is the internal status; because unroutable requests have no
+        recipient organisation, `ROUTING_EXCEPTION` never appears here.
+
+        Newest first, capped at 100 items. **There is no pagination yet.**
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The requests visible to the caller (possibly an empty array).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    maxItems: 100
+                    items:
+                      $ref: "#/components/schemas/OrganisationPropertyRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
 components:
+  securitySchemes:
+    cookieSession:
+      type: apiKey
+      in: cookie
+      name: rp_session
+      description: |
+        Web session. Set by `POST /v1/auth/login` and `POST /v1/auth/verify-email`; HttpOnly,
+        SameSite=Lax, Path=/, Secure outside development. State-changing requests authenticated
+        this way must carry an allowlisted `Origin` header (`403 CSRF_ORIGIN` otherwise).
+    bearerToken:
+      type: http
+      scheme: bearer
+      description: |
+        Mobile/API session: the opaque `access_token` returned by login with
+        `"token_delivery": "bearer"`. Not a JWT. Exempt from the CSRF origin check.
+
   headers:
     X-Request-Id:
       description: Request identifier (echoed from the request or generated). Equals `trace_id` in error bodies.
@@ -282,6 +763,106 @@ components:
         type: string
 
   responses:
+    VerificationSent:
+      description: Accepted. The same answer is given whether or not the email has an account.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [status]
+            properties:
+              status:
+                type: string
+                const: VERIFICATION_SENT
+    Authenticated:
+      description: |
+        Signed in. With cookie delivery the response sets `rp_session` and has no
+        `access_token`; with bearer delivery it has `access_token` and sets no cookie.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+        Set-Cookie:
+          description: "`rp_session=<token>; Path=/; HttpOnly; SameSite=Lax` (plus `Secure` outside development). Cookie delivery only."
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AuthResult"
+    ValidationFailed:
+      description: "`VALIDATION_FAILED` (per-field messages in `error.fields`) or `INVALID_JSON`."
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    Unauthenticated:
+      description: "Not signed in, or the session is invalid, expired or revoked (`UNAUTHENTICATED`)."
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    Forbidden:
+      description: Signed in but not allowed to use this route (`FORBIDDEN`).
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    CsrfOrigin:
+      description: |
+        `CSRF_ORIGIN`: the request was authenticated by the session cookie but its `Origin`
+        header is missing or not allowlisted. Never returned for bearer or anonymous requests.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    PayloadTooLarge:
+      description: The body exceeds 64 KB (`PAYLOAD_TOO_LARGE`).
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    UnsupportedMediaType:
+      description: The Content-Type is not `application/json` (`UNSUPPORTED_MEDIA_TYPE`).
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    RateLimited:
+      description: Too many requests from this IP (`RATE_LIMITED`).
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+        Retry-After:
+          description: Seconds to wait before retrying.
+          schema:
+            type: integer
+            minimum: 1
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
     InternalError:
       description: Unexpected server error (`INTERNAL`).
       headers:
@@ -323,6 +904,12 @@ components:
                 - LISTING_NOT_FOUND
                 - LISTING_UNAVAILABLE
                 - IDEMPOTENCY_CONFLICT
+                - UNAUTHENTICATED
+                - FORBIDDEN
+                - CSRF_ORIGIN
+                - INVALID_CREDENTIALS
+                - EMAIL_NOT_VERIFIED
+                - INVALID_TOKEN
                 - RATE_LIMITED
                 - ORIGIN_NOT_ALLOWED
                 - NOT_FOUND
@@ -341,6 +928,195 @@ components:
         trace_id:
           type: string
           description: Same value as the `X-Request-Id` response header.
+
+    User:
+      type: object
+      description: |
+        The signed-in user. Everyone is implicitly a consumer; extra capabilities come only
+        from `memberships` (organisation-scoped) and `platform_roles`. Both arrays are always
+        present (empty, never null).
+      required: [id, name, email, email_verified, platform_roles, memberships]
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+          description: Lower-cased.
+        email_verified:
+          type: boolean
+          description: Always true for a signed-in user (sessions are only issued after verification).
+        platform_roles:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlatformRoleAssignment"
+        memberships:
+          type: array
+          items:
+            $ref: "#/components/schemas/Membership"
+
+    PlatformRoleAssignment:
+      type: object
+      required: [role, market_code]
+      additionalProperties: false
+      properties:
+        role:
+          type: string
+          enum: [SUPER_ADMIN, PLATFORM_ADMIN, MARKET_ADMIN, FINANCE_ADMIN, CONTENT_ADMIN, MODERATOR, SUPPORT]
+        market_code:
+          type: [string, "null"]
+          pattern: "^[A-Z]{2}$"
+          description: Set only for the market-scoped role MARKET_ADMIN; null for global roles.
+
+    Membership:
+      type: object
+      description: The user's role in one organisation and market.
+      required: [organisation_id, organisation_name, organisation_kind, market_code, role]
+      additionalProperties: false
+      properties:
+        organisation_id:
+          type: string
+          format: uuid
+        organisation_name:
+          type: string
+        organisation_kind:
+          type: string
+          enum: [AGENCY, LANDLORD, HOST, DEVELOPER, SERVICE_PROVIDER]
+        market_code:
+          type: string
+          pattern: "^[A-Z]{2}$"
+        role:
+          type: string
+          enum: [OWNER, MANAGER, AGENT, STAFF]
+
+    AuthResult:
+      type: object
+      required: [user, session]
+      additionalProperties: false
+      properties:
+        user:
+          $ref: "#/components/schemas/User"
+        session:
+          type: object
+          required: [expires_at]
+          additionalProperties: false
+          properties:
+            expires_at:
+              type: string
+              format: date-time
+              description: Absolute expiry (30 days after sign-in). The session also ends after 14 days without use.
+        access_token:
+          type: string
+          description: Opaque session token. Present only when `token_delivery` is `bearer`.
+
+    TokenDelivery:
+      type: string
+      enum: [cookie, bearer]
+      default: cookie
+
+    NewPassword:
+      type: string
+      minLength: 10
+      maxLength: 128
+      description: 10 to 128 characters.
+
+    EmailRequest:
+      type: object
+      additionalProperties: false
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+
+    RegisterRequest:
+      type: object
+      additionalProperties: false
+      required: [name, email, password, consent]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        password:
+          $ref: "#/components/schemas/NewPassword"
+        consent:
+          type: object
+          additionalProperties: false
+          required: [privacy_version, accepted]
+          properties:
+            privacy_version:
+              type: string
+              minLength: 1
+              maxLength: 32
+            accepted:
+              type: boolean
+              const: true
+        marketing_opt_in:
+          type: boolean
+          default: false
+
+    OrganisationPropertyRequest:
+      type: object
+      required:
+        - request_id
+        - reference
+        - listing_id
+        - request_type
+        - status
+        - message
+        - preferred_contact_method
+        - contact
+        - created_at
+      additionalProperties: false
+      properties:
+        request_id:
+          type: string
+          format: uuid
+        reference:
+          type: string
+          pattern: "^RP-[2-9A-HJKMNP-TV-Z]{8}$"
+        listing_id:
+          type: string
+          format: uuid
+        request_type:
+          type: string
+          enum: [ENQUIRY, PROPERTY_INFORMATION, VIEWING_REQUEST, CONSULTATION_REQUEST]
+        status:
+          type: string
+          enum: [RECEIVED]
+          description: Internal status. Only RECEIVED can appear in an organisation inbox today.
+        message:
+          type: string
+        preferred_contact_method:
+          type: string
+          enum: [EMAIL, PHONE, WHATSAPP]
+        contact:
+          type: object
+          description: The customer's contact details (the guest's, or the account's name and email for a signed-in customer).
+          required: [name, email, phone]
+          additionalProperties: false
+          properties:
+            name:
+              type: string
+            email:
+              type: string
+              format: email
+            phone:
+              type: [string, "null"]
+              description: E.164, or null when the customer gave no phone number.
+        created_at:
+          type: string
+          format: date-time
 
     Market:
       type: object
@@ -382,7 +1158,6 @@ components:
         - request_type
         - message
         - preferred_contact_method
-        - guest_contact
         - consent
       properties:
         listing_id:
@@ -409,7 +1184,9 @@ components:
         guest_contact:
           type: object
           additionalProperties: false
-          required: [name, email]
+          description: |
+            Required for guests, with `name` and `email`. Optional for a signed-in customer, for
+            whom only `phone` is read (name and email come from the account).
           properties:
             name:
               type: string

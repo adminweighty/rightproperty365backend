@@ -43,6 +43,7 @@ type validated struct {
 	email          string
 	phone          string
 	privacyVersion string
+	customerUserID *uuid.UUID
 }
 
 // validate normalises in and returns per-field errors (empty when valid).
@@ -125,8 +126,25 @@ func validate(in Input, headerKey string, now time.Time) (validated, map[string]
 		}
 	}
 
-	// Guest contact (required until authenticated customers exist).
-	if in.GuestContact == nil {
+	// Contact details. An authenticated customer is identified by the session:
+	// name and email come from the account (anything sent in guest_contact for
+	// them is ignored) and guest_contact may be omitted; only its phone is read.
+	// A guest must supply guest_contact.
+	if in.Customer != nil {
+		id := in.Customer.UserID
+		v.customerUserID = &id
+		v.name = strings.TrimSpace(in.Customer.Name)
+		v.email = strings.ToLower(strings.TrimSpace(in.Customer.Email))
+		if in.GuestContact != nil {
+			v.phone = strings.TrimSpace(in.GuestContact.Phone)
+		}
+		switch {
+		case v.phone != "" && !e164Re.MatchString(v.phone):
+			fields["guest_contact.phone"] = "must be in E.164 format, for example +263771234567"
+		case v.phone == "" && (in.PreferredContactMethod == ContactPhone || in.PreferredContactMethod == ContactWhatsApp):
+			fields["guest_contact.phone"] = "is required when the preferred contact method is PHONE or WHATSAPP"
+		}
+	} else if in.GuestContact == nil {
 		fields["guest_contact"] = "is required"
 	} else {
 		v.name = strings.TrimSpace(in.GuestContact.Name)
@@ -177,8 +195,14 @@ func validate(in Input, headerKey string, now time.Time) (validated, map[string]
 
 // hash returns the hex SHA-256 of the canonicalised payload. The idempotency
 // key itself is excluded: the hash answers "is this the same request?".
-// Field order is fixed by the struct, so the encoding is deterministic.
+// Field order is fixed by the struct, so the encoding is deterministic. The
+// customer's user ID is part of the content (omitted for guests, which keeps
+// guest hashes unchanged), so one customer can never replay another's key.
 func (v validated) hash() string {
+	customer := ""
+	if v.customerUserID != nil {
+		customer = v.customerUserID.String()
+	}
 	slot := ""
 	if v.slot != nil {
 		slot = v.slot.Format(time.RFC3339Nano)
@@ -193,7 +217,8 @@ func (v validated) hash() string {
 		Email          string `json:"guest_email"`
 		Phone          string `json:"guest_phone"`
 		PrivacyVersion string `json:"privacy_version"`
-	}{v.listingID.String(), v.requestType, v.message, v.contactMethod, slot, v.name, v.email, v.phone, v.privacyVersion})
+		CustomerUserID string `json:"customer_user_id,omitempty"`
+	}{v.listingID.String(), v.requestType, v.message, v.contactMethod, slot, v.name, v.email, v.phone, v.privacyVersion, customer})
 	sum := sha256.Sum256(canonical)
 	return hex.EncodeToString(sum[:])
 }

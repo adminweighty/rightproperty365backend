@@ -91,6 +91,13 @@ func TestCORS(t *testing.T) {
 			if got := rec.Header().Get("Access-Control-Allow-Origin"); got != tt.wantAllow {
 				t.Fatalf("Access-Control-Allow-Origin = %q, want %q", got, tt.wantAllow)
 			}
+			wantCreds := ""
+			if tt.wantAllow != "" {
+				wantCreds = "true"
+			}
+			if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != wantCreds {
+				t.Fatalf("Access-Control-Allow-Credentials = %q, want %q", got, wantCreds)
+			}
 			if called != tt.wantHandler {
 				t.Fatalf("handler called = %v, want %v", called, tt.wantHandler)
 			}

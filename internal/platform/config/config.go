@@ -23,6 +23,7 @@ const (
 	defaultDBMaxConns  = 8
 	maxDBMaxConns      = 100
 	defaultCORSOrigins = "http://localhost:3000"
+	defaultWebBaseURL  = "http://localhost:3000"
 )
 
 // Config is the validated runtime configuration shared by the API and worker.
@@ -36,6 +37,12 @@ type Config struct {
 	DBMaxConns         int32
 	CORSAllowedOrigins []string
 	LogLevel           slog.Level
+	// WebBaseURL is the frontend origin used to build links placed in emails
+	// (verify-email, reset-password). No trailing slash.
+	WebBaseURL string
+	// DevSeedPassword is the shared password of the development seed users.
+	// It is only ever populated when Env is development and must never be logged.
+	DevSeedPassword string
 }
 
 // UseMemoryStore reports whether the process should run on the in-memory
@@ -96,6 +103,17 @@ func FromLookup(get func(string) string) (Config, error) {
 		errs = append(errs, err)
 	}
 	cfg.CORSAllowedOrigins = origins
+
+	cfg.WebBaseURL = strings.TrimRight(val("WEB_BASE_URL", defaultWebBaseURL), "/")
+	if u, err := url.Parse(cfg.WebBaseURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+		errs = append(errs, errors.New("WEB_BASE_URL must be an http(s) URL such as https://app.example.com"))
+	}
+
+	// Seed users exist only in development; elsewhere the variable is ignored
+	// so a stray value can never create known-password accounts.
+	if cfg.Env == EnvDevelopment {
+		cfg.DevSeedPassword = get("DEV_SEED_PASSWORD")
+	}
 
 	level, err := parseLevel(val("LOG_LEVEL", "info"))
 	if err != nil {

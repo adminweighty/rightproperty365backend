@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/httpx"
 )
 
@@ -18,7 +19,7 @@ const (
 // HeaderIdempotencyKey may carry the idempotency key instead of the body.
 const HeaderIdempotencyKey = "Idempotency-Key"
 
-// Handler serves POST /v1/property-requests.
+// Handler serves POST /v1/property-requests and GET /v1/agent/property-requests.
 type Handler struct {
 	svc    *Service
 	logger *slog.Logger
@@ -35,6 +36,11 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	var in Input
 	if !httpx.DecodeJSON(w, r, &in) {
 		return
+	}
+
+	// The customer's identity comes from the session only, never from the body.
+	if p := auth.FromContext(r.Context()); p != nil {
+		in.Customer = &Customer{UserID: p.UserID, Name: p.Name, Email: p.Email}
 	}
 
 	res, err := h.svc.Create(r.Context(), in, r.Header.Get(HeaderIdempotencyKey))
@@ -66,4 +72,31 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		slog.Bool("replayed", res.Replayed),
 	)
 	httpx.WriteJSON(w, status, res)
+}
+
+// inboxResponse is the body of GET /v1/agent/property-requests.
+type inboxResponse struct {
+	Items []InboxItem `json:"items"`
+}
+
+// Inbox lists the requests received by the caller's organisation(s). The
+// route sits behind auth.RequireMembership; the scope below is derived solely
+// from the caller's memberships, so a member of one organisation can never
+// read another organisation's requests or those routed to a direct seller.
+func (h *Handler) Inbox(w http.ResponseWriter, r *http.Request) {
+	p := auth.FromContext(r.Context())
+	if p == nil {
+		httpx.WriteError(w, r, http.StatusUnauthorized, httpx.CodeUnauthenticated, "You need to sign in to do this.", nil)
+		return
+	}
+	items, err := h.svc.Inbox(r.Context(), InboxScope{
+		UserID:                 p.UserID,
+		ManagedOrganisationIDs: p.OrganisationIDs(auth.RoleOwner, auth.RoleManager),
+		MemberOrganisationIDs:  p.OrganisationIDs(auth.RoleAgent, auth.RoleStaff),
+	})
+	if err != nil {
+		httpx.WriteInternalError(w, r, h.logger, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, inboxResponse{Items: items})
 }

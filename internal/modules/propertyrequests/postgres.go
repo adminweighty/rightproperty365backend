@@ -123,15 +123,15 @@ func (s *PostgresStore) Create(ctx context.Context, req NewRequest) (Record, boo
 			guest_name, guest_email, guest_phone,
 			consent_privacy_version, consent_accepted_at,
 			recipient_type, recipient_user_id, recipient_organisation_id,
-			created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $20)
+			created_at, updated_at, customer_user_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $20, $21)
 		ON CONFLICT (idempotency_key) DO NOTHING`,
 		req.ID, req.Reference, req.MarketID, req.ListingID, req.RequestType, req.Status, req.Message,
 		req.PreferredContactMethod, req.PreferredSlot, req.IdempotencyKey, req.RequestHash,
 		req.GuestName, req.GuestEmail, guestPhone,
 		req.PrivacyVersion, req.ConsentAcceptedAt,
 		recipientType, recipientUserID, recipientOrgID,
-		req.CreatedAt,
+		req.CreatedAt, req.CustomerUserID,
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -160,10 +160,16 @@ func (s *PostgresStore) Create(ctx context.Context, req NewRequest) (Record, boo
 		}
 	}
 
+	// Activity belongs to the account for an authenticated customer and to the
+	// guest's email otherwise.
+	var activityGuestEmail *string
+	if req.CustomerUserID == nil {
+		activityGuestEmail = &req.GuestEmail
+	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO customer_activity (id, guest_email, activity_type, market_id, listing_id, request_id, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		uuid.New(), req.GuestEmail, ActivityRequestSubmitted, req.MarketID, req.ListingID, req.ID, req.CreatedAt,
+		INSERT INTO customer_activity (id, user_id, guest_email, activity_type, market_id, listing_id, request_id, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		uuid.New(), req.CustomerUserID, activityGuestEmail, ActivityRequestSubmitted, req.MarketID, req.ListingID, req.ID, req.CreatedAt,
 	); err != nil {
 		return Record{}, false, fmt.Errorf("insert customer activity: %w", err)
 	}
@@ -180,4 +186,45 @@ func (s *PostgresStore) Create(ctx context.Context, req NewRequest) (Record, boo
 		return Record{}, false, fmt.Errorf("commit: %w", err)
 	}
 	return Record{ID: req.ID, Reference: req.Reference, Status: req.Status, RequestHash: req.RequestHash, CreatedAt: req.CreatedAt}, true, nil
+}
+
+// ListInbox implements Store. Organisation IDs are passed as text arrays and
+// cast in SQL; the visibility rule is documented on InboxScope. Requests with
+// no recipient organisation (direct sellers, routing exceptions) can never
+// match because both branches compare recipient_organisation_id.
+//
+// NOTE: compiled but not yet exercised against a real database.
+func (s *PostgresStore) ListInbox(ctx context.Context, scope InboxScope) ([]InboxItem, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT pr.id, pr.reference, pr.listing_id, pr.request_type, pr.status, pr.message,
+		       pr.preferred_contact_method,
+		       COALESCE(pr.guest_name, u.full_name, ''),
+		       COALESCE(pr.guest_email, u.email, ''),
+		       pr.guest_phone, pr.created_at
+		FROM property_requests pr
+		LEFT JOIN users u ON u.id = pr.customer_user_id
+		WHERE pr.recipient_organisation_id IN (SELECT unnest($1::text[])::uuid)
+		   OR (pr.recipient_organisation_id IN (SELECT unnest($2::text[])::uuid)
+		       AND (pr.recipient_user_id IS NULL OR pr.recipient_user_id = $3))
+		ORDER BY pr.created_at DESC, pr.id DESC
+		LIMIT $4`,
+		uuidStrings(scope.ManagedOrganisationIDs), uuidStrings(scope.MemberOrganisationIDs), scope.UserID, scope.Limit)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (InboxItem, error) {
+		var it InboxItem
+		err := row.Scan(&it.RequestID, &it.Reference, &it.ListingID, &it.RequestType, &it.Status, &it.Message,
+			&it.PreferredContactMethod, &it.Contact.Name, &it.Contact.Email, &it.Contact.Phone, &it.CreatedAt)
+		it.CreatedAt = it.CreatedAt.UTC()
+		return it, err
+	})
+}
+
+func uuidStrings(ids []uuid.UUID) []string {
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = id.String()
+	}
+	return out
 }
