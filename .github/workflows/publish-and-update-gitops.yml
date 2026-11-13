@@ -12,7 +12,7 @@ name: Build and update RightProperty365 GitOps
 # worker or a migration Job yet; add image builds for the `worker` and `migrate`
 # targets here when those manifests exist.
 #
-# Requires: secret GITOPS_TOKEN (contents read/write on adminweighty/weightygitops)
+# Requires: secret GITOPS_TOKEN (contents read/write on adminweighty/gitops)
 # and GitHub environments `staging` and `production`.
 
 on:
@@ -74,7 +74,7 @@ jobs:
       - name: Checkout GitOps repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          repository: adminweighty/weightygitops
+          repository: adminweighty/gitops
           ref: main
           token: ${{ secrets.GITOPS_TOKEN }}
           path: gitops
