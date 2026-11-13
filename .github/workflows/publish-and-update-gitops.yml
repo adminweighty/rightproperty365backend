@@ -1,0 +1,107 @@
+name: Build and update RightProperty365 GitOps
+
+# Adapted from the rightproperty365-gitops-starter for this repository:
+#   - runs CI first, so a failing commit is never published
+#   - builds the `api` target of deploy/docker/Dockerfile (the starter assumed ./Dockerfile)
+#   - a production run in progress is never cancelled by a newer push
+#
+# dev        -> staging     (staging-api.rightproperty365.com)
+# production -> production  (api.rightproperty365.com)
+#
+# Only the API image is published. The GitOps starter has no Deployment for the
+# worker or a migration Job yet; add image builds for the `worker` and `migrate`
+# targets here when those manifests exist.
+#
+# Requires: secret GITOPS_TOKEN (contents read/write on adminweighty/weightygitops)
+# and GitHub environments `staging` and `production`.
+
+on:
+  push:
+    branches: [dev, production]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: rightproperty-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/production' }}
+
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/production'
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref == 'refs/heads/production' && 'production' || 'staging' }}
+    steps:
+      - name: Validate component and calculate image
+        id: config
+        env:
+          REPOSITORY: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${REPOSITORY,,}" in
+            adminweighty/rightproperty365) COMPONENT=api ;;
+            *) echo 'This workflow is configured only for adminweighty/rightproperty365' >&2; exit 1 ;;
+          esac
+          echo "component=$COMPONENT" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "tag=sha-$COMMIT_SHA" >> "$GITHUB_OUTPUT"
+      - name: Checkout application
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Authenticate to GitHub Container Registry
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: ${{ vars.DOCKER_CONTEXT || '.' }}
+          file: ${{ vars.DOCKERFILE || './deploy/docker/Dockerfile' }}
+          target: api
+          push: true
+          tags: ${{ steps.config.outputs.image }}:${{ steps.config.outputs.tag }}
+      - name: Checkout GitOps repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: adminweighty/weightygitops
+          ref: main
+          token: ${{ secrets.GITOPS_TOKEN }}
+          path: gitops
+      - name: Install YAML parser
+        run: python3 -m pip install 'PyYAML==6.0.3'
+      - name: Update the environment image mapping
+        working-directory: gitops
+        shell: bash
+        env:
+          ENVIRONMENT_NAME: ${{ github.ref == 'refs/heads/production' && 'production' || 'staging' }}
+          COMPONENT: ${{ steps.config.outputs.component }}
+          IMAGE: ${{ steps.config.outputs.image }}
+          IMAGE_TAG: ${{ steps.config.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          for attempt in 1 2 3 4 5; do
+            git fetch origin main
+            git checkout -B gitops-update origin/main
+            python3 scripts/set-image.py
+            git add "environments/$ENVIRONMENT_NAME/kustomization.yaml"
+            if git diff --cached --quiet; then echo 'Mapping is already current'; exit 0; fi
+            git commit -m "deploy($ENVIRONMENT_NAME): $COMPONENT $IMAGE_TAG"
+            if git push origin HEAD:main; then exit 0; fi
+            echo "GitOps branch changed; retry $attempt"
+            sleep "$attempt"
+          done
+          echo 'Could not update GitOps branch after retries' >&2
+          exit 1
