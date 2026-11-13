@@ -49,8 +49,8 @@ jobs:
         run: |
           set -euo pipefail
           case "${REPOSITORY,,}" in
-            adminweighty/rightproperty365) COMPONENT=api ;;
-            *) echo 'This workflow is configured only for adminweighty/rightproperty365' >&2; exit 1 ;;
+            adminweighty/rightproperty365backend) COMPONENT=api ;;
+            *) echo 'This workflow is configured only for adminweighty/rightproperty365backend' >&2; exit 1 ;;
           esac
           echo "component=$COMPONENT" >> "$GITHUB_OUTPUT"
           echo "image=ghcr.io/${REPOSITORY,,}" >> "$GITHUB_OUTPUT"
