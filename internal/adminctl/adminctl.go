@@ -38,7 +38,7 @@ CONTENT_ADMIN, MODERATOR, SUPPORT. MARKET_ADMIN requires --market (for example Z
 
 The password is read from the ADMINCTL_PASSWORD environment variable, or from
 standard input when that is not set. It is never accepted as a flag.
-The database is DATABASE_DIRECT_URL, or DATABASE_URL when that is not set.`
+The database is DATABASE_URL (or DATABASE_DIRECT_URL when that override is set).`
 
 var (
 	emailRe  = regexp.MustCompile(`^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>".]+$`)

@@ -21,8 +21,9 @@ const (
 	usersEmailConstraint = "users_email_lower_key"
 )
 
-// PostgresStore is the production Store. All statements are compatible with
-// PgBouncer transaction mode (no session state, explicit short transactions).
+// PostgresStore is the production Store. Statements use no session state and
+// explicit short transactions, so they work on a plain PostgreSQL connection
+// and equally behind a transaction pooler (DB_POOL_MODE=transaction).
 //
 // NOTE: written against migrations 0001 + 0002 and compiled, but not yet
 // exercised against a real database.

@@ -20,6 +20,12 @@ const (
 	EnvStaging     = "staging"
 	EnvProduction  = "production"
 
+	// Pool modes (DB_POOL_MODE). "session" is a normal connection to
+	// PostgreSQL. "transaction" is for a deployment that puts PgBouncer in
+	// transaction-pooling mode in front of it.
+	PoolModeSession     = "session"
+	PoolModeTransaction = "transaction"
+
 	defaultHTTPAddr    = ":8080"
 	defaultDBMaxConns  = 8
 	maxDBMaxConns      = 100
@@ -36,10 +42,16 @@ const (
 type Config struct {
 	Env      string
 	HTTPAddr string
-	// DatabaseURL is the pooled (PgBouncer, transaction mode) runtime URL.
+	// DatabaseURL is the PostgreSQL connection string. It is the one required
+	// database setting outside development.
 	DatabaseURL string
-	// DatabaseDirectURL is the direct connection used only by migrations.
-	DatabaseDirectURL  string
+	// DatabaseDirectURL is an OPTIONAL override used by migrations, adminctl
+	// and seed. It is only needed when DatabaseURL goes through a transaction
+	// pooler; otherwise leave it empty and DatabaseURL is used.
+	DatabaseDirectURL string
+	// DBPoolMode is PoolModeSession (default) or PoolModeTransaction and
+	// describes what DatabaseURL connects to.
+	DBPoolMode         string
 	DBMaxConns         int32
 	CORSAllowedOrigins []string
 	LogLevel           slog.Level
@@ -53,6 +65,58 @@ type Config struct {
 	// (absolute lifetime and inactivity timeout).
 	AdminSessionTTL     time.Duration
 	AdminSessionIdleTTL time.Duration
+}
+
+// ToolDatabase returns the connection string and pool mode that one-off
+// administrative commands (migrate, adminctl, seed) should use: the direct URL
+// when one is configured (always a plain session connection), otherwise the
+// runtime URL with its configured pool mode. url is "" when neither is set.
+func ToolDatabase(get func(string) string) (url, poolMode string, err error) {
+	if direct := strings.TrimSpace(get("DATABASE_DIRECT_URL")); direct != "" {
+		return direct, PoolModeSession, nil
+	}
+	poolMode, err = parsePoolMode(strings.TrimSpace(get("DB_POOL_MODE")))
+	if err != nil {
+		return "", "", err
+	}
+	return strings.TrimSpace(get("DATABASE_URL")), poolMode, nil
+}
+
+func parsePoolMode(raw string) (string, error) {
+	switch strings.ToLower(raw) {
+	case "", PoolModeSession:
+		return PoolModeSession, nil
+	case PoolModeTransaction:
+		return PoolModeTransaction, nil
+	}
+	return "", fmt.Errorf("DB_POOL_MODE must be %q or %q", PoolModeSession, PoolModeTransaction)
+}
+
+// DatabaseTLSWarning returns a human-readable warning when databaseURL would
+// let the connection run without TLS to a host that is not this machine, or
+// "" when there is nothing to say. It never includes the URL, the host or any
+// credential, and it changes nothing about how the connection is made.
+//
+// PostgreSQL clients default to sslmode=prefer, which silently falls back to
+// an unencrypted connection; only require, verify-ca and verify-full insist
+// on TLS.
+func DatabaseTLSWarning(databaseURL string) string {
+	u, err := url.Parse(databaseURL)
+	if err != nil || databaseURL == "" {
+		return ""
+	}
+	switch u.Hostname() {
+	case "", "localhost", "127.0.0.1", "::1":
+		return "" // same machine (or a Unix socket): nothing travels over a network
+	}
+	switch mode := strings.ToLower(u.Query().Get("sslmode")); mode {
+	case "require", "verify-ca", "verify-full":
+		return ""
+	case "":
+		return "the database is on another host and its connection string has no sslmode, so it defaults to \"prefer\" and can fall back to an UNENCRYPTED connection; add sslmode=require (or verify-full)"
+	default:
+		return "the database is on another host and its connection string uses sslmode=" + mode + ", which allows an UNENCRYPTED connection; use sslmode=require (or verify-full)"
+	}
 }
 
 // UseMemoryStore reports whether the process should run on the in-memory
@@ -85,6 +149,12 @@ func FromLookup(get func(string) string) (Config, error) {
 	default:
 		errs = append(errs, fmt.Errorf("APP_ENV must be one of development, staging, production (got %q)", cfg.Env))
 	}
+
+	poolMode, err := parsePoolMode(val("DB_POOL_MODE", ""))
+	if err != nil {
+		errs = append(errs, err)
+	}
+	cfg.DBPoolMode = poolMode
 
 	if raw := val("DB_MAX_CONNS", ""); raw != "" {
 		n, err := strconv.Atoi(raw)

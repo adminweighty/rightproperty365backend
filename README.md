@@ -111,7 +111,7 @@ go run ./cmd/seed          # or: make seed
 ```
 
 `cmd/seed` writes the same organisations, accounts, roles, listings and directory profiles into the database at
-`DATABASE_DIRECT_URL` (or `DATABASE_URL`). It **refuses to run unless `APP_ENV=development` is set
+`DATABASE_URL`. It **refuses to run unless `APP_ENV=development` is set
 explicitly and `DEV_SEED_PASSWORD` is set**, runs in one transaction and is idempotent (re-running
 it resets the sample rows, including the shared password, and touches nothing else). Sample
 listings get a placeholder title and price, because this backend does not own listing content yet.
@@ -157,9 +157,10 @@ All configuration comes from environment variables. For local development you ma
 | --- | --- | --- |
 | `APP_ENV` | `development` | `development`, `staging` or `production` |
 | `HTTP_ADDR` | `:8080` | API listen address |
-| `DATABASE_URL` | _(empty)_ | **Pooled** Neon URL (PgBouncer, transaction mode). Empty is allowed only in development (in-memory stores); startup **fails** in staging/production |
-| `DATABASE_DIRECT_URL` | _(empty)_ | **Direct** Neon URL, used only by `cmd/migrate` |
-| `DB_MAX_CONNS` | `8` | Per-process pool cap (1–100). API and worker each have their own pool |
+| `DATABASE_URL` | _(empty)_ | PostgreSQL connection string for the self-hosted server; **the one required database setting**. Empty is allowed only in development (in-memory stores); startup **fails** in staging/production. Use `sslmode=require` or `verify-full` when the database is on another host |
+| `DB_POOL_MODE` | `session` | `session`: `DATABASE_URL` connects straight to PostgreSQL. `transaction`: it goes through PgBouncer in transaction-pooling mode |
+| `DATABASE_DIRECT_URL` | _(empty)_ | Optional override for `cmd/migrate`, `adminctl` and `seed`; only needed with `DB_POOL_MODE=transaction`. Defaults to `DATABASE_URL` |
+| `DB_MAX_CONNS` | `8` | Per-process pool cap (1–100). Each API replica and the worker have their own pool; see "Database" for sizing against `max_connections` |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated exact origins; wildcards are rejected |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `WEB_BASE_URL` | `http://localhost:3000` | Frontend base URL used to build the links in verification / password-reset emails |
@@ -363,7 +364,7 @@ Platform administrators have their own login, and every session has a **scope**:
 #### Creating administrators: `adminctl`
 
 Against a real database the first administrator is created with `cmd/adminctl` (Postgres only; it
-uses `DATABASE_DIRECT_URL`, or `DATABASE_URL` when that is unset, and fails with a clear message
+uses `DATABASE_URL`, or the optional `DATABASE_DIRECT_URL` override, and fails with a clear message
 when neither is set):
 
 ```powershell
@@ -489,7 +490,7 @@ internal/platform/auth       Principal + Authenticate / RequireAuth / RequireMem
 internal/app                 router wiring (middleware order, routes); end-to-end tests live here
 internal/adminctl            logic of cmd/adminctl (argument and password validation)
 internal/devseed             the development sample data (organisations, people, 18 listings, 29 directory profiles)
-internal/platform/database   pgxpool setup for the pooled runtime URL
+internal/platform/database   pgxpool setup (session or transaction pool mode)
 internal/platform/outbox     outbox dispatcher (lease, retry, dead-letter)
 internal/platform/migrate    embedded-SQL migration runner
 internal/modules/health            /healthz, /readyz
@@ -520,12 +521,71 @@ Deliberately no empty stubs. These will be added under `internal/modules/` as th
 
 ## Database
 
-- **Runtime** uses `DATABASE_URL`, the pooled Neon endpoint (PgBouncer in transaction mode). The
-  pool therefore uses pgx `QueryExecModeCacheDescribe` (no server-side prepared statements) and the
-  code avoids all session state: no session advisory locks, `SET`, or `LISTEN/NOTIFY`.
-- **Migrations** use `DATABASE_DIRECT_URL`, the direct endpoint, because the runner takes a
-  session-level advisory lock and runs multi-statement scripts. Applied versions are tracked in
+> **Decision (user, 2026-11-14): the database is self-hosted PostgreSQL on the project's own
+> server, not Neon.** In the user's words: "no dont use neon we using postgres db on server". This
+> overrides the BRD, the FSD and the handover notes wherever they name Neon or describe
+> Neon-specific features (branching, autosuspend, pooled/direct endpoints, plan-based point-in-time
+> recovery). None of those are assumed anywhere in this repository.
+
+- **One connection string.** `DATABASE_URL` is the only required database setting. The API, the
+  worker, `cmd/migrate`, `cmd/adminctl` and `cmd/seed` all use it.
+- **Pool mode.** `DB_POOL_MODE=session` (the default) means `DATABASE_URL` connects straight to
+  PostgreSQL and pgx runs normally, with its per-connection prepared-statement cache. If PgBouncer
+  in transaction-pooling mode is ever put in front of the server, set `DB_POOL_MODE=transaction`:
+  the pool then avoids named prepared statements (`QueryExecModeCacheDescribe`). The application
+  code uses no session state (`SET`, `LISTEN/NOTIFY`, session advisory locks) either way, so
+  switching needs no code change.
+- **`DATABASE_DIRECT_URL` is optional** and only matters with `DB_POOL_MODE=transaction`: the
+  migration runner takes a session-level advisory lock and runs multi-statement scripts, which
+  cannot go through a transaction pooler, so `cmd/migrate` then needs a direct PostgreSQL
+  connection (it refuses to run otherwise). `adminctl` and `seed` use the override too when it is
+  set. Without a pooler, leave it empty. Applied migration versions are tracked in
   `schema_migrations`.
+- **Sizing `DB_MAX_CONNS`.** It is a cap **per process** (1–100, default 8); every API replica and
+  the worker open their own pool. Keep
+
+  `API replicas × DB_MAX_CONNS + workers × DB_MAX_CONNS + ~5 (migrations, adminctl, backups, psql, monitoring)`
+
+  comfortably below the server's `max_connections` (PostgreSQL's default is 100, a few of which are
+  reserved for superusers). Example: 3 API replicas and 1 worker at the default 8 use at most 32.
+  Raising replica counts (autoscaling) raises this total; either lower `DB_MAX_CONNS`, raise
+  `max_connections` (which costs server memory), or add PgBouncer and `DB_POOL_MODE=transaction`.
+- **TLS.** The code does not set or override `sslmode`; whatever is in `DATABASE_URL` is used as
+  written. **Assumption made here:** the API and worker run on different hosts from the database
+  (a cluster talking to a database server), so the connection string should carry
+  `sslmode=require` at minimum, or `sslmode=verify-full` with the server's CA certificate
+  (`sslrootcert`) to also authenticate the server. With no `sslmode` the client defaults to
+  `prefer`, which silently falls back to an unencrypted connection. `sslmode=disable` is only
+  acceptable when both ends are on the same machine (as with the local docker-compose Postgres).
+  At startup the API and worker log a **warning** (never the URL) if `DATABASE_URL` points at
+  another host without `require`/`verify-ca`/`verify-full`; they do not refuse to start and do not
+  change the connection. The PostgreSQL server must have TLS enabled for `require` to work — that
+  is server configuration and is not done by this repository.
+- **Deployment.** The GitOps manifests live in the user's separate `adminweighty/weightygitops`
+  repository (not touched from here). They need to provide `DATABASE_URL` to the API and worker
+  from a **Kubernetes Secret** (and `DB_POOL_MODE` / `DATABASE_DIRECT_URL` only if a pooler is
+  used). No connection string belongs in this repository, in an image or in a ConfigMap.
+- **Local development** keeps using the docker-compose Postgres (`docker compose up -d`) or no
+  database at all (in-memory stores).
+
+### Database operations: NOT set up, and unowned
+
+Running PostgreSQL yourself means the following are the project's responsibility. **None of them
+exists today, nothing in this repository provides them, and nobody has been named as owner.**
+
+| Area | What is needed | Status | Owner |
+| --- | --- | --- | --- |
+| Backups | Regular logical dumps (`pg_dump` / `pg_dumpall`) and/or physical base backups (`pg_basebackup`) with continuous WAL archiving for point-in-time recovery; copies kept off the database server | Not set up | Unassigned |
+| Restore testing | Periodically restoring a backup into a scratch server and checking it; a backup that has never been restored is not known to work | Not set up | Unassigned |
+| Monitoring and alerting | Disk space, connection count vs `max_connections`, replication/WAL archiving lag, long-running queries, failed logins, server availability | Not set up | Unassigned |
+| Upgrades and patching | PostgreSQL minor releases (security fixes), planned major-version upgrades, OS patching of the database server | Not set up | Unassigned |
+| Access and secrets | A dedicated least-privilege application role, a separate migration/owner role if wanted, password rotation, `pg_hba.conf` restricted to the cluster, TLS certificates | Not set up | Unassigned |
+| High availability | A standby / failover plan. A single server is a single point of failure for the whole platform | Not decided | Unassigned |
+
+Until these have owners, a disk failure or a bad migration on the server means data loss.
+
+### Schema
+
 - Money is `numeric` + ISO 4217 currency code; all timestamps are `timestamptz` stored in UTC.
 - `0002_identity` adds credentials and verification to `users`, `user_consents`, organisation
   `kind`, the `OWNER/MANAGER/AGENT/STAFF` membership roles with a market, `platform_role_assignments`,
@@ -542,11 +602,12 @@ Deliberately no empty stubs. These will be added under `internal/modules/` as th
 - `0005_business_enquiries` adds `directory_profiles` (no contact columns), `business_enquiries`,
   `business_enquiry_timeline` and `customer_activity.business_enquiry_id`. Also **never run**,
   like its store queries.
-- `0001_init` seeds the four markets. It does **not** seed listings: against a real database
-  `POST /v1/property-requests` returns 404 until listings exist.
+- `0001_init` seeds the four markets. It does **not** seed listings or profiles: against a real
+  database `POST /v1/property-requests` and `POST /v1/business-enquiries` return 404 until they
+  exist (in development, `cmd/seed` creates the sample ones).
 
 ```powershell
-$env:DATABASE_DIRECT_URL = "<direct connection string>"
+$env:DATABASE_URL = "<connection string>"   # never commit or paste a real one
 go run ./cmd/migrate status
 go run ./cmd/migrate up
 ```

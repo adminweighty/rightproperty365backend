@@ -61,8 +61,87 @@ func TestFromLookupAdminSessions(t *testing.T) {
 	}
 }
 
+func TestDatabasePoolMode(t *testing.T) {
+	const db = "postgres://user:pw@db.example.internal/db?sslmode=require"
+
+	cfg, err := FromLookup(lookup(nil))
+	if err != nil || cfg.DBPoolMode != PoolModeSession {
+		t.Fatalf("default pool mode = %q, %v; want session", cfg.DBPoolMode, err)
+	}
+	for raw, want := range map[string]string{"session": PoolModeSession, "transaction": PoolModeTransaction, "Transaction": PoolModeTransaction, " session ": PoolModeSession} {
+		cfg, err := FromLookup(lookup(map[string]string{"DB_POOL_MODE": raw}))
+		if err != nil || cfg.DBPoolMode != want {
+			t.Fatalf("DB_POOL_MODE=%q -> %q, %v; want %q", raw, cfg.DBPoolMode, err, want)
+		}
+	}
+	for _, raw := range []string{"pgbouncer", "statement", "true", "session,transaction"} {
+		if _, err := FromLookup(lookup(map[string]string{"DB_POOL_MODE": raw})); err == nil || !strings.Contains(err.Error(), "DB_POOL_MODE") {
+			t.Fatalf("DB_POOL_MODE=%q: expected an error, got %v", raw, err)
+		}
+	}
+
+	// DATABASE_URL alone is enough outside development.
+	prod, err := FromLookup(lookup(map[string]string{"APP_ENV": "production", "DATABASE_URL": db}))
+	if err != nil || prod.DatabaseDirectURL != "" || prod.DBPoolMode != PoolModeSession {
+		t.Fatalf("production with only DATABASE_URL: %v (direct set=%v, mode=%s)", err, prod.DatabaseDirectURL != "", prod.DBPoolMode)
+	}
+}
+
+func TestToolDatabase(t *testing.T) {
+	const runtime, direct = "postgres://u:p@db.example.internal/app", "postgres://u:p@db.example.internal:5433/app"
+	tests := []struct {
+		name     string
+		env      map[string]string
+		wantURL  string
+		wantMode string
+		wantErr  bool
+	}{
+		{"only DATABASE_URL", map[string]string{"DATABASE_URL": runtime}, runtime, PoolModeSession, false},
+		{"DATABASE_URL behind a transaction pooler", map[string]string{"DATABASE_URL": runtime, "DB_POOL_MODE": "transaction"}, runtime, PoolModeTransaction, false},
+		{"direct override wins and is a session connection", map[string]string{"DATABASE_URL": runtime, "DATABASE_DIRECT_URL": direct, "DB_POOL_MODE": "transaction"}, direct, PoolModeSession, false},
+		{"nothing set", nil, "", PoolModeSession, false},
+		{"bad pool mode", map[string]string{"DATABASE_URL": runtime, "DB_POOL_MODE": "nope"}, "", "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			url, mode, err := ToolDatabase(lookup(tt.env))
+			if (err != nil) != tt.wantErr || url != tt.wantURL || mode != tt.wantMode {
+				t.Fatalf("ToolDatabase = (set=%v, %q, %v), want (%q, %v)", url != "", mode, err, tt.wantMode, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestDatabaseTLSWarning(t *testing.T) {
+	tests := []struct {
+		name, url string
+		wantWarn  bool
+	}{
+		{"remote with require", "postgres://u:secret@db.example.internal/app?sslmode=require", false},
+		{"remote with verify-full", "postgres://u:secret@db.example.internal/app?sslmode=verify-full", false},
+		{"remote with verify-ca", "postgres://u:secret@10.0.0.5:5432/app?sslmode=verify-ca", false},
+		{"remote without sslmode", "postgres://u:secret@db.example.internal/app", true},
+		{"remote with prefer", "postgres://u:secret@db.example.internal/app?sslmode=prefer", true},
+		{"remote with disable", "postgres://u:secret@10.0.0.5/app?sslmode=disable", true},
+		{"localhost with disable", "postgres://u:secret@localhost:5432/app?sslmode=disable", false},
+		{"loopback without sslmode", "postgres://u:secret@127.0.0.1/app", false},
+		{"empty", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := DatabaseTLSWarning(tt.url)
+			if (got != "") != tt.wantWarn {
+				t.Fatalf("warning = %q, want a warning: %v", got, tt.wantWarn)
+			}
+			if strings.Contains(got, "secret") || strings.Contains(got, "example.internal") || strings.Contains(got, "10.0.0.5") {
+				t.Fatalf("the warning leaks the connection string: %q", got)
+			}
+		})
+	}
+}
+
 func TestFromLookupIdentity(t *testing.T) {
-	const db = "postgres://user:pw@example.neon.tech/db"
+	const db = "postgres://user:pw@db.example.internal/db"
 
 	dev, err := FromLookup(lookup(map[string]string{"WEB_BASE_URL": "http://localhost:4000/", "DEV_SEED_PASSWORD": "seed-value"}))
 	if err != nil {
@@ -86,7 +165,7 @@ func TestFromLookupIdentity(t *testing.T) {
 }
 
 func TestFromLookup(t *testing.T) {
-	const db = "postgres://user:pw@example.neon.tech/db"
+	const db = "postgres://user:pw@db.example.internal/db"
 	tests := []struct {
 		name    string
 		env     map[string]string
@@ -119,6 +198,7 @@ func TestFromLookup(t *testing.T) {
 		{name: "wildcard CORS origin", env: map[string]string{"CORS_ALLOWED_ORIGINS": "*"}, wantErr: "CORS_ALLOWED_ORIGINS"},
 		{name: "CORS origin with path", env: map[string]string{"CORS_ALLOWED_ORIGINS": "https://a.example/app"}, wantErr: "CORS_ALLOWED_ORIGINS"},
 		{name: "bad log level", env: map[string]string{"LOG_LEVEL": "loud"}, wantErr: "LOG_LEVEL"},
+		{name: "bad pool mode", env: map[string]string{"DB_POOL_MODE": "pgbouncer"}, wantErr: "DB_POOL_MODE"},
 		{name: "bad database scheme", env: map[string]string{"DATABASE_URL": "mysql://secret-value"}, wantErr: "DATABASE_URL must start with"},
 	}
 	for _, tt := range tests {

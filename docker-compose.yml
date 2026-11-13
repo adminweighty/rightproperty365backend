@@ -3,7 +3,7 @@
 # DATABASE_URL the API runs on in-memory stores.
 #
 #   docker compose up -d
-#   DATABASE_URL / DATABASE_DIRECT_URL for this stack (same value, no pooler locally):
+#   DATABASE_URL for this stack (sslmode=disable is fine: it never leaves this machine):
 #   postgres://rp365:rp365_local_dev_only@localhost:5432/rp365?sslmode=disable
 #
 # The credentials below are throwaway LOCAL defaults, overridable from the

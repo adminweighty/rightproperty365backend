@@ -9,7 +9,7 @@
 // idempotent: re-running it resets the sample rows and touches nothing else.
 // Run the migrations first (go run ./cmd/migrate up).
 //
-// The database is DATABASE_DIRECT_URL, or DATABASE_URL when that is not set.
+// The database is DATABASE_URL (or the optional DATABASE_DIRECT_URL override).
 package main
 
 import (
@@ -46,12 +46,12 @@ func run() error {
 		return err
 	}
 
-	url := os.Getenv("DATABASE_DIRECT_URL")
-	if url == "" {
-		url = os.Getenv("DATABASE_URL")
+	url, poolMode, err := config.ToolDatabase(os.Getenv)
+	if err != nil {
+		return err
 	}
 	if url == "" {
-		return errors.New("neither DATABASE_DIRECT_URL nor DATABASE_URL is set: seed writes to Postgres only " +
+		return errors.New("DATABASE_URL is not set: seed writes to PostgreSQL only " +
 			"(without a database the API seeds its in-memory stores by itself)")
 	}
 
@@ -60,7 +60,7 @@ func run() error {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
-	pool, err := database.NewPool(ctx, url, 2)
+	pool, err := database.NewPool(ctx, url, 2, poolMode)
 	if err != nil {
 		return err
 	}

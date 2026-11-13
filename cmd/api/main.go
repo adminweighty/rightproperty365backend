@@ -80,12 +80,15 @@ func run() error {
 			logger.Info("development seed users created (password from DEV_SEED_PASSWORD)", slog.Any("emails", devseed.Emails()))
 		}
 	} else {
-		pool, err := database.NewPool(ctx, cfg.DatabaseURL, cfg.DBMaxConns)
+		if warning := config.DatabaseTLSWarning(cfg.DatabaseURL); warning != "" {
+			logger.Warn("DATABASE_URL: " + warning)
+		}
+		pool, err := database.NewPool(ctx, cfg.DatabaseURL, cfg.DBMaxConns, cfg.DBPoolMode)
 		if err != nil {
 			return err
 		}
 		defer pool.Close()
-		logger.Info("database pool ready", slog.Int("max_conns", int(cfg.DBMaxConns)))
+		logger.Info("database pool ready", slog.Int("max_conns", int(cfg.DBMaxConns)), slog.String("pool_mode", cfg.DBPoolMode))
 		marketStore = markets.NewPostgresStore(pool)
 		requestStore = propertyrequests.NewPostgresStore(pool)
 		identityStore = identity.NewPostgresStore(pool)

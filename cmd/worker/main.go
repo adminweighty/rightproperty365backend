@@ -48,7 +48,10 @@ func run() error {
 		return nil
 	}
 
-	pool, err := database.NewPool(ctx, cfg.DatabaseURL, cfg.DBMaxConns)
+	if warning := config.DatabaseTLSWarning(cfg.DatabaseURL); warning != "" {
+		logger.Warn("DATABASE_URL: " + warning)
+	}
+	pool, err := database.NewPool(ctx, cfg.DatabaseURL, cfg.DBMaxConns, cfg.DBPoolMode)
 	if err != nil {
 		return err
 	}

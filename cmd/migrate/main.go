@@ -4,8 +4,10 @@
 //	migrate down     revert the most recent migration (one step)
 //	migrate status   list migrations and whether they are applied
 //
-// It connects with DATABASE_DIRECT_URL (a direct connection, never the
-// PgBouncer pooler) and serialises concurrent runs with an advisory lock.
+// It connects with DATABASE_URL and serialises concurrent runs with a
+// session-level advisory lock. Because of that lock it needs a real session:
+// if DATABASE_URL goes through a transaction pooler (DB_POOL_MODE=transaction),
+// set DATABASE_DIRECT_URL to a direct PostgreSQL connection for this command.
 package main
 
 import (
@@ -37,9 +39,16 @@ func run(args []string) error {
 	if err := config.LoadDotEnv(".env"); err != nil {
 		return fmt.Errorf("read .env: %w", err)
 	}
-	url := os.Getenv("DATABASE_DIRECT_URL")
+	url, poolMode, err := config.ToolDatabase(os.Getenv)
+	if err != nil {
+		return err
+	}
 	if url == "" {
-		return fmt.Errorf("DATABASE_DIRECT_URL is not set (use the direct connection string, not the pooled one)")
+		return fmt.Errorf("DATABASE_URL is not set")
+	}
+	if poolMode == config.PoolModeTransaction {
+		return fmt.Errorf("DB_POOL_MODE=transaction: migrations take a session-level advisory lock and cannot run through a transaction pooler; " +
+			"set DATABASE_DIRECT_URL to a direct PostgreSQL connection")
 	}
 
 	migs, err := migrate.Load(migrations.FS)

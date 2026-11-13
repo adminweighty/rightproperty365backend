@@ -7,8 +7,8 @@
 //
 // The password comes from the ADMINCTL_PASSWORD environment variable or from
 // standard input (typed without echo on a terminal, or piped). It is never a
-// flag, never echoed and never logged. The database is DATABASE_DIRECT_URL,
-// or DATABASE_URL when that is not set; there is no in-memory mode.
+// flag, never echoed and never logged. The database is DATABASE_URL (or the
+// optional DATABASE_DIRECT_URL override); there is no in-memory mode.
 package main
 
 import (
@@ -86,18 +86,18 @@ func readPassword() (string, error) {
 	return string(first), nil
 }
 
-// openStore connects to Postgres. The direct URL is preferred because this is
-// a one-off administrative command, like migrations.
+// openStore connects to PostgreSQL with DATABASE_URL, or with the optional
+// DATABASE_DIRECT_URL override when one is set.
 func openStore(ctx context.Context) (adminctl.Store, func(), error) {
-	url := os.Getenv("DATABASE_DIRECT_URL")
-	if url == "" {
-		url = os.Getenv("DATABASE_URL")
+	url, poolMode, err := config.ToolDatabase(os.Getenv)
+	if err != nil {
+		return nil, nil, err
 	}
 	if url == "" {
-		return nil, nil, errors.New("neither DATABASE_DIRECT_URL nor DATABASE_URL is set: adminctl works on Postgres only " +
+		return nil, nil, errors.New("DATABASE_URL is not set: adminctl works on PostgreSQL only " +
 			"(in development without a database, sign in as the seeded admin@example.test instead)")
 	}
-	pool, err := database.NewPool(ctx, url, 2)
+	pool, err := database.NewPool(ctx, url, 2, poolMode)
 	if err != nil {
 		return nil, nil, err
 	}

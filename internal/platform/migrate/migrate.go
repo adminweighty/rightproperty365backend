@@ -1,6 +1,6 @@
 // Package migrate is a deliberately small migration runner over embedded SQL
-// files. It must be pointed at a DIRECT database connection (not the PgBouncer
-// pooler) because it uses a session-level advisory lock and multi-statement
+// files. It needs a real PostgreSQL session (not a transaction pooler such as
+// PgBouncer in transaction mode) because it uses a session-level advisory lock and multi-statement
 // scripts.
 package migrate
 
@@ -97,7 +97,8 @@ type Runner struct {
 	migrations []Migration
 }
 
-// NewRunner builds a runner. conn must be a direct (non-pooled) connection.
+// NewRunner builds a runner. conn must be a session connection to PostgreSQL,
+// not one that goes through a transaction pooler.
 func NewRunner(conn *pgx.Conn, migrations []Migration) *Runner {
 	return &Runner{conn: conn, migrations: migrations}
 }

@@ -17,8 +17,9 @@ const (
 	referenceConstraint = "property_requests_reference_key"
 )
 
-// PostgresStore is the production Store. All statements are compatible with
-// PgBouncer transaction mode (no session state, explicit short transaction).
+// PostgresStore is the production Store. Statements use no session state and
+// one explicit short transaction, so they work on a plain PostgreSQL
+// connection and equally behind a transaction pooler (DB_POOL_MODE=transaction).
 type PostgresStore struct{ pool *pgxpool.Pool }
 
 // NewPostgresStore returns a Postgres-backed store.
