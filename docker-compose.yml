@@ -1,0 +1,44 @@
+# Local development dependencies, for machines where Docker is available.
+# Nothing in the Go build, tests or dev startup requires this file: without
+# DATABASE_URL the API runs on in-memory stores.
+#
+#   docker compose up -d
+#   DATABASE_URL / DATABASE_DIRECT_URL for this stack (same value, no pooler locally):
+#   postgres://rp365:rp365_local_dev_only@localhost:5432/rp365?sslmode=disable
+#
+# The credentials below are throwaway LOCAL defaults, overridable from the
+# environment. Never reuse them anywhere else.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rp365}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rp365_local_dev_only}
+      POSTGRES_DB: ${POSTGRES_DB:-rp365}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # S3-compatible object storage for the future media module.
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-rp365local}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-rp365_local_dev_only}
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - minio-data:/data
+
+volumes:
+  postgres-data:
+  minio-data:

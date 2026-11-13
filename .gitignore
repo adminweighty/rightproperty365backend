@@ -1,0 +1,28 @@
+# Secrets / local configuration (never commit real values)
+.env
+.env.*
+!.env.example
+
+# Build output and binaries
+/bin/
+/dist/
+/tmp/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+
+# Test and tooling artefacts
+*.out
+coverage.*
+*.prof
+*.log
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

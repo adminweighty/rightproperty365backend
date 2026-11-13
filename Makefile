@@ -1,0 +1,45 @@
+# Convenience targets. On Windows without make, run the underlying go commands
+# directly (see README.md).
+
+.PHONY: run worker migrate-up migrate-down migrate-status fmt fmt-check vet test build check docker-api docker-worker docker-migrate
+
+run:
+	go run ./cmd/api
+
+worker:
+	go run ./cmd/worker
+
+migrate-up:
+	go run ./cmd/migrate up
+
+migrate-down:
+	go run ./cmd/migrate down
+
+migrate-status:
+	go run ./cmd/migrate status
+
+fmt:
+	gofmt -w .
+
+fmt-check:
+	@test -z "$$(gofmt -l .)" || (echo "gofmt needed on:"; gofmt -l .; exit 1)
+
+vet:
+	go vet ./...
+
+test:
+	go test ./...
+
+build:
+	go build -trimpath -o bin/ ./cmd/...
+
+check: fmt-check vet test build
+
+docker-api:
+	docker build -f deploy/docker/Dockerfile --target api -t rp365-api .
+
+docker-worker:
+	docker build -f deploy/docker/Dockerfile --target worker -t rp365-worker .
+
+docker-migrate:
+	docker build -f deploy/docker/Dockerfile --target migrate -t rp365-migrate .

@@ -1,0 +1,179 @@
+package propertyrequests
+
+import (
+	"context"
+	"crypto/rand"
+	"errors"
+	"fmt"
+	"math/big"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+// referenceAlphabet omits characters that are easily confused when read
+// aloud or typed (0/O, 1/I/L, U).
+const referenceAlphabet = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+const (
+	referenceLength   = 8
+	referenceAttempts = 5
+)
+
+// Service holds the business rules for creating property requests.
+type Service struct {
+	store  Store
+	now    func() time.Time
+	newRef func() (string, error)
+}
+
+// Option customises a Service (used by tests).
+type Option func(*Service)
+
+// WithClock overrides the time source.
+func WithClock(now func() time.Time) Option { return func(s *Service) { s.now = now } }
+
+// WithReferenceGenerator overrides reference generation.
+func WithReferenceGenerator(f func() (string, error)) Option {
+	return func(s *Service) { s.newRef = f }
+}
+
+// NewService builds a Service on the given store.
+func NewService(store Store, opts ...Option) *Service {
+	s := &Service{store: store, now: time.Now, newRef: NewReference}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// Create validates, routes and persists a property request.
+//
+// Idempotency: a repeated key with identical content returns the original
+// request (Result.Replayed); a repeated key with different content returns
+// ErrIdempotencyConflict. The replay check runs before the listing checks so
+// a retry still succeeds after the listing has since expired.
+func (s *Service) Create(ctx context.Context, in Input, headerIdempotencyKey string) (Result, error) {
+	now := s.now().UTC().Truncate(time.Microsecond) // Postgres timestamptz precision
+
+	v, fields := validate(in, headerIdempotencyKey, now)
+	if len(fields) > 0 {
+		return Result{}, &ValidationError{Fields: fields}
+	}
+	hash := v.hash()
+
+	existing, err := s.store.FindByIdempotencyKey(ctx, v.idempotencyKey)
+	switch {
+	case err == nil:
+		return replay(existing, hash)
+	case !errors.Is(err, ErrNotFound):
+		return Result{}, fmt.Errorf("look up idempotency key: %w", err)
+	}
+
+	listing, err := s.store.GetListing(ctx, v.listingID)
+	if err != nil {
+		if errors.Is(err, ErrListingNotFound) {
+			return Result{}, ErrListingNotFound
+		}
+		return Result{}, fmt.Errorf("load listing: %w", err)
+	}
+	if listing.Status != ListingStatusPublished || (listing.ExpiresAt != nil && !listing.ExpiresAt.After(now)) {
+		return Result{}, ErrListingUnavailable
+	}
+
+	id, err := uuid.NewV7()
+	if err != nil {
+		return Result{}, fmt.Errorf("generate request id: %w", err)
+	}
+
+	req := NewRequest{
+		ID:                     id,
+		MarketID:               listing.MarketID,
+		ListingID:              listing.ID,
+		RequestType:            v.requestType,
+		Status:                 StatusReceived,
+		Message:                v.message,
+		PreferredContactMethod: v.contactMethod,
+		PreferredSlot:          v.slot,
+		IdempotencyKey:         v.idempotencyKey,
+		RequestHash:            hash,
+		GuestName:              v.name,
+		GuestEmail:             v.email,
+		GuestPhone:             v.phone,
+		PrivacyVersion:         v.privacyVersion,
+		ConsentAcceptedAt:      now,
+		Recipient:              ResolveRecipient(listing),
+		CreatedAt:              now,
+	}
+	if req.Recipient == nil {
+		// Still accepted: the customer gets RECEIVED and operations picks up
+		// the exception. We never lose an enquiry because routing failed.
+		req.Status = StatusRoutingException
+	}
+
+	for range referenceAttempts {
+		if req.Reference, err = s.newRef(); err != nil {
+			return Result{}, fmt.Errorf("generate reference: %w", err)
+		}
+		rec, created, err := s.store.Create(ctx, req)
+		switch {
+		case errors.Is(err, ErrReferenceCollision):
+			continue
+		case err != nil:
+			return Result{}, fmt.Errorf("persist property request: %w", err)
+		case !created:
+			// Lost a race against a concurrent request with the same key.
+			return replay(rec, hash)
+		}
+		return result(rec, false), nil
+	}
+	return Result{}, errors.New("could not allocate a unique reference")
+}
+
+// ResolveRecipient picks who receives a request: the assigned agent, else the
+// organisation inbox, else the direct seller. It returns nil when nobody is
+// eligible (the request is then stored as a routing exception).
+func ResolveRecipient(l Listing) *Recipient {
+	switch {
+	case l.AgentUserID != nil && l.AgentEligible:
+		return &Recipient{Type: RecipientAgent, UserID: l.AgentUserID, OrganisationID: l.OrganisationID}
+	case l.OrganisationID != nil && l.OrganisationEligible:
+		return &Recipient{Type: RecipientOrganisation, OrganisationID: l.OrganisationID}
+	case l.SellerUserID != nil && l.SellerEligible:
+		return &Recipient{Type: RecipientSeller, UserID: l.SellerUserID}
+	}
+	return nil
+}
+
+func replay(rec Record, hash string) (Result, error) {
+	if rec.RequestHash != hash {
+		return Result{}, ErrIdempotencyConflict
+	}
+	return result(rec, true), nil
+}
+
+// result builds the customer-facing view. The public status is always
+// RECEIVED, whatever the internal status is.
+func result(rec Record, replayed bool) Result {
+	return Result{
+		RequestID: rec.ID,
+		Reference: rec.Reference,
+		Status:    StatusReceived,
+		CreatedAt: rec.CreatedAt.UTC(),
+		Replayed:  replayed,
+	}
+}
+
+// NewReference returns a random human-friendly reference such as RP-7K3M9QXD.
+func NewReference() (string, error) {
+	out := make([]byte, referenceLength)
+	max := big.NewInt(int64(len(referenceAlphabet)))
+	for i := range out {
+		n, err := rand.Int(rand.Reader, max)
+		if err != nil {
+			return "", err
+		}
+		out[i] = referenceAlphabet[n.Int64()]
+	}
+	return "RP-" + string(out), nil
+}

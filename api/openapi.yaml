@@ -1,0 +1,459 @@
+openapi: 3.1.0
+info:
+  title: RightProperty365 API
+  version: 0.1.0
+  summary: Multi-country property marketplace API (Zimbabwe first).
+  description: |
+    Versioned REST API for RightProperty365.
+
+    Conventions
+    - Every error response uses the `ErrorEnvelope` shape. Branch on `error.code`, not on `error.message`.
+    - Every response carries an `X-Request-Id` header. Clients may supply their own
+      (1-128 characters of `A-Z a-z 0-9 . _ -`); otherwise one is generated. The same value is
+      returned as `trace_id` in error bodies.
+    - Timestamps are RFC 3339 in UTC.
+    - Request bodies must be `application/json`, at most 64 KB, and must not contain unknown fields.
+    - There is no authentication yet: all property requests are guest requests.
+servers:
+  - url: http://localhost:8080
+    description: Local development
+tags:
+  - name: health
+  - name: markets
+  - name: property-requests
+
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      operationId: getLiveness
+      summary: Liveness probe
+      description: Always 200 while the process is running. Does not check dependencies.
+      responses:
+        "200":
+          description: The process is alive.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                additionalProperties: false
+                properties:
+                  status:
+                    type: string
+                    const: ok
+
+  /readyz:
+    get:
+      tags: [health]
+      operationId: getReadiness
+      summary: Readiness probe
+      description: |
+        Pings the database when one is configured. In development without `DATABASE_URL`
+        the API runs on in-memory stores and reports `"store": "memory"`.
+      responses:
+        "200":
+          description: Ready to serve traffic.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, store]
+                additionalProperties: false
+                properties:
+                  status:
+                    type: string
+                    const: ready
+                  store:
+                    type: string
+                    enum: [memory, postgres]
+        "503":
+          description: The database is not reachable (`NOT_READY`).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+
+  /v1/markets:
+    get:
+      tags: [markets]
+      operationId: listMarkets
+      summary: List markets
+      description: Returns all markets, active markets first, then by country code.
+      responses:
+        "200":
+          description: The markets.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                additionalProperties: false
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Market"
+              example:
+                data:
+                  - id: 0195c0de-0000-7000-8000-00000000a001
+                    code: ZW
+                    name: Zimbabwe
+                    currency_code: USD
+                    timezone: Africa/Harare
+                    status: ACTIVE
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/property-requests:
+    post:
+      tags: [property-requests]
+      operationId: createPropertyRequest
+      summary: Submit a property request (enquiry)
+      description: |
+        The single entry point for every customer enquiry about a listing.
+
+        The request, its timeline entry, the customer activity record and the notification
+        outbox event are committed in one database transaction; `201` is returned only after
+        that commit. The response status is always `RECEIVED` — acceptance does not mean the
+        recipient has been notified.
+
+        **Idempotency.** An idempotency key is required, either as `idempotency_key` in the
+        body or in the `Idempotency-Key` header (the body wins when both are present).
+        Repeating a key with identical content returns `200` with the original response.
+        Repeating a key with different content returns `409`. Content is compared after
+        normalisation (trimmed strings, lower-cased email, slot converted to UTC).
+
+        **Rate limit.** Per client IP: bursts of 10 requests, refilled at 10 per minute.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: Alternative to `idempotency_key` in the body. Required if the body omits it.
+          schema:
+            $ref: "#/components/schemas/IdempotencyKey"
+        - name: X-Request-Id
+          in: header
+          required: false
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9._-]{1,128}$"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PropertyRequestCreate"
+            example:
+              listing_id: 0195c0de-0000-7000-8000-000000000001
+              request_type: VIEWING_REQUEST
+              message: I would like to view this property next week.
+              preferred_contact_method: WHATSAPP
+              preferred_slot_utc: "2027-01-15T08:00:00Z"
+              idempotency_key: 6f1c2f0a-8f0e-4f43-9a55-2f6f3f1f9c11
+              guest_contact:
+                name: Tariro Moyo
+                email: tariro@example.com
+                phone: "+263771234567"
+              consent:
+                privacy_version: "2026-01"
+                accepted: true
+      responses:
+        "201":
+          description: The request was stored.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PropertyRequestReceipt"
+        "200":
+          description: Idempotent replay. The key was already used with identical content; the original receipt is returned.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PropertyRequestReceipt"
+        "400":
+          description: |
+            `VALIDATION_FAILED` (with per-field messages in `error.fields`) or `INVALID_JSON`
+            (malformed JSON, wrong types, unknown fields).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+              example:
+                error:
+                  code: VALIDATION_FAILED
+                  message: Some fields need your attention.
+                  fields:
+                    message: must be plain text without HTML
+                    consent.accepted: must be true
+                trace_id: 4b0b8f0e-5d0c-4e0e-9a39-0a5a4f1f6c55
+        "404":
+          description: The listing does not exist (`LISTING_NOT_FOUND`).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: The idempotency key was already used with different content (`IDEMPOTENCY_CONFLICT`).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "410":
+          description: The listing is not published or has expired (`LISTING_UNAVAILABLE`).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "413":
+          description: The body exceeds 64 KB (`PAYLOAD_TOO_LARGE`).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "415":
+          description: The Content-Type is not `application/json` (`UNSUPPORTED_MEDIA_TYPE`).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          description: Too many requests from this IP (`RATE_LIMITED`).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
+                minimum: 1
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+components:
+  headers:
+    X-Request-Id:
+      description: Request identifier (echoed from the request or generated). Equals `trace_id` in error bodies.
+      schema:
+        type: string
+
+  responses:
+    InternalError:
+      description: Unexpected server error (`INTERNAL`).
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    Timeout:
+      description: The request exceeded the server-side time limit (`TIMEOUT`).
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+
+  schemas:
+    ErrorEnvelope:
+      type: object
+      required: [error, trace_id]
+      additionalProperties: false
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          additionalProperties: false
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable code.
+              enum:
+                - VALIDATION_FAILED
+                - INVALID_JSON
+                - UNSUPPORTED_MEDIA_TYPE
+                - PAYLOAD_TOO_LARGE
+                - LISTING_NOT_FOUND
+                - LISTING_UNAVAILABLE
+                - IDEMPOTENCY_CONFLICT
+                - RATE_LIMITED
+                - ORIGIN_NOT_ALLOWED
+                - NOT_FOUND
+                - METHOD_NOT_ALLOWED
+                - NOT_READY
+                - TIMEOUT
+                - INTERNAL
+            message:
+              type: string
+              description: Human-readable summary. Not stable; do not parse.
+            fields:
+              type: object
+              description: Per-field messages, present for `VALIDATION_FAILED`. Keys are JSON paths such as `guest_contact.email`.
+              additionalProperties:
+                type: string
+        trace_id:
+          type: string
+          description: Same value as the `X-Request-Id` response header.
+
+    Market:
+      type: object
+      required: [id, code, name, currency_code, timezone, status]
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+          description: ISO 3166-1 alpha-2 country code.
+          pattern: "^[A-Z]{2}$"
+        name:
+          type: string
+        currency_code:
+          type: string
+          description: ISO 4217 currency code.
+          pattern: "^[A-Z]{3}$"
+        timezone:
+          type: string
+          description: IANA time zone name.
+        status:
+          type: string
+          enum: [ACTIVE, PLANNED, SUSPENDED]
+
+    IdempotencyKey:
+      type: string
+      minLength: 8
+      maxLength: 128
+      pattern: "^[\\x21-\\x7E]+$"
+      description: Client-generated unique key (a UUID is recommended). Printable ASCII, no spaces.
+
+    PropertyRequestCreate:
+      type: object
+      additionalProperties: false
+      required:
+        - listing_id
+        - request_type
+        - message
+        - preferred_contact_method
+        - guest_contact
+        - consent
+      properties:
+        listing_id:
+          type: string
+          format: uuid
+        request_type:
+          type: string
+          enum: [ENQUIRY, PROPERTY_INFORMATION, VIEWING_REQUEST, CONSULTATION_REQUEST]
+        message:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          description: Plain text. Anything containing HTML tags or control characters is rejected. Leading/trailing whitespace is trimmed.
+        preferred_contact_method:
+          type: string
+          enum: [EMAIL, PHONE, WHATSAPP]
+          description: PHONE and WHATSAPP require `guest_contact.phone`.
+        preferred_slot_utc:
+          type: [string, "null"]
+          format: date-time
+          description: Optional. Only allowed for VIEWING_REQUEST and CONSULTATION_REQUEST and must be in the future.
+        idempotency_key:
+          $ref: "#/components/schemas/IdempotencyKey"
+        guest_contact:
+          type: object
+          additionalProperties: false
+          required: [name, email]
+          properties:
+            name:
+              type: string
+              minLength: 1
+              maxLength: 120
+            email:
+              type: string
+              format: email
+              maxLength: 254
+            phone:
+              type: string
+              pattern: "^\\+[1-9][0-9]{6,14}$"
+              description: E.164. Optional unless the preferred contact method is PHONE or WHATSAPP.
+        consent:
+          type: object
+          additionalProperties: false
+          required: [privacy_version, accepted]
+          properties:
+            privacy_version:
+              type: string
+              minLength: 1
+              maxLength: 32
+              description: Version of the privacy notice the customer accepted.
+            accepted:
+              type: boolean
+              const: true
+
+    PropertyRequestReceipt:
+      type: object
+      required: [request_id, reference, status, created_at]
+      additionalProperties: false
+      properties:
+        request_id:
+          type: string
+          format: uuid
+        reference:
+          type: string
+          pattern: "^RP-[2-9A-HJKMNP-TV-Z]{8}$"
+          description: Human-friendly reference to quote to support.
+          examples: [RP-7K3M9QXD]
+        status:
+          type: string
+          const: RECEIVED
+          description: The request has been stored. It does not indicate that anyone has been notified.
+        created_at:
+          type: string
+          format: date-time
