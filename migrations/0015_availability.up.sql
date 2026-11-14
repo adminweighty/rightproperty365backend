@@ -56,9 +56,9 @@ CREATE INDEX listing_availability_audit_listing_idx ON listing_availability_audi
 -- When the lister last changed the calendar; NULL when they never have.
 ALTER TABLE listings ADD COLUMN availability_updated_at timestamptz;
 
--- "My listings": the listings of an organisation or of a direct owner, whatever their status.
-CREATE INDEX listings_organisation_idx ON listings (organisation_id) WHERE organisation_id IS NOT NULL;
-CREATE INDEX listings_seller_idx ON listings (seller_user_id) WHERE seller_user_id IS NOT NULL;
+-- "My listings" reads the listings of an organisation or of a direct owner.
+-- Both indexes it needs (listings_organisation_idx, listings_seller_idx)
+-- already exist since 0001_init, so none is created here.
 
 -- ---------------------------------------------------------------------------
 -- Requests to stay: a property request of type STAY_REQUEST carries the
