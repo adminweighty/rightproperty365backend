@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.19.0
+  version: 0.20.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,34 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Dashboards and working a request (changed in 0.20.0)
+    - **New:** `GET /v1/me/dashboard` (one role-aware summary for the signed-in account),
+      `GET /v1/me/property-requests` and `GET /v1/me/property-requests/{id}` (the requests the
+      account sent, in the customer's own terms), `GET /v1/agent/property-requests/{id}`,
+      `PATCH /v1/agent/property-requests/{id}` (move the lead stage),
+      `POST /v1/agent/property-requests/{id}/notes` (internal notes),
+      `GET /v1/agent/organisations/{id}/members` (read-only team list),
+      `GET /v1/admin/overview`, `GET /v1/admin/routing-exceptions` and
+      `POST /v1/admin/routing-exceptions/{id}/resolve`.
+    - **Lead stages.** Every property request now has a `stage`, one of `NEW_ENQUIRY` (New
+      enquiry), `ASSIGNED` (Assigned), `CONTACTED` (Contacted), `VIEWING_REQUESTED` (Viewing
+      requested), `VIEWING_SCHEDULED` (Viewing scheduled), `FOLLOW_UP_REQUIRED` (Follow-up
+      required), `CONVERTED` (Converted), `CLOSED` (Closed). Requests stored before 0.20.0 are
+      `NEW_ENQUIRY`. The allowed moves are listed under `PATCH /v1/agent/property-requests/{id}`
+      and returned with every request as `allowed_stages`. `status` keeps its meaning.
+    - **Breaking for clients of `GET /v1/agent/property-requests`.** The body was
+      `{items}` with at most 100 items and no paging; it is now one page:
+      `{items, page, page_size, total, total_pages, stage_counts}`, 20 items by default, at
+      most 100 (`page`, `page_size`). New filters: `stage`, `type`, `listing_id`, `from`, `to`,
+      `q`. `OrganisationPropertyRequest` gains `stage`, `stage_label` and `stage_changed_at`
+      (additive); `request_type` now documents `STAY_REQUEST`, which was already returned.
+    - **Changed meaning:** `GET /v1/inbox/summary` `property_requests.new` is now the number of
+      visible requests at stage `NEW_ENQUIRY` (it was every visible request, capped at 100).
+    - **Customers never see the working side.** The customer endpoints return a customer
+      status (`RECEIVED`, `IN_PROGRESS`, `RESPONDED`, `VIEWING_SCHEDULED`, `CLOSED`) derived from
+      the stage, never the stage itself, an internal note, who handles the request, or whether
+      routing failed.
 
     Countries and places (changed in 0.15.0)
     - The platform is global: every ISO 3166-1 country can be used (`GET /v1/countries`). Public
@@ -3770,37 +3798,581 @@ paths:
           colleague;
         - for a direct seller: the requests routed to them for their own listings.
 
-        The `PRIVATE_SELLER` account role only opens the route. It never adds data: a user who
-        declared it but sells nothing gets an empty `items` array. Requests of other
+        The `PRIVATE_SELLER` / `LANDLORD` account role only opens the route. It never adds data:
+        a user who declared it but sells nothing gets an empty `items` array. Requests of other
         organisations and of other sellers are never returned. `status` is the internal status;
         because unroutable requests have no recipient, `ROUTING_EXCEPTION` never appears here.
 
-        Newest first, capped at 100 items. **There is no pagination yet.**
+        **Changed in 0.20.0: paged and filtered.** Newest first (`created_at`, then id), one
+        page at a time. The filters only narrow what the rules above allow; nothing a client
+        sends can widen it. `total` counts the whole filter; `stage_counts` lists **every**
+        stage in pipeline order with its count under the filters **other than** `stage` (so a
+        stage tab bar can show all numbers while one stage is selected).
       security:
         - cookieSession: []
         - bearerToken: []
+      parameters:
+        - name: stage
+          in: query
+          description: One lead stage, or several separated by commas (or repeated).
+          schema:
+            type: string
+          examples:
+            several:
+              value: NEW_ENQUIRY,FOLLOW_UP_REQUIRED
+        - name: type
+          in: query
+          description: One request type.
+          schema:
+            type: string
+            enum: [ENQUIRY, PROPERTY_INFORMATION, VIEWING_REQUEST, CONSULTATION_REQUEST, STAY_REQUEST]
+        - name: listing_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: from
+          in: query
+          description: Only requests created at or after this instant (RFC 3339).
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          description: Only requests created before this instant. Must be after `from`.
+          schema:
+            type: string
+            format: date-time
+        - name: q
+          in: query
+          description: |
+            Free text, at most 100 characters, matched case-insensitively (substring) against
+            the reference, the customer's name, the customer's email and the message.
+          schema:
+            type: string
+            maxLength: 100
+        - $ref: "#/components/parameters/RequestPage"
+        - $ref: "#/components/parameters/RequestPageSize"
       responses:
         "200":
-          description: The requests visible to the caller (possibly an empty array).
+          description: One page of the requests visible to the caller (possibly empty).
           headers:
             X-Request-Id:
               $ref: "#/components/headers/X-Request-Id"
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: false
-                required: [items]
-                properties:
-                  items:
-                    type: array
-                    maxItems: 100
-                    items:
-                      $ref: "#/components/schemas/OrganisationPropertyRequest"
+                $ref: "#/components/schemas/ReceivedPropertyRequestPage"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
         "401":
           $ref: "#/components/responses/Unauthenticated"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/agent/property-requests/{id}:
+    parameters:
+      - $ref: "#/components/parameters/PropertyRequestId"
+    get:
+      tags: [organisation-workspace]
+      operationId: getReceivedPropertyRequest
+      summary: One received property request, with its timeline and internal notes (new in 0.20.0)
+      description: |
+        The same rules as `GET /v1/agent/property-requests`: `401` when not signed in, `403`
+        when the caller may not open the request inbox at all, and `404
+        PROPERTY_REQUEST_NOT_FOUND` for a request the caller cannot see in their inbox (another
+        organisation's, a colleague's, another seller's, a routing exception) exactly as for one
+        that does not exist. `Cache-Control: private, no-store`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReceivedPropertyRequestEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PropertyRequestNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+    patch:
+      tags: [organisation-workspace]
+      operationId: movePropertyRequestStage
+      summary: Move a received request to another lead stage (new in 0.20.0)
+      description: |
+        Who may call it and which requests: as `GET /v1/agent/property-requests/{id}` (any
+        member who can see the request, OWNER and MANAGER for the whole organisation, the
+        direct seller for their own). The stage, its `STAGE_CHANGED` timeline entry (who and
+        when) and an outbox event `PROPERTY_REQUEST_STAGE_CHANGED` (identifiers and stages only)
+        are written together. No email is sent.
+
+        Allowed moves (anything else, including the current stage itself, is `409
+        INVALID_STAGE_TRANSITION` and changes nothing):
+
+        | From | To |
+        | --- | --- |
+        | NEW_ENQUIRY | ASSIGNED, CONTACTED, VIEWING_REQUESTED, VIEWING_SCHEDULED, FOLLOW_UP_REQUIRED, CLOSED |
+        | ASSIGNED | CONTACTED, VIEWING_REQUESTED, VIEWING_SCHEDULED, FOLLOW_UP_REQUIRED, CLOSED |
+        | CONTACTED | VIEWING_REQUESTED, VIEWING_SCHEDULED, FOLLOW_UP_REQUIRED, CONVERTED, CLOSED |
+        | VIEWING_REQUESTED | CONTACTED, VIEWING_SCHEDULED, FOLLOW_UP_REQUIRED, CLOSED |
+        | VIEWING_SCHEDULED | CONTACTED, VIEWING_REQUESTED, FOLLOW_UP_REQUIRED, CONVERTED, CLOSED |
+        | FOLLOW_UP_REQUIRED | CONTACTED, VIEWING_REQUESTED, VIEWING_SCHEDULED, CONVERTED, CLOSED |
+        | CONVERTED | CLOSED |
+        | CLOSED | FOLLOW_UP_REQUIRED |
+
+        Nothing ever returns to `NEW_ENQUIRY`. `ASSIGNED` only records the stage: assigning a
+        request to a person is not built. An unknown stage is `400 VALIDATION_FAILED`
+        (`error.fields.stage`). Per-IP rate limit: bursts of 60, refilled at 60 per minute,
+        shared with the notes endpoint and resolving routing exceptions.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [stage]
+              properties:
+                stage:
+                  $ref: "#/components/schemas/LeadStage"
+      responses:
+        "200":
+          description: The request after the move (same shape as the GET).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReceivedPropertyRequestEnvelope"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: "`FORBIDDEN` (the caller may not open the inbox) or `CSRF_ORIGIN`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          $ref: "#/components/responses/PropertyRequestNotFound"
+        "409":
+          description: "`INVALID_STAGE_TRANSITION`: the stage cannot be reached from the current one. Nothing was changed."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/agent/property-requests/{id}/notes:
+    parameters:
+      - $ref: "#/components/parameters/PropertyRequestId"
+    post:
+      tags: [organisation-workspace]
+      operationId: addPropertyRequestNote
+      summary: Add an internal note to a received request (new in 0.20.0)
+      description: |
+        Who may call it and which requests: as `PATCH /v1/agent/property-requests/{id}`. A note
+        is internal to the receiving side: everyone who can see the request in their inbox
+        reads it, and it is **never** returned by any customer endpoint. The timeline records
+        `NOTE_ADDED` (who and when, never the text). Notes cannot be edited or deleted.
+        `body` is trimmed, 1 to 2000 characters, no control characters other than line breaks
+        and tabs. Same rate limit as the PATCH.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [body]
+              properties:
+                body:
+                  type: string
+                  minLength: 1
+                  maxLength: 2000
+      responses:
+        "201":
+          description: The note was stored. The body is the whole request, notes included (same shape as the GET).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReceivedPropertyRequestEnvelope"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: "`FORBIDDEN` (the caller may not open the inbox) or `CSRF_ORIGIN`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          $ref: "#/components/responses/PropertyRequestNotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/agent/organisations/{id}/members:
+    get:
+      tags: [organisation-workspace]
+      operationId: listOrganisationMembers
+      summary: The members of an organisation, read-only (new in 0.20.0)
+      description: |
+        For the OWNER and MANAGER of that organisation (the people who see all its work; the
+        dashboard's `organisations[].can_see_members`). Another member of the organisation gets
+        `403 FORBIDDEN`; anyone who is not a member gets `404 ORGANISATION_NOT_FOUND`, the same
+        as for an organisation that does not exist. `401` when not signed in.
+
+        Members whose membership was removed are not listed. No email address or phone
+        number is returned. Ordered by role (OWNER, MANAGER, AGENT, STAFF) then name. Inviting,
+        changing and removing members is not built. `Cache-Control: private, no-store`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The members.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganisationMembers"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: "`ORGANISATION_NOT_FOUND`: no such organisation, or the caller is not a member of it."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/me/dashboard:
+    get:
+      tags: [account]
+      operationId: getMyDashboard
+      summary: One role-aware summary for the signed-in account (new in 0.20.0)
+      description: |
+        Everything a client needs to draw the home page after sign-in without knowing role
+        rules. Any signed-in caller (`401` otherwise); never `403`. Every number and list is
+        scoped exactly as the endpoint it summarises (`GET /v1/agent/property-requests`,
+        `GET /v1/inbox/summary`, `GET /v1/inbox/appointments`, `GET /v1/me/listings`,
+        `GET /v1/me/property-requests`, `GET /v1/me/appointments`, `GET /v1/me/onboarding`), so
+        a dashboard never shows more than those. `Cache-Control: private, no-store`.
+
+        **`kind`** says which dashboard applies:
+        - `SEEKER`: only seeker roles (`CONSUMER`, `TENANT`) or none.
+        - `PROFESSIONAL_PENDING`: holds a professional, business or owner role and nothing is
+          approved yet (no membership, not an approved direct owner). `onboarding` and
+          `next_actions` say what to do.
+        - `PROFESSIONAL`: a verified member of at least one organisation (`organisations` lists
+          each, with the caller's role there). May also be a direct owner (`direct_owner`).
+        - `DIRECT_OWNER`: an approved `LANDLORD` or `PRIVATE_SELLER` with no organisation.
+        - `ADMIN`: an administrator's session. Everything else is empty and the only next
+          action is `OPEN_ADMIN_OVERVIEW` (use `GET /v1/admin/overview`).
+
+        **Counters** (`counters[]`, each `{key, label, value, group, target}`; a counter is
+        present only when its section applies; keys are stable, labels may change):
+
+        | key | group | present when |
+        | --- | --- | --- |
+        | `requests.new` (stage NEW_ENQUIRY), `requests.open` (not CONVERTED or CLOSED) | `requests` | `capabilities.receives_requests` |
+        | `requests.stage.<STAGE>` for each of the 8 stages, in pipeline order | `requests_by_stage` | `capabilities.receives_requests` |
+        | `business_enquiries.new` | `business_enquiries` | `capabilities.receives_business_enquiries` |
+        | `appointments.requested`, `appointments.reschedule_requested`, `appointments.upcoming_confirmed` | `appointments` | `capabilities.manages_appointments` |
+        | `listings.total`, `listings.status.PUBLISHED`, then `listings.status.<STATUS>` for every other status the caller has, alphabetically | `listings` | `capabilities.manages_listings` |
+        | `short_stays.calendar_stale` (PUBLISHED short stays whose calendar was never set or not changed for 30 days) | `listings` | the caller manages at least one short stay |
+        | `my_requests.total`, `my_requests.open` (not CLOSED), `my_requests.status.<STATUS>` for each customer status | `my_activity` | `SEEKER`, or anyone who sent a request while signed in |
+        | `my_appointments.upcoming`, `my_appointments.needs_reply` | `my_activity` | `SEEKER`, or anyone with an upcoming appointment of their own |
+
+        **Next actions** (`next_actions[]`, each `{code, text, target, count, role}`):
+        `RESPOND_TO_NEW_REQUESTS`, `FOLLOW_UP_REQUESTS`, `RESPOND_TO_BUSINESS_ENQUIRIES`,
+        `CONFIRM_APPOINTMENTS`, `REVIEW_RESCHEDULES`, `UPDATE_SHORT_STAY_CALENDARS`,
+        `REPLY_TO_APPOINTMENT` (each only when its count is above zero, with `count`),
+        `COMPLETE_ONBOARDING`, `UPDATE_ONBOARDING`, `AWAIT_VERIFICATION`, `REAPPLY_ONBOARDING`
+        (one per application in `DRAFT`, `CHANGES_REQUESTED`, `SUBMITTED`, `REJECTED`, with
+        `role`), `FIND_A_PROPERTY` (seekers), `OPEN_ADMIN_OVERVIEW` (admin sessions).
+        `needs_attention` is the sum of the `count`s.
+
+        **Targets** (`counters[].target`, `next_actions[].target`), each mapped by the client to
+        one of its own pages: `search`, `my_requests`, `my_appointments`, `onboarding`,
+        `requests`, `business_enquiries`, `appointments`, `listings`, `team`,
+        `admin_overview`.
+
+        **Recent items**: `recent.received_requests` (the 5 newest in the caller's inbox),
+        `recent.my_requests` (the 5 newest the caller sent), `recent.appointments` (the next 5
+        upcoming, soonest first, from both sides; `side` says which).
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The dashboard.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Dashboard"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/me/property-requests:
+    get:
+      tags: [account]
+      operationId: listMyPropertyRequests
+      summary: The property requests this account sent (new in 0.20.0)
+      description: |
+        The requests sent **while signed in** as this account (linked by account id). A request
+        sent as a guest is never linked, even when its email address is the account's. Newest
+        first. Any signed-in caller (`401` otherwise). `status_counts` lists every customer
+        status with the account's count, whatever the filter. Never returns the lead stage, an
+        internal note, the recipient or whether routing failed. `Cache-Control: private,
+        no-store`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - name: status
+          in: query
+          description: One customer status, or several separated by commas (or repeated).
+          schema:
+            type: string
+          examples:
+            several:
+              value: RECEIVED,IN_PROGRESS
+        - $ref: "#/components/parameters/RequestPage"
+        - $ref: "#/components/parameters/RequestPageSize"
+      responses:
+        "200":
+          description: One page (possibly empty).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CustomerPropertyRequestPage"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/me/property-requests/{id}:
+    parameters:
+      - $ref: "#/components/parameters/PropertyRequestId"
+    get:
+      tags: [account]
+      operationId: getMyPropertyRequest
+      summary: One property request this account sent, with its customer timeline (new in 0.20.0)
+      description: |
+        `404 PROPERTY_REQUEST_NOT_FOUND` for a request this account did not send (including
+        for its recipient: the receiving side uses `GET /v1/agent/property-requests/{id}`).
+        `timeline` holds `RECEIVED` and one `STATUS_CHANGED` entry each time the customer
+        status changed; stage moves that do not change it, notes and people are left out.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The request.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request]
+                properties:
+                  request:
+                    $ref: "#/components/schemas/CustomerPropertyRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/PropertyRequestNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/admin/overview:
+    get:
+      tags: [admin]
+      operationId: getAdminOverview
+      summary: The counts an administrator starts from (new in 0.20.0)
+      description: |
+        Requires an `admin` session holding any platform role (`401` / `403` otherwise). Each
+        role gets only the sections it covers; a section it may not see is **null** and is left
+        out of `sections`:
+        - `accounts` (names and email addresses of recent sign-ups): SUPER_ADMIN,
+          PLATFORM_ADMIN, SUPPORT. Administrator accounts are counted in `administrators`
+          only.
+        - `verifications`: whoever may open `GET /v1/admin/onboarding` (SUPER_ADMIN,
+          PLATFORM_ADMIN, MODERATOR, and MARKET_ADMIN for its own markets).
+        - `listings`: SUPER_ADMIN, PLATFORM_ADMIN, MODERATOR, and MARKET_ADMIN for its own
+          markets. A PUBLISHED listing whose period is over counts as EXPIRED.
+        - `requests` (with routing exceptions, which are not in `by_stage`): SUPER_ADMIN,
+          PLATFORM_ADMIN, SUPPORT, and MARKET_ADMIN for its own markets.
+
+        FINANCE_ADMIN and CONTENT_ADMIN get no section (nothing they work on is built).
+        `market_codes` is null when every country is counted. `Cache-Control: private,
+        no-store`.
+      security:
+        - cookieSession: []
+      responses:
+        "200":
+          description: The overview.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminOverview"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/admin/routing-exceptions:
+    get:
+      tags: [admin]
+      operationId: listRoutingExceptions
+      summary: Property requests nobody could receive (new in 0.20.0)
+      description: |
+        SUPER_ADMIN, PLATFORM_ADMIN, SUPPORT, and MARKET_ADMIN for its own markets, on an
+        `admin` session (`401` / `403` otherwise). The longest-waiting first. Items carry the
+        customer's `contact` so the request can be passed on by hand; reassigning a request to
+        a recipient is not built. `Cache-Control: private, no-store`.
+      security:
+        - cookieSession: []
+      parameters:
+        - name: state
+          in: query
+          schema:
+            type: string
+            enum: [OPEN, RESOLVED, ALL]
+            default: OPEN
+        - $ref: "#/components/parameters/RequestPage"
+        - $ref: "#/components/parameters/RequestPageSize"
+      responses:
+        "200":
+          description: One page (possibly empty).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoutingExceptionPage"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/admin/routing-exceptions/{id}/resolve:
+    parameters:
+      - $ref: "#/components/parameters/PropertyRequestId"
+    post:
+      tags: [admin]
+      operationId: resolveRoutingException
+      summary: Mark a routing exception as dealt with (new in 0.20.0)
+      description: |
+        Who may: as `GET /v1/admin/routing-exceptions`. A request that is not a routing
+        exception, or is in another market than a MARKET_ADMIN's, is `404
+        PROPERTY_REQUEST_NOT_FOUND`; one already resolved is `409 ALREADY_RESOLVED`. The request
+        stays a routing exception with no recipient; this only records that someone dealt with
+        it (timeline `ROUTING_EXCEPTION_RESOLVED`, outbox `PROPERTY_REQUEST_EXCEPTION_RESOLVED`,
+        an audit log line). The body is optional. Same rate limit as the request PATCH.
+      security:
+        - cookieSession: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                note:
+                  type: string
+                  maxLength: 2000
+                  description: What was done, for other administrators. Optional.
+      responses:
+        "200":
+          description: The resolved exception.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request]
+                properties:
+                  request:
+                    $ref: "#/components/schemas/RoutingException"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: "`FORBIDDEN` or `CSRF_ORIGIN`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          $ref: "#/components/responses/PropertyRequestNotFound"
+        "409":
+          description: "`ALREADY_RESOLVED`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalError"
         "504":
@@ -4451,10 +5023,12 @@ paths:
         signed-in caller may ask (`401` otherwise); a caller who receives nothing gets zeros,
         never `403`.
 
-        - `property_requests.new` and `business_enquiries.new`: the requests and enquiries the
-          caller can see in `GET /v1/agent/property-requests` and
-          `GET /v1/inbox/business-enquiries`. Neither has a read or lead status yet, so "new"
+        - `property_requests.new` (changed in 0.20.0): the requests the caller can see in
+          `GET /v1/agent/property-requests` whose lead stage is `NEW_ENQUIRY`, uncapped.
+        - `business_enquiries.new`: the enquiries the caller can see in
+          `GET /v1/inbox/business-enquiries`. They have no read or lead status yet, so "new"
           is **every** one of them, capped at 100.
+        - `GET /v1/me/dashboard` uses these same numbers.
         - `appointments.requested` and `appointments.reschedule_requested`: appointments in
           those statuses (whoever proposed the new time). `appointments.upcoming_confirmed`:
           `CONFIRMED` appointments that have not ended.
@@ -4510,6 +5084,31 @@ components:
         minimum: 1
         maximum: 100
         default: 20
+    RequestPage:
+      name: page
+      in: query
+      description: Page number from 1. A page past the end is an empty `items` array.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100000
+        default: 1
+    RequestPageSize:
+      name: page_size
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    PropertyRequestId:
+      name: id
+      in: path
+      required: true
+      description: The `request_id`. A value that is not a UUID is `404 PROPERTY_REQUEST_NOT_FOUND`.
+      schema:
+        type: string
+        format: uuid
     ReferenceMarket:
       name: market
       in: query
@@ -4578,6 +5177,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ReceivedAppointmentEnvelope"
+    PropertyRequestNotFound:
+      description: "`PROPERTY_REQUEST_NOT_FOUND`: no such request, or it is not the caller's to see (the same answer)."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
     AppointmentNotFound:
       description: "`APPOINTMENT_NOT_FOUND`: no such appointment, or it is not the caller's to see."
       content:
@@ -6552,12 +7157,25 @@ components:
         - listing
         - request_type
         - status
+        - stage
+        - stage_label
+        - stage_changed_at
         - message
         - preferred_contact_method
         - contact
         - created_at
-      additionalProperties: false
+      # No additionalProperties: false here (changed in 0.20.0), because
+      # ReceivedPropertyRequest extends this schema; list items carry exactly these fields.
       properties:
+        stage:
+          $ref: "#/components/schemas/LeadStage"
+        stage_label:
+          type: string
+          description: New in 0.20.0. The stage's wording, for example `New enquiry`.
+        stage_changed_at:
+          type: [string, "null"]
+          format: date-time
+          description: New in 0.20.0. When the stage last changed; null until somebody moves the request.
         stay:
           oneOf:
             - $ref: "#/components/schemas/StayDetails"
@@ -6582,11 +7200,11 @@ components:
             named to its own advertiser) and null only when the listing has no public page.
         request_type:
           type: string
-          enum: [ENQUIRY, PROPERTY_INFORMATION, VIEWING_REQUEST, CONSULTATION_REQUEST]
+          enum: [ENQUIRY, PROPERTY_INFORMATION, VIEWING_REQUEST, CONSULTATION_REQUEST, STAY_REQUEST]
         status:
           type: string
           enum: [RECEIVED]
-          description: Internal status. Only RECEIVED can appear in an organisation inbox today.
+          description: Internal routing status. Only RECEIVED can appear in an inbox. The work done on a request is its `stage`.
         message:
           type: string
         preferred_contact_method:
@@ -6609,6 +7227,747 @@ components:
         created_at:
           type: string
           format: date-time
+
+    LeadStage:
+      type: string
+      description: |
+        New in 0.20.0. The lead stage of a property request, in pipeline order, with its
+        label: NEW_ENQUIRY "New enquiry", ASSIGNED "Assigned", CONTACTED "Contacted",
+        VIEWING_REQUESTED "Viewing requested", VIEWING_SCHEDULED "Viewing scheduled",
+        FOLLOW_UP_REQUIRED "Follow-up required", CONVERTED "Converted", CLOSED "Closed".
+      enum: [NEW_ENQUIRY, ASSIGNED, CONTACTED, VIEWING_REQUESTED, VIEWING_SCHEDULED, FOLLOW_UP_REQUIRED, CONVERTED, CLOSED]
+
+    StageCount:
+      type: object
+      additionalProperties: false
+      required: [stage, label, count]
+      properties:
+        stage:
+          $ref: "#/components/schemas/LeadStage"
+        label:
+          type: string
+        count:
+          type: integer
+
+    ReceivedPropertyRequestPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, page_size, total, total_pages, stage_counts]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrganisationPropertyRequest"
+        page:
+          type: integer
+        page_size:
+          type: integer
+        total:
+          type: integer
+        total_pages:
+          type: integer
+        stage_counts:
+          type: array
+          description: All 8 stages, in pipeline order, counted under every filter except `stage`.
+          items:
+            $ref: "#/components/schemas/StageCount"
+
+    ReceivedPropertyRequest:
+      description: A received request in full, as the receiving side sees it (new in 0.20.0).
+      unevaluatedProperties: false
+      allOf:
+        - $ref: "#/components/schemas/OrganisationPropertyRequest"
+        - type: object
+          required: [preferred_slot_utc, updated_at, allowed_stages, timeline, notes]
+          properties:
+            preferred_slot_utc:
+              type: [string, "null"]
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+            allowed_stages:
+              type: array
+              description: The stages `PATCH` accepts from the current stage (may be empty).
+              items:
+                type: object
+                additionalProperties: false
+                required: [stage, label]
+                properties:
+                  stage:
+                    $ref: "#/components/schemas/LeadStage"
+                  label:
+                    type: string
+            timeline:
+              type: array
+              description: Oldest first.
+              items:
+                type: object
+                additionalProperties: false
+                required: [event, label, from_stage, to_stage, actor, actor_name, at]
+                properties:
+                  event:
+                    type: string
+                    enum: [REQUEST_RECEIVED, STAGE_CHANGED, NOTE_ADDED]
+                  label:
+                    type: string
+                    description: "`Request received`, `Moved to <stage label>` or `Note added`."
+                  from_stage:
+                    oneOf:
+                      - $ref: "#/components/schemas/LeadStage"
+                      - type: "null"
+                    description: STAGE_CHANGED only.
+                  to_stage:
+                    oneOf:
+                      - $ref: "#/components/schemas/LeadStage"
+                      - type: "null"
+                    description: STAGE_CHANGED only.
+                  actor:
+                    type: string
+                    enum: [CUSTOMER, PROFESSIONAL, SYSTEM]
+                  actor_name:
+                    type: [string, "null"]
+                    description: Who did it (null for the customer's own entry).
+                  at:
+                    type: string
+                    format: date-time
+            notes:
+              type: array
+              description: Internal notes, oldest first. Never shown to the customer.
+              items:
+                type: object
+                additionalProperties: false
+                required: [id, body, author_name, mine, created_at]
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  body:
+                    type: string
+                  author_name:
+                    type: string
+                  mine:
+                    type: boolean
+                    description: True for a note the caller wrote.
+                  created_at:
+                    type: string
+                    format: date-time
+
+    ReceivedPropertyRequestEnvelope:
+      type: object
+      additionalProperties: false
+      required: [request]
+      properties:
+        request:
+          $ref: "#/components/schemas/ReceivedPropertyRequest"
+
+    CustomerRequestStatus:
+      type: string
+      description: |
+        New in 0.20.0. What the customer is told about a request, derived from its lead stage:
+        RECEIVED "Received" (NEW_ENQUIRY, and a request nobody could receive); IN_PROGRESS
+        "In progress" (ASSIGNED, VIEWING_REQUESTED, FOLLOW_UP_REQUIRED); RESPONDED "Responded"
+        (CONTACTED); VIEWING_SCHEDULED "Viewing scheduled"; CLOSED "Closed" (CONVERTED, CLOSED).
+      enum: [RECEIVED, IN_PROGRESS, RESPONDED, VIEWING_SCHEDULED, CLOSED]
+
+    CustomerPropertyRequest:
+      type: object
+      description: |
+        A request as the customer who sent it sees it (new in 0.20.0). Never the lead stage,
+        the recipient, an internal note or whether routing failed.
+      additionalProperties: false
+      required: [request_id, reference, listing_id, listing, request_type, status, status_label, message, preferred_contact_method, preferred_slot_utc, stay, created_at]
+      properties:
+        request_id:
+          type: string
+          format: uuid
+        reference:
+          type: string
+        listing_id:
+          type: string
+          format: uuid
+        listing:
+          oneOf:
+            - $ref: "#/components/schemas/ListingSummary"
+            - type: "null"
+          description: Null when the listing no longer has a public page.
+        request_type:
+          type: string
+          enum: [ENQUIRY, PROPERTY_INFORMATION, VIEWING_REQUEST, CONSULTATION_REQUEST, STAY_REQUEST]
+        status:
+          $ref: "#/components/schemas/CustomerRequestStatus"
+        status_label:
+          type: string
+        message:
+          type: string
+        preferred_contact_method:
+          type: string
+          enum: [EMAIL, PHONE, WHATSAPP]
+        preferred_slot_utc:
+          type: [string, "null"]
+          format: date-time
+        stay:
+          oneOf:
+            - $ref: "#/components/schemas/StayDetails"
+            - type: "null"
+        created_at:
+          type: string
+          format: date-time
+        timeline:
+          type: array
+          description: Only in `GET /v1/me/property-requests/{id}` (absent from lists). Oldest first.
+          items:
+            type: object
+            additionalProperties: false
+            required: [event, status, status_label, at]
+            properties:
+              event:
+                type: string
+                enum: [RECEIVED, STATUS_CHANGED]
+              status:
+                $ref: "#/components/schemas/CustomerRequestStatus"
+              status_label:
+                type: string
+              at:
+                type: string
+                format: date-time
+
+    CustomerPropertyRequestPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, page_size, total, total_pages, status_counts]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CustomerPropertyRequest"
+        page:
+          type: integer
+        page_size:
+          type: integer
+        total:
+          type: integer
+        total_pages:
+          type: integer
+        status_counts:
+          type: array
+          description: Every customer status, in order, with the account's count (whatever the filter).
+          items:
+            type: object
+            additionalProperties: false
+            required: [status, label, count]
+            properties:
+              status:
+                $ref: "#/components/schemas/CustomerRequestStatus"
+              label:
+                type: string
+              count:
+                type: integer
+
+    OrganisationMembers:
+      type: object
+      additionalProperties: false
+      required: [organisation, items]
+      properties:
+        organisation:
+          type: object
+          additionalProperties: false
+          required: [id, name, kind]
+          properties:
+            id:
+              type: string
+              format: uuid
+            name:
+              type: string
+            kind:
+              type: string
+              description: The organisation kind, for example `AGENCY`, `LAW_FIRM`, `PROPERTY_MANAGER`.
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [user_id, name, role, role_label, status, status_label, market_code, is_you]
+            properties:
+              user_id:
+                type: string
+                format: uuid
+              name:
+                type: string
+              role:
+                type: string
+                enum: [OWNER, MANAGER, AGENT, STAFF]
+              role_label:
+                type: string
+                description: In an agency `Agency Principal`, `Agency Administrator`, `Estate Agent`, `Agency Staff`; elsewhere `Principal`, `Manager`, `Estate Agent`, `Staff`.
+              status:
+                type: string
+                enum: [ACTIVE, INVITED, SUSPENDED]
+                description: SUSPENDED when the member's account is not active.
+              status_label:
+                type: string
+              market_code:
+                type: string
+              is_you:
+                type: boolean
+
+    DashboardCounter:
+      type: object
+      additionalProperties: false
+      required: [key, label, value, group, target]
+      properties:
+        key:
+          type: string
+          description: Stable. See `GET /v1/me/dashboard` for every key.
+          examples: [requests.new, requests.stage.FOLLOW_UP_REQUIRED, listings.status.PUBLISHED]
+        label:
+          type: string
+        value:
+          type: integer
+        group:
+          type: string
+          enum: [my_activity, requests, requests_by_stage, business_enquiries, appointments, listings]
+        target:
+          oneOf:
+            - $ref: "#/components/schemas/DashboardTarget"
+            - type: "null"
+
+    DashboardTarget:
+      type: string
+      description: Where a counter or an action leads; the client maps each to one of its own pages.
+      enum: [search, my_requests, my_appointments, onboarding, requests, business_enquiries, appointments, listings, team, admin_overview]
+
+    DashboardAction:
+      type: object
+      additionalProperties: false
+      required: [code, text, target, count, role]
+      properties:
+        code:
+          type: string
+          enum:
+            - RESPOND_TO_NEW_REQUESTS
+            - FOLLOW_UP_REQUESTS
+            - RESPOND_TO_BUSINESS_ENQUIRIES
+            - CONFIRM_APPOINTMENTS
+            - REVIEW_RESCHEDULES
+            - UPDATE_SHORT_STAY_CALENDARS
+            - REPLY_TO_APPOINTMENT
+            - COMPLETE_ONBOARDING
+            - UPDATE_ONBOARDING
+            - AWAIT_VERIFICATION
+            - REAPPLY_ONBOARDING
+            - FIND_A_PROPERTY
+            - OPEN_ADMIN_OVERVIEW
+        text:
+          type: string
+        target:
+          $ref: "#/components/schemas/DashboardTarget"
+        count:
+          type: [integer, "null"]
+          description: How many items wait, or null when the action is not about a number.
+        role:
+          type: [string, "null"]
+          description: The account role an onboarding action is about (use with `/v1/me/onboarding/{role}`), else null.
+
+    DashboardAppointment:
+      type: object
+      additionalProperties: false
+      required: [id, reference, type, status, status_label, start_utc, timezone, listing, side]
+      properties:
+        id:
+          type: string
+          format: uuid
+        reference:
+          type: string
+        type:
+          $ref: "#/components/schemas/AppointmentType"
+        status:
+          $ref: "#/components/schemas/AppointmentStatus"
+        status_label:
+          type: string
+        start_utc:
+          type: string
+          format: date-time
+        timezone:
+          type: string
+        listing:
+          oneOf:
+            - $ref: "#/components/schemas/ListingSummary"
+            - type: "null"
+        side:
+          type: string
+          enum: [CUSTOMER, PROFESSIONAL]
+          description: CUSTOMER when the caller asked for it (open with `/v1/me/appointments/{id}`), PROFESSIONAL when the caller receives it (`/v1/inbox/appointments/{id}`).
+
+    Dashboard:
+      type: object
+      additionalProperties: false
+      required: [kind, name, roles, organisations, direct_owner, capabilities, onboarding, counters, needs_attention, next_actions, recent]
+      properties:
+        kind:
+          type: string
+          enum: [SEEKER, PROFESSIONAL_PENDING, PROFESSIONAL, DIRECT_OWNER, ADMIN]
+        name:
+          type: string
+        roles:
+          type: array
+          description: The caller's account roles.
+          items:
+            type: object
+            additionalProperties: false
+            required: [role, label, status]
+            properties:
+              role:
+                type: string
+              label:
+                type: string
+              status:
+                type: string
+                enum: [ACTIVE, PENDING_VERIFICATION, REJECTED, REVOKED]
+        organisations:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, name, kind, market_code, role, role_label, can_see_members, can_assign_work, can_manage_listings]
+            properties:
+              id:
+                type: string
+                format: uuid
+              name:
+                type: string
+              kind:
+                type: string
+              market_code:
+                type: string
+              role:
+                type: string
+                enum: [OWNER, MANAGER, AGENT, STAFF]
+              role_label:
+                type: string
+              can_see_members:
+                type: boolean
+                description: "`GET /v1/agent/organisations/{id}/members` is open to the caller."
+              can_assign_work:
+                type: boolean
+                description: The caller sees all of the organisation's requests and appointments.
+              can_manage_listings:
+                type: boolean
+        direct_owner:
+          type: boolean
+          description: The caller is an approved landlord or property seller.
+        capabilities:
+          type: object
+          additionalProperties: false
+          required: [receives_requests, receives_business_enquiries, manages_appointments, manages_listings, sees_team]
+          properties:
+            receives_requests:
+              type: boolean
+            receives_business_enquiries:
+              type: boolean
+            manages_appointments:
+              type: boolean
+            manages_listings:
+              type: boolean
+            sees_team:
+              type: boolean
+        onboarding:
+          type: array
+          description: One entry per role with an onboarding application.
+          items:
+            type: object
+            additionalProperties: false
+            required: [role, role_label, status, status_label, can_submit, can_edit, missing_fields, missing_documents, decision_reason, submitted_at]
+            properties:
+              role:
+                type: string
+              role_label:
+                type: string
+              status:
+                $ref: "#/components/schemas/OnboardingStatus"
+              status_label:
+                type: string
+              can_submit:
+                type: boolean
+              can_edit:
+                type: boolean
+              missing_fields:
+                type: integer
+              missing_documents:
+                type: integer
+              decision_reason:
+                type: [string, "null"]
+              submitted_at:
+                type: [string, "null"]
+                format: date-time
+        counters:
+          type: array
+          items:
+            $ref: "#/components/schemas/DashboardCounter"
+        needs_attention:
+          type: integer
+          description: The sum of `next_actions[].count` (a badge for the dashboard link).
+        next_actions:
+          type: array
+          items:
+            $ref: "#/components/schemas/DashboardAction"
+        recent:
+          type: object
+          additionalProperties: false
+          required: [received_requests, my_requests, appointments]
+          properties:
+            received_requests:
+              type: array
+              maxItems: 5
+              items:
+                $ref: "#/components/schemas/OrganisationPropertyRequest"
+            my_requests:
+              type: array
+              maxItems: 5
+              items:
+                $ref: "#/components/schemas/CustomerPropertyRequest"
+            appointments:
+              type: array
+              maxItems: 5
+              items:
+                $ref: "#/components/schemas/DashboardAppointment"
+
+    AdminStatusCount:
+      type: object
+      additionalProperties: false
+      required: [status, label, count]
+      properties:
+        status:
+          type: string
+        label:
+          type: string
+        count:
+          type: integer
+
+    AdminOverview:
+      type: object
+      additionalProperties: false
+      required: [roles, sections, accounts, verifications, listings, requests]
+      properties:
+        roles:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [role, market_code]
+            properties:
+              role:
+                type: string
+              market_code:
+                type: [string, "null"]
+        sections:
+          type: array
+          description: The sections that are not null, in display order.
+          items:
+            type: string
+            enum: [accounts, verifications, listings, requests]
+        accounts:
+          oneOf:
+            - type: "null"
+            - type: object
+              additionalProperties: false
+              required: [total, administrators, unverified, last_7_days, last_30_days, by_status, by_role, recent]
+              properties:
+                total:
+                  type: integer
+                  description: Accounts that hold no platform role.
+                administrators:
+                  type: integer
+                unverified:
+                  type: integer
+                  description: Email address not verified yet.
+                last_7_days:
+                  type: integer
+                last_30_days:
+                  type: integer
+                by_status:
+                  type: array
+                  description: ACTIVE, SUSPENDED, DELETED.
+                  items:
+                    $ref: "#/components/schemas/AdminStatusCount"
+                by_role:
+                  type: array
+                  description: One entry per account role and role status that occurs.
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [role, label, status, count]
+                    properties:
+                      role:
+                        type: string
+                      label:
+                        type: string
+                      status:
+                        type: string
+                        enum: [ACTIVE, PENDING_VERIFICATION, REJECTED, REVOKED]
+                      count:
+                        type: integer
+                recent:
+                  type: array
+                  maxItems: 10
+                  description: The newest sign-ups, newest first.
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [id, name, email, email_verified, roles, created_at]
+                    properties:
+                      id:
+                        type: string
+                        format: uuid
+                      name:
+                        type: string
+                      email:
+                        type: string
+                        format: email
+                      email_verified:
+                        type: boolean
+                      roles:
+                        type: array
+                        items:
+                          type: string
+                      created_at:
+                        type: string
+                        format: date-time
+        verifications:
+          oneOf:
+            - type: "null"
+            - type: object
+              additionalProperties: false
+              required: [waiting, by_status]
+              properties:
+                waiting:
+                  type: integer
+                  description: Applications SUBMITTED and not decided.
+                by_status:
+                  type: array
+                  description: SUBMITTED, CHANGES_REQUESTED, APPROVED, REJECTED, DRAFT.
+                  items:
+                    $ref: "#/components/schemas/AdminStatusCount"
+        listings:
+          oneOf:
+            - type: "null"
+            - type: object
+              additionalProperties: false
+              required: [market_codes, total, by_status]
+              properties:
+                market_codes:
+                  type: [array, "null"]
+                  items:
+                    type: string
+                total:
+                  type: integer
+                by_status:
+                  type: array
+                  description: DRAFT, PENDING_REVIEW, PUBLISHED, PAUSED, EXPIRED, SOLD, LET, CLOSED, then any other status found.
+                  items:
+                    $ref: "#/components/schemas/AdminStatusCount"
+        requests:
+          oneOf:
+            - type: "null"
+            - type: object
+              additionalProperties: false
+              required: [market_codes, total, last_7_days, last_30_days, by_stage, routing_exceptions]
+              properties:
+                market_codes:
+                  type: [array, "null"]
+                  items:
+                    type: string
+                total:
+                  type: integer
+                last_7_days:
+                  type: integer
+                last_30_days:
+                  type: integer
+                by_stage:
+                  type: array
+                  description: Routed requests only, all 8 stages in pipeline order.
+                  items:
+                    $ref: "#/components/schemas/StageCount"
+                routing_exceptions:
+                  type: object
+                  additionalProperties: false
+                  required: [open, resolved]
+                  properties:
+                    open:
+                      type: integer
+                    resolved:
+                      type: integer
+
+    RoutingException:
+      type: object
+      additionalProperties: false
+      required: [request_id, reference, listing_id, listing, request_type, message, preferred_contact_method, contact, stay, created_at, state, resolved_at, resolution_note]
+      properties:
+        request_id:
+          type: string
+          format: uuid
+        reference:
+          type: string
+        listing_id:
+          type: string
+          format: uuid
+        listing:
+          oneOf:
+            - $ref: "#/components/schemas/ListingSummary"
+            - type: "null"
+        request_type:
+          type: string
+          enum: [ENQUIRY, PROPERTY_INFORMATION, VIEWING_REQUEST, CONSULTATION_REQUEST, STAY_REQUEST]
+        message:
+          type: string
+        preferred_contact_method:
+          type: string
+          enum: [EMAIL, PHONE, WHATSAPP]
+        contact:
+          type: object
+          additionalProperties: false
+          required: [name, email, phone]
+          properties:
+            name:
+              type: string
+            email:
+              type: string
+              format: email
+            phone:
+              type: [string, "null"]
+        stay:
+          oneOf:
+            - $ref: "#/components/schemas/StayDetails"
+            - type: "null"
+        created_at:
+          type: string
+          format: date-time
+        state:
+          type: string
+          enum: [OPEN, RESOLVED]
+        resolved_at:
+          type: [string, "null"]
+          format: date-time
+        resolution_note:
+          type: [string, "null"]
+
+    RoutingExceptionPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, page_size, total, total_pages]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RoutingException"
+        page:
+          type: integer
+        page_size:
+          type: integer
+        total:
+          type: integer
+        total_pages:
+          type: integer
 
     Market:
       type: object

@@ -719,6 +719,10 @@ type Store interface {
 	PublishedSlugs(ctx context.Context, now time.Time) ([]SlugEntry, error)
 	// PublicCounts returns the listing numbers of GET /v1/trust/summary.
 	PublicCounts(ctx context.Context, now time.Time) (PublicCounts, error)
+	// CountByStatus returns the number of listings per status in the
+	// countries (nil: every country), for the administrators' overview. A
+	// PUBLISHED listing whose publication period is over counts as EXPIRED.
+	CountByStatus(ctx context.Context, marketCodes []string, now time.Time) (map[string]int, error)
 }
 
 // PublicCounts are the listing numbers of the trust summary.

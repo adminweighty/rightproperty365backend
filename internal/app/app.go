@@ -15,6 +15,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/availability"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
+	"rightproperty365.com/backend/internal/modules/dashboard"
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/health"
 	"rightproperty365.com/backend/internal/modules/identity"
@@ -55,6 +56,12 @@ const (
 	// refilled at 30 per minute.
 	calendarChangesPerMinute = 30
 	calendarChangesBurst     = 30
+
+	// Per-IP limit on working a property request (PATCH the stage, POST a
+	// note) and on resolving a routing exception, its own bucket: bursts of
+	// 60, refilled at 60 per minute.
+	requestWorkPerMinute = 60
+	requestWorkBurst     = 60
 
 	// Per-IP limit shared by every POST /v1/auth/* route (its own bucket,
 	// separate from property requests): bursts of 20, refilled at 20 per minute.
@@ -224,6 +231,8 @@ func NewRouter(d Deps) (http.Handler, error) {
 	enquiriesSvc := businessenquiries.NewService(d.Enquiries, enquiryOpts...)
 	requestsH := propertyrequests.NewHandler(requestsSvc, logger)
 	requestsH.SetListingNames(listingNames{svc: listingsSvc})
+	requestsH.SetMarkets(marketIDs(d.Markets))
+	requestWorkLimiter := httpx.NewRateLimiter(requestWorkPerMinute, requestWorkBurst)
 	enquiriesH := businessenquiries.NewHandler(enquiriesSvc, logger)
 	appointmentsH := appointments.NewHandler(appointmentsSvc, inboxCounts{requests: requestsSvc, enquiries: enquiriesSvc}, logger)
 	appointmentLimiter := httpx.NewRateLimiter(appointmentsPerMinute, appointmentsBurst)
@@ -235,6 +244,23 @@ func NewRouter(d Deps) (http.Handler, error) {
 		onboardingSvc.SetClock(d.Now)
 	}
 	onboardingH := onboarding.NewHandler(onboardingSvc, logger)
+
+	// Dashboards: one role-aware summary per account, an organisation's
+	// members, and the administrators' overview. Every number is read through
+	// the module that owns it, with that module's own scoping.
+	dashboardH := dashboard.NewHandler(dashboard.Sources{
+		Requests: requestsSvc, RequestViews: requestsH, Appointments: appointmentsH,
+		Onboarding: onboardingSvc, Listings: availabilitySvc, People: d.Identity,
+		RoleLabels: onboardingVocabulary{ref: referenceSvc, markets: d.Markets}.RoleLabels,
+		ListingCounts: func(ctx context.Context, marketCodes []string) (map[string]int, error) {
+			now := time.Now()
+			if d.Now != nil {
+				now = d.Now()
+			}
+			return d.Listings.CountByStatus(ctx, marketCodes, now.UTC())
+		},
+		MarketIDs: marketIDs(d.Markets), Now: d.Now,
+	}, logger)
 	uploadLimiter := httpx.NewRateLimiter(UploadRequestsPerMinute, UploadRequestsBurst)
 
 	requestLimiter := httpx.NewRateLimiter(propertyRequestsPerMinute, propertyRequestsBurst)
@@ -334,6 +360,19 @@ func NewRouter(d Deps) (http.Handler, error) {
 
 		r.With(auth.RequireAuth).Get("/me", identityH.Me)
 
+		// One role-aware summary for the signed-in account: which dashboard
+		// applies, counters, next actions and recent items, each scoped as
+		// the endpoint it summarises.
+		r.With(auth.RequireAuth).Get("/me/dashboard", dashboardH.Me)
+
+		// The requests this account sent while signed in, as their customer
+		// sees them: never the lead stage, an internal note or who handles it.
+		r.Route("/me/property-requests", func(r chi.Router) {
+			r.Use(auth.RequireAuth)
+			r.Get("/", requestsH.Mine)
+			r.Get("/{id}", requestsH.MineOne)
+		})
+
 		// The lister's side: the listings the caller may manage (read-only;
 		// creating and editing listings is not built) and the availability
 		// calendar and stay rules of the short stays among them. The handler
@@ -418,13 +457,37 @@ func NewRouter(d Deps) (http.Handler, error) {
 				r.Post("/{id}/reject", onboardingH.AdminReject)
 				r.Post("/{id}/request-changes", onboardingH.AdminRequestChanges)
 			})
+
+			// The counts an administrator starts from. Every platform role
+			// may ask; the handler returns only the sections its role covers.
+			r.With(auth.RequirePlatformRole(auth.AllPlatformRoles()...)).Get("/overview", dashboardH.Overview)
+
+			// Requests nobody could receive: SUPER_ADMIN, PLATFORM_ADMIN,
+			// SUPPORT, and MARKET_ADMIN for its own markets (the handler
+			// limits it; another market's request is 404).
+			r.Route("/routing-exceptions", func(r chi.Router) {
+				r.Use(auth.RequirePlatformRole(propertyrequests.ExceptionAdminRoles()...))
+				r.Get("/", requestsH.Exceptions)
+				r.With(requestWorkLimiter.Middleware).Post("/{id}/resolve", requestsH.ResolveException)
+			})
 		})
 
 		// Request inbox for organisation members and direct sellers. The
 		// handler decides who may enter (membership, direct seller, or a
 		// declared PRIVATE_SELLER) and scopes the data to the caller's own
 		// organisations, role and listings.
-		r.With(auth.RequireAuth).Get("/agent/property-requests", requestsH.Inbox)
+		r.Route("/agent/property-requests", func(r chi.Router) {
+			r.Use(auth.RequireAuth)
+			r.Get("/", requestsH.Inbox)
+			r.Get("/{id}", requestsH.Get)
+			// Working a request: move its lead stage, add an internal note.
+			r.With(requestWorkLimiter.Middleware).Patch("/{id}", requestsH.Patch)
+			r.With(requestWorkLimiter.Middleware).Post("/{id}/notes", requestsH.AddNote)
+		})
+
+		// The members of an organisation, read-only, for its OWNER and
+		// MANAGER. The handler answers 404 to anyone who is not a member.
+		r.With(auth.RequireAuth).Get("/agent/organisations/{id}/members", dashboardH.Members)
 	})
 	return r, nil
 }

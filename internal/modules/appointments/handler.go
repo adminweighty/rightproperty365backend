@@ -690,39 +690,117 @@ func (h *Handler) Assign(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-type newCount struct {
+// NewCount is the number of new items in an inbox.
+type NewCount struct {
 	New int `json:"new"`
 }
 
-type summaryResponse struct {
-	PropertyRequests  newCount `json:"property_requests"`
-	BusinessEnquiries newCount `json:"business_enquiries"`
+// Summary is the body of GET /v1/inbox/summary.
+type Summary struct {
+	PropertyRequests  NewCount `json:"property_requests"`
+	BusinessEnquiries NewCount `json:"business_enquiries"`
 	Appointments      Counts   `json:"appointments"`
 }
 
-// Summary serves GET /v1/inbox/summary: the numbers behind the app's badges,
-// each scoped exactly as its own inbox. Any signed-in caller may ask; someone
+// SummaryFor returns the numbers behind the app's badges for a caller, each
+// scoped exactly as its own inbox. GET /v1/me/dashboard uses the same numbers.
+func (h *Handler) SummaryFor(ctx context.Context, p *auth.Principal) (Summary, error) {
+	var out Summary
+	var err error
+	if out.Appointments, err = h.svc.Count(ctx, ScopeOf(p)); err != nil {
+		return Summary{}, err
+	}
+	if h.inbox != nil {
+		if out.PropertyRequests.New, err = h.inbox.NewPropertyRequests(ctx, p); err != nil {
+			return Summary{}, err
+		}
+		if out.BusinessEnquiries.New, err = h.inbox.NewBusinessEnquiries(ctx, p); err != nil {
+			return Summary{}, err
+		}
+	}
+	return out, nil
+}
+
+// Summary serves GET /v1/inbox/summary. Any signed-in caller may ask; someone
 // who receives nothing gets zeros.
 func (h *Handler) Summary(w http.ResponseWriter, r *http.Request) {
 	p, ok := h.customer(w, r)
 	if !ok {
 		return
 	}
-	var out summaryResponse
-	var err error
-	if out.Appointments, err = h.svc.Count(r.Context(), ScopeOf(p)); err != nil {
+	out, err := h.SummaryFor(r.Context(), p)
+	if err != nil {
 		h.fail(w, r, err)
 		return
 	}
-	if h.inbox != nil {
-		if out.PropertyRequests.New, err = h.inbox.NewPropertyRequests(r.Context(), p); err != nil {
-			h.fail(w, r, err)
-			return
-		}
-		if out.BusinessEnquiries.New, err = h.inbox.NewBusinessEnquiries(r.Context(), p); err != nil {
-			h.fail(w, r, err)
-			return
+	httpx.WriteJSON(w, http.StatusOK, out)
+}
+
+// Brief is an appointment in a dashboard's short list.
+type Brief struct {
+	ID          uuid.UUID    `json:"id"`
+	Reference   string       `json:"reference"`
+	Type        string       `json:"type"`
+	Status      string       `json:"status"`
+	StatusLabel string       `json:"status_label"`
+	StartUTC    time.Time    `json:"start_utc"`
+	Timezone    string       `json:"timezone"`
+	Listing     *listingView `json:"listing"`
+	// Side says whose list it is from: CUSTOMER (the caller asked for it) or
+	// PROFESSIONAL (the caller receives it).
+	Side string `json:"side"`
+}
+
+func briefs(list []Appointment, side string) []Brief {
+	out := make([]Brief, 0, len(list))
+	for _, a := range list {
+		v := base(a)
+		out = append(out, Brief{
+			ID: v.ID, Reference: v.Reference, Type: v.Type, Status: v.Status, StatusLabel: v.StatusLabel,
+			StartUTC: v.StartUTC, Timezone: v.Timezone, Listing: v.Listing, Side: side,
+		})
+	}
+	return out
+}
+
+// NextReceived returns the caller's next upcoming appointments as a
+// professional, soonest first, scoped as GET /v1/inbox/appointments.
+func (h *Handler) NextReceived(ctx context.Context, p *auth.Principal, limit int) ([]Brief, error) {
+	scope := ScopeOf(p)
+	if scope.Empty() {
+		return []Brief{}, nil
+	}
+	list, _, err := h.svc.List(ctx, ListFilter{Scope: &scope, When: WhenUpcoming, Ascending: true, Page: 1, PageSize: limit})
+	if err != nil {
+		return nil, err
+	}
+	return briefs(list, PartyProfessional), nil
+}
+
+// MineSummary is what a customer's dashboard shows of their appointments.
+type MineSummary struct {
+	// Upcoming is the number of appointments still ahead.
+	Upcoming int
+	// NeedsReply is how many of them wait for the customer to accept or
+	// decline a new time the professional proposed.
+	NeedsReply int
+	Next       []Brief
+}
+
+// MineSummaryFor returns the caller's own upcoming appointments, soonest
+// first, scoped as GET /v1/me/appointments.
+func (h *Handler) MineSummaryFor(ctx context.Context, p *auth.Principal, limit int) (MineSummary, error) {
+	list, total, err := h.svc.List(ctx, ListFilter{CustomerUserID: &p.UserID, When: WhenUpcoming, Ascending: true, Page: 1, PageSize: MaxPageSize})
+	if err != nil {
+		return MineSummary{}, err
+	}
+	out := MineSummary{Upcoming: total}
+	now := h.svc.now()
+	for _, a := range list {
+		if proposedAhead(a, PartyProfessional, now) {
+			out.NeedsReply++
 		}
 	}
-	httpx.WriteJSON(w, http.StatusOK, summaryResponse(out))
+	out.Next = briefs(list[:min(limit, len(list))], PartyCustomer)
+	return out, nil
 }

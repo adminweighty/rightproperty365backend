@@ -3,8 +3,6 @@ package propertyrequests
 import (
 	"context"
 	"fmt"
-	"slices"
-	"sort"
 	"sync"
 	"time"
 
@@ -40,6 +38,9 @@ type MemoryStore struct {
 	activity []MemoryActivityEntry
 	outbox   []MemoryOutboxEvent
 	sink     outbox.Sink
+	// work is the working state of each request (see memory_work.go).
+	work  map[uuid.UUID]*memoryWork
+	notes []Note
 	// appointments writes the appointment that belongs to a request; it is
 	// called under the store lock so both are stored or neither is.
 	appointments func(NewRequest) error
@@ -68,6 +69,11 @@ type MemoryTimelineEntry struct {
 	EventType string
 	ActorType string
 	CreatedAt time.Time
+	// Set for the entries written after creation (see work.go).
+	ActorUserID *uuid.UUID
+	ActorName   string
+	FromStage   string
+	ToStage     string
 }
 
 // MemoryActivityEntry mirrors a customer_activity row.
@@ -98,6 +104,7 @@ func NewMemoryStore() *MemoryStore {
 		listings: make(map[uuid.UUID]Listing),
 		byKey:    make(map[string]Record),
 		refs:     make(map[string]struct{}),
+		work:     make(map[uuid.UUID]*memoryWork),
 	}
 	org, seller := SeedOrganisationID, SeedSellerUserID
 	for n := 1; n <= 5; n++ {
@@ -201,57 +208,6 @@ func (s *MemoryStore) Create(_ context.Context, req NewRequest) (Record, bool, e
 		})
 	}
 	return rec, true, nil
-}
-
-// ListInbox implements Store with the same visibility rule as the Postgres query.
-func (s *MemoryStore) ListInbox(_ context.Context, scope InboxScope) ([]InboxItem, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	items := []InboxItem{}
-	for _, req := range s.requests {
-		if req.Recipient == nil {
-			continue // routing exception: in nobody's inbox
-		}
-		assignee := req.Recipient.UserID
-		visible := false
-		if req.Recipient.OrganisationID != nil {
-			org := *req.Recipient.OrganisationID
-			visible = slices.Contains(scope.ManagedOrganisationIDs, org) ||
-				(slices.Contains(scope.MemberOrganisationIDs, org) && (assignee == nil || *assignee == scope.UserID))
-		}
-		// Routed to the caller as the direct seller of the listing.
-		if req.Recipient.Type == RecipientSeller && assignee != nil && *assignee == scope.UserID {
-			visible = true
-		}
-		if !visible {
-			continue
-		}
-		item := InboxItem{
-			RequestID: req.ID, Reference: req.Reference, ListingID: req.ListingID,
-			RequestType: req.RequestType, Status: req.Status, Message: req.Message,
-			PreferredContactMethod: req.PreferredContactMethod,
-			Contact:                InboxContact{Name: req.GuestName, Email: req.GuestEmail},
-			CreatedAt:              req.CreatedAt,
-			Stay:                   req.Stay,
-		}
-		if req.GuestPhone != "" {
-			phone := req.GuestPhone
-			item.Contact.Phone = &phone
-		}
-		items = append(items, item)
-	}
-	// Newest first; UUIDv7 IDs break ties in creation order.
-	sort.SliceStable(items, func(i, j int) bool {
-		if !items[i].CreatedAt.Equal(items[j].CreatedAt) {
-			return items[i].CreatedAt.After(items[j].CreatedAt)
-		}
-		return items[i].RequestID.String() > items[j].RequestID.String()
-	})
-	if scope.Limit > 0 && len(items) > scope.Limit {
-		items = items[:scope.Limit]
-	}
-	return items, nil
 }
 
 // IsDirectSeller implements Store.

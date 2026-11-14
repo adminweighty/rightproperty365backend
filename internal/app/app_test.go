@@ -1131,7 +1131,7 @@ func TestAgentInbox(t *testing.T) {
 	t.Run("agent of another organisation sees nothing", func(t *testing.T) {
 		rec := e.get("/v1/agent/property-requests", withCookie(e.loginCookie(identity.SeedAgentBEmail, seedPassword)))
 		wantStatus(t, rec, http.StatusOK)
-		if got := strings.TrimSpace(rec.Body.String()); got != `{"items":[]}` {
+		if got := strings.TrimSpace(rec.Body.String()); !strings.HasPrefix(got, `{"items":[],"page":1,"page_size":20,"total":0,"total_pages":0,`) {
 			t.Fatalf("body = %s, want an empty items array", got)
 		}
 	})
@@ -2119,7 +2119,7 @@ func TestSellerInboxAccess(t *testing.T) {
 		}
 		rec := e.get("/v1/agent/property-requests", withCookie(c))
 		wantStatus(t, rec, http.StatusOK)
-		if got := strings.TrimSpace(rec.Body.String()); got != `{"items":[]}` {
+		if got := strings.TrimSpace(rec.Body.String()); !strings.HasPrefix(got, `{"items":[],"page":1,"page_size":20,"total":0,"total_pages":0,`) {
 			t.Fatalf("body = %s, want an empty items array", got)
 		}
 	})
@@ -2146,7 +2146,7 @@ func TestSellerInboxAccess(t *testing.T) {
 			c := e.selfRegister(fmt.Sprintf("owner%d@example.com", i), roles...)
 			rec := e.get("/v1/agent/property-requests", withCookie(c))
 			wantStatus(t, rec, http.StatusOK)
-			if got := strings.TrimSpace(rec.Body.String()); got != `{"items":[]}` {
+			if got := strings.TrimSpace(rec.Body.String()); !strings.HasPrefix(got, `{"items":[],"page":1,"page_size":20,"total":0,"total_pages":0,`) {
 				t.Fatalf("%v: body = %s, want an empty items array", roles, got)
 			}
 			user, _ := e.me(c)

@@ -19,6 +19,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/modules/notifications"
 	"rightproperty365.com/backend/internal/modules/onboarding"
+	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/database"
@@ -104,6 +105,14 @@ func run() error {
 
 	dispatcher := outbox.NewDispatcher(outbox.NewPostgresQueue(pool), logger, outbox.Config{})
 	handlers.Register(dispatcher)
+
+	// A request's stage changes and resolved routing exceptions are recorded
+	// in the outbox for later consumers (a customer notification, analytics).
+	// Nothing sends an email for them yet, so they are acknowledged: without a
+	// handler the dispatcher would retry and then dead-letter them.
+	for _, t := range propertyrequests.WorkEventTypes() {
+		dispatcher.Register(t, outbox.HandlerFunc(func(context.Context, outbox.Event) error { return nil }))
+	}
 
 	// Search index: listing events keep Elasticsearch in step. With the
 	// database search driver there is no index, and the events are acknowledged.

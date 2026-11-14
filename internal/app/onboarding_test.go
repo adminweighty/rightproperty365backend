@@ -1330,7 +1330,7 @@ func TestOnboardingApprovalPerOutcome(t *testing.T) {
 			}
 			if tc.role == "LANDLORD" || tc.role == "PRIVATE_SELLER" {
 				// An individual owner: nothing created, and an empty inbox.
-				if got := strings.TrimSpace(e.get("/v1/agent/property-requests", withCookie(c)).Body.String()); got != `{"items":[]}` {
+				if got := strings.TrimSpace(e.get("/v1/agent/property-requests", withCookie(c)).Body.String()); !strings.HasPrefix(got, `{"items":[],"page":1,"page_size":20,"total":0,"total_pages":0,`) {
 					t.Fatalf("%s inbox = %s", tc.role, got)
 				}
 			}
@@ -1576,7 +1576,7 @@ func TestSolicitors(t *testing.T) {
 		t.Fatalf("the firm did not receive the request for its listing: %s", inbox.Body)
 	}
 	other := e.get("/v1/agent/property-requests", withCookie(e.loginCookie(attorneys, seedPassword)))
-	if got := strings.TrimSpace(other.Body.String()); got != `{"items":[]}` {
+	if got := strings.TrimSpace(other.Body.String()); !strings.HasPrefix(got, `{"items":[],"page":1,"page_size":20,"total":0,"total_pages":0,`) {
 		t.Fatalf("another firm sees it: %s", got)
 	}
 	if got := e.inboxListings(devseed.EstatesOwnerEmail); len(got) != 0 {

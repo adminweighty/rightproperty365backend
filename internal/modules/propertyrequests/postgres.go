@@ -235,43 +235,6 @@ func (s *PostgresStore) Create(ctx context.Context, req NewRequest) (Record, boo
 	return rec, true, nil
 }
 
-// ListInbox implements Store. Organisation IDs are passed as text arrays and
-// cast in SQL; the visibility rule is documented on InboxScope. Routing
-// exceptions have neither a recipient organisation nor a recipient user, so no
-// branch can match them; a direct-seller request matches only its own seller.
-//
-// NOTE: compiled but not yet exercised against a real database.
-func (s *PostgresStore) ListInbox(ctx context.Context, scope InboxScope) ([]InboxItem, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT pr.id, pr.reference, pr.listing_id, pr.request_type, pr.status, pr.message,
-		       pr.preferred_contact_method,
-		       COALESCE(pr.guest_name, u.full_name, ''),
-		       COALESCE(pr.guest_email, u.email, ''),
-		       pr.guest_phone, pr.created_at, pr.check_in::text, pr.check_out::text, pr.guests
-		FROM property_requests pr
-		LEFT JOIN users u ON u.id = pr.customer_user_id
-		WHERE pr.recipient_organisation_id IN (SELECT unnest($1::text[])::uuid)
-		   OR (pr.recipient_organisation_id IN (SELECT unnest($2::text[])::uuid)
-		       AND (pr.recipient_user_id IS NULL OR pr.recipient_user_id = $3))
-		   OR (pr.recipient_type = 'SELLER' AND pr.recipient_user_id = $3)
-		ORDER BY pr.created_at DESC, pr.id DESC
-		LIMIT $4`,
-		uuidStrings(scope.ManagedOrganisationIDs), uuidStrings(scope.MemberOrganisationIDs), scope.UserID, scope.Limit)
-	if err != nil {
-		return nil, err
-	}
-	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (InboxItem, error) {
-		var it InboxItem
-		var checkIn, checkOut *string
-		var guests *int
-		err := row.Scan(&it.RequestID, &it.Reference, &it.ListingID, &it.RequestType, &it.Status, &it.Message,
-			&it.PreferredContactMethod, &it.Contact.Name, &it.Contact.Email, &it.Contact.Phone, &it.CreatedAt, &checkIn, &checkOut, &guests)
-		it.CreatedAt = it.CreatedAt.UTC()
-		it.Stay = StayOf(checkIn, checkOut, guests)
-		return it, err
-	})
-}
-
 // StayOf builds the stay of a stored request from its nullable columns
 // (dates as YYYY-MM-DD); nil unless all three are set.
 func StayOf(checkIn, checkOut *string, guests *int) *StayDetails {

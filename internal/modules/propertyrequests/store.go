@@ -40,9 +40,10 @@ type Store interface {
 	// is taken and the caller should retry with a new one.
 	Create(ctx context.Context, req NewRequest) (rec Record, created bool, err error)
 
-	// ListInbox returns the requests visible under scope (see InboxScope),
-	// newest first, at most scope.Limit.
-	ListInbox(ctx context.Context, scope InboxScope) ([]InboxItem, error)
+	// WorkStore is everything that happens after a request was received:
+	// the inbox, the lead stage, internal notes, the customer's own history
+	// and the routing exceptions (see work.go).
+	WorkStore
 
 	// IsDirectSeller reports whether the user is the direct seller of at
 	// least one listing (in any status).

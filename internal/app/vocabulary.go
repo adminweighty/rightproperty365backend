@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 
 	"github.com/google/uuid"
 
@@ -264,9 +265,10 @@ func (p people) Name(ctx context.Context, userID uuid.UUID) (string, error) {
 }
 
 // inboxCounts counts what is waiting in the two enquiry inboxes, each scoped
-// exactly as its own endpoint scopes it. Neither inbox has a "read" or lead
-// status yet, so "new" is every received item the caller can see (capped at
-// the inbox size, 100).
+// exactly as its own endpoint scopes it. A property request is "new" while
+// its lead stage is NEW_ENQUIRY. The business enquiry inbox has no "read" or
+// lead status yet, so there "new" is every received item the caller can see
+// (capped at the inbox size, 100).
 type inboxCounts struct {
 	requests  *propertyrequests.Service
 	enquiries *businessenquiries.Service
@@ -274,21 +276,29 @@ type inboxCounts struct {
 
 // NewPropertyRequests implements appointments.InboxCounts.
 func (c inboxCounts) NewPropertyRequests(ctx context.Context, p *auth.Principal) (int, error) {
-	items, err := c.requests.Inbox(ctx, propertyrequests.InboxScope{
-		UserID:                 p.UserID,
-		ManagedOrganisationIDs: p.OrganisationIDs(auth.RoleOwner, auth.RoleManager),
-		MemberOrganisationIDs:  p.OrganisationIDs(auth.RoleAgent, auth.RoleStaff),
-	})
+	counts, err := c.requests.StageCounts(ctx, propertyrequests.ScopeOf(p))
 	if err != nil {
 		return 0, err
 	}
-	n := 0
-	for _, it := range items {
-		if it.Status == propertyrequests.StatusReceived {
-			n++
+	return counts[propertyrequests.StageNewEnquiry], nil
+}
+
+// marketIDs resolves country codes to market IDs through the country store
+// (in a database the IDs are looked up by code, never assumed).
+func marketIDs(store markets.Store) propertyrequests.MarketIDs {
+	return func(ctx context.Context, codes []string) ([]uuid.UUID, error) {
+		all, err := store.List(ctx)
+		if err != nil {
+			return nil, err
 		}
+		ids := []uuid.UUID{}
+		for _, m := range all {
+			if slices.Contains(codes, m.Code) {
+				ids = append(ids, m.ID)
+			}
+		}
+		return ids, nil
 	}
-	return n, nil
 }
 
 // NewBusinessEnquiries implements appointments.InboxCounts.

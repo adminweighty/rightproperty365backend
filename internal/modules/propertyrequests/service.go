@@ -200,18 +200,16 @@ func (s *Service) Create(ctx context.Context, in Input, headerIdempotencyKey str
 	return Result{}, errors.New("could not allocate a unique reference")
 }
 
-// Inbox lists the requests visible under scope, newest first, capped at
-// MaxInboxItems. There is no pagination yet.
+// Inbox lists the newest requests visible under scope, at most
+// MaxInboxItems, without paging. InboxPage is the paged form.
 func (s *Service) Inbox(ctx context.Context, scope InboxScope) ([]InboxItem, error) {
-	if scope.Limit <= 0 || scope.Limit > MaxInboxItems {
-		scope.Limit = MaxInboxItems
-	}
-	items, err := s.store.ListInbox(ctx, scope)
+	page, err := s.store.ListInbox(ctx, InboxFilter{Scope: scope, Limit: MaxInboxItems})
 	if err != nil {
 		return nil, fmt.Errorf("list inbox: %w", err)
 	}
-	if items == nil {
-		items = []InboxItem{}
+	items := make([]InboxItem, 0, len(page.Items))
+	for _, r := range page.Items {
+		items = append(items, ItemOf(r))
 	}
 	return items, nil
 }

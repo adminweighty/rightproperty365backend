@@ -5,8 +5,6 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/google/uuid"
-
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/httpx"
 )
@@ -30,6 +28,10 @@ type Handler struct {
 	// names resolves listing IDs to their public summary for the inbox. Nil
 	// leaves `listing` null.
 	names ListingNames
+	// markets resolves country codes to market IDs for a market
+	// administrator's routing exceptions. Nil means such an administrator
+	// sees none.
+	markets MarketIDs
 }
 
 // SetListingNames makes the inbox show which listing each request is about.
@@ -86,68 +88,4 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		slog.Bool("replayed", res.Replayed),
 	)
 	httpx.WriteJSON(w, status, res)
-}
-
-// inboxResponse is the body of GET /v1/agent/property-requests.
-type inboxResponse struct {
-	Items []InboxItem `json:"items"`
-}
-
-// Inbox lists the requests received by the caller: those of their
-// organisation(s), scoped by role, plus those routed to them as the direct
-// seller of a listing.
-//
-// Who may call it (401 when anonymous, otherwise 403 unless one holds):
-//   - the caller has an organisation membership; or
-//   - the caller is the direct seller of at least one listing; or
-//   - the caller declared the PRIVATE_SELLER account role (any status).
-//
-// The third case is the single place an account role affects access, and all
-// it does is let a would-be seller open an inbox that is empty until they
-// actually sell something. WHAT is returned never depends on account roles:
-// the scope below is built only from the caller's user ID and memberships, so
-// nobody can read another organisation's or another seller's requests.
-func (h *Handler) Inbox(w http.ResponseWriter, r *http.Request) {
-	p := auth.FromContext(r.Context())
-	if p == nil {
-		httpx.WriteError(w, r, http.StatusUnauthorized, httpx.CodeUnauthenticated, "You need to sign in to do this.", nil)
-		return
-	}
-	if !p.HasMembership() && !p.DeclaresDirectOwner() {
-		seller, err := h.svc.IsDirectSeller(r.Context(), p.UserID)
-		if err != nil {
-			httpx.WriteInternalError(w, r, h.logger, err)
-			return
-		}
-		if !seller {
-			httpx.WriteError(w, r, http.StatusForbidden, httpx.CodeForbidden, "You do not have permission to do this.", nil)
-			return
-		}
-	}
-	items, err := h.svc.Inbox(r.Context(), InboxScope{
-		UserID:                 p.UserID,
-		ManagedOrganisationIDs: p.OrganisationIDs(auth.RoleOwner, auth.RoleManager),
-		MemberOrganisationIDs:  p.OrganisationIDs(auth.RoleAgent, auth.RoleStaff),
-	})
-	if err != nil {
-		httpx.WriteInternalError(w, r, h.logger, err)
-		return
-	}
-	if h.names != nil && len(items) > 0 {
-		ids := make([]uuid.UUID, 0, len(items))
-		for _, it := range items {
-			ids = append(ids, it.ListingID)
-		}
-		names, err := h.names.ListingNames(r.Context(), ids)
-		if err != nil {
-			httpx.WriteInternalError(w, r, h.logger, err)
-			return
-		}
-		for i := range items {
-			if name, ok := names[items[i].ListingID]; ok {
-				items[i].Listing = &name
-			}
-		}
-	}
-	httpx.WriteJSON(w, http.StatusOK, inboxResponse{Items: items})
 }

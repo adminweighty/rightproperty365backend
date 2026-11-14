@@ -258,7 +258,14 @@ All configuration comes from environment variables. For local development you ma
 | POST | `/v1/admin/onboarding/{id}/approve`, `/reject`, `/request-changes` | Decide an application |
 | POST | `/v1/admin/auth/login` | Administrator sign-in (platform-role accounts only; cookie only) |
 | GET | `/v1/admin/me` | Same as `/v1/me`, but requires an admin-scope session and a platform role |
-| GET | `/v1/agent/property-requests` | Requests received by the caller: their organisation's (scoped by role) and/or their own as a direct seller |
+| GET | `/v1/agent/property-requests` | Requests received by the caller: their organisation's (scoped by role) and/or their own as a direct seller; paged, filtered, with counts per lead stage |
+| GET, PATCH | `/v1/agent/property-requests/{id}` | One received request with its timeline and internal notes; move its lead stage |
+| POST | `/v1/agent/property-requests/{id}/notes` | Add an internal note (never shown to the customer) |
+| GET | `/v1/agent/organisations/{id}/members` | The members of an organisation, read-only (its OWNER and MANAGER) |
+| GET | `/v1/me/dashboard` | One role-aware summary for the signed-in account: kind, counters, next actions, recent items |
+| GET | `/v1/me/property-requests`, `/{id}` | The requests this account sent, in the customer's own terms |
+| GET | `/v1/admin/overview` | Counts an administrator starts from, sections by platform role |
+| GET, POST | `/v1/admin/routing-exceptions`, `/{id}/resolve` | Requests nobody could receive, and marking one as dealt with |
 | POST | `/v1/appointments` | A signed-in customer asks for a viewing or a consultation |
 | GET, POST | `/v1/me/appointments`, `/{id}`, `/{id}/cancel`, `/{id}/reschedule`, `/{id}/accept` | The customer's own appointments |
 | GET, POST | `/v1/inbox/appointments`, `/{id}`, `/{id}/confirm`, `/reschedule`, `/cancel`, `/complete`, `/no-show`, `/assign` | Appointments received by a professional (list, calendar and actions) |
@@ -344,6 +351,56 @@ delivery.
   enquiry" email with a reference, a preview with contact details removed and a button to the
   inbox (see "Email"). The customer's contact details are never put in an email.
 
+## Dashboards and working a request
+
+Added in API 0.20.0 (migration `0018`). The specification describes no dashboard widgets, so the
+dashboards are derived from what each role can already do; every number is read through the
+module that owns it, with that module's own scoping (the `dashboard` module owns no data).
+
+- **`GET /v1/me/dashboard`** – one body per signed-in account: `kind` (`SEEKER`,
+  `PROFESSIONAL_PENDING`, `PROFESSIONAL`, `DIRECT_OWNER`, `ADMIN`), roles, organisations with
+  the caller's role and what it allows there, `capabilities`, onboarding status per role,
+  `counters` (stable keys such as `requests.new`, `requests.stage.FOLLOW_UP_REQUIRED`,
+  `appointments.requested`, `listings.status.PUBLISHED`, `short_stays.calendar_stale`,
+  `my_requests.status.RECEIVED`), `needs_attention`, `next_actions` (stable codes, text and a
+  `target` key such as `requests` or `onboarding` that the client maps to a page) and `recent`
+  (5 newest received requests, 5 newest sent, next 5 appointments). The badge numbers are the
+  ones of `GET /v1/inbox/summary` (same code). The OpenAPI lists every key, code and target.
+- **Lead stages** – `NEW_ENQUIRY`, `ASSIGNED`, `CONTACTED`, `VIEWING_REQUESTED`,
+  `VIEWING_SCHEDULED`, `FOLLOW_UP_REQUIRED`, `CONVERTED`, `CLOSED` (the updated functional
+  specification's eight, as the owner decided over the FSD's older list). Allowed moves are a
+  fixed table in `propertyrequests/work.go`: nothing returns to `NEW_ENQUIRY`, `CONVERTED` needs
+  prior contact or a viewing and can only be closed, `CLOSED` reopens only as
+  `FOLLOW_UP_REQUIRED`. Anything else is `409 INVALID_STAGE_TRANSITION`. Who may move a
+  request: whoever sees it in their inbox (same rule as the list). The move, its timeline entry
+  (who, when, from, to) and the outbox event are one transaction, with the row locked.
+- **Internal notes** – `POST /v1/agent/property-requests/{id}/notes`; visible to everyone who
+  sees the request in their inbox, never on a customer endpoint (a test checks the customer
+  bodies for the text). The timeline records that a note was added, not what it says.
+- **The customer's own requests** – `GET /v1/me/property-requests[/{id}]`, linked by
+  `customer_user_id` (requests sent while signed in). A guest request is never linked, even with
+  the same email. The customer sees a status derived from the stage (`RECEIVED`, `IN_PROGRESS`,
+  `RESPONDED`, `VIEWING_SCHEDULED`, `CLOSED`) and a timeline of those statuses only; a request
+  nobody could receive stays `RECEIVED` to them.
+- **Inbox filters** – `stage`, `type`, `listing_id`, `from`, `to`, `q` (reference, name, email,
+  message), `page`, `page_size`; `stage_counts` per stage. Filters never widen the scope.
+- **Team list** – `GET /v1/agent/organisations/{id}/members`, OWNER and MANAGER only (another
+  member `403`, a non-member `404`); name, role label, status, no contact details.
+- **Administrators** – `GET /v1/admin/overview` (accounts and recent sign-ups for SUPER_ADMIN,
+  PLATFORM_ADMIN, SUPPORT; verifications for whoever reviews them; listings by status for
+  SUPER_ADMIN, PLATFORM_ADMIN, MODERATOR; requests by stage and routing exceptions for
+  SUPER_ADMIN, PLATFORM_ADMIN, SUPPORT; MARKET_ADMIN gets its own countries' verifications,
+  listings and requests; FINANCE_ADMIN and CONTENT_ADMIN get no section).
+  `GET /v1/admin/routing-exceptions` and `POST .../{id}/resolve` list and close the requests
+  nobody could receive (routing them to someone is not built).
+- Working a request and resolving an exception share one per-IP limit: bursts of 60, refilled at
+  60 per minute.
+
+**Not built** (dashboards and requests): replies to the customer and any email about a stage
+change; assigning a request to a person; follow-up dates and reminders; editing or deleting a
+note; listing analytics, conversion funnels and response-time KPIs (no event data exists);
+seeker favourites, saved searches and alerts; inviting, changing or removing members.
+
 ## Appointments: viewings and consultations
 
 Professionals (estate agents, agency staff, property managers, solicitors, the other business
@@ -425,7 +482,8 @@ REQUESTED | CONFIRMED | RESCHEDULE_REQUESTED ──cancel──> CANCELLED
   `PathMyAppointments`): **those pages must exist there**.
 - `GET /v1/inbox/summary` returns `{property_requests: {new}, business_enquiries: {new},
   appointments: {requested, reschedule_requested, upcoming_confirmed}}`, each scoped as its own
-  inbox. Requests and enquiries have no read status yet, so `new` is all of them (capped at 100).
+  inbox. A property request is `new` while its lead stage is `NEW_ENQUIRY`; business enquiries
+  have no read status yet, so there `new` is all of them (capped at 100).
 - **Sample data** (memory and `cmd/seed`): seven appointments relative to the moment of seeding —
   for `agent@example.test` (requested, confirmed, completed, a confirmed consultation),
   `estates.agent2@example.test` (a reschedule the consumer can accept, a guest's request), the
@@ -434,8 +492,8 @@ REQUESTED | CONFIRMED | RESCHEDULE_REQUESTED ──cancel──> CANCELLED
 
 **Not built** (appointments): venue and showroom hourly bookings, short-stay bookings,
 appointment slot configuration (any future time can be requested), ICS invites,
-calendar sync, reminders, push notifications, an endpoint listing an organisation's members (so
-`assign` needs a user ID the client already knows), appointments created from business enquiries
+calendar sync, reminders, push notifications (`GET /v1/agent/organisations/{id}/members` now
+gives OWNER and MANAGER the user IDs `assign` needs), appointments created from business enquiries
 (`business_enquiry_id` exists and is always null), and automatic expiry of requests that were
 never answered.
 
@@ -1237,9 +1295,11 @@ short-stay bookings, for any role yet.**
 So that nobody assumes these exist. They are in the updated functional specification and are
 **not** in this backend:
 
-- enquiry lead statuses (New enquiry, Assigned, Contacted, Viewing requested, Viewing scheduled,
-  Follow-up required, Converted, Closed) and replies to enquiries;
-- agency principals assigning leads;
+- replies to enquiries and a customer notification when a request moves (the eight lead
+  stages, New enquiry to Closed, are built: see "Dashboards and working a request");
+- agency principals assigning leads to a person (the `ASSIGNED` stage exists, but it only
+  records the stage), follow-up dates on a lead;
+- reassigning a routing exception to a recipient (administrators can list and resolve them);
 - rental applications;
 - appointments beyond viewings and consultations (see "Appointments": venue and short-stay
   bookings, slot configuration, ICS invites, calendar sync, reminders);
@@ -1846,8 +1906,9 @@ their data with `Principal.OrganisationIDs(...)` (and `PlatformRole.MarketCode` 
   `AGENT`/`STAFF` see the requests of their organisation that are assigned to them personally or
   to the organisation inbox, not those assigned to a colleague; a direct seller sees the requests
   routed to them for their own listings.
-- Requests of other organisations and of other sellers are never returned. Newest first, capped at
-  100 — **no pagination yet**.
+- Requests of other organisations and of other sellers are never returned. Newest first, 20 per
+  page by default (at most 100), with filters that only narrow this scope (see "Dashboards and
+  working a request").
 
 ### Not built yet
 
@@ -1885,7 +1946,8 @@ their data with `Principal.OrganisationIDs(...)` (and `PlatformRole.MarketCode` 
 - **Login lockout** beyond the per-IP rate limit (no per-account throttling or lockout).
 - Session management for users (list / revoke other devices), password change while signed in,
   and email change.
-- Pagination and filters on the organisation inbox.
+- Editing or deleting an internal note on a request, and a durable audit table for stage changes
+  beyond the request's own timeline.
 
 ## Layout
 
@@ -1914,7 +1976,8 @@ internal/platform/migrate    embedded-SQL migration runner
 internal/modules/health            /healthz, /readyz
 internal/modules/markets           GET /v1/countries, /v1/markets (every ISO country)
 internal/modules/availability      /v1/me/listings, availability calendars of short stays, GET /v1/listings/{slug}/availability
-internal/modules/propertyrequests  POST /v1/property-requests, GET /v1/agent/property-requests (handler, service, store: postgres + memory)
+internal/modules/propertyrequests  POST /v1/property-requests, /v1/agent/property-requests[/{id}[/notes]], /v1/me/property-requests, /v1/admin/routing-exceptions (handler, service, store: postgres + memory)
+internal/modules/dashboard         GET /v1/me/dashboard, /v1/agent/organisations/{id}/members, /v1/admin/overview (owns no data: reads through the other modules)
 internal/modules/businessenquiries POST /v1/business-enquiries, GET /v1/inbox/business-enquiries (handler, service, store: postgres + memory)
 internal/modules/appointments      /v1/appointments, /v1/me/appointments, /v1/inbox/appointments, /v1/inbox/summary (handler, service, store: postgres + memory)
 internal/modules/notifications     outbox events -> emails; verification/reset mailer; data lookups (postgres + memory)
@@ -1942,7 +2005,8 @@ Deliberately no empty stubs. These will be added under `internal/modules/` as th
 - `media` – image/document upload to object storage (MinIO locally)
 - `billing` – plans, payments, invoices (exact decimal money + ISO 4217)
 - `notifications` (exists for email) – WhatsApp and in-app delivery
-- `backoffice` – moderation and routing-exception handling
+- `backoffice` – moderation, and reassigning routing exceptions (listing and resolving them is
+  built in `propertyrequests`)
 
 ## Database
 
@@ -2012,6 +2076,18 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0018_request_work` adds to `property_requests` the lead `stage` (text, NOT NULL, default
+  `NEW_ENQUIRY`, CHECK on the eight stages; every existing row becomes `NEW_ENQUIRY`),
+  `stage_changed_at`, `stage_changed_by`, `exception_resolved_at`, `exception_resolved_by`,
+  `exception_resolution_note` (at most 2000 characters; resolved only for a
+  `ROUTING_EXCEPTION`), and the index `property_requests_recipient_org_stage_idx`; widens
+  `request_timeline_actor_type_check` with `ADMIN`; and creates `property_request_notes` (`id`,
+  `request_id` cascade, `author_user_id`, `author_name`, `body` 1 to 2000 characters,
+  `created_at`) with the index `property_request_notes_request_idx`. Stage history lives in
+  `request_timeline` (`STAGE_CHANGED`, detail `{from, to, actor_name}`). **The API of this
+  release needs it: it selects these columns.** Its down migration loses every note, every
+  stage and every resolution, and deletes `ADMIN` timeline rows. **Not run by me**, and the
+  Postgres queries that use it are compiled only.
 - `0017_registration_captchas` adds `registration_captchas` (`id` text primary key,
   `answer_hash`, `expires_at`, `used_at`, `created_at`) and the index
   `registration_captchas_expires_at_idx`. One new table; no existing table or row is touched.
@@ -2121,7 +2197,8 @@ Delivery is **at-least-once**, so handlers must be idempotent — key side effec
 The worker handles `PROPERTY_REQUEST_CREATED`, `BUSINESS_ENQUIRY_CREATED`, `USER_EMAIL_VERIFIED`,
 `PASSWORD_CHANGED` and `ADMIN_SIGNED_IN` by sending the notification emails described under
 "Email"; each email is keyed on the event ID and recipient, so a redelivered event sends nothing
-twice. A handler can mark a failure permanent, which dead-letters the event at once. **The worker
+twice. `PROPERTY_REQUEST_STAGE_CHANGED` and `PROPERTY_REQUEST_EXCEPTION_RESOLVED` (identifiers
+and stages only) are acknowledged without sending anything: no email exists for them yet. A handler can mark a failure permanent, which dead-letters the event at once. **The worker
 sends real email when `RESEND_API_KEY` is set.** Without `DATABASE_URL` in development the worker
 logs that it is idle and waits for shutdown (the API then handles the events in-process).
 

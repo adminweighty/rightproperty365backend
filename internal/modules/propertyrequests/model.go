@@ -228,7 +228,7 @@ type NewRequest struct {
 	Appointment *LinkedAppointment
 }
 
-// MaxInboxItems caps GET /v1/agent/property-requests until it is paginated.
+// MaxInboxItems caps Service.Inbox, the unpaged form of the inbox.
 const MaxInboxItems = 100
 
 // InboxScope says which requests a caller may see. It is built on the server
@@ -248,7 +248,6 @@ type InboxScope struct {
 	UserID                 uuid.UUID
 	ManagedOrganisationIDs []uuid.UUID
 	MemberOrganisationIDs  []uuid.UUID
-	Limit                  int
 }
 
 // InboxItem is one request as shown to the receiving organisation. Status is
@@ -259,15 +258,37 @@ type InboxItem struct {
 	ListingID uuid.UUID `json:"listing_id"`
 	// Listing is the public summary of the listing the request is about, or
 	// null when the listing has no public page.
-	Listing                *InboxListing `json:"listing"`
-	RequestType            string        `json:"request_type"`
-	Status                 string        `json:"status"`
-	Message                string        `json:"message"`
-	PreferredContactMethod string        `json:"preferred_contact_method"`
-	Contact                InboxContact  `json:"contact"`
-	CreatedAt              time.Time     `json:"created_at"`
+	Listing     *InboxListing `json:"listing"`
+	RequestType string        `json:"request_type"`
+	Status      string        `json:"status"`
+	// Stage is the lead stage and StageLabel its wording; StageChangedAt is
+	// null until somebody moves the request.
+	Stage                  string       `json:"stage"`
+	StageLabel             string       `json:"stage_label"`
+	StageChangedAt         *time.Time   `json:"stage_changed_at"`
+	Message                string       `json:"message"`
+	PreferredContactMethod string       `json:"preferred_contact_method"`
+	Contact                InboxContact `json:"contact"`
+	CreatedAt              time.Time    `json:"created_at"`
 	// Stay is the dates, nights and guests of a STAY_REQUEST; null for every other type.
 	Stay *StayDetails `json:"stay"`
+}
+
+// ItemOf builds the inbox view of a stored request (without its listing).
+func ItemOf(r StoredRequest) InboxItem {
+	item := InboxItem{
+		RequestID: r.ID, Reference: r.Reference, ListingID: r.ListingID,
+		RequestType: r.RequestType, Status: r.Status,
+		Stage: r.Stage, StageLabel: StageLabel(r.Stage), StageChangedAt: r.StageChangedAt,
+		Message: r.Message, PreferredContactMethod: r.PreferredContactMethod,
+		Contact:   InboxContact{Name: r.ContactName, Email: r.ContactEmail},
+		CreatedAt: r.CreatedAt, Stay: r.Stay,
+	}
+	if r.ContactPhone != "" {
+		phone := r.ContactPhone
+		item.Contact.Phone = &phone
+	}
+	return item
 }
 
 // InboxListing names the listing a request is about.
