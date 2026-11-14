@@ -15,8 +15,10 @@ import (
 	"rightproperty365.com/backend/internal/app"
 	"rightproperty365.com/backend/internal/devseed"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
+	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/health"
 	"rightproperty365.com/backend/internal/modules/identity"
+	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/modules/notifications"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
@@ -70,6 +72,9 @@ func run() error {
 		identityStore  identity.Store
 		enquiryStore   businessenquiries.Store
 		referenceStore reference.Store
+		listingStore   listings.Store
+		listingSearch  listings.Search
+		directoryStore directory.Store
 		healthH        *health.Handler
 	)
 	if cfg.UseMemoryStore() {
@@ -77,6 +82,11 @@ func run() error {
 		logger.Warn("DATABASE_URL is not set: using IN-MEMORY stores. Data is lost on restart and the worker cannot see it. Development only.")
 		marketStore = markets.NewMemoryStore()
 		referenceStore = devseed.NewMemoryReferenceStore()
+		// The public catalogue: the web's 18 sample listings and 29 profiles.
+		memListings := listings.NewMemoryStore(reference.NewService(referenceStore, nil))
+		memDirectory := directory.NewMemoryStore()
+		devseed.SeedMemoryContent(memListings, memDirectory, time.Now())
+		listingStore, listingSearch, directoryStore = memListings, memListings, memDirectory
 		memRequests := propertyrequests.NewMemoryStore()
 		// Development sample data: 18 published listings, each with its
 		// organisation and assigned agent (or its direct seller).
@@ -137,6 +147,8 @@ func run() error {
 		identityStore = identity.NewPostgresStore(pool)
 		enquiryStore = businessenquiries.NewPostgresStore(pool)
 		referenceStore = reference.NewPostgresStore(pool)
+		pgListings := listings.NewPostgresStore(pool)
+		listingStore, listingSearch, directoryStore = pgListings, pgListings, directory.NewPostgresStore(pool)
 		healthH = health.NewHandler(health.StorePostgres, pool.Ping, logger)
 		deliveryLog = mail.NewPostgresDeliveryLog(pool)
 	}
@@ -146,15 +158,18 @@ func run() error {
 	mailer := notifications.NewAccountMailer(mail.NewService(sender, deliveryLog, logger), renderer)
 
 	handler, err := app.NewRouter(app.Deps{
-		Config:    cfg,
-		Logger:    logger,
-		Health:    healthH,
-		Markets:   marketStore,
-		Requests:  requestStore,
-		Enquiries: enquiryStore,
-		Reference: referenceStore,
-		Identity:  identityStore,
-		Mailer:    mailer,
+		Config:        cfg,
+		Logger:        logger,
+		Health:        healthH,
+		Markets:       marketStore,
+		Requests:      requestStore,
+		Enquiries:     enquiryStore,
+		Reference:     referenceStore,
+		Listings:      listingStore,
+		ListingSearch: listingSearch,
+		Directory:     directoryStore,
+		Identity:      identityStore,
+		Mailer:        mailer,
 	})
 	if err != nil {
 		return err

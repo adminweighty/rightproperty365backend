@@ -178,6 +178,8 @@ All configuration comes from environment variables. For local development you ma
 | GET | `/readyz` | Readiness (pings the database when configured; reports the store in use) |
 | GET | `/v1/markets` | Markets: ZW active; BW, ZA, AE planned |
 | GET | `/v1/reference`, `/v1/reference/{set}` | Reference data behind every drop-down, filter and list (public, cacheable) |
+| GET | `/v1/listings`, `/v1/listings/suggest`, `/v1/listings/{slug}` | Public listing search, suggestions and detail |
+| GET | `/v1/directory`, `/v1/directory/{kind}`, `/v1/directory/{kind}/{slug}`, `/v1/sitemap` | Public directories, profiles and sitemap data |
 | POST | `/v1/property-requests` | The single entry point for every customer enquiry (guest or signed-in) |
 | POST | `/v1/business-enquiries` | The only way to contact a directory profile (guest or signed-in) |
 | GET | `/v1/inbox/business-enquiries` | Business enquiries received by the caller's organisation(s) |
@@ -268,6 +270,66 @@ delivery.
 - **Notifications.** The customer gets an "enquiry received" email and the recipient a "new
   enquiry" email with a reference, a preview with contact details removed and a button to the
   inbox (see "Email"). The customer's contact details are never put in an email.
+
+## Listings and directories: the public catalogue
+
+The web app reads listings and directory profiles from the API. Everything here is public,
+read-only, the same for every caller, and cacheable (`Cache-Control: public, max-age=30,
+stale-while-revalidate=120`, a strong `ETag`, `304` on `If-None-Match`).
+
+| Method | Path | Returns |
+| --- | --- | --- |
+| GET | `/v1/listings` | Search: `{items, page, page_size, total, total_pages, facets}` |
+| GET | `/v1/listings/suggest?q=` | Up to 8 `{type: suburb\|city\|listing, label, value}` |
+| GET | `/v1/listings/{slug}` | `{listing}`; `410 LISTING_UNAVAILABLE` or `404 LISTING_NOT_FOUND` |
+| GET | `/v1/directory` | `{kinds: [{code, label, singular_label, description, count}]}` |
+| GET | `/v1/directory/{kind}` | One page of profiles, sponsored first |
+| GET | `/v1/directory/{kind}/{slug}` | `{profile}` with its agents and public listings |
+| GET | `/v1/sitemap` | Every public listing slug and profile kind/slug with `updated_at` |
+
+**Only PUBLISHED and unexpired listings are ever returned (FR-006).** `status = 'PUBLISHED' AND
+expires_at > now` is part of every query that can return a listing. Search sits behind a `Search`
+port (`internal/modules/listings`): the Postgres and memory adapters implement every filter,
+sort order, facet and suggestion, and an Elasticsearch adapter can be added behind the same port
+later. An adapter only proposes IDs; the service re-reads every hit from the database, which
+re-checks status and expiry, so an index that is behind cannot bring back an expired listing.
+
+- **Filters** (all optional, combined with AND): `q`, `deal`, `category`, `property_type`, `city`,
+  `suburb`, `min_price`, `max_price` (compared only against listings priced in `currency`,
+  default `USD`; nothing is converted), `bedrooms_min`, `bathrooms_min`, `features` (repeatable or
+  comma-separated; all must be present), `featured`. Codes are reference-data codes; an unknown
+  or inactive code is `400 VALIDATION_FAILED` on that parameter.
+- **Sort**: `newest` (default), `relevance` (default when `q` is given), `price_asc`, `price_desc`.
+  **Paging**: `page` from 1, `page_size` 1–48 (default 12).
+- **Facets**: `deal`, `category`, `property_type`, `city`, `suburb`, `bedrooms`, `features` as
+  `[{code, label, count}]`, and `price: {currency, min, max}`. Each facet counts the listings that
+  match every *other* filter, so choosing a value does not hide its alternatives.
+- **By slug**: an expired, sold, let, paused or closed listing is `410` (the page can say "no
+  longer available"); an unknown slug **and a draft that was never public** are both `404`, so
+  drafts are not revealed.
+- **A listing** carries id, slug, reference, title, `deal` / `category` / `property_type` /
+  `suburb` / `city` as `{code, label}`, `price {amount, currency}` (a decimal string, never a
+  float), `price_period`, market, bedrooms, bathrooms, floor and land area (m²), summary,
+  description, features, featured, photos `{url, alt, width, height}`, the three dates, and
+  `advertiser`.
+- **`advertiser` is public profile references only**: `{type, name, verified, agency, agent}`
+  where `agency` and `agent` are `{kind, slug, name, verified}` (both null for a private seller).
+  **No phone number, email address or street address appears in any public response**; a test
+  walks every public GET (reference, listings, each listing, directories, each profile, sitemap)
+  and fails on any key named like contact data or any value that looks like an email address or a
+  phone number.
+- **Profiles** carry name, role, tagline, description, city, areas, services, offerings, trade,
+  verified, sponsored, since, `agency` (for agents), `listing_count`; the detail adds an agency's
+  `agents` and the profile's public `listings`. `logo` is always null (there are none).
+- **Photos are not uploaded anywhere.** `photos[].url` is a site-relative path
+  (`/assets/images/<file>.jpg`) naming the web app's own sample image files, returned exactly as
+  stored. **Object storage (MinIO) and uploads are not built.**
+
+The dev seed (memory store and `cmd/seed`) holds the web's 18 listings and 29 profiles with their
+real titles, prices, descriptions, features, photos, slugs and references
+(`internal/devseed/data/sample.json`, converted from the web's sample data). Publication dates are
+relative to the moment of seeding, so the sample listings are always recent; the one expired
+listing (`expired-two-bedroom-flat-avenues`) answers `410`.
 
 ## Reference data: drop-downs and lists come from the database
 
@@ -647,9 +709,12 @@ their data with `Principal.OrganisationIDs(...)` (and `PlatformRole.MarketCode` 
 - **The emails for features that do not exist yet** (status updates, listing expiry and relisting,
   invoices, payments, account deletion) are written and tested but nothing sends them.
 - **Unsubscribe / notification preferences** – every email today is transactional.
-- **Directory profile management and public profile endpoints** – profiles exist only as seeded
-  rows (kind, slug, name, owner); there is no API to create, edit, verify, suspend or list them,
-  and the web app still serves profile content from its own sample data.
+- **Listing and profile management** – listings and profiles are read-only: there is no API to
+  create, edit, publish, relist, verify or suspend them. They exist only as seeded rows.
+- **Photo upload and object storage (MinIO)** – photo URLs are paths to the web app's own static
+  sample images.
+- **A dedicated search engine** – search runs in Postgres (ILIKE) behind the `Search` port; the
+  Elasticsearch adapter is not written.
 - **Verification / approval workflow for pending roles** – professional account roles stay
   `PENDING_VERIFICATION` forever; nothing reviews, approves, rejects or revokes them, and approval
   would not yet lead to a membership.
@@ -691,6 +756,8 @@ internal/modules/markets           GET /v1/markets
 internal/modules/propertyrequests  POST /v1/property-requests, GET /v1/agent/property-requests (handler, service, store: postgres + memory)
 internal/modules/businessenquiries POST /v1/business-enquiries, GET /v1/inbox/business-enquiries (handler, service, store: postgres + memory)
 internal/modules/notifications     outbox events -> emails; verification/reset mailer; data lookups (postgres + memory)
+internal/modules/listings          GET /v1/listings, /v1/listings/suggest, /v1/listings/{slug}; Search port (postgres + memory)
+internal/modules/directory         GET /v1/directory, /v1/directory/{kind}[/{slug}], /v1/sitemap (postgres + memory)
 internal/modules/reference         GET /v1/reference, /v1/reference/{set}; the rows other modules validate against
 internal/modules/identity          /v1/auth/*, /v1/me: accounts, sessions, tokens, roles, Mailer (store: postgres + memory)
 migrations/    embedded SQL (NNNN_name.up.sql / .down.sql)
@@ -708,7 +775,7 @@ Deliberately no empty stubs. These will be added under `internal/modules/` as th
 
 - `identity` (exists) still lacks organisation membership management, invitations and MFA — see
   "Not built yet"
-- `listings` – listing CRUD, search, publication cycles, expiry/relisting
+- `listings` (exists, read-only) – listing CRUD, publication cycles, expiry/relisting
 - `media` – image/document upload to object storage (MinIO locally)
 - `billing` – plans, payments, invoices (exact decimal money + ISO 4217)
 - `notifications` (exists for email) – WhatsApp and in-app delivery
@@ -802,6 +869,10 @@ Until these have owners, a disk failure or a bad migration on the server means d
 - `0007_reference_data` adds `reference_items`, inserts the baseline rows, and replaces the fixed
   vocabulary `CHECK` constraints with API validation (plus a guard against platform roles). Also
   **never run**.
+- `0008_listings_directory` adds the public content of listings (slug, reference, deal, category,
+  type, location, rooms, areas, text, features, photos) and of directory profiles (role, tagline,
+  about, city, trade, verified, sponsored, areas, services, offerings). No contact columns. Also
+  **never run**, like the Postgres search and directory queries.
 - `0001_init` seeds the four markets. It does **not** seed listings or profiles: against a real
   database `POST /v1/property-requests` and `POST /v1/business-enquiries` return 404 until they
   exist (in development, `cmd/seed` creates the sample ones).

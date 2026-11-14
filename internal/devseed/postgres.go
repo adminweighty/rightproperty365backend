@@ -2,6 +2,7 @@ package devseed
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -12,15 +13,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"rightproperty365.com/backend/internal/modules/identity"
+	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/markets"
-	"rightproperty365.com/backend/internal/modules/propertyrequests"
-)
-
-// Placeholder commercial terms for the sample listings: this backend does not
-// own listing content yet, only what request routing needs.
-const (
-	sampleListingPrice    = "100000"
-	sampleListingCurrency = "USD"
 )
 
 // SeedPostgres writes the same sample data into a development Postgres
@@ -29,7 +23,7 @@ const (
 // to their defined state (including the shared password). Rows it does not
 // own are never touched. Callers must have passed CheckEnvironment.
 //
-// It requires migrations 0001-0007. If a sample email already belongs to a
+// It requires migrations 0001-0008. If a sample email already belongs to a
 // different user row the run fails and changes nothing.
 //
 // NOTE: compiled but NEVER run — there is no Postgres on the machine this was
@@ -149,41 +143,109 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, hasher identity.Hashe
 		}
 	}
 
-	for _, l := range Listings() {
-		var publishedAt *time.Time
-		if l.Status == propertyrequests.ListingStatusPublished {
-			publishedAt = &now
+	// Listings: the web's real titles, prices, descriptions, features and
+	// photos, each tied to its organisation and agent (or direct seller).
+	for _, l := range ListingRecords(now) {
+		var period, sellerName *string
+		if l.PricePeriod != "" {
+			period = &l.PricePeriod
+		}
+		if l.Advertiser.Type == listings.AdvertiserPrivateSeller {
+			sellerName = &l.Advertiser.Name
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO listings (id, market_id, title, status, price_amount, currency_code,
-			                      organisation_id, agent_user_id, seller_user_id, published_at, expires_at, created_at, updated_at)
-			VALUES ($1, $2, $3, $4::text::listing_status, $5::text::numeric, $6, $7, $8, $9, $10, $11, $12, $12)
+			                      organisation_id, agent_user_id, seller_user_id, published_at, expires_at, created_at, updated_at,
+			                      slug, reference, deal, category, property_type, price_period, city_code, suburb_code,
+			                      bedrooms, bathrooms, floor_area_m2, land_area_m2, summary, description, featured, private_seller_name)
+			VALUES ($1, $2, $3, $4::text::listing_status, $5::text::numeric, $6, $7, $8, $9, $10, $11, $12, $12,
+			        $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
 			ON CONFLICT (id) DO UPDATE
-			SET market_id = EXCLUDED.market_id, status = EXCLUDED.status,
+			SET market_id = EXCLUDED.market_id, title = EXCLUDED.title, status = EXCLUDED.status,
+			    price_amount = EXCLUDED.price_amount, currency_code = EXCLUDED.currency_code,
 			    organisation_id = EXCLUDED.organisation_id, agent_user_id = EXCLUDED.agent_user_id,
-			    seller_user_id = EXCLUDED.seller_user_id, expires_at = EXCLUDED.expires_at,
-			    published_at = COALESCE(listings.published_at, EXCLUDED.published_at),
-			    updated_at = EXCLUDED.updated_at`,
-			l.ID, l.MarketID, "Sample listing "+l.ID.String()[len(l.ID.String())-2:], l.Status, sampleListingPrice, sampleListingCurrency,
-			l.OrganisationID, l.AgentUserID, l.SellerUserID, publishedAt, l.ExpiresAt, now); err != nil {
-			return fmt.Errorf("seed listing %s: %w", l.ID, err)
+			    seller_user_id = EXCLUDED.seller_user_id, published_at = EXCLUDED.published_at,
+			    expires_at = EXCLUDED.expires_at, updated_at = EXCLUDED.updated_at,
+			    slug = EXCLUDED.slug, reference = EXCLUDED.reference, deal = EXCLUDED.deal, category = EXCLUDED.category,
+			    property_type = EXCLUDED.property_type, price_period = EXCLUDED.price_period,
+			    city_code = EXCLUDED.city_code, suburb_code = EXCLUDED.suburb_code,
+			    bedrooms = EXCLUDED.bedrooms, bathrooms = EXCLUDED.bathrooms,
+			    floor_area_m2 = EXCLUDED.floor_area_m2, land_area_m2 = EXCLUDED.land_area_m2,
+			    summary = EXCLUDED.summary, description = EXCLUDED.description, featured = EXCLUDED.featured,
+			    private_seller_name = EXCLUDED.private_seller_name`,
+			l.ID, markets.ZimbabweID, l.Title, l.Status, l.Price.Amount, l.Price.Currency,
+			l.OrganisationID, l.AgentUserID, l.SellerUserID, l.PublishedAt, l.ExpiresAt, l.UpdatedAt,
+			l.Slug, l.Reference, l.Deal, l.Category, l.PropertyType, period, l.City, l.Suburb,
+			l.Bedrooms, l.Bathrooms, l.FloorArea, l.LandArea, l.Summary, l.Description, l.Featured, sellerName); err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+				return fmt.Errorf("seed listing %s: its slug or reference already belongs to a different listing in this database", l.Slug)
+			}
+			return fmt.Errorf("seed listing %s: %w", l.Slug, err)
+		}
+		// Features and photos are replaced wholesale so a re-run resets them.
+		if _, err := tx.Exec(ctx, `DELETE FROM listing_features WHERE listing_id = $1`, l.ID); err != nil {
+			return fmt.Errorf("seed listing %s features: %w", l.Slug, err)
+		}
+		for i, f := range l.Features {
+			if _, err := tx.Exec(ctx, `INSERT INTO listing_features (listing_id, feature_code, position) VALUES ($1, $2, $3)`, l.ID, f, i); err != nil {
+				return fmt.Errorf("seed listing %s feature %s: %w", l.Slug, f, err)
+			}
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM listing_photos WHERE listing_id = $1`, l.ID); err != nil {
+			return fmt.Errorf("seed listing %s photos: %w", l.Slug, err)
+		}
+		for i, ph := range l.Photos {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO listing_photos (id, listing_id, position, url, alt, width, height) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+				uuid.New(), l.ID, i, ph.URL, ph.Alt, ph.Width, ph.Height); err != nil {
+				return fmt.Errorf("seed listing %s photo: %w", l.Slug, err)
+			}
 		}
 	}
 
-	for _, p := range Profiles() {
+	// Directory profiles with the web's public content. No contact details:
+	// the table has no such columns.
+	for _, p := range ProfileRecords(now) {
+		offerings, err := json.Marshal(p.Offerings)
+		if err != nil {
+			return err
+		}
+		if p.Offerings == nil {
+			offerings = []byte("[]")
+		}
+		var trade *string
+		if p.TradeCode != "" {
+			trade = &p.TradeCode
+		}
+		areas, services := p.Areas, p.Services
+		if areas == nil {
+			areas = []string{}
+		}
+		if services == nil {
+			services = []string{}
+		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO directory_profiles (id, market_id, kind, slug, name, organisation_id, agent_user_id, status, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, 'ACTIVE', $8, $8)
+			INSERT INTO directory_profiles (id, market_id, kind, slug, name, organisation_id, agent_user_id, status, created_at, updated_at,
+			                                role_title, tagline, about, city_code, trade_code, verified, sponsored, since_year,
+			                                areas, services, offerings)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, 'ACTIVE', $8, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19::jsonb)
 			ON CONFLICT (id) DO UPDATE
 			SET market_id = EXCLUDED.market_id, kind = EXCLUDED.kind, slug = EXCLUDED.slug, name = EXCLUDED.name,
 			    organisation_id = EXCLUDED.organisation_id, agent_user_id = EXCLUDED.agent_user_id,
-			    status = 'ACTIVE', updated_at = EXCLUDED.updated_at`,
-			p.ID, markets.ZimbabweID, p.Kind, p.Slug, p.Name, p.Organisation.ID, p.AgentUserID, now); err != nil {
+			    status = 'ACTIVE', updated_at = EXCLUDED.updated_at,
+			    role_title = EXCLUDED.role_title, tagline = EXCLUDED.tagline, about = EXCLUDED.about,
+			    city_code = EXCLUDED.city_code, trade_code = EXCLUDED.trade_code, verified = EXCLUDED.verified,
+			    sponsored = EXCLUDED.sponsored, since_year = EXCLUDED.since_year,
+			    areas = EXCLUDED.areas, services = EXCLUDED.services, offerings = EXCLUDED.offerings`,
+			p.ID, markets.ZimbabweID, p.Kind, p.Slug, p.Name, p.OrganisationID, p.AgentUserID, p.UpdatedAt,
+			p.Role, p.Tagline, p.Description, p.CityCode, trade, p.Verified, p.Sponsored, p.Since,
+			areas, services, string(offerings)); err != nil {
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-				return fmt.Errorf("seed profile %s: that kind and slug already belong to a different profile in this database", p.Key())
+				return fmt.Errorf("seed profile %s/%s: that kind and slug already belong to a different profile in this database", p.Kind, p.Slug)
 			}
-			return fmt.Errorf("seed profile %s: %w", p.Key(), err)
+			return fmt.Errorf("seed profile %s/%s: %w", p.Kind, p.Slug, err)
 		}
 	}
 

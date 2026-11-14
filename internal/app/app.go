@@ -12,8 +12,10 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
+	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/health"
 	"rightproperty365.com/backend/internal/modules/identity"
+	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
@@ -60,7 +62,12 @@ type Deps struct {
 	Enquiries businessenquiries.Store
 	Identity  identity.Store
 	Reference reference.Store
-	Mailer    identity.Mailer
+	// Listings is the source of truth for listings; ListingSearch is the
+	// search engine in front of it (the same adapter today).
+	Listings      listings.Store
+	ListingSearch listings.Search
+	Directory     directory.Store
+	Mailer        identity.Mailer
 
 	// Optional overrides used by tests.
 	Now    func() time.Time
@@ -86,6 +93,14 @@ func NewRouter(d Deps) (http.Handler, error) {
 	})
 	vocab := vocabulary{ref: referenceSvc}
 	referenceH := reference.NewHandler(referenceSvc, logger)
+
+	// Public catalogue: listings and the directories. Read-only and cacheable.
+	listingsSvc := listings.NewService(d.Listings, d.ListingSearch, referenceSvc)
+	if d.Now != nil {
+		listingsSvc.SetClock(d.Now)
+	}
+	listingsH := listings.NewHandler(listingsSvc, logger)
+	directoryH := directory.NewHandler(directory.NewService(d.Directory, vocab, listingsSvc), logger)
 
 	identityOpts := []identity.Option{
 		identity.WithAdminSessionTTLs(cfg.AdminSessionTTL, cfg.AdminSessionIdleTTL),
@@ -145,6 +160,15 @@ func NewRouter(d Deps) (http.Handler, error) {
 
 		// Open to guests and signed-in customers alike.
 		r.With(requestLimiter.Middleware).Post("/property-requests", requestsH.Create)
+
+		// Public catalogue. These never read the session and are cacheable.
+		r.Get("/listings", listingsH.List)
+		r.Get("/listings/suggest", listingsH.Suggest)
+		r.Get("/listings/{slug}", listingsH.Get)
+		r.Get("/directory", directoryH.Kinds)
+		r.Get("/directory/{kind}", directoryH.List)
+		r.Get("/directory/{kind}/{slug}", directoryH.Get)
+		r.Get("/sitemap", directoryH.Sitemap)
 
 		// The only way to contact a directory profile. Open to guests and
 		// signed-in customers alike.

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.7.0
+  version: 0.8.0
   summary: Multi-country property marketplace API (Zimbabwe first).
   description: |
     Versioned REST API for RightProperty365.
@@ -17,10 +17,13 @@ info:
     Contacting a business or an agent
     - Directory profiles (agencies, agents, developers, property managers, hosts, service
       providers) have **no public contact details**: this API never returns a profile's phone
-      number, email address or street address, and has no public profile endpoints. The only way
-      to reach a profile is `POST /v1/business-enquiries`.
+      number, email address or street address. The only way to reach a profile is
+      `POST /v1/business-enquiries`.
     - The customer's own contact details are stored with the enquiry and returned **only** by
       `GET /v1/inbox/business-enquiries` to the authorised recipient.
+    - The public catalogue (`/v1/listings`, `/v1/directory`, `/v1/sitemap`, `/v1/reference`)
+      never returns a phone number, an email address or a street address for anyone. A test
+      walks every public response to enforce it.
 
     Reference data
     - Every drop-down, filter and list value comes from `GET /v1/reference` (or
@@ -57,6 +60,8 @@ tags:
   - name: health
   - name: markets
   - name: reference
+  - name: listings
+  - name: directory
   - name: property-requests
   - name: business-enquiries
   - name: auth
@@ -318,6 +323,492 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/listings:
+    get:
+      tags: [listings]
+      operationId: searchListings
+      summary: Search listings
+      description: |
+        Public search over listings. **Only listings that are PUBLISHED and not yet expired are
+        ever returned** (status and `expires_at > now` are enforced in the query, and every
+        search hit is re-read from the database before it is returned).
+
+        Every filter is optional and filters combine with AND. Code filters take codes from the
+        reference data; a code that is unknown or inactive is `400 VALIDATION_FAILED` on that
+        parameter.
+
+        **Sorting.** `newest` (default without `q`), `relevance` (default with `q`; title matches
+        rank above suburb/city, then property type, then the rest; without `q` featured listings
+        come first), `price_asc`, `price_desc`. Ties are broken by newest, then id.
+
+        **Paging.** `page` starts at 1; `page_size` is 1–48, default 12. A page past the end is
+        `200` with an empty `items` array.
+
+        **Facets.** Each facet counts the listings that match every *other* filter (and `q`),
+        so selecting a value does not hide its alternatives. `features` and `bedrooms` count
+        within the full result. Only values with at least one listing appear.
+
+        **Sitemaps** should use `GET /v1/sitemap`, not this endpoint.
+
+        Public, the same for every caller, and cacheable (`Cache-Control`, `ETag`, `304`).
+      parameters:
+        - name: q
+          in: query
+          description: Free text, at most 100 characters. Every word must match the title, suburb, city, property type, summary, description or reference (case-insensitive).
+          schema: { type: string, maxLength: 100 }
+          example: borrowdale house
+        - name: deal
+          in: query
+          description: A `deal_types` code.
+          schema: { type: string }
+          example: sale
+        - name: category
+          in: query
+          description: A `property_categories` code.
+          schema: { type: string }
+          example: residential
+        - name: property_type
+          in: query
+          description: A `property_types` code.
+          schema: { type: string }
+          example: house
+        - name: city
+          in: query
+          description: A `cities` code.
+          schema: { type: string }
+          example: harare
+        - name: suburb
+          in: query
+          description: A `suburbs` code.
+          schema: { type: string }
+          example: borrowdale
+        - name: min_price
+          in: query
+          description: Lowest price, as a decimal amount. With a price filter only listings priced in `currency` match.
+          schema: { type: string, pattern: "^[0-9]+(\\.[0-9]+)?$" }
+          example: "100000"
+        - name: max_price
+          in: query
+          description: Highest price, as a decimal amount. Must not be lower than `min_price`.
+          schema: { type: string, pattern: "^[0-9]+(\\.[0-9]+)?$" }
+          example: "300000"
+        - name: currency
+          in: query
+          description: ISO 4217 code for `min_price` / `max_price` and for the price facet. Defaults to `USD`. Prices in other currencies are never converted.
+          schema: { type: string, pattern: "^[A-Za-z]{3}$", default: USD }
+        - name: bedrooms_min
+          in: query
+          description: At least this many bedrooms (0–50). Listings without a bedroom count never match.
+          schema: { type: integer, minimum: 0, maximum: 50 }
+        - name: bathrooms_min
+          in: query
+          description: At least this many bathrooms (0–50).
+          schema: { type: integer, minimum: 0, maximum: 50 }
+        - name: features
+          in: query
+          description: "`listing_features` codes; the listing must have ALL of them. Repeat the parameter (`features=a&features=b`) or separate with commas. At most 20."
+          schema: { type: array, items: { type: string }, maxItems: 20 }
+          style: form
+          explode: true
+          example: [borehole, solar-backup]
+        - name: featured
+          in: query
+          description: "`true` for featured listings only, `false` for the rest."
+          schema: { type: boolean }
+        - name: sort
+          in: query
+          schema: { type: string, enum: [newest, price_asc, price_desc, relevance] }
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 48, default: 12 }
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: One page of listings with facets.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CatalogueCacheControl"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListingPage"
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "400":
+          description: |
+            `VALIDATION_FAILED`. `error.fields` is keyed by the parameter: `q`, `deal`,
+            `category`, `property_type`, `city`, `suburb`, `min_price`, `max_price`, `currency`,
+            `bedrooms_min`, `bathrooms_min`, `features`, `featured`, `sort`, `page`, `page_size`.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/listings/suggest:
+    get:
+      tags: [listings]
+      operationId: suggestListings
+      summary: Search suggestions
+      description: |
+        Up to 8 suggestions for a search box: suburbs first, then cities, then listing titles;
+        within each, names that start with the term come first. Only suburbs and cities that
+        have at least one public listing, and only public listings, are suggested. A term
+        shorter than 2 characters returns an empty list.
+      parameters:
+        - name: q
+          in: query
+          schema: { type: string, maxLength: 100 }
+          example: bor
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: The suggestions (possibly empty).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CatalogueCacheControl"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [suggestions]
+                additionalProperties: false
+                properties:
+                  suggestions:
+                    type: array
+                    maxItems: 8
+                    items:
+                      $ref: "#/components/schemas/ListingSuggestion"
+              example:
+                suggestions:
+                  - { type: suburb, label: "Borrowdale, Harare", value: borrowdale }
+                  - { type: listing, label: Four-bedroom family home with garden, value: four-bedroom-family-home-borrowdale }
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "400":
+          description: "`VALIDATION_FAILED` with field `q` (longer than 100 characters)."
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/listings/{slug}:
+    get:
+      tags: [listings]
+      operationId: getListing
+      summary: One listing
+      description: |
+        The listing, if it is PUBLISHED and not expired.
+
+        - `410 LISTING_UNAVAILABLE`: the listing was public once and no longer is (expired, sold,
+          let, paused or closed). The page can say "This listing is no longer available".
+        - `404 LISTING_NOT_FOUND`: no such slug, **or** a listing that has never been public
+          (draft, pending review). Drafts are deliberately indistinguishable from unknown slugs.
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[a-z0-9]+(-[a-z0-9]+)*$", maxLength: 200 }
+          example: four-bedroom-family-home-borrowdale
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: The listing.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CatalogueCacheControl"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [listing]
+                additionalProperties: false
+                properties:
+                  listing:
+                    $ref: "#/components/schemas/Listing"
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "404":
+          description: "`LISTING_NOT_FOUND`."
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "410":
+          description: "`LISTING_UNAVAILABLE`."
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/directory:
+    get:
+      tags: [directory]
+      operationId: listDirectoryKinds
+      summary: The directories, with profile counts
+      description: The active `directory_kinds` in display order, each with the number of public profiles in it.
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: The directories.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CatalogueCacheControl"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [kinds]
+                additionalProperties: false
+                properties:
+                  kinds:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DirectoryKindCount"
+              example:
+                kinds:
+                  - { code: agencies, label: Estate agencies, singular_label: Estate agency, description: Registered agencies selling and letting property across Zimbabwe., count: 5 }
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/directory/{kind}:
+    get:
+      tags: [directory]
+      operationId: listDirectoryProfiles
+      summary: Profiles in one directory
+      description: |
+        Public profiles of one kind: sponsored profiles first, then by name. Only ACTIVE
+        profiles are returned. **No phone number, email address or street address is ever
+        returned**; a profile is contacted with `POST /v1/business-enquiries`.
+      parameters:
+        - name: kind
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/DirectoryKind"
+        - name: q
+          in: query
+          description: Free text, at most 100 characters. Every word must match the name, role, tagline, description, services or areas.
+          schema: { type: string, maxLength: 100 }
+        - name: city
+          in: query
+          description: A `cities` code.
+          schema: { type: string }
+          example: harare
+        - name: trade
+          in: query
+          description: A `service_trades` code. Only service providers have a trade; for other kinds it matches nothing.
+          schema: { type: string }
+          example: plumbing
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 48, default: 12 }
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: One page of profiles.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CatalogueCacheControl"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DirectoryPage"
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "400":
+          description: "`VALIDATION_FAILED` with fields `q`, `city`, `trade`, `page` or `page_size`."
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: "`DIRECTORY_KIND_NOT_FOUND`: no active directory kind has this code."
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/directory/{kind}/{slug}:
+    get:
+      tags: [directory]
+      operationId: getDirectoryProfile
+      summary: One profile
+      description: |
+        The profile with, for an agency, its agents (as profile references) and, for agencies
+        and agents, their public listings (newest first; an agency's listings are all those of
+        the organisation, an agent's are the ones assigned to them). Other kinds have no
+        listings. No contact details are returned.
+      parameters:
+        - name: kind
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/DirectoryKind"
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[a-z0-9]+(-[a-z0-9]+)*$", maxLength: 80 }
+          example: sample-estates
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: The profile.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CatalogueCacheControl"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [profile]
+                additionalProperties: false
+                properties:
+                  profile:
+                    $ref: "#/components/schemas/DirectoryProfileDetail"
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "404":
+          description: "`DIRECTORY_KIND_NOT_FOUND`, or `PROFILE_NOT_FOUND` (no such profile, or it is not ACTIVE)."
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/sitemap:
+    get:
+      tags: [directory]
+      operationId: getSitemap
+      summary: Everything a sitemap needs
+      description: |
+        The slug and `updated_at` of every public listing (newest first) and the kind, slug and
+        `updated_at` of every public profile. Not paginated.
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: The entries.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CatalogueCacheControl"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [listings, profiles]
+                additionalProperties: false
+                properties:
+                  listings:
+                    type: array
+                    items:
+                      type: object
+                      required: [slug, updated_at]
+                      additionalProperties: false
+                      properties:
+                        slug: { type: string }
+                        updated_at: { type: string, format: date-time }
+                  profiles:
+                    type: array
+                    items:
+                      type: object
+                      required: [kind, slug, updated_at]
+                      additionalProperties: false
+                      properties:
+                        kind:
+                          $ref: "#/components/schemas/DirectoryKind"
+                        slug: { type: string }
+                        updated_at: { type: string, format: date-time }
+              example:
+                listings:
+                  - { slug: four-bedroom-house-highlands, updated_at: "2026-11-12T00:00:00Z" }
+                profiles:
+                  - { kind: agencies, slug: sample-estates, updated_at: "2026-11-14T00:00:00Z" }
+        "304":
+          $ref: "#/components/responses/NotModified"
         "500":
           $ref: "#/components/responses/InternalError"
         "504":
@@ -1337,6 +1828,10 @@ components:
       description: "`public, max-age=60, stale-while-revalidate=300`. The response is the same for every caller."
       schema:
         type: string
+    CatalogueCacheControl:
+      description: "`public, max-age=30, stale-while-revalidate=120`. The response is the same for every caller and never depends on a session."
+      schema:
+        type: string
     X-Request-Id:
       description: Request identifier (echoed from the request or generated). Equals `trace_id` in error bodies.
       schema:
@@ -1495,6 +1990,8 @@ components:
                 - LISTING_UNAVAILABLE
                 - IDEMPOTENCY_CONFLICT
                 - REFERENCE_SET_NOT_FOUND
+                - DIRECTORY_KIND_NOT_FOUND
+                - PROFILE_NOT_FOUND
                 - RECIPIENT_NOT_FOUND
                 - RECIPIENT_UNAVAILABLE
                 - UNAUTHENTICATED
@@ -1521,6 +2018,344 @@ components:
         trace_id:
           type: string
           description: Same value as the `X-Request-Id` response header.
+
+    Coded:
+      type: object
+      description: A reference-data code with its current label. If the row has been retired the label repeats the code.
+      required: [code, label]
+      additionalProperties: false
+      properties:
+        code: { type: string }
+        label: { type: string }
+
+    Money:
+      type: object
+      description: An exact amount. `amount` is a decimal string with two decimal places; never parse it as a float for arithmetic.
+      required: [amount, currency]
+      additionalProperties: false
+      properties:
+        amount: { type: string, pattern: "^[0-9]+\\.[0-9]{2}$", examples: ["385000.00"] }
+        currency: { type: string, pattern: "^[A-Z]{3}$", description: ISO 4217, examples: [USD] }
+
+    Photo:
+      type: object
+      required: [url, alt, width, height]
+      additionalProperties: false
+      properties:
+        url:
+          type: string
+          description: |
+            Today a site-relative path served by the web app (`/assets/images/<file>.jpg`),
+            returned exactly as stored. Object storage and uploads are not built; when they are,
+            this becomes an absolute URL.
+          examples: [/assets/images/listing-house-borrowdale.jpg]
+        alt: { type: string }
+        width: { type: integer, minimum: 1, description: Pixel width of the image file. }
+        height: { type: integer, minimum: 1 }
+
+    ProfileRef:
+      type: object
+      description: A PUBLIC reference to a directory profile (`/v1/directory/{kind}/{slug}`). Never contact details.
+      required: [kind, slug, name, verified]
+      additionalProperties: false
+      properties:
+        kind:
+          $ref: "#/components/schemas/DirectoryKind"
+        slug: { type: string }
+        name: { type: string }
+        verified: { type: boolean }
+
+    ListingAdvertiser:
+      type: object
+      description: |
+        Who advertises the listing, as public profile references only. There is no phone
+        number, email address or street address here or anywhere else in a listing: a listing
+        is answered with `POST /v1/property-requests`.
+      required: [type, name, verified, agency, agent]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [agency, private_seller]
+        name:
+          type: string
+          description: The agency's name, or the private seller's display name (`Private seller` in the sample data).
+        verified: { type: boolean }
+        agency:
+          oneOf:
+            - $ref: "#/components/schemas/ProfileRef"
+            - type: "null"
+          description: The agency's profile. Null for a private seller.
+        agent:
+          oneOf:
+            - $ref: "#/components/schemas/ProfileRef"
+            - type: "null"
+          description: The assigned agent's profile. Null for a private seller, or when no agent is assigned.
+
+    Listing:
+      type: object
+      description: A public listing. The same object is used in search results, on the detail endpoint and on profiles.
+      required: [id, slug, reference, title, deal, category, property_type, price, price_period, suburb, city, market_code,
+                 bedrooms, bathrooms, floor_area, land_area, summary, description, features, featured, photos, advertiser,
+                 published_at, expires_at, updated_at]
+      additionalProperties: false
+      properties:
+        id: { type: string, format: uuid, description: "Use as `listing_id` in `POST /v1/property-requests`." }
+        slug: { type: string, examples: [four-bedroom-family-home-borrowdale] }
+        reference: { type: string, description: Human reference of the listing., examples: [RP-ZW-10001] }
+        title: { type: string }
+        deal:
+          allOf: [{ $ref: "#/components/schemas/Coded" }]
+          description: "`deal_types` code and label, e.g. `sale` / `For sale`."
+        category:
+          allOf: [{ $ref: "#/components/schemas/Coded" }]
+          description: "`property_categories` code and label."
+        property_type:
+          allOf: [{ $ref: "#/components/schemas/Coded" }]
+          description: "`property_types` code and label."
+        price:
+          $ref: "#/components/schemas/Money"
+        price_period:
+          type: [string, "null"]
+          enum: [month, null]
+          description: "`month` for a monthly rent; null for a sale price."
+        suburb:
+          allOf: [{ $ref: "#/components/schemas/Coded" }]
+          description: "`suburbs` code and label."
+        city:
+          allOf: [{ $ref: "#/components/schemas/Coded" }]
+          description: "`cities` code and label."
+        market_code: { type: string, pattern: "^[A-Z]{2}$" }
+        bedrooms: { type: [integer, "null"], minimum: 0 }
+        bathrooms: { type: [integer, "null"], minimum: 0 }
+        floor_area: { type: [integer, "null"], minimum: 0, description: Square metres. }
+        land_area: { type: [integer, "null"], minimum: 0, description: Square metres. }
+        summary: { type: string, description: One sentence for cards. }
+        description: { type: string, description: Plain text. }
+        features:
+          type: array
+          description: "`listing_features` codes and labels, in the advertiser's order."
+          items:
+            $ref: "#/components/schemas/Coded"
+        featured: { type: boolean }
+        photos:
+          type: array
+          description: In display order; the first is the cover. May be empty.
+          items:
+            $ref: "#/components/schemas/Photo"
+        advertiser:
+          $ref: "#/components/schemas/ListingAdvertiser"
+        published_at: { type: string, format: date-time, description: Start of the current publication cycle (UTC). }
+        expires_at: { type: string, format: date-time, description: End of the current publication cycle (90 days after `published_at`). Always in the future for a returned listing. }
+        updated_at: { type: string, format: date-time }
+      example:
+        id: 0195c0de-0000-7000-8000-000000000001
+        slug: four-bedroom-family-home-borrowdale
+        reference: RP-ZW-10001
+        title: Four-bedroom family home with garden
+        deal: { code: sale, label: For sale }
+        category: { code: residential, label: Residential }
+        property_type: { code: house, label: House }
+        price: { amount: "385000.00", currency: USD }
+        price_period: null
+        suburb: { code: borrowdale, label: Borrowdale }
+        city: { code: harare, label: Harare }
+        market_code: ZW
+        bedrooms: 4
+        bathrooms: 3
+        floor_area: 320
+        land_area: 2000
+        summary: Single-storey home on a walled half-acre with borehole and solar backup.
+        description: A well-kept single-storey home set back from a quiet road.
+        features:
+          - { code: borehole, label: Borehole }
+          - { code: solar-backup, label: Solar backup }
+        featured: true
+        photos:
+          - { url: /assets/images/listing-house-borrowdale.jpg, alt: White two-storey house with a tiled roof under a blue sky, width: 1200, height: 800 }
+        advertiser:
+          type: agency
+          name: Sample Estates
+          verified: true
+          agency: { kind: agencies, slug: sample-estates, name: Sample Estates, verified: true }
+          agent: { kind: agents, slug: tendai-ncube, name: Tendai Ncube, verified: true }
+        published_at: "2026-11-10T08:00:00Z"
+        expires_at: "2027-02-08T08:00:00Z"
+        updated_at: "2026-11-10T08:00:00Z"
+
+    FacetCount:
+      type: object
+      required: [code, label, count]
+      additionalProperties: false
+      properties:
+        code: { type: string }
+        label: { type: string }
+        count: { type: integer, minimum: 1 }
+
+    ListingFacets:
+      type: object
+      description: All keys are always present; a facet with no values is an empty array.
+      required: [deal, category, property_type, city, suburb, bedrooms, features, price]
+      additionalProperties: false
+      properties:
+        deal: { type: array, items: { $ref: "#/components/schemas/FacetCount" }, description: Ordered by label. }
+        category: { type: array, items: { $ref: "#/components/schemas/FacetCount" } }
+        property_type: { type: array, items: { $ref: "#/components/schemas/FacetCount" } }
+        city: { type: array, items: { $ref: "#/components/schemas/FacetCount" } }
+        suburb: { type: array, items: { $ref: "#/components/schemas/FacetCount" } }
+        bedrooms:
+          type: array
+          description: "Exact bedroom counts in ascending order; `code` is the number as a string (`\"3\"`), `label` is e.g. `3 bedrooms`."
+          items: { $ref: "#/components/schemas/FacetCount" }
+        features:
+          type: array
+          description: Ordered by count (highest first), then label.
+          items: { $ref: "#/components/schemas/FacetCount" }
+        price:
+          type: object
+          description: Lowest and highest price, in `currency`, among the listings matching every filter except the price filter. Both null when there are none.
+          required: [currency, min, max]
+          additionalProperties: false
+          properties:
+            currency: { type: string, pattern: "^[A-Z]{3}$" }
+            min: { type: [string, "null"], examples: ["600.00"] }
+            max: { type: [string, "null"], examples: ["640000.00"] }
+
+    ListingPage:
+      type: object
+      required: [items, page, page_size, total, total_pages, facets]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Listing"
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1, maximum: 48 }
+        total: { type: integer, minimum: 0, description: Number of listings matching the filters. }
+        total_pages: { type: integer, minimum: 0 }
+        facets:
+          $ref: "#/components/schemas/ListingFacets"
+
+    ListingSuggestion:
+      type: object
+      required: [type, label, value]
+      additionalProperties: false
+      properties:
+        type: { type: string, enum: [suburb, city, listing] }
+        label: { type: string, description: "Text to show. For a suburb it includes the city: `Borrowdale, Harare`." }
+        value:
+          type: string
+          description: "For `suburb` and `city`: the reference code, to use as the `suburb` / `city` filter. For `listing`: the listing's slug."
+
+    DirectoryKindInfo:
+      type: object
+      required: [code, label, singular_label, description]
+      additionalProperties: false
+      properties:
+        code:
+          $ref: "#/components/schemas/DirectoryKind"
+        label: { type: string, examples: [Estate agencies] }
+        singular_label: { type: string, examples: [Estate agency] }
+        description: { type: string }
+
+    DirectoryKindCount:
+      type: object
+      required: [code, label, singular_label, description, count]
+      additionalProperties: false
+      properties:
+        code:
+          $ref: "#/components/schemas/DirectoryKind"
+        label: { type: string }
+        singular_label: { type: string }
+        description: { type: string }
+        count: { type: integer, minimum: 0, description: Public profiles of this kind. }
+
+    DirectoryProfile:
+      type: object
+      description: |
+        A public profile. It has no phone number, email address or street address, and never
+        will: use `POST /v1/business-enquiries` with its `kind` and `slug` to contact it.
+      required: [kind, slug, name, role, tagline, description, city, areas, services, offerings, trade, verified, sponsored,
+                 since, logo, agency, listing_count, updated_at]
+      additionalProperties: false
+      properties:
+        kind:
+          $ref: "#/components/schemas/DirectoryKind"
+        slug: { type: string }
+        name: { type: string }
+        role: { type: string, description: Job title for a person, speciality for a business. }
+        tagline: { type: string }
+        description: { type: string, description: Plain text "about" paragraph. }
+        city:
+          allOf: [{ $ref: "#/components/schemas/Coded" }]
+          description: "`cities` code and label."
+        areas: { type: array, items: { type: string }, description: Free-text names of the areas served. Not reference codes. }
+        services: { type: array, items: { type: string }, description: "Names of the services offered; any of them can be sent as `service` in a business enquiry." }
+        offerings:
+          type: array
+          description: Services described in detail. Empty for most kinds.
+          items:
+            type: object
+            required: [name, description]
+            additionalProperties: false
+            properties:
+              name: { type: string }
+              description: { type: string }
+        trade:
+          oneOf:
+            - $ref: "#/components/schemas/Coded"
+            - type: "null"
+          description: "`service_trades` code and label. Service providers only; null otherwise."
+        verified: { type: boolean }
+        sponsored: { type: boolean, description: Paid placement. Must be labelled "Sponsored" wherever it is shown. }
+        since: { type: [integer, "null"], description: Year the business started, when known. }
+        logo:
+          oneOf:
+            - $ref: "#/components/schemas/Photo"
+            - type: "null"
+          description: Always null today (the sample data has no logos and uploads are not built).
+        agency:
+          oneOf:
+            - $ref: "#/components/schemas/ProfileRef"
+            - type: "null"
+          description: "Agent profiles only: the agency they work for."
+        listing_count: { type: integer, minimum: 0, description: Number of public listings of an agency or agent; 0 for other kinds. }
+        updated_at: { type: string, format: date-time }
+
+    DirectoryProfileDetail:
+      description: A profile with its agents and listings.
+      allOf:
+        - $ref: "#/components/schemas/DirectoryProfile"
+        - type: object
+          required: [agents, listings]
+          properties:
+            agents:
+              type: array
+              description: An agency's agent profiles, by name. Empty for every other kind.
+              items:
+                $ref: "#/components/schemas/ProfileRef"
+            listings:
+              type: array
+              description: The profile's public listings, newest first. Empty for kinds that own no listings.
+              items:
+                $ref: "#/components/schemas/Listing"
+
+    DirectoryPage:
+      type: object
+      required: [kind, items, page, page_size, total, total_pages]
+      additionalProperties: false
+      properties:
+        kind:
+          $ref: "#/components/schemas/DirectoryKindInfo"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/DirectoryProfile"
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1, maximum: 48 }
+        total: { type: integer, minimum: 0 }
+        total_pages: { type: integer, minimum: 0 }
 
     ReferenceSetCode:
       type: string

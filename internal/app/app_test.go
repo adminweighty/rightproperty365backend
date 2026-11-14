@@ -21,8 +21,10 @@ import (
 
 	"rightproperty365.com/backend/internal/devseed"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
+	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/health"
 	"rightproperty365.com/backend/internal/modules/identity"
+	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
@@ -109,6 +111,8 @@ type env struct {
 	requests  *propertyrequests.MemoryStore
 	enquiries *businessenquiries.MemoryStore
 	reference *reference.MemoryStore
+	listings  *listings.MemoryStore
+	directory *directory.MemoryStore
 	mail      *captureMailer
 	logs      *bytes.Buffer
 	now       time.Time
@@ -141,6 +145,9 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		now:       time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC),
 	}
 	hasher := identity.Hasher{MemoryKiB: 64, Time: 1, Threads: 1}
+	e.listings = listings.NewMemoryStore(reference.NewService(e.reference, nil))
+	e.directory = directory.NewMemoryStore()
+	devseed.SeedMemoryContent(e.listings, e.directory, e.now)
 	devseed.SeedMemoryListings(e.requests)
 	devseed.SeedMemoryProfiles(e.enquiries)
 	if err := devseed.SeedMemoryUsers(context.Background(), e.identity, hasher, seedPassword, e.now); err != nil {
@@ -155,10 +162,11 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		Requests:  e.requests,
 		Enquiries: e.enquiries,
 		Reference: e.reference,
-		Identity:  e.identity,
-		Mailer:    e.mail,
-		Now:       func() time.Time { return e.now },
-		Hasher:    &hasher,
+		Listings:  e.listings, ListingSearch: e.listings, Directory: e.directory,
+		Identity: e.identity,
+		Mailer:   e.mail,
+		Now:      func() time.Time { return e.now },
+		Hasher:   &hasher,
 	})
 	if err != nil {
 		t.Fatal(err)
