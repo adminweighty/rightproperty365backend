@@ -56,37 +56,61 @@ var IndexMapping []byte
 // no owner account, not even the advertiser. Hits are identified by ID and
 // the listing itself is always re-read from the database.
 type Document struct {
-	ID                string    `json:"id"`
-	Slug              string    `json:"slug"`
-	Reference         string    `json:"reference"`
-	Title             string    `json:"title"`
-	Summary           string    `json:"summary"`
-	Description       string    `json:"description"`
-	Deal              string    `json:"deal"`
-	Category          string    `json:"category"`
-	PropertyType      string    `json:"property_type"`
-	PropertyTypeLabel string    `json:"property_type_label"`
-	City              string    `json:"city"`
-	CityLabel         string    `json:"city_label"`
-	Suburb            string    `json:"suburb"`
-	SuburbLabel       string    `json:"suburb_label"`
-	Market            string    `json:"market"`
-	Currency          string    `json:"currency"`
-	Price             float64   `json:"price"`
-	PricePeriod       string    `json:"price_period,omitempty"`
-	Bedrooms          *int      `json:"bedrooms,omitempty"`
-	Bathrooms         *int      `json:"bathrooms,omitempty"`
-	FloorArea         *int      `json:"floor_area,omitempty"`
-	LandArea          *int      `json:"land_area,omitempty"`
-	Features          []string  `json:"features"`
-	Featured          bool      `json:"featured"`
-	Status            string    `json:"status"`
-	PublishedAt       time.Time `json:"published_at"`
-	ExpiresAt         time.Time `json:"expires_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
-	Version           int64     `json:"version"`
+	ID                string   `json:"id"`
+	Slug              string   `json:"slug"`
+	Reference         string   `json:"reference"`
+	Title             string   `json:"title"`
+	Summary           string   `json:"summary"`
+	Description       string   `json:"description"`
+	Deal              string   `json:"deal"`
+	Category          string   `json:"category"`
+	PropertyType      string   `json:"property_type"`
+	PropertyTypeLabel string   `json:"property_type_label"`
+	City              string   `json:"city"`
+	CityLabel         string   `json:"city_label"`
+	Suburb            string   `json:"suburb"`
+	SuburbLabel       string   `json:"suburb_label"`
+	Market            string   `json:"market"`
+	Currency          string   `json:"currency"`
+	Price             float64  `json:"price"`
+	PricePeriod       string   `json:"price_period,omitempty"`
+	Bedrooms          *int     `json:"bedrooms,omitempty"`
+	Bathrooms         *int     `json:"bathrooms,omitempty"`
+	FloorArea         *int     `json:"floor_area,omitempty"`
+	LandArea          *int     `json:"land_area,omitempty"`
+	Features          []string `json:"features"`
+	Featured          bool     `json:"featured"`
+	Status            string   `json:"status"`
+	PublishedAt       ESTime   `json:"published_at"`
+	ExpiresAt         ESTime   `json:"expires_at"`
+	UpdatedAt         ESTime   `json:"updated_at"`
+	Version           int64    `json:"version"`
 	// Location is reserved for map search; nothing sets it yet.
 	Location *[2]float64 `json:"location,omitempty"`
+}
+
+// esTimeLayout is how dates are sent to Elasticsearch: UTC with exactly three
+// fractional digits. That is the form the reference shows for the default
+// date format (strict_date_optional_time, yyyy-MM-dd'T'HH:mm:ss.SSSZ); a date
+// field stores milliseconds anyway.
+const esTimeLayout = "2006-01-02T15:04:05.000Z"
+
+// ESTime is a time written in esTimeLayout.
+type ESTime time.Time
+
+// MarshalJSON implements json.Marshaler.
+func (t ESTime) MarshalJSON() ([]byte, error) {
+	return []byte(`"` + time.Time(t).UTC().Format(esTimeLayout) + `"`), nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (t *ESTime) UnmarshalJSON(b []byte) error {
+	parsed, err := time.Parse(`"`+esTimeLayout+`"`, string(b))
+	if err != nil {
+		return err
+	}
+	*t = ESTime(parsed)
+	return nil
 }
 
 // BuildDocument turns a record into its index document.
@@ -107,7 +131,7 @@ func BuildDocument(r Record, labels map[string]map[string]string) Document {
 		Market: r.MarketCode, Currency: r.Price.Currency, Price: amount, PricePeriod: r.PricePeriod,
 		Bedrooms: r.Bedrooms, Bathrooms: r.Bathrooms, FloorArea: r.FloorArea, LandArea: r.LandArea,
 		Features: features, Featured: r.Featured, Status: r.Status,
-		PublishedAt: r.PublishedAt.UTC(), ExpiresAt: r.ExpiresAt.UTC(), UpdatedAt: r.UpdatedAt.UTC(), Version: r.Version(),
+		PublishedAt: ESTime(r.PublishedAt), ExpiresAt: ESTime(r.ExpiresAt), UpdatedAt: ESTime(r.UpdatedAt), Version: r.Version(),
 	}
 }
 
@@ -276,8 +300,9 @@ func (ix *Indexer) Reindex(ctx context.Context) (name string, count int, err err
 		return "", 0, fmt.Errorf("create index: %w", err)
 	}
 	created := name // the named result is cleared on an error return
+	keep := false   // set when the alias may already point to the new index
 	defer func() {
-		if err != nil { // do not leave a half-built index behind
+		if err != nil && !keep { // do not leave a half-built index behind
 			_, _, _ = esDo(context.WithoutCancel(ctx), ix.es, http.MethodDelete, "/"+created, nil, "", http.StatusNotFound)
 		}
 	}()
@@ -310,11 +335,33 @@ func (ix *Indexer) Reindex(ctx context.Context) (name string, count int, err err
 		if _, raw, err = esDo(ctx, ix.es, http.MethodPost, "/"+name+"/_bulk", bulk.Bytes(), "application/x-ndjson"); err != nil {
 			return "", 0, fmt.Errorf("bulk index: %w", err)
 		}
+		// The bulk API answers 200 even when items fail: `errors` says so and
+		// each item carries its own status and error type.
 		var result struct {
-			Errors bool `json:"errors"`
+			Errors *bool `json:"errors"`
+			Items  []map[string]struct {
+				Status int `json:"status"`
+				Error  struct {
+					Type string `json:"type"`
+				} `json:"error"`
+			} `json:"items"`
 		}
-		if json.Unmarshal(raw, &result) != nil || result.Errors {
+		if json.Unmarshal(raw, &result) != nil || result.Errors == nil {
+			err = &ESError{Reason: "unreadable bulk response"}
+			return "", 0, err
+		}
+		if *result.Errors {
 			err = &ESError{Reason: "bulk indexing reported errors"}
+			for _, item := range result.Items {
+				if it, ok := item["index"]; ok && it.Status >= 300 {
+					reason := it.Error.Type
+					if reason == "" || len(reason) >= 80 {
+						reason = "error"
+					}
+					err = &ESError{Status: it.Status, Reason: "bulk item rejected: " + reason}
+					break
+				}
+			}
 			return "", 0, err
 		}
 	}
@@ -344,12 +391,34 @@ func (ix *Indexer) Reindex(ctx context.Context) (name string, count int, err err
 	// One atomic action list: readers never see zero or two indices.
 	actions := []map[string]any{}
 	for _, index := range old {
-		actions = append(actions, map[string]any{"remove": map[string]any{"index": index, "alias": ix.alias}})
+		actions = append(actions, map[string]any{"remove": map[string]any{"index": index, "alias": ix.alias, "must_exist": true}})
 	}
 	actions = append(actions, map[string]any{"add": map[string]any{"index": name, "alias": ix.alias, "is_write_index": true}})
 	body, _ := json.Marshal(map[string]any{"actions": actions})
-	if _, _, err = esDo(ctx, ix.es, http.MethodPost, "/_aliases", body, "application/json"); err != nil {
+	if _, raw, err = esDo(ctx, ix.es, http.MethodPost, "/_aliases", body, "application/json"); err != nil {
 		return "", 0, fmt.Errorf("swap alias: %w", err)
+	}
+	// The aliases API can answer 200 with "errors": true and one result per
+	// action when some actions failed. That is not a swap: nothing is deleted
+	// (the alias may point to the old index, the new one or both) and an
+	// operator has to look. The new index is removed only when its own "add"
+	// is known to have failed, so the alias cannot be pointing at it.
+	var swap struct {
+		Errors        bool `json:"errors"`
+		ActionResults []struct {
+			Status int `json:"status"`
+		} `json:"action_results"`
+	}
+	if json.Unmarshal(raw, &swap) != nil {
+		keep = true
+		err = &ESError{Reason: "unreadable alias response; check the alias before retrying"}
+		return "", 0, err
+	}
+	if swap.Errors {
+		added := len(swap.ActionResults) != len(actions) || swap.ActionResults[len(actions)-1].Status < 300
+		keep = added
+		err = &ESError{Reason: "alias swap reported failed actions; check the alias before retrying"}
+		return "", 0, err
 	}
 
 	// Only now are the old indices unused. Failing to delete one is not a

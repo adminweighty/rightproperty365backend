@@ -32,7 +32,7 @@ services:
   # anywhere else. After starting it: ELASTICSEARCH_URL=http://localhost:9200,
   # then `go run ./cmd/reindex` to build the index.
   elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:9.1.5
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.6
     environment:
       discovery.type: single-node
       xpack.security.enabled: "false"

@@ -370,8 +370,8 @@ The API and the worker each log one line at startup naming the driver:
   (the database re-check removes it and takes it off `total`), but it can still be counted in the
   **facet counts** and in `total` on pages where it is not among the hits. The window is the
   outbox delay, normally seconds.
-- **Fallback.** If Elasticsearch is unreachable, slow (over `SEARCH_TIMEOUT`), returns an error or
-  an unreadable answer, that request is answered by the database adapter instead. Search does not
+- **Fallback.** If Elasticsearch is unreachable, slow (over `SEARCH_TIMEOUT`), returns an error, an
+  unreadable answer or partial results (`timed_out` or a failed shard), that request is answered by the database adapter instead. Search does not
   fail. Each fallback is logged as a warning (`search engine failed; answering from the database
   instead`) with a running count `search_fallbacks_total`; there is no metrics endpoint yet. The
   client does not retry: the database is the retry.
@@ -390,7 +390,8 @@ field is in the mapping.
 worker reads the listing's *current* state from the database and writes the document if it is
 public, or deletes it if it is not. That makes the handler idempotent and independent of event
 order; writes and deletes also use external versioning (`updated_at` in microseconds), so
-Elasticsearch refuses an older write. Failures are retried with the outbox backoff and
+Elasticsearch refuses an older write (HTTP 409, which the handler treats as success, not as a
+failure to retry). Other failures are retried with the outbox backoff and
 dead-lettered like any other event. With the database driver the worker acknowledges these events
 and does nothing.
 
@@ -403,7 +404,9 @@ and does nothing.
 **Rebuilding.** `go run ./cmd/reindex` (or `make reindex`) creates a new index from the database,
 bulk-indexes every public listing, refreshes it, moves the alias to it in **one atomic action**,
 and only then deletes the index the alias used to point to. Searches keep working throughout, and
-a failure before the swap leaves the alias untouched and removes the half-built index. It refuses
+a failure before the swap leaves the alias untouched and removes the half-built index. The aliases API can answer 200 with `"errors": true` when one action
+failed; the command treats that as a failure, deletes nothing the alias might still use, and asks
+for the alias to be checked by hand. It refuses
 to run without `DATABASE_URL` and `ELASTICSEARCH_URL`. Run it once after creating a cluster and
 after any mapping change.
 

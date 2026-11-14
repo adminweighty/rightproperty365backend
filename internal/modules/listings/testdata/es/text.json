@@ -11,9 +11,7 @@
         }
       },
       "filter": {
-        "bool": {
-          "filter": []
-        }
+        "match_all": {}
       }
     },
     "category": {
@@ -26,9 +24,7 @@
         }
       },
       "filter": {
-        "bool": {
-          "filter": []
-        }
+        "match_all": {}
       }
     },
     "city": {
@@ -41,9 +37,7 @@
         }
       },
       "filter": {
-        "bool": {
-          "filter": []
-        }
+        "match_all": {}
       }
     },
     "deal": {
@@ -56,9 +50,7 @@
         }
       },
       "filter": {
-        "bool": {
-          "filter": []
-        }
+        "match_all": {}
       }
     },
     "features": {
@@ -71,9 +63,7 @@
         }
       },
       "filter": {
-        "bool": {
-          "filter": []
-        }
+        "match_all": {}
       }
     },
     "price": {
@@ -111,9 +101,7 @@
         }
       },
       "filter": {
-        "bool": {
-          "filter": []
-        }
+        "match_all": {}
       }
     },
     "suburb": {
@@ -126,18 +114,11 @@
         }
       },
       "filter": {
-        "bool": {
-          "filter": []
-        }
+        "match_all": {}
       }
     }
   },
   "from": 0,
-  "post_filter": {
-    "bool": {
-      "filter": []
-    }
-  },
   "query": {
     "bool": {
       "filter": [
@@ -149,7 +130,7 @@
         {
           "range": {
             "expires_at": {
-              "gt": "2026-11-14T09:00:00Z"
+              "gt": "2026-11-14T09:00:00.000Z"
             }
           }
         }

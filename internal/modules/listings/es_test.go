@@ -124,8 +124,8 @@ func TestSearchBodyRules(t *testing.T) {
 	body := string(raw)
 
 	// FR-006 is in the query itself, for hits and aggregations alike.
-	for _, must := range []string{`{"term":{"status":"PUBLISHED"}}`, `{"range":{"expires_at":{"gt":"2026-11-14T09:00:00Z"}}}`} {
-		if !strings.Contains(body, `"query":{"bool":{"filter":[`+`{"term":{"status":"PUBLISHED"}},{"range":{"expires_at":{"gt":"2026-11-14T09:00:00Z"}}}`) || !strings.Contains(body, must) {
+	for _, must := range []string{`{"term":{"status":"PUBLISHED"}}`, `{"range":{"expires_at":{"gt":"2026-11-14T09:00:00.000Z"}}}`} {
+		if !strings.Contains(body, `"query":{"bool":{"filter":[`+`{"term":{"status":"PUBLISHED"}},{"range":{"expires_at":{"gt":"2026-11-14T09:00:00.000Z"}}}`) || !strings.Contains(body, must) {
 			t.Fatalf("the public rule must lead the main query: %s", body)
 		}
 	}
@@ -372,6 +372,12 @@ func TestSearchFallsBackToTheDatabaseAdapter(t *testing.T) {
 			return 404, `{"error":{"type":"index_not_found_exception"}}`
 		}},
 		"unreadable answer": {respond: func(string, string, []byte) (int, string) { return 200, `<html>proxy error</html>` }},
+		"timed out inside Elasticsearch": {respond: func(string, string, []byte) (int, string) {
+			return 200, `{"timed_out":true,"_shards":{"total":1,"successful":1,"failed":0},"hits":{"total":{"value":0},"hits":[]}}`
+		}},
+		"a shard failed": {respond: func(string, string, []byte) (int, string) {
+			return 200, `{"timed_out":false,"_shards":{"total":2,"successful":1,"failed":1},"hits":{"total":{"value":0},"hits":[]}}`
+		}},
 		"bad hit id": {respond: func(string, string, []byte) (int, string) {
 			return 200, `{"hits":{"total":{"value":1},"hits":[{"_id":"nope"}]}}`
 		}},
@@ -627,7 +633,7 @@ func TestReindexSwapsTheAliasAtomically(t *testing.T) {
 	if err := json.Unmarshal(es.requests[4].Body, &swap); err != nil || len(swap.Actions) != 2 {
 		t.Fatalf("alias actions = %s", es.requests[4].Body)
 	}
-	if swap.Actions[0]["remove"]["index"] != old || swap.Actions[1]["add"]["index"] != fresh || swap.Actions[1]["add"]["is_write_index"] != true ||
+	if swap.Actions[0]["remove"]["must_exist"] != true || swap.Actions[0]["remove"]["index"] != old || swap.Actions[1]["add"]["index"] != fresh || swap.Actions[1]["add"]["is_write_index"] != true ||
 		swap.Actions[1]["add"]["alias"] != "rp365-test-listings-current" {
 		t.Fatalf("alias actions = %+v", swap.Actions)
 	}
@@ -635,6 +641,64 @@ func TestReindexSwapsTheAliasAtomically(t *testing.T) {
 	if es.calls()[5] != "DELETE /"+old || strings.Contains(strings.Join(es.calls(), " "), "someone-elses-index") {
 		t.Fatalf("deletes = %v", es.calls())
 	}
+
+	// The aliases API answers 200 with "errors": true when an action failed.
+	// That is not a swap: nothing is deleted afterwards, and the new index is
+	// removed only when its own "add" is known to have failed.
+	t.Run("the alias request reports failed actions", func(t *testing.T) {
+		for name, tc := range map[string]struct {
+			response  string
+			deleteNew bool
+		}{
+			"remove failed, add applied": {`{"acknowledged":true,"errors":true,"action_results":[{"action":{"type":"remove"},"status":404,"error":{"type":"aliases_not_found_exception"}},{"action":{"type":"add"},"status":200}]}`, false},
+			"add failed":                 {`{"acknowledged":true,"errors":true,"action_results":[{"action":{"type":"remove"},"status":200},{"action":{"type":"add"},"status":400,"error":{"type":"illegal_state_exception"}}]}`, true},
+			"no per-action results":      {`{"acknowledged":true,"errors":true}`, false},
+			"unreadable":                 {`<html>proxy</html>`, false},
+		} {
+			es := &fakeES{respond: func(method, path string, _ []byte) (int, string) {
+				switch {
+				case method == http.MethodGet && strings.HasPrefix(path, "/_alias/"):
+					return 200, `{"` + old + `":{"aliases":{"rp365-test-listings-current":{}}}}`
+				case strings.HasSuffix(path, "/_bulk"):
+					return 200, `{"errors":false,"items":[]}`
+				case path == "/_aliases":
+					return 200, tc.response
+				}
+				return 200, `{"acknowledged":true}`
+			}}
+			if _, _, err := newIndexer(es, store).Reindex(context.Background()); err == nil {
+				t.Fatalf("%s: expected an error", name)
+			}
+			calls := strings.Join(es.calls(), "|")
+			if strings.Contains(calls, "DELETE /"+old) {
+				t.Fatalf("%s: the old index must not be deleted: %s", name, calls)
+			}
+			if got := strings.HasSuffix(calls, "DELETE /"+fresh); got != tc.deleteNew {
+				t.Fatalf("%s: new index deleted = %v, want %v: %s", name, got, tc.deleteNew, calls)
+			}
+		}
+	})
+
+	// A bulk response is 200 even when items were rejected; the item's own
+	// status and error type are reported, and a response without the
+	// "errors" flag is not taken as success.
+	t.Run("bulk item errors", func(t *testing.T) {
+		for response, want := range map[string]string{
+			`{"errors":true,"items":[{"index":{"_id":"x","status":400,"error":{"type":"strict_dynamic_mapping_exception","reason":"private text"}}}]}`: "HTTP 400 bulk item rejected: strict_dynamic_mapping_exception",
+			`{}`: "unreadable bulk response",
+		} {
+			es := &fakeES{respond: func(_, path string, _ []byte) (int, string) {
+				if strings.HasSuffix(path, "/_bulk") {
+					return 200, response
+				}
+				return 200, `{}`
+			}}
+			_, _, err := newIndexer(es, store).Reindex(context.Background())
+			if err == nil || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "private text") {
+				t.Fatalf("bulk error = %v, want %q", err, want)
+			}
+		}
+	})
 
 	t.Run("first run: no alias yet", func(t *testing.T) {
 		es := &fakeES{respond: func(method, path string, _ []byte) (int, string) {
@@ -644,7 +708,7 @@ func TestReindexSwapsTheAliasAtomically(t *testing.T) {
 			if strings.HasSuffix(path, "/_bulk") {
 				return 200, `{"errors":false}`
 			}
-			return 200, `{}`
+			return 200, `{"acknowledged":true}`
 		}}
 		if _, _, err := newIndexer(es, store).Reindex(context.Background()); err != nil {
 			t.Fatal(err)

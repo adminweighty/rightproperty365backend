@@ -26,7 +26,7 @@ var esTextFields = []string{"title^4", "suburb_label^3", "city_label^3", "proper
 func esPublic(now time.Time) []any {
 	return []any{
 		J{"term": J{"status": StatusPublished}},
-		J{"range": J{"expires_at": J{"gt": now.UTC().Format(time.RFC3339Nano)}}},
+		J{"range": J{"expires_at": J{"gt": now.UTC().Format(esTimeLayout)}}},
 	}
 }
 
@@ -63,6 +63,15 @@ func esFacetFilters(q Query) map[string][]any {
 }
 
 var esFacetOrder = []string{"deal", "category", "property_type", "city", "suburb", "bedrooms", "price"}
+
+// esAll is the query matching documents that satisfy every filter. With no
+// filters it is match_all rather than a bool query with an empty clause list.
+func esAll(filters []any) J {
+	if len(filters) == 0 {
+		return J{"match_all": J{}}
+	}
+	return J{"bool": J{"filter": filters}}
+}
 
 // allExcept returns every facet filter except the named facet's own.
 func allExcept(filters map[string][]any, skip string) []any {
@@ -108,7 +117,7 @@ func BuildSearchBody(q Query, now time.Time) J {
 
 	facets := esFacetFilters(q)
 	facetAgg := func(name, field string, size int) J {
-		return J{"filter": J{"bool": J{"filter": allExcept(facets, name)}}, "aggs": J{"values": J{"terms": J{"field": field, "size": size}}}}
+		return J{"filter": esAll(allExcept(facets, name)), "aggs": J{"values": J{"terms": J{"field": field, "size": size}}}}
 	}
 	priceFilter := append(allExcept(facets, "price"), J{"term": J{"currency": currencyOf(q)}})
 	aggs := J{
@@ -119,8 +128,8 @@ func BuildSearchBody(q Query, now time.Time) J {
 		"suburb":        facetAgg("suburb", "suburb", 1000),
 		"bedrooms":      facetAgg("bedrooms", "bedrooms", 60),
 		// Features are counted within the full result (they have no "other choice").
-		"features": J{"filter": J{"bool": J{"filter": allExcept(facets, "")}}, "aggs": J{"values": J{"terms": J{"field": "features", "size": 1000}}}},
-		"price": J{"filter": J{"bool": J{"filter": priceFilter}}, "aggs": J{
+		"features": J{"filter": esAll(allExcept(facets, "")), "aggs": J{"values": J{"terms": J{"field": "features", "size": 1000}}}},
+		"price": J{"filter": esAll(priceFilter), "aggs": J{
 			"min": J{"min": J{"field": "price"}}, "max": J{"max": J{"field": "price"}},
 		}},
 	}
@@ -141,17 +150,25 @@ func BuildSearchBody(q Query, now time.Time) J {
 		order = newest
 	}
 
-	return J{
+	body := J{
 		// page and page_size are bounded by the API (page_size <= 48), and
-		// from + size is capped below Elasticsearch's default result window.
-		"from": min((q.Page-1)*q.PageSize, 10000-q.PageSize), "size": q.PageSize,
+		// from + size never exceeds Elasticsearch's default result window
+		// (index.max_result_window, 10,000).
+		"from": max(0, min((q.Page-1)*q.PageSize, esResultWindow-q.PageSize)), "size": q.PageSize,
 		"_source": false, "track_total_hits": true,
-		"query":       J{"bool": boolQuery},
-		"post_filter": J{"bool": J{"filter": allExcept(facets, "")}},
-		"aggs":        aggs,
-		"sort":        order,
+		"query": J{"bool": boolQuery},
+		"aggs":  aggs,
+		"sort":  order,
 	}
+	// post_filter narrows the hits after the aggregations are calculated.
+	if post := allExcept(facets, ""); len(post) > 0 {
+		body["post_filter"] = J{"bool": J{"filter": post}}
+	}
+	return body
 }
+
+// esResultWindow is the default index.max_result_window.
+const esResultWindow = 10000
 
 // BuildSuggestBody builds the _search request behind GET /v1/listings/suggest.
 // It uses the search_as_you_type sub-fields, so "bor" finds "Borrowdale".
@@ -237,6 +254,21 @@ func (e *ElasticSearch) search(ctx context.Context, body J, out any) error {
 	_, resp, err := esDo(ctx, e.es, http.MethodPost, "/"+e.alias+"/_search", raw, "application/json")
 	if err != nil {
 		return err
+	}
+	// A search can answer 200 with partial results: it timed out inside
+	// Elasticsearch or some shards failed. Totals and facets would be wrong, so
+	// that is a failure here and the database answers instead.
+	var health struct {
+		TimedOut bool `json:"timed_out"`
+		Shards   struct {
+			Failed int `json:"failed"`
+		} `json:"_shards"`
+	}
+	if err := json.Unmarshal(resp, &health); err != nil {
+		return &ESError{Reason: "unreadable response"}
+	}
+	if health.TimedOut || health.Shards.Failed > 0 {
+		return &ESError{Reason: "partial results"}
 	}
 	if err := json.Unmarshal(resp, out); err != nil {
 		return &ESError{Reason: "unreadable response"}
