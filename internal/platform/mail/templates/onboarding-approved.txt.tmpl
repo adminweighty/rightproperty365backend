@@ -1,0 +1,12 @@
+{{define "subject"}}Your application has been approved{{end}}
+{{define "heading"}}You are verified{{end}}
+{{define "button"}}{{if .ProfileName}}View your profile{{else}}Go to your account{{end}}{{end}}
+{{define "why"}}You are receiving this because you applied for a professional role on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+Your application to join RightProperty365 as {{.RoleName}} has been approved.
+
+Role: {{.RoleName}}
+Approved: {{dateTime .When}}
+
+{{if .ProfileName}}Your profile, {{.ProfileName}}, is now listed in the directory with the verified badge. People can send you enquiries from it, and you will find them in your inbox.{{else}}Your role is now active. You can use it from your account.{{end}}{{end}}

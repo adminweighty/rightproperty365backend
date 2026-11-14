@@ -15,6 +15,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/markets"
+	"rightproperty365.com/backend/internal/platform/storage"
 )
 
 // SeedPostgres writes the same sample data into a development Postgres
@@ -28,7 +29,7 @@ import (
 //
 // NOTE: compiled but NEVER run — there is no Postgres on the machine this was
 // written on. Treat the first run as a test.
-func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, hasher identity.Hasher, password string, now time.Time) error {
+func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage, hasher identity.Hasher, password string, now time.Time) error {
 	if err := identity.CheckPassword(password); err != nil {
 		return fmt.Errorf("DEV_SEED_PASSWORD %w", err)
 	}
@@ -258,6 +259,12 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, hasher identity.Hashe
 			}
 			return fmt.Errorf("seed profile %s/%s: %w", p.Kind, p.Slug, err)
 		}
+	}
+
+	// The two onboarding demo accounts (needs migration 0009). Their sample
+	// documents are written to the configured file storage.
+	if err := seedPostgresOnboarding(ctx, tx, files, hash, now); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(ctx); err != nil {

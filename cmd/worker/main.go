@@ -13,8 +13,10 @@ import (
 
 	"github.com/google/uuid"
 
+	"rightproperty365.com/backend/internal/app"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/notifications"
+	"rightproperty365.com/backend/internal/modules/onboarding"
 	"rightproperty365.com/backend/internal/modules/reference"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/database"
@@ -81,6 +83,10 @@ func run() error {
 	handlers.SetRoleLabels(func(ctx context.Context) (map[string]string, error) {
 		return reference.NewService(reference.NewPostgresStore(pool), nil).Labels(ctx, reference.SetAccountRoles)
 	})
+
+	// Onboarding emails read the application at send time. The worker never
+	// opens a document, so it needs no file storage.
+	handlers.SetOnboardingSource(app.OnboardingNotifications(onboarding.NewPostgresStore(pool), nil, reference.NewPostgresStore(pool), logger))
 
 	listingStore := listings.NewPostgresStore(pool)
 	handlers.SetListingLookup(func(ctx context.Context, id uuid.UUID) (string, string, bool) {

@@ -54,6 +54,7 @@ func codes(items []refItem) string {
 var wantSetSizes = map[string]int{
 	"deal_types": 2, "property_categories": 3, "property_types": 7, "request_types": 4, "contact_methods": 3,
 	"account_roles": 11, "directory_kinds": 6, "service_trades": 7, "cities": 4, "suburbs": 18, "listing_features": 59,
+	"onboarding_documents": 8,
 }
 
 func TestReferenceAllSets(t *testing.T) {
@@ -397,26 +398,32 @@ func TestPlatformRolesAreDeniedEvenIfInTheReferenceTable(t *testing.T) {
 	}
 }
 
-// The baseline rows in migration 0007 are the same rows the memory store and
-// cmd/seed use.
+// The baseline rows in the migrations (0007, and 0009 for the onboarding
+// documents) are the same rows the memory store and cmd/seed use.
 func TestMigrationSeedsTheSameReferenceRows(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "..", "migrations", "0007_reference_data.up.sql"))
-	if err != nil {
-		t.Fatal(err)
+	sql := ""
+	for _, name := range []string{"0007_reference_data.up.sql", "0009_onboarding.up.sql"} {
+		raw, err := os.ReadFile(filepath.Join("..", "..", "migrations", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sql += string(raw)
 	}
-	sql := string(raw)
 	total := 0
 	for set, items := range devseed.ReferenceItems() {
 		for _, it := range items {
 			total++
 			want := fmt.Sprintf("VALUES ('%s', '%s', '%s',", set, strings.ReplaceAll(it.Code, "'", "''"), strings.ReplaceAll(it.Label, "'", "''"))
 			if !strings.Contains(sql, want) {
-				t.Fatalf("migration 0007 lacks the row %s/%s (%s)", set, it.Code, it.Label)
+				t.Fatalf("the migrations lack the row %s/%s (%s)", set, it.Code, it.Label)
+			}
+			if set == reference.SetOnboardingDocuments && (it.Description == nil || !strings.Contains(sql, "'"+strings.ReplaceAll(*it.Description, "'", "''")+"'")) {
+				t.Fatalf("the migrations lack the description of %s/%s", set, it.Code)
 			}
 		}
 	}
 	if got := strings.Count(sql, "INSERT INTO reference_items"); got != total {
-		t.Fatalf("migration 0007 inserts %d rows, the baseline has %d", got, total)
+		t.Fatalf("the migrations insert %d rows, the baseline has %d", got, total)
 	}
 	for _, role := range auth.AllPlatformRoles() {
 		if strings.Contains(sql, "VALUES ('account_roles', '"+role+"'") {

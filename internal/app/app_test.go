@@ -26,12 +26,14 @@ import (
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/markets"
+	"rightproperty365.com/backend/internal/modules/onboarding"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/httpx"
 	"rightproperty365.com/backend/internal/platform/logging"
+	"rightproperty365.com/backend/internal/platform/storage"
 )
 
 const (
@@ -113,6 +115,8 @@ type env struct {
 	reference *reference.MemoryStore
 	listings  *listings.MemoryStore
 	directory *directory.MemoryStore
+	onboard   *onboarding.MemoryStore
+	files     *storage.Local
 	mail      *captureMailer
 	logs      *bytes.Buffer
 	now       time.Time
@@ -153,6 +157,17 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 	if err := devseed.SeedMemoryUsers(context.Background(), e.identity, hasher, seedPassword, e.now); err != nil {
 		t.Fatal(err)
 	}
+	// Onboarding: its own store, and document files in a per-test directory.
+	e.onboard = onboarding.NewMemoryStore(onboarding.MemoryDeps{
+		Identity: e.identity, Directory: e.directory, Enquiries: e.enquiries,
+		MarketID: func(code string) (uuid.UUID, bool) { return markets.ZimbabweID, code == devseed.MarketCode },
+	})
+	if e.files, err = storage.NewLocal(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if err := devseed.SeedMemoryOnboarding(context.Background(), e.identity, e.onboard, e.files, hasher, seedPassword, e.now); err != nil {
+		t.Fatal(err)
+	}
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	e.handler, err = NewRouter(Deps{
 		Config:    cfg,
@@ -163,10 +178,11 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		Enquiries: e.enquiries,
 		Reference: e.reference,
 		Listings:  e.listings, ListingSearch: e.listings, Directory: e.directory,
-		Identity: e.identity,
-		Mailer:   e.mail,
-		Now:      func() time.Time { return e.now },
-		Hasher:   &hasher,
+		Identity:   e.identity,
+		Mailer:     e.mail,
+		Onboarding: e.onboard, Files: e.files,
+		Now:    func() time.Time { return e.now },
+		Hasher: &hasher,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -644,7 +660,7 @@ func TestSeedUsersAndMeShape(t *testing.T) {
 	t.Run("consumer", func(t *testing.T) {
 		rec := e.get("/v1/me", withCookie(e.loginCookie(identity.SeedConsumerEmail, seedPassword)))
 		wantStatus(t, rec, http.StatusOK)
-		want := `{"user":{"id":"` + identity.SeedConsumerUserID.String() + `","name":"Casey Consumer","email":"consumer@example.test","email_verified":true,"platform_roles":[],"memberships":[],"account_roles":[{"role":"CONSUMER","status":"ACTIVE"}]},"session":{"scope":"customer","expires_at":"2026-12-01T09:00:00Z"}}`
+		want := `{"user":{"id":"` + identity.SeedConsumerUserID.String() + `","name":"Casey Consumer","email":"consumer@example.test","email_verified":true,"platform_roles":[],"memberships":[],"account_roles":[{"role":"CONSUMER","status":"ACTIVE","onboarding_status":null}]},"session":{"scope":"customer","expires_at":"2026-12-01T09:00:00Z"}}`
 		if got := strings.TrimSpace(rec.Body.String()); got != want {
 			t.Fatalf("body = %s\nwant   %s", got, want)
 		}
@@ -655,7 +671,7 @@ func TestSeedUsersAndMeShape(t *testing.T) {
 		wantStatus(t, rec, http.StatusOK)
 		want := `"platform_roles":[],"memberships":[{"organisation_id":"` + propertyrequests.SeedOrganisationID.String() +
 			`","organisation_name":"Sample Estates","organisation_kind":"AGENCY","market_code":"ZW","role":"AGENT"}],` +
-			`"account_roles":[{"role":"CONSUMER","status":"ACTIVE"},{"role":"AGENT","status":"ACTIVE"}]`
+			`"account_roles":[{"role":"CONSUMER","status":"ACTIVE","onboarding_status":null},{"role":"AGENT","status":"ACTIVE","onboarding_status":null}]`
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("body = %s\nwant to contain %s", rec.Body, want)
 		}
@@ -664,7 +680,7 @@ func TestSeedUsersAndMeShape(t *testing.T) {
 	t.Run("admin", func(t *testing.T) {
 		rec := e.get("/v1/me", withCookie(e.adminLogin(identity.SeedAdminEmail, seedPassword)))
 		wantStatus(t, rec, http.StatusOK)
-		if want := `"platform_roles":[{"role":"SUPER_ADMIN","market_code":null}],"memberships":[],"account_roles":[{"role":"CONSUMER","status":"ACTIVE"}]`; !strings.Contains(rec.Body.String(), want) {
+		if want := `"platform_roles":[{"role":"SUPER_ADMIN","market_code":null}],"memberships":[],"account_roles":[{"role":"CONSUMER","status":"ACTIVE","onboarding_status":null}]`; !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("body = %s\nwant to contain %s", rec.Body, want)
 		}
 	})
@@ -1269,7 +1285,7 @@ func TestRegisterWithAccountRoles(t *testing.T) {
 	cookie := sessionCookie(rec)
 	meUser, raw := e.me(cookie)
 	check("/v1/me", meUser)
-	if !strings.Contains(raw, `"memberships":[],"account_roles":[{"role":"CONSUMER","status":"ACTIVE"},`) {
+	if !strings.Contains(raw, `"memberships":[],"account_roles":[{"role":"CONSUMER","status":"ACTIVE","onboarding_status":null},`) {
 		t.Fatalf("unexpected /v1/me body: %s", raw)
 	}
 

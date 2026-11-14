@@ -501,8 +501,8 @@ func TestAccountNotifications(t *testing.T) {
 		}
 	})
 
-	if got := len(EventTypes()); got != 5 {
-		t.Fatalf("%d event types handled, want 5", got)
+	if got := len(EventTypes()); got != 9 {
+		t.Fatalf("%d event types handled, want 9 (5 and the 4 onboarding events)", got)
 	}
 }
 

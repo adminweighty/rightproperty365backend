@@ -2,6 +2,7 @@ package devseed
 
 import (
 	"rightproperty365.com/backend/internal/modules/identity"
+	"rightproperty365.com/backend/internal/modules/onboarding"
 	"rightproperty365.com/backend/internal/modules/reference"
 )
 
@@ -124,6 +125,10 @@ func ReferenceItems() map[string][]reference.Item {
 			add(reference.SetListingFeatures, reference.Item{Code: Code(f), Label: f})
 		}
 	}
+	for _, t := range onboarding.DefaultDocumentTypes() {
+		add(reference.SetOnboardingDocuments, reference.Item{Code: t.Code, Label: t.Label, Description: str(t.Description)})
+	}
+	sets[reference.SetOnboardingDocuments] = list(sets[reference.SetOnboardingDocuments]...)
 	for _, set := range []string{reference.SetPropertyTypes, reference.SetCities, reference.SetSuburbs, reference.SetServiceTrades, reference.SetListingFeatures} {
 		sets[set] = list(sets[set]...)
 	}

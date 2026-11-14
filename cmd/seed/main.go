@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -25,6 +26,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/database"
+	"rightproperty365.com/backend/internal/platform/storage"
 )
 
 func main() {
@@ -66,7 +68,18 @@ func run() error {
 	}
 	defer pool.Close()
 
-	if err := devseed.SeedPostgres(ctx, pool, identity.DefaultHasher(), password, time.Now()); err != nil {
+	// The onboarding demo documents go to the configured file storage
+	// (STORAGE_DRIVER; the local folder by default in development).
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	files, err := storage.Open(cfg, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	if err != nil {
+		return err
+	}
+
+	if err := devseed.SeedPostgres(ctx, pool, files, identity.DefaultHasher(), password, time.Now()); err != nil {
 		return err
 	}
 	fmt.Printf("seeded %d organisations, %d accounts, %d listings and %d directory profiles (password: DEV_SEED_PASSWORD)\n",

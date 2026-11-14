@@ -31,6 +31,7 @@ import (
 
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/identity"
+	"rightproperty365.com/backend/internal/modules/onboarding"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/mail"
@@ -186,6 +187,8 @@ type Handlers struct {
 	// roleLabels returns the current reference-data labels of the account
 	// roles (code -> label). Nil means the built-in labels.
 	roleLabels func(ctx context.Context) (map[string]string, error)
+	// onboarding loads the data behind an onboarding event.
+	onboarding func(ctx context.Context, applicationID uuid.UUID) (onboarding.NotificationInfo, error)
 }
 
 // SetListingLookup makes the property request emails name the listing by its
@@ -227,13 +230,31 @@ func NewHandlers(svc *mail.Service, renderer *mail.Renderer, source Source, logg
 
 // EventTypes lists the outbox events this module handles.
 func EventTypes() []string {
-	return []string{
+	return append([]string{
 		propertyrequests.EventPropertyRequestCreated,
 		businessenquiries.EventBusinessEnquiryCreated,
 		identity.EventUserEmailVerified,
 		identity.EventPasswordChanged,
 		identity.EventAdminSignedIn,
-	}
+	}, onboarding.EventTypes()...)
+}
+
+// PathOnboarding is the web page where an applicant fills in an application.
+const PathOnboarding = "/onboarding"
+
+// SetOnboardingSource supplies the data behind onboarding events. Without it
+// those events are dead-lettered.
+func (h *Handlers) SetOnboardingSource(source func(ctx context.Context, applicationID uuid.UUID) (onboarding.NotificationInfo, error)) {
+	h.onboarding = source
+}
+
+// onboardingTemplates maps an onboarding event to its template and the page
+// its button opens.
+var onboardingTemplates = map[string]struct{ template, path string }{
+	onboarding.EventSubmitted:        {"onboarding-submitted", PathOnboarding},
+	onboarding.EventApproved:         {"onboarding-approved", PathAccount},
+	onboarding.EventChangesRequested: {"onboarding-changes-requested", PathOnboarding},
+	onboarding.EventRejected:         {"onboarding-rejected", PathAccount},
 }
 
 // Register attaches the handlers to a dispatcher.
@@ -387,6 +408,34 @@ func (h *Handlers) build(ctx context.Context, ev outbox.Event) ([]mail.Notificat
 			template, d.Path = "admin-sign-in", PathAdminSignIn
 		}
 		if err := add(template, "account", user.Person, d); err != nil {
+			return nil, err
+		}
+
+	case onboarding.EventSubmitted, onboarding.EventApproved, onboarding.EventChangesRequested, onboarding.EventRejected:
+		if h.onboarding == nil {
+			return nil, outbox.Permanent(fmt.Errorf("notifications: no onboarding source for event type %q", ev.Type))
+		}
+		info, err := h.onboarding(ctx, ev.AggregateID)
+		if errors.Is(err, onboarding.ErrNotFound) {
+			return nil, ErrNotFound
+		}
+		if err != nil {
+			return nil, err
+		}
+		// The applicant only: no document names, no private details, and the
+		// reason only in the two emails that exist to pass it on.
+		t := onboardingTemplates[ev.Type]
+		d := mail.Data{Name: info.Name, Path: t.path, RoleName: info.RoleLabel, When: occurredAt(ev)}
+		switch ev.Type {
+		case onboarding.EventChangesRequested, onboarding.EventRejected:
+			d.Reason = info.Reason
+		case onboarding.EventApproved:
+			if info.Profile != nil {
+				d.Path, d.ProfileName = "/directory/"+info.Profile.Kind+"/"+info.Profile.Slug, info.ProfileName
+			}
+		}
+		user := info.UserID
+		if err := add(t.template, "applicant", Person{UserID: &user, Name: info.Name, Email: info.Email}, d); err != nil {
 			return nil, err
 		}
 

@@ -1,0 +1,12 @@
+{{define "subject"}}Your application was not approved{{end}}
+{{define "heading"}}Application not approved{{end}}
+{{define "button"}}Go to your account{{end}}
+{{define "why"}}You are receiving this because you applied for a professional role on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+We are sorry: your application to join RightProperty365 as {{.RoleName}} was not approved.
+
+Role: {{.RoleName}}
+Reason: {{.Reason}}
+
+The role has not been added to your account. You can still use RightProperty365 to search and to send requests, and you may apply again from your account if your situation changes.{{end}}

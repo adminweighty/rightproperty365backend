@@ -31,6 +31,9 @@ const (
 	SetCities             = "cities"
 	SetSuburbs            = "suburbs"
 	SetListingFeatures    = "listing_features"
+	// SetOnboardingDocuments: the kinds of document a professional may have
+	// to attach to an onboarding application (code, label, description).
+	SetOnboardingDocuments = "onboarding_documents"
 )
 
 // Sets returns every set code in the order the API lists them.
@@ -38,6 +41,7 @@ func Sets() []string {
 	return []string{
 		SetDealTypes, SetPropertyCategories, SetPropertyTypes, SetRequestTypes, SetContactMethods,
 		SetAccountRoles, SetDirectoryKinds, SetServiceTrades, SetCities, SetSuburbs, SetListingFeatures,
+		SetOnboardingDocuments,
 	}
 }
 

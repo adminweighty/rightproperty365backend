@@ -50,6 +50,10 @@ func Templates() []Template {
 		{"property-request-new", "New property request (to the agent or seller)", true},
 		{"business-enquiry-received", "Business enquiry received (to the customer)", true},
 		{"business-enquiry-new", "New business enquiry (to the profile owner)", true},
+		{"onboarding-submitted", "Onboarding application received (to the applicant)", true},
+		{"onboarding-approved", "Onboarding application approved (to the applicant)", true},
+		{"onboarding-changes-requested", "Onboarding application needs changes (to the applicant)", true},
+		{"onboarding-rejected", "Onboarding application not approved (to the applicant)", true},
 
 		{"request-update", "Reply or status update to the customer", false},
 		{"listing-expiring", "Listing expiring in 14, 7 or 1 days", false},
@@ -82,14 +86,18 @@ type Data struct {
 	Path  string
 	Query url.Values
 
-	Reference     string
-	RequestType   string
-	ListingRef    string
-	ListingTitle  string
-	ProfileName   string
-	Service       string
-	Preview       string
-	StatusText    string
+	Reference    string
+	RequestType  string
+	ListingRef   string
+	ListingTitle string
+	ProfileName  string
+	Service      string
+	Preview      string
+	StatusText   string
+	// RoleName is the label of the account role an onboarding email is about;
+	// Reason is the verification team's reason (changes requested, rejected).
+	RoleName      string
+	Reason        string
 	Roles         []Role
 	When          time.Time
 	ExpiresOn     time.Time

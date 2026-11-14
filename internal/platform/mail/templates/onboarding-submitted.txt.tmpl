@@ -1,0 +1,14 @@
+{{define "subject"}}We have received your application{{end}}
+{{define "heading"}}Application received{{end}}
+{{define "button"}}View your application{{end}}
+{{define "why"}}You are receiving this because you applied for a professional role on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+We have received your application to join RightProperty365 as {{.RoleName}}.
+
+Role: {{.RoleName}}
+Submitted: {{dateTime .When}}
+
+Our verification team will review your details and documents. We will email you when there is a decision. There is nothing more you need to do for now.
+
+Until your application is approved, the role does not give access to agency or business tools.{{end}}

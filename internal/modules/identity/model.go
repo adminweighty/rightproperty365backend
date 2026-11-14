@@ -70,11 +70,14 @@ const (
 	AccountRoleAgencyOwner     = "AGENCY_OWNER"
 )
 
-// Account role statuses. Only ACTIVE and PENDING_VERIFICATION are set today;
-// the database also allows REJECTED and REVOKED for the future approval workflow.
+// Account role statuses. A professional role starts as PENDING_VERIFICATION
+// and becomes ACTIVE or REJECTED when a platform administrator decides its
+// onboarding application (internal/modules/onboarding). The database also
+// allows REVOKED, which nothing sets yet.
 const (
 	AccountRoleActive              = "ACTIVE"
 	AccountRolePendingVerification = "PENDING_VERIFICATION"
+	AccountRoleRejected            = "REJECTED"
 )
 
 // SelectableRole is an account role that may be chosen at sign-up.
@@ -128,6 +131,10 @@ func initialAccountRoleStatus(role string) string {
 type AccountRole struct {
 	Role   string
 	Status string
+	// OnboardingStatus is the status of the role's newest onboarding
+	// application ("" when the role has none: CONSUMER, TENANT, and roles
+	// granted before onboarding existed). Filled by the stores on reads.
+	OnboardingStatus string
 }
 
 // sortAccountRoles orders roles as in the allowlist (unknown values last).
@@ -209,6 +216,7 @@ type User struct {
 	Status          string
 	PasswordHash    string // "" when the account has no password yet
 	EmailVerifiedAt *time.Time
+	CreatedAt       time.Time
 	PlatformRoles   []auth.PlatformRole
 	Memberships     []auth.Membership
 	// AccountRoles are self-declared and informational only (see AccountRole*).
@@ -276,6 +284,10 @@ type UserView struct {
 type AccountRoleView struct {
 	Role   string `json:"role"`
 	Status string `json:"status"`
+	// OnboardingStatus is the status of the role's onboarding application:
+	// DRAFT, SUBMITTED, CHANGES_REQUESTED, APPROVED or REJECTED; null for a
+	// role that has no onboarding.
+	OnboardingStatus *string `json:"onboarding_status"`
 }
 
 // PlatformRoleView is one platform role; market_code is null unless the role
@@ -305,7 +317,12 @@ func (u User) View() UserView {
 	roles := slices.Clone(u.AccountRoles)
 	sortAccountRoles(roles)
 	for _, r := range roles {
-		v.AccountRoles = append(v.AccountRoles, AccountRoleView{Role: r.Role, Status: r.Status})
+		view := AccountRoleView{Role: r.Role, Status: r.Status}
+		if r.OnboardingStatus != "" {
+			status := r.OnboardingStatus
+			view.OnboardingStatus = &status
+		}
+		v.AccountRoles = append(v.AccountRoles, view)
 	}
 	for _, r := range u.PlatformRoles {
 		pr := PlatformRoleView{Role: r.Role}

@@ -37,6 +37,16 @@ func SampleData(name string) Data {
 	case "business-enquiry-new":
 		d.Name, d.Path, d.Reference, d.ProfileName, d.Service = "Sample Plumbers Owner", "/agent/requests", "BE-4H8N2RXT", "Sample Plumbers", "Burst pipes and leaks"
 		d.Preview = SafePreview("The geyser is leaking into the ceiling. Can someone come this week? Call me on +263 77 123 4567 or write to tariro@example.com.", 140)
+	case "onboarding-submitted":
+		d.Name, d.Path, d.RoleName = "Sample Plumbers Owner", "/onboarding", "Service provider"
+	case "onboarding-approved":
+		d.Name, d.Path, d.RoleName, d.ProfileName = "Sample Plumbers Owner", "/directory/service-providers/sample-plumbers", "Service provider", "Sample Plumbers"
+	case "onboarding-changes-requested":
+		d.Name, d.Path, d.RoleName = "Sample Plumbers Owner", "/onboarding", "Service provider"
+		d.Reason = "The proof of address is older than three months. Please upload a recent one."
+	case "onboarding-rejected":
+		d.Name, d.Path, d.RoleName = "Sample Plumbers Owner", "/account", "Service provider"
+		d.Reason = "We could not confirm the business registration with the documents provided."
 	case "request-update":
 		d.Path, d.Reference, d.StatusText = "/account", "RP-7K2M9Q4D", "The agent has replied"
 	case "listing-expiring":

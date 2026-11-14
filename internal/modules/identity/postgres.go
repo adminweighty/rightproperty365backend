@@ -80,6 +80,24 @@ func replaceAccountRoles(ctx context.Context, q querier, u NewUser) error {
 			return fmt.Errorf("insert account role: %w", err)
 		}
 	}
+	// Onboarding: every role that waits for verification and has an outcome
+	// gets a DRAFT application, in this same transaction. Roles are only
+	// replaced while the account is unverified, so the only applications an
+	// account can have here are drafts nobody has touched.
+	if _, err := q.Exec(ctx, `DELETE FROM onboarding_applications WHERE user_id = $1 AND status = 'DRAFT'`, u.ID); err != nil {
+		return fmt.Errorf("clear onboarding drafts: %w", err)
+	}
+	if _, err := q.Exec(ctx, `
+		INSERT INTO onboarding_applications (id, user_id, role, status, created_at, updated_at)
+		SELECT gen_random_uuid(), r.user_id, r.role, 'DRAFT', $2, $2
+		FROM user_account_roles r
+		JOIN onboarding_role_outcomes o ON o.role = r.role
+		WHERE r.user_id = $1 AND r.status = 'PENDING_VERIFICATION'
+		  AND NOT EXISTS (SELECT 1 FROM onboarding_applications a
+		                  WHERE a.user_id = r.user_id AND a.role = r.role AND a.status <> 'REJECTED')`,
+		u.ID, u.CreatedAt); err != nil {
+		return fmt.Errorf("create onboarding drafts: %w", err)
+	}
 	return nil
 }
 
@@ -141,12 +159,12 @@ func (s *PostgresStore) UpdatePendingRegistration(ctx context.Context, u NewUser
 	})
 }
 
-const userColumns = `id, email, full_name, status, COALESCE(password_hash, ''), email_verified_at`
+const userColumns = `id, email, full_name, status, COALESCE(password_hash, ''), email_verified_at, created_at`
 
 func (s *PostgresStore) loadUser(ctx context.Context, where string, arg any) (User, error) {
 	var u User
 	err := s.pool.QueryRow(ctx, `SELECT `+userColumns+` FROM users WHERE `+where, arg).
-		Scan(&u.ID, &u.Email, &u.Name, &u.Status, &u.PasswordHash, &u.EmailVerifiedAt)
+		Scan(&u.ID, &u.Email, &u.Name, &u.Status, &u.PasswordHash, &u.EmailVerifiedAt, &u.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
@@ -199,13 +217,17 @@ func (s *PostgresStore) loadUser(ctx context.Context, where string, arg any) (Us
 
 	// Self-declared account roles (informational; never used for authorisation).
 	rows, err = s.pool.Query(ctx, `
-		SELECT role, status FROM user_account_roles WHERE user_id = $1 ORDER BY role`, u.ID)
+		SELECT r.role, r.status,
+		       COALESCE((SELECT a.status FROM onboarding_applications a
+		                 WHERE a.user_id = r.user_id AND a.role = r.role
+		                 ORDER BY a.created_at DESC, a.id DESC LIMIT 1), '')
+		FROM user_account_roles r WHERE r.user_id = $1 ORDER BY r.role`, u.ID)
 	if err != nil {
 		return User{}, fmt.Errorf("load account roles: %w", err)
 	}
 	u.AccountRoles, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (AccountRole, error) {
 		var r AccountRole
-		err := row.Scan(&r.Role, &r.Status)
+		err := row.Scan(&r.Role, &r.Status, &r.OnboardingStatus)
 		return r, err
 	})
 	if err != nil {

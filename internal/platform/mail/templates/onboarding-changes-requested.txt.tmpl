@@ -1,0 +1,12 @@
+{{define "subject"}}Your application needs changes{{end}}
+{{define "heading"}}Please update your application{{end}}
+{{define "button"}}Update your application{{end}}
+{{define "why"}}You are receiving this because you applied for a professional role on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+Our verification team has looked at your application to join RightProperty365 as {{.RoleName}} and needs something changed before it can be approved.
+
+Role: {{.RoleName}}
+What to change: {{.Reason}}
+
+Please update your application and submit it again. Your details and documents are saved, so you only need to change what is asked for.{{end}}

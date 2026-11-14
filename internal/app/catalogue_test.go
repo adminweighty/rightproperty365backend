@@ -688,7 +688,11 @@ func TestPublicResponsesCarryNoContactDetails(t *testing.T) {
 	wantStatus(t, e.post("/v1/property-requests", e.propertyRequest(1)), http.StatusCreated)
 	wantStatus(t, e.post("/v1/business-enquiries", e.enquiry("service-providers", "sample-plumbers")), http.StatusCreated)
 
-	paths := publicGETs(e)
+	// ...including an onboarding application with a private phone number, a
+	// registration number and documents, approved into a public profile.
+	approved := e.approveSeededProvider()
+
+	paths := append(publicGETs(e), "/v1/directory/service-providers/"+approved, "/v1/onboarding/requirements")
 	if len(paths) < 70 {
 		t.Fatalf("only %d public paths were walked", len(paths))
 	}
@@ -719,7 +723,8 @@ func TestPublicResponsesCarryNoContactDetails(t *testing.T) {
 				t.Fatalf("%s: %s.%s contains a phone number: %q", path, at, key, s)
 			}
 		})
-		for _, private := range []string{"@example.test", "@example.com", "tariro", "+263", "771234567", "enquiries@", "password"} {
+		for _, private := range []string{"@example.test", "@example.com", "tariro", "+263", "771234567", "enquiries@", "password",
+			"770000001", "sample-0001", "pamela", "pending.provider", "devseed", "object_key", "sha256"} {
 			if strings.Contains(strings.ToLower(body), private) {
 				t.Fatalf("%s contains %q", path, private)
 			}

@@ -105,7 +105,29 @@ type Config struct {
 	// (absolute lifetime and inactivity timeout).
 	AdminSessionTTL     time.Duration
 	AdminSessionIdleTTL time.Duration
+	// StorageDriver is StorageDriverLocal or StorageDriverS3 (private files:
+	// onboarding documents). Local is development only.
+	StorageDriver string
+	// StorageLocalDir is where the local driver writes (git-ignored).
+	StorageLocalDir string
+	// S3 settings for an S3-compatible store such as MinIO. S3SecretKey
+	// formats as "[redacted]".
+	S3Endpoint     string
+	S3Bucket       string
+	S3AccessKey    string
+	S3SecretKey    Secret
+	S3Region       string
+	S3UsePathStyle bool
 }
+
+// Storage drivers (STORAGE_DRIVER).
+const (
+	StorageDriverLocal = "local"
+	StorageDriverS3    = "s3"
+
+	defaultStorageLocalDir = "tmp/uploads"
+	defaultS3Region        = "us-east-1"
+)
 
 // ToolDatabase returns the connection string and pool mode that one-off
 // administrative commands (migrate, adminctl, seed) should use: the direct URL
@@ -396,6 +418,45 @@ func FromLookup(get func(string) string) (Config, error) {
 		errs = append(errs, err)
 	}
 	cfg.LogLevel = level
+
+	// Private file storage. The local driver writes to this machine's disk,
+	// which is lost with the container and not shared between replicas, so it
+	// is refused outside development.
+	cfg.StorageDriver = strings.ToLower(val("STORAGE_DRIVER", ""))
+	if cfg.StorageDriver == "" && cfg.Env == EnvDevelopment {
+		cfg.StorageDriver = StorageDriverLocal
+	}
+	cfg.StorageLocalDir = val("STORAGE_LOCAL_DIR", defaultStorageLocalDir)
+	cfg.S3Endpoint = val("S3_ENDPOINT", "")
+	cfg.S3Bucket = val("S3_BUCKET", "")
+	cfg.S3AccessKey = val("S3_ACCESS_KEY", "")
+	cfg.S3SecretKey = Secret(val("S3_SECRET_KEY", ""))
+	cfg.S3Region = val("S3_REGION", defaultS3Region)
+	cfg.S3UsePathStyle = true
+	if raw := val("S3_USE_PATH_STYLE", ""); raw != "" {
+		v, err := strconv.ParseBool(raw)
+		if err != nil {
+			errs = append(errs, errors.New("S3_USE_PATH_STYLE must be true or false"))
+		}
+		cfg.S3UsePathStyle = v
+	}
+	switch cfg.StorageDriver {
+	case StorageDriverLocal:
+		if cfg.Env != EnvDevelopment {
+			errs = append(errs, fmt.Errorf("STORAGE_DRIVER=local is development only; APP_ENV=%s must use STORAGE_DRIVER=s3", cfg.Env))
+		}
+	case StorageDriverS3:
+		if u, err := url.Parse(cfg.S3Endpoint); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+			errs = append(errs, errors.New("S3_ENDPOINT must be an http(s) URL without credentials, such as https://minio.internal:9000"))
+		}
+		if cfg.S3Bucket == "" || cfg.S3AccessKey == "" || !cfg.S3SecretKey.IsSet() {
+			errs = append(errs, errors.New("STORAGE_DRIVER=s3 needs S3_BUCKET, S3_ACCESS_KEY and S3_SECRET_KEY"))
+		}
+	case "":
+		errs = append(errs, fmt.Errorf("STORAGE_DRIVER is required when APP_ENV=%s and must be s3", cfg.Env))
+	default:
+		errs = append(errs, errors.New("STORAGE_DRIVER must be local or s3"))
+	}
 
 	if len(errs) > 0 {
 		return Config{}, fmt.Errorf("invalid configuration: %w", errors.Join(errs...))

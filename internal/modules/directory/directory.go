@@ -142,7 +142,8 @@ type Entry struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// Store holds the profiles. Every method returns ACTIVE profiles only.
+// Store holds the profiles. Every method returns only profiles that are
+// published (ACTIVE) AND verified: nothing else is ever public.
 type Store interface {
 	// List returns one page of a kind, sponsored profiles first, then by name,
 	// and the total number of matches.

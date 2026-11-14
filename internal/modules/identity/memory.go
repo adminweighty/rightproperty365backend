@@ -30,6 +30,91 @@ type MemoryStore struct {
 	consents      []MemoryConsent
 	outbox        []outbox.Event
 	sink          outbox.Sink
+
+	// Onboarding hooks (see SetOnboarding). Never called with mu held.
+	syncDrafts         func(userID uuid.UUID, roles []AccountRole, now time.Time)
+	onboardingStatuses func(userID uuid.UUID) map[string]string
+}
+
+// SetOnboarding connects the in-memory onboarding store: sync is told the
+// roles of an account whenever registration sets them (it creates the DRAFT
+// applications, which the Postgres store does in the same transaction), and
+// statuses supplies each role's onboarding status for reads.
+func (s *MemoryStore) SetOnboarding(sync func(userID uuid.UUID, roles []AccountRole, now time.Time), statuses func(userID uuid.UUID) map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.syncDrafts, s.onboardingStatuses = sync, statuses
+}
+
+// decorate attaches the onboarding status of each account role. It is called
+// WITHOUT the lock: the onboarding store reads this store in turn.
+func (s *MemoryStore) decorate(u User) User {
+	s.mu.Lock()
+	statuses := s.onboardingStatuses
+	s.mu.Unlock()
+	if statuses == nil {
+		return u
+	}
+	byRole := statuses(u.ID)
+	for i := range u.AccountRoles {
+		u.AccountRoles[i].OnboardingStatus = byRole[u.AccountRoles[i].Role]
+	}
+	return u
+}
+
+func (s *MemoryStore) rolesChanged(userID uuid.UUID, roles []AccountRole, now time.Time) {
+	s.mu.Lock()
+	sync := s.syncDrafts
+	s.mu.Unlock()
+	if sync != nil {
+		sync(userID, append([]AccountRole(nil), roles...), now)
+	}
+}
+
+// Account returns a user without onboarding statuses (for the onboarding
+// store itself, which must not be called back).
+func (s *MemoryStore) Account(id uuid.UUID) (User, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.users[id]
+	if !ok {
+		return User{}, false
+	}
+	return s.view(u), true
+}
+
+// SetAccountRoleStatus changes the status of one of the user's account roles.
+func (s *MemoryStore) SetAccountRoleStatus(userID uuid.UUID, role, status string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, r := range s.accountRoles[userID] {
+		if r.Role == role {
+			s.accountRoles[userID][i].Status = status
+			return nil
+		}
+	}
+	return fmt.Errorf("set account role status: %w", ErrNotFound)
+}
+
+// SetMembership makes the user a member of an organisation with the given
+// role, replacing an existing membership of the same organisation.
+func (s *MemoryStore) SetMembership(userID, organisationID uuid.UUID, marketCode, role string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.users[userID]; !ok {
+		return fmt.Errorf("set membership: %w", ErrNotFound)
+	}
+	if _, ok := s.organisations[organisationID]; !ok {
+		return fmt.Errorf("set membership: organisation %s: %w", organisationID, ErrNotFound)
+	}
+	for i, m := range s.memberships {
+		if m.UserID == userID && m.OrganisationID == organisationID {
+			s.memberships[i].Role, s.memberships[i].MarketCode = role, marketCode
+			return nil
+		}
+	}
+	s.memberships = append(s.memberships, memoryMembership{UserID: userID, OrganisationID: organisationID, MarketCode: marketCode, Role: role})
+	return nil
 }
 
 type memoryUser struct {
@@ -111,6 +196,14 @@ func (s *MemoryStore) view(u *memoryUser) User {
 
 // CreateUser implements Store.
 func (s *MemoryStore) CreateUser(_ context.Context, u NewUser) error {
+	if err := s.createUser(u); err != nil {
+		return err
+	}
+	s.rolesChanged(u.ID, u.AccountRoles, u.CreatedAt)
+	return nil
+}
+
+func (s *MemoryStore) createUser(u NewUser) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, taken := s.byEmail[u.Email]; taken {
@@ -119,7 +212,7 @@ func (s *MemoryStore) CreateUser(_ context.Context, u NewUser) error {
 	s.users[u.ID] = &memoryUser{
 		User: User{
 			ID: u.ID, Name: u.Name, Email: u.Email, Status: StatusActive,
-			PasswordHash: u.PasswordHash, EmailVerifiedAt: u.EmailVerifiedAt,
+			PasswordHash: u.PasswordHash, EmailVerifiedAt: u.EmailVerifiedAt, CreatedAt: u.CreatedAt,
 		},
 		MarketingOptIn: u.MarketingOptIn,
 	}
@@ -131,6 +224,14 @@ func (s *MemoryStore) CreateUser(_ context.Context, u NewUser) error {
 
 // UpdatePendingRegistration implements Store.
 func (s *MemoryStore) UpdatePendingRegistration(_ context.Context, u NewUser) error {
+	if err := s.updatePendingRegistration(u); err != nil {
+		return err
+	}
+	s.rolesChanged(u.ID, u.AccountRoles, u.CreatedAt)
+	return nil
+}
+
+func (s *MemoryStore) updatePendingRegistration(u NewUser) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	user, ok := s.users[u.ID]
@@ -152,23 +253,21 @@ func (s *MemoryStore) UpdatePendingRegistration(_ context.Context, u NewUser) er
 // UserByEmail implements Store.
 func (s *MemoryStore) UserByEmail(_ context.Context, email string) (User, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	id, ok := s.byEmail[email]
+	s.mu.Unlock()
 	if !ok {
 		return User{}, ErrNotFound
 	}
-	return s.view(s.users[id]), nil
+	return s.UserByID(context.Background(), id)
 }
 
 // UserByID implements Store.
 func (s *MemoryStore) UserByID(_ context.Context, id uuid.UUID) (User, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	u, ok := s.users[id]
+	u, ok := s.Account(id)
 	if !ok {
 		return User{}, ErrNotFound
 	}
-	return s.view(u), nil
+	return s.decorate(u), nil
 }
 
 // CreateVerificationToken implements Store.
@@ -360,7 +459,7 @@ func (s *MemoryStore) CreatePlatformAdmin(_ context.Context, a NewPlatformAdmin)
 	verified := a.CreatedAt
 	s.users[a.ID] = &memoryUser{User: User{
 		ID: a.ID, Name: a.Name, Email: a.Email, Status: StatusActive,
-		PasswordHash: a.PasswordHash, EmailVerifiedAt: &verified,
+		PasswordHash: a.PasswordHash, EmailVerifiedAt: &verified, CreatedAt: a.CreatedAt,
 	}}
 	s.byEmail[a.Email] = a.ID
 	s.platformRoles[a.ID] = []auth.PlatformRole{{Role: a.Role, MarketCode: a.MarketCode}}

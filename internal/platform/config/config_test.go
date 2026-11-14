@@ -13,8 +13,94 @@ import (
 	"time"
 )
 
+// lookup serves the given environment. Outside development a storage driver
+// is mandatory, so a staging or production environment that says nothing
+// about storage gets a complete (made-up) S3 configuration; rawLookup is used
+// by the storage tests themselves.
 func lookup(m map[string]string) func(string) string {
+	env := strings.ToLower(m["APP_ENV"])
+	_, storageSet := m["STORAGE_DRIVER"]
+	if (env != "staging" && env != "production") || storageSet {
+		return rawLookup(m)
+	}
+	s3 := map[string]string{
+		"STORAGE_DRIVER": "s3", "S3_ENDPOINT": "https://objects.private.example:9000", "S3_BUCKET": "rp365-private",
+		"S3_ACCESS_KEY": "test-access", "S3_SECRET_KEY": fakeS3Secret(),
+	}
+	return func(k string) string {
+		if v, ok := m[k]; ok {
+			return v
+		}
+		return s3[k]
+	}
+}
+
+func rawLookup(m map[string]string) func(string) string {
 	return func(k string) string { return m[k] }
+}
+
+// fakeS3Secret is built at run time so no key-shaped literal is committed.
+func fakeS3Secret() string { return "s3-secret-" + strings.Repeat("x", 12) }
+
+func TestStorageDriverSelection(t *testing.T) {
+	const db = "postgres://user@db.private.example:5432/app?sslmode=verify-full"
+	prod := func(extra map[string]string) map[string]string {
+		env := map[string]string{"APP_ENV": "production", "DATABASE_URL": db, "RESEND_API_KEY": "test-key-not-real"}
+		for k, v := range extra {
+			env[k] = v
+		}
+		return env
+	}
+	s3 := map[string]string{"STORAGE_DRIVER": "s3", "S3_ENDPOINT": "http://localhost:9000", "S3_BUCKET": "rp365-dev", "S3_ACCESS_KEY": "a", "S3_SECRET_KEY": fakeS3Secret()}
+	cases := []struct {
+		name    string
+		env     map[string]string
+		want    string
+		wantErr string
+	}{
+		{"development defaults to local", nil, StorageDriverLocal, ""},
+		{"development may use s3", s3, StorageDriverS3, ""},
+		{"s3 without settings fails", map[string]string{"STORAGE_DRIVER": "s3"}, "", "S3_ENDPOINT must be"},
+		{"s3 without a secret fails", map[string]string{"STORAGE_DRIVER": "s3", "S3_ENDPOINT": "http://localhost:9000", "S3_BUCKET": "b", "S3_ACCESS_KEY": "a"}, "", "needs S3_BUCKET, S3_ACCESS_KEY and S3_SECRET_KEY"},
+		{"endpoint with credentials fails", map[string]string{"STORAGE_DRIVER": "s3", "S3_ENDPOINT": "http://user:hunter2@localhost:9000", "S3_BUCKET": "b", "S3_ACCESS_KEY": "a", "S3_SECRET_KEY": fakeS3Secret()}, "", "S3_ENDPOINT must be"},
+		{"unknown driver", map[string]string{"STORAGE_DRIVER": "ftp"}, "", "STORAGE_DRIVER must be local or s3"},
+		{"bad path style flag", map[string]string{"S3_USE_PATH_STYLE": "maybe"}, "", "S3_USE_PATH_STYLE must be true or false"},
+		{"production without a driver fails startup", prod(nil), "", "STORAGE_DRIVER is required"},
+		{"production refuses local", prod(map[string]string{"STORAGE_DRIVER": "local"}), "", "development only"},
+		{"staging refuses local", map[string]string{"APP_ENV": "staging", "DATABASE_URL": db, "RESEND_API_KEY": "test-key-not-real", "STORAGE_DRIVER": "local"}, "", "development only"},
+		{"production with s3", prod(s3), StorageDriverS3, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := FromLookup(rawLookup(tc.env))
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %v, want one containing %q", err, tc.wantErr)
+				}
+				for _, secret := range []string{fakeS3Secret(), "hunter2"} {
+					if strings.Contains(err.Error(), secret) {
+						t.Fatalf("the error echoes a secret: %v", err)
+					}
+				}
+				return
+			}
+			if err != nil || cfg.StorageDriver != tc.want {
+				t.Fatalf("driver = %q, %v; want %q", cfg.StorageDriver, err, tc.want)
+			}
+		})
+	}
+
+	cfg, err := FromLookup(rawLookup(s3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.S3UsePathStyle || cfg.S3Region != "us-east-1" || cfg.StorageLocalDir != "tmp/uploads" {
+		t.Fatalf("defaults: path style %v, region %q, dir %q", cfg.S3UsePathStyle, cfg.S3Region, cfg.StorageLocalDir)
+	}
+	// The secret key never appears when the configuration is formatted.
+	if out := fmt.Sprintf("%v %+v %#v", cfg, cfg, cfg.S3SecretKey); strings.Contains(out, fakeS3Secret()) {
+		t.Fatal("formatting the configuration exposes S3_SECRET_KEY")
+	}
 }
 
 func TestFromLookupDefaults(t *testing.T) {

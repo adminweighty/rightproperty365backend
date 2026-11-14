@@ -35,12 +35,26 @@ func (s *MemoryStore) Put(r Record) {
 	s.records = append(s.records, r)
 }
 
+// Has reports whether a profile with that address exists in ANY status (a
+// new profile's slug must not collide with a hidden one either).
+func (s *MemoryStore) Has(kind, slug string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, r := range s.records {
+		if r.Kind == kind && r.Slug == slug {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *MemoryStore) active() []Record {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var out []Record
 	for _, r := range s.records {
-		if r.Status == StatusActive {
+		// Public means published (ACTIVE) and verified.
+		if r.Status == StatusActive && r.Verified {
 			out = append(out, r)
 		}
 	}
@@ -166,7 +180,7 @@ func scanProfile(row pgx.CollectableRow) (Record, error) {
 }
 
 func (s *PostgresStore) profiles(ctx context.Context, tail string, args ...any) ([]Record, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+profileColumns+` FROM directory_profiles p WHERE p.status = 'ACTIVE' AND `+tail, args...)
+	rows, err := s.pool.Query(ctx, `SELECT `+profileColumns+` FROM directory_profiles p WHERE p.status = 'ACTIVE' AND p.verified AND `+tail, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -194,7 +208,7 @@ func (s *PostgresStore) List(ctx context.Context, kind string, f Filter, limit, 
 	}
 	where := strings.Join(conds, " AND ")
 	var total int
-	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM directory_profiles p WHERE p.status = 'ACTIVE' AND `+where, args...).Scan(&total); err != nil {
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM directory_profiles p WHERE p.status = 'ACTIVE' AND p.verified AND `+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	args = append(args, limit, offset)
@@ -230,7 +244,7 @@ func (s *PostgresStore) AgentsOf(ctx context.Context, organisationID uuid.UUID) 
 
 // Counts implements Store.
 func (s *PostgresStore) Counts(ctx context.Context) (map[string]int, error) {
-	rows, err := s.pool.Query(ctx, `SELECT kind, count(*) FROM directory_profiles WHERE status = 'ACTIVE' GROUP BY kind`)
+	rows, err := s.pool.Query(ctx, `SELECT kind, count(*) FROM directory_profiles WHERE status = 'ACTIVE' AND verified GROUP BY kind`)
 	if err != nil {
 		return nil, err
 	}
@@ -249,7 +263,7 @@ func (s *PostgresStore) Counts(ctx context.Context) (map[string]int, error) {
 
 // Entries implements Store.
 func (s *PostgresStore) Entries(ctx context.Context) ([]Entry, error) {
-	rows, err := s.pool.Query(ctx, `SELECT kind, slug, updated_at FROM directory_profiles WHERE status = 'ACTIVE' ORDER BY kind, slug`)
+	rows, err := s.pool.Query(ctx, `SELECT kind, slug, updated_at FROM directory_profiles WHERE status = 'ACTIVE' AND verified ORDER BY kind, slug`)
 	if err != nil {
 		return nil, err
 	}

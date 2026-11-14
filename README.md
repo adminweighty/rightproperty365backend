@@ -129,6 +129,16 @@ Invoke-RestMethod -Uri http://localhost:8080/v1/me -WebSession $s
 Invoke-RestMethod -Uri http://localhost:8080/v1/agent/property-requests -WebSession $s
 ```
 
+**Onboarding demo accounts** (same `DEV_SEED_PASSWORD`; created in memory by the API and in
+Postgres by `cmd/seed`). Their professional role is **not** active: it waits for an administrator.
+The other seeded professionals are already approved and are deliberately left **without**
+onboarding applications (their roles were granted by the seed, not by a review).
+
+| Email | Name | Role and application |
+| --- | --- | --- |
+| `pending.provider@example.test` | Pamela Provider | SERVICE_PROVIDER, application **SUBMITTED** with details ("Sample Roofing Repairs") and one tiny generated sample document per required type (a PNG and two PDFs). Sign in as `admin@example.test` at the administrator login to review and decide it |
+| `pending.agent@example.test` | Peter Pending | AGENT, application still a **DRAFT** (nothing filled in) |
+
 Registering a new account in development does not send email: the API **logs** the link, e.g.
 `"msg":"DEV MAIL (not sent): verify-email link", "link":"http://localhost:3000/verify-email?token=..."`.
 
@@ -168,6 +178,7 @@ All configuration comes from environment variables. For local development you ma
 | `DEV_SEED_PASSWORD` | _(empty)_ | Development only: shared password of the seed users. Ignored outside `APP_ENV=development`; never logged |
 | `ADMIN_SESSION_TTL` | `12h` | Absolute lifetime of an administrator session (Go duration, 1m–24h) |
 | `ADMIN_SESSION_IDLE_TTL` | `30m` | Administrator inactivity timeout (Go duration; must not exceed `ADMIN_SESSION_TTL`) |
+| `STORAGE_DRIVER`, `STORAGE_LOCAL_DIR`, `S3_*` | | Private file storage for onboarding documents: see "File storage". **Staging and production must use `STORAGE_DRIVER=s3`** |
 | `ADMINCTL_PASSWORD` | _(empty)_ | `cmd/adminctl` only: the administrator password, as an alternative to stdin |
 
 ## Endpoints
@@ -191,6 +202,13 @@ All configuration comes from environment variables. For local development you ma
 | POST | `/v1/auth/password-reset/request` | Always `202 RESET_SENT` |
 | POST | `/v1/auth/password-reset/confirm` | Set a new password; revokes all of the user's sessions |
 | GET | `/v1/me` | The signed-in user (roles, memberships) and the session (`scope`, `expires_at`) |
+| GET | `/v1/onboarding/requirements` | What each professional role must provide: details and documents (public, cacheable) |
+| GET | `/v1/me/onboarding` | The caller's onboarding applications |
+| PUT | `/v1/me/onboarding/{role}` | Save details (partial); after a rejection, start a new application |
+| POST, DELETE, GET | `/v1/me/onboarding/{role}/documents`, `.../documents/{id}`, `.../documents/{id}/file` | Attach (multipart), remove and download the caller's own documents |
+| POST | `/v1/me/onboarding/{role}/submit` | Submit for review |
+| GET | `/v1/admin/onboarding`, `/v1/admin/onboarding/{id}`, `.../documents/{docId}/file` | Review queue, one application in full, a document (admin-scope session; SUPER_ADMIN, PLATFORM_ADMIN, MODERATOR, MARKET_ADMIN) |
+| POST | `/v1/admin/onboarding/{id}/approve`, `/reject`, `/request-changes` | Decide an application |
 | POST | `/v1/admin/auth/login` | Administrator sign-in (platform-role accounts only; cookie only) |
 | GET | `/v1/admin/me` | Same as `/v1/me`, but requires an admin-scope session and a platform role |
 | GET | `/v1/agent/property-requests` | Requests received by the caller: their organisation's (scoped by role) and/or their own as a direct seller |
@@ -445,6 +463,144 @@ is likewise only exercised against a fake.
 **Operations: not set up, no owner.** Snapshots and restore testing, upgrades (the client major
 must match the cluster major), monitoring (cluster health, disk watermarks, slow queries), index
 lifecycle, authentication and TLS for a real cluster, and capacity planning.
+
+## Professional onboarding and verification
+
+A professional role chosen at sign-up is only a request. Each such role gets an **onboarding
+application**: the person fills in details, attaches documents and submits; a platform
+administrator approves, rejects or asks for changes. **Only an approval** makes the role ACTIVE
+and creates the organisation, membership and public profile that go with it. CONSUMER and TENANT
+have no onboarding. A platform role can never be obtained this way: platform roles have no outcome
+row, the tables refuse them, and the service ignores one even if it were inserted.
+
+```
+registration ──> DRAFT ──submit──> SUBMITTED ──approve──────────> APPROVED   (role ACTIVE, things created)
+                   ^                  │  ├──────reject──────────> REJECTED   (role REJECTED; final)
+                   │                  │  └──request-changes──> CHANGES_REQUESTED ──submit──> SUBMITTED
+                   └── PUT after a rejection starts a NEW application (the rejected one is kept)
+```
+
+Every transition is one row in `onboarding_history` (actor, from, to, reason, time; a trigger
+refuses updates) and one `audit=true` log line. An approval is **one transaction** in Postgres:
+application, account role, organisation, membership, profile, history row and outbox event commit
+together.
+
+**What an approval creates** is a table (`onboarding_role_outcomes`), not code:
+
+| Role | Outcome | Created on approval |
+| --- | --- | --- |
+| `AGENCY_OWNER` | ORGANISATION | organisation `AGENCY` + OWNER membership + profile in `agencies` |
+| `LANDLORD` | ORGANISATION | organisation `LANDLORD` + OWNER + profile in `property-managers` |
+| `HOST` | ORGANISATION | organisation `HOST` + OWNER + profile in `hosts` |
+| `DEVELOPER` | ORGANISATION | organisation `DEVELOPER` + OWNER + profile in `developers` |
+| `SERVICE_PROVIDER` | ORGANISATION | organisation `SERVICE_PROVIDER` + OWNER + profile in `service-providers` (with its trade) |
+| `AGENT` | AGENCY_MEMBER | AGENT membership in the chosen **existing verified agency** + profile in `agents`, linked to it |
+| `AGENCY_STAFF` | AGENCY_MEMBER | STAFF membership in the chosen agency; no profile |
+| `AGENCY_ADMIN` | AGENCY_MEMBER | MANAGER membership in the chosen agency; no profile |
+| `PRIVATE_SELLER` | NONE | nothing; the role becomes ACTIVE |
+
+A created profile is published and `verified = true`, with a slug derived from the name (`-2`,
+`-3`, ... on a collision). **Public directory endpoints and the sitemap only ever return profiles
+that are published AND verified**; the 29 sample profiles are all verified. A profile gets public
+content only: the contact phone, the registration number and the documents never leave the
+application (the public leak test walks an approved profile).
+
+**Details** (validated as they are saved; required ones checked on submit):
+
+| Outcome | Fields (required in bold) |
+| --- | --- |
+| ORGANISATION | **`business_name`** (2–120), `tagline` (≤140), **`description`** (≤2000, plain text), **`city`** (`cities` code), `areas` (0–12), `services` (0–12), **`trade`** (`service_trades` code; SERVICE_PROVIDER only), `registration_number`, **`contact_phone`** (E.164) |
+| AGENCY_MEMBER | **`agency_slug`** (an existing verified agency), `job_title`, `bio` (AGENT only, ≤1000), `areas`, **`contact_phone`** |
+| NONE | **`contact_phone`** |
+
+`contact_phone` and `registration_number` are **private**: the applicant and authorised
+administrators see them, nobody else, and nothing copies them to a profile.
+
+### Documents each role must attach: PLACEHOLDERS, need confirmation
+
+> **Open decision for the project owner.** The table below is a placeholder so the flow can be
+> built and tried. Which documents each market really requires is a **business and legal
+> decision** (regulator rules, data-protection law, what the Estate Agents Council issues) that
+> has not been taken. The rows live in the database (`onboarding_role_documents` and the
+> `onboarding_documents` reference set), so they can be changed without a release.
+
+| Role | Required | Optional |
+| --- | --- | --- |
+| `AGENCY_OWNER` | PROOF_OF_IDENTITY, BUSINESS_REGISTRATION, PROOF_OF_ADDRESS, ESTATE_AGENTS_COUNCIL_CERTIFICATE | TAX_CLEARANCE |
+| `LANDLORD`, `HOST`, `DEVELOPER` | PROOF_OF_IDENTITY, BUSINESS_REGISTRATION, PROOF_OF_ADDRESS | TAX_CLEARANCE |
+| `SERVICE_PROVIDER` | PROOF_OF_IDENTITY, BUSINESS_REGISTRATION, PROOF_OF_ADDRESS | TAX_CLEARANCE, TRADE_LICENCE |
+| `AGENT` | PROOF_OF_IDENTITY, ESTATE_AGENTS_COUNCIL_CERTIFICATE | |
+| `AGENCY_STAFF`, `AGENCY_ADMIN` | PROOF_OF_IDENTITY, PROOF_OF_EMPLOYMENT | |
+| `PRIVATE_SELLER` | PROOF_OF_IDENTITY, PROOF_OF_OWNERSHIP | |
+
+### File storage
+
+Documents are **private objects**. There is no public URL for one: the only way to read a document
+is an authenticated API route (the owner's, or an authorised administrator's, whose every access
+is audit-logged) that streams it with `Content-Disposition: attachment`,
+`X-Content-Type-Options: nosniff` and `Cache-Control: private, no-store`.
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `STORAGE_DRIVER` | `local` in development | `local` or `s3`. **Staging and production must use `s3`: startup fails otherwise** |
+| `STORAGE_LOCAL_DIR` | `tmp/uploads` | `local` only. Git-ignored. Lost with the machine; not shared between replicas |
+| `S3_ENDPOINT` | _(empty)_ | `s3`: http(s) URL of the S3-compatible store (MinIO), without credentials |
+| `S3_BUCKET` | _(empty)_ | `s3`: an existing **private** bucket |
+| `S3_ACCESS_KEY`, `S3_SECRET_KEY` | _(empty)_ | `s3`. The secret key is a redacting type: never logged, never formatted |
+| `S3_REGION` | `us-east-1` | `s3` |
+| `S3_USE_PATH_STYLE` | `true` | `s3`: `<endpoint>/<bucket>/<key>`, which MinIO needs |
+
+The API logs one line at startup naming the storage driver. The S3 adapter uses
+`github.com/minio/minio-go/v7`: a small client written for MinIO, which is what the stack runs, in
+place of the much larger AWS SDK. **It is tested against a fake HTTP transport only and has never
+talked to MinIO**; MinIO is in `docker-compose.yml`, but there is no Docker on the machine this
+was written on.
+
+**Uploads go through the API, not presigned URLs. This is a deliberate deviation from FR-010**
+(presigned PUT with asynchronous scanning), so that validation is enforced server-side today:
+
+- one `multipart/form-data` request with `type` and `file`; the route alone has a larger body
+  limit (10 MB + framing) and a longer timeout (2 minutes); uploads are rate limited per IP;
+- at most **10 MB** per file and **10 documents** per application; an empty file is refused;
+- only **PDF, JPEG and PNG**, decided by **sniffing the content**. The client's `Content-Type` and
+  the file extension are ignored: a PNG named `bill.pdf` is accepted **as a PNG** and shown as
+  `bill.png`; text, HTML, SVG, archives and executables are refused whatever they are called;
+- the display name is sanitised and capped at 100 characters, and is never part of a storage key;
+- object keys are random (`onboarding/<32 hex digits>`) and contain no user input;
+- the SHA-256 of the content is stored;
+- attaching a type again replaces the document and deletes the old object.
+
+**Not built:** malware scanning and quarantine (a file is stored and can be downloaded by a
+reviewer unscanned: **open it with care**), image re-encoding and EXIF/metadata stripping,
+presigned direct uploads, a retention and deletion policy (documents are kept indefinitely,
+including after a rejection), cleanup of orphan objects if a delete fails (it is logged), and
+encryption settings for the bucket (an infrastructure decision).
+
+### Who may review
+
+`GET /v1/admin/onboarding...` needs an **admin-scope** session and one of SUPER_ADMIN,
+PLATFORM_ADMIN, MODERATOR or MARKET_ADMIN; anyone else gets 403. A MARKET_ADMIN only sees and
+decides applications of its own market (the market of the application's city, or of the agency
+being joined); for another market's application it gets 404. Applications that belong to no
+market (a draft without a city, a private seller) are for the global roles only.
+
+### Emails
+
+Four emails, to the applicant only, through the outbox: application received, approved (says what
+they can now do and links to their profile, or to `/account`), changes requested (with the reason,
+links to `/onboarding`) and not approved (with the reason). They never contain document names or
+private details. **Administrators are not emailed** about new submissions yet; they see the queue.
+
+### Not built yet (onboarding)
+
+- **Suspending or unpublishing a profile** from the API: not built. A profile is hidden by setting
+  its `status` or `verified` in the database.
+- **Editing a profile after approval**, adding a logo, or changing the organisation: not built.
+- **Revoking an approved role**, removing a membership, or approving on behalf of an agency (the
+  agency itself does not confirm a new member; a platform administrator does).
+- **Admin email / notifications** for new submissions; an SLA or reminder for the queue.
+- **Admin endpoints for the requirement tables**: they are changed in the database.
+- **A durable audit trail**: decisions and document accesses are log lines (plus the history table).
 
 ## Reference data: drop-downs and lists come from the database
 
@@ -759,13 +915,16 @@ There are three separate things, all returned by `GET /v1/me`, and only two of t
 **Account roles** are chosen at registration from this allowlist (exact API codes): `CONSUMER`,
 `TENANT`, `PRIVATE_SELLER`, `LANDLORD`, `HOST`, `DEVELOPER`, `SERVICE_PROVIDER`, `AGENT`,
 `AGENCY_STAFF`, `AGENCY_ADMIN`, `AGENCY_OWNER`. Each has a status: `CONSUMER` and `TENANT` are
-`ACTIVE`; every other role is stored as `PENDING_VERIFICATION` (the database also reserves
-`REJECTED` and `REVOKED`; nothing sets them yet). Platform roles can never be chosen.
+`ACTIVE`; every other role starts as `PENDING_VERIFICATION` and becomes `ACTIVE` or `REJECTED` when
+a platform administrator decides its onboarding application (see "Professional onboarding and
+verification"; the database also reserves `REVOKED`, which nothing sets yet). `GET /v1/me` shows
+each role's `onboarding_status`. Platform roles can never be chosen.
 
 Selecting a professional role at sign-up **only records a request**. It does not create an
 organisation or a membership, gives no access to any organisation's data, and is never consulted by
 `RequireMembership` or `RequirePlatformRole` — a self-registered "AGENT" gets `403 FORBIDDEN` from
-`GET /v1/agent/property-requests` until someone gives them a real membership.
+`GET /v1/agent/property-requests` until their onboarding application is approved, which is what
+creates the membership.
 
 There is exactly **one** place an account role affects access: a user who declared
 `PRIVATE_SELLER` (in any status) may open `GET /v1/agent/property-requests`. That only lets a
@@ -835,11 +994,9 @@ their data with `Principal.OrganisationIDs(...)` (and `PlatformRole.MarketCode` 
 - **Listing lifecycle (publish, edit, pause, relist) and an expiry job** – so nothing but the seed
   emits listing events yet.
 - **Metrics** – the search-fallback count is only a log field.
-- **Verification / approval workflow for pending roles** – professional account roles stay
-  `PENDING_VERIFICATION` forever; nothing reviews, approves, rejects or revokes them, and approval
-  would not yet lead to a membership.
-- **Organisation creation and invitations** – memberships and platform roles can only be created
-  directly in the database (or by the development seed).
+- **Revoking a role or a membership, and invitations** – a membership is created only by an
+  approved onboarding application (or the development seed); nothing removes one, and an agency
+  cannot invite or confirm its own members. Platform roles are created only by `cmd/adminctl`.
 - **Account deletion** and data export.
 - **Consent preference centre** – registration consent is recorded, but there is no way to review
   or change consents (including `marketing_opt_in`) afterwards.
@@ -860,6 +1017,8 @@ cmd/migrate    migration runner: up | down | status
 cmd/adminctl   create platform administrators / set their password (Postgres only)
 cmd/seed       development sample data into Postgres (refuses outside APP_ENV=development)
 cmd/mailpreview  render every email template to tmp/mail-preview/ (sends nothing)
+internal/modules/onboarding  professional onboarding: applications, documents, review, approval
+internal/platform/storage    private file storage: local folder (development) and S3/MinIO
 cmd/reindex    rebuild the Elasticsearch listings index and swap the alias (needs a cluster)
 internal/platform/config     env configuration + validation
 internal/platform/logging    slog JSON logger, request-ID propagation
@@ -971,6 +1130,12 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0009_onboarding` adds the `onboarding_documents` reference set, `onboarding_role_outcomes`,
+  `onboarding_role_documents`, `onboarding_applications` (one current application per user and
+  role), `onboarding_documents` and the immutable `onboarding_history`; it backfills a DRAFT
+  application for every role that is already `PENDING_VERIFICATION`, and narrows the public
+  profile index to verified profiles. **Never run**, like every migration after 0001: its SQL, the
+  onboarding Postgres store and the one-transaction approval have only been compiled.
 - Money is `numeric` + ISO 4217 currency code; all timestamps are `timestamptz` stored in UTC.
 - `0002_identity` adds credentials and verification to `users`, `user_consents`, organisation
   `kind`, the `OWNER/MANAGER/AGENT/STAFF` membership roles with a market, `platform_role_assignments`,

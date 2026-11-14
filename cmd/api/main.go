@@ -23,6 +23,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/modules/notifications"
+	"rightproperty365.com/backend/internal/modules/onboarding"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
 	"rightproperty365.com/backend/internal/platform/config"
@@ -31,6 +32,7 @@ import (
 	"rightproperty365.com/backend/internal/platform/logging"
 	"rightproperty365.com/backend/internal/platform/mail"
 	"rightproperty365.com/backend/internal/platform/outbox"
+	"rightproperty365.com/backend/internal/platform/storage"
 )
 
 const shutdownTimeout = 20 * time.Second
@@ -69,6 +71,15 @@ func run() error {
 	}
 	var deliveryLog mail.DeliveryLog
 
+	// Private file storage (onboarding documents).
+	files, err := storage.Open(cfg, logger)
+	if err != nil {
+		return err
+	}
+	// onboardingInfo loads the data behind an onboarding email. It is set
+	// once the router's service exists; events only arrive after that.
+	var onboardingStore onboarding.Store
+
 	var (
 		marketStore    markets.Store
 		requestStore   propertyrequests.Store
@@ -103,6 +114,22 @@ func run() error {
 
 		memIdentity := identity.NewMemoryStore()
 		identityStore = memIdentity
+		memOnboarding := onboarding.NewMemoryStore(onboarding.MemoryDeps{
+			Identity: memIdentity, Directory: memDirectory, Enquiries: memEnquiries,
+			MarketID: func(code string) (uuid.UUID, bool) {
+				all, err := marketStore.List(ctx)
+				if err != nil {
+					return uuid.Nil, false
+				}
+				for _, m := range all {
+					if m.Code == code {
+						return m.ID, true
+					}
+				}
+				return uuid.Nil, false
+			},
+		})
+		onboardingStore = memOnboarding
 
 		// Without a database there is no outbox table for the worker to poll,
 		// so notification emails are handled in this process, straight from
@@ -121,6 +148,7 @@ func run() error {
 		handlers.SetRoleLabels(func(ctx context.Context) (map[string]string, error) {
 			return reference.NewService(referenceStore, nil).Labels(ctx, reference.SetAccountRoles)
 		})
+		handlers.SetOnboardingSource(app.OnboardingNotifications(memOnboarding, files, referenceStore, logger))
 		sink := func(ev outbox.Event) {
 			go func() {
 				hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
@@ -134,13 +162,18 @@ func run() error {
 		memIdentity.SetOutboxSink(sink)
 		memRequests.SetOutboxSink(sink)
 		memEnquiries.SetOutboxSink(sink)
+		memOnboarding.SetOutboxSink(sink)
 		if cfg.DevSeedPassword == "" {
 			logger.Warn("DEV_SEED_PASSWORD is not set: development seed users were NOT created (copy .env.example to .env to get them)")
 		} else {
 			if err := devseed.SeedMemoryUsers(ctx, memIdentity, identity.DefaultHasher(), cfg.DevSeedPassword, time.Now()); err != nil {
 				return fmt.Errorf("seed development users: %w", err)
 			}
-			logger.Info("development seed users created (password from DEV_SEED_PASSWORD)", slog.Any("emails", devseed.Emails()))
+			if err := devseed.SeedMemoryOnboarding(ctx, memIdentity, memOnboarding, files, identity.DefaultHasher(), cfg.DevSeedPassword, time.Now()); err != nil {
+				return fmt.Errorf("seed onboarding demo accounts: %w", err)
+			}
+			logger.Info("development seed users created (password from DEV_SEED_PASSWORD)",
+				slog.Any("emails", append(devseed.Emails(), devseed.PendingProviderEmail, devseed.PendingAgentEmail)))
 		}
 	} else {
 		if warning := config.DatabaseTLSWarning(cfg.DatabaseURL); warning != "" {
@@ -161,6 +194,7 @@ func run() error {
 		listingStore, listingSearch, directoryStore = pgListings, pgListings, directory.NewPostgresStore(pool)
 		healthH = health.NewHandler(health.StorePostgres, pool.Ping, logger)
 		deliveryLog = mail.NewPostgresDeliveryLog(pool)
+		onboardingStore = onboarding.NewPostgresStore(pool)
 	}
 
 	// Search engine. Elasticsearch only proposes listing IDs: every hit is
@@ -202,6 +236,8 @@ func run() error {
 		Directory:     directoryStore,
 		Identity:      identityStore,
 		Mailer:        mailer,
+		Onboarding:    onboardingStore,
+		Files:         files,
 	})
 	if err != nil {
 		return err

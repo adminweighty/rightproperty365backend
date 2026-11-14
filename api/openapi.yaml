@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.9.0
+  version: 0.10.0
   summary: Multi-country property marketplace API (Zimbabwe first).
   description: |
     Versioned REST API for RightProperty365.
@@ -67,6 +67,16 @@ tags:
   - name: auth
   - name: account
   - name: organisation-workspace
+  - name: onboarding
+    description: |
+      Verification of professional accounts. Choosing a professional role at sign-up only
+      records a request; the role's **onboarding application** (details and documents) has to
+      be submitted and approved by a platform administrator before the role is ACTIVE.
+      CONSUMER and TENANT have no onboarding.
+
+      Status flow: `DRAFT` -> `SUBMITTED` -> `APPROVED` | `REJECTED` | `CHANGES_REQUESTED`;
+      `CHANGES_REQUESTED` -> `SUBMITTED`. `REJECTED` is final for that application; saving
+      details again starts a new one.
   - name: admin
 
 paths:
@@ -194,6 +204,7 @@ paths:
         | `cities` | cities of a market | `market_code` |
         | `suburbs` | suburbs of a city | `market_code`, `parent_code` = its city |
         | `listing_features` | listing features and amenities | — |
+        | `onboarding_documents` | document types for professional onboarding (`description` is set) | — |
 
         Markets are not a set: use `GET /v1/markets`. Platform administrator roles are never in
         `account_roles` and can never be chosen at registration, whatever this endpoint returns.
@@ -250,6 +261,7 @@ paths:
                   suburbs:
                     - { code: borrowdale, label: Borrowdale, singular_label: null, description: null, sort_order: 10, market_code: ZW, parent_code: harare, group: null, requires_verification: null }
                   listing_features: []
+                  onboarding_documents: []
         "304":
           $ref: "#/components/responses/NotModified"
         "400":
@@ -636,6 +648,7 @@ paths:
       tags: [directory]
       operationId: listDirectoryProfiles
       summary: Profiles in one directory
+      x-visibility-rule: Only profiles that are published and verified are ever returned by the directory endpoints and the sitemap.
       description: |
         Public profiles of one kind: sponsored profiles first, then by name. Only ACTIVE
         profiles are returned. **No phone number, email address or street address is ever
@@ -1595,8 +1608,10 @@ paths:
                   account_roles:
                     - role: CONSUMER
                       status: ACTIVE
+                      onboarding_status: null
                     - role: AGENT
                       status: ACTIVE
+                      onboarding_status: APPROVED
         "401":
           $ref: "#/components/responses/Unauthenticated"
         "500":
@@ -1728,6 +1743,790 @@ paths:
           $ref: "#/components/responses/InternalError"
         "504":
           $ref: "#/components/responses/Timeout"
+
+  /v1/onboarding/requirements:
+    get:
+      tags: [onboarding]
+      operationId: getOnboardingRequirements
+      summary: What each professional role has to provide
+      description: |
+        Public and cacheable (like the reference data). One entry per role that has onboarding,
+        in sign-up order: the details to fill in and the documents to attach. Everything here
+        comes from database tables, so it can change without a release; do not hard-code it.
+
+        The seeded document requirements are **placeholders** awaiting business and legal
+        confirmation per market.
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: The requirements.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+            Cache-Control: { $ref: "#/components/headers/CatalogueCacheControl" }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [roles]
+                additionalProperties: false
+                properties:
+                  roles:
+                    type: array
+                    items: { $ref: "#/components/schemas/OnboardingRoleRequirements" }
+              example:
+                roles:
+                  - role: SERVICE_PROVIDER
+                    label: Service provider
+                    outcome: ORGANISATION
+                    organisation_kind: SERVICE_PROVIDER
+                    directory_kind: service-providers
+                    fields:
+                      - { name: business_name, required: true }
+                      - { name: tagline, required: false }
+                      - { name: description, required: true }
+                      - { name: city, required: true }
+                      - { name: areas, required: false }
+                      - { name: services, required: false }
+                      - { name: trade, required: true }
+                      - { name: registration_number, required: false }
+                      - { name: contact_phone, required: true }
+                    documents:
+                      - { code: PROOF_OF_IDENTITY, label: Proof of identity, description: "National ID, passport or driver's licence of the person applying.", required: true }
+                      - { code: TRADE_LICENCE, label: Trade licence, description: "Licence or certification for your trade, if your trade has one.", required: false }
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/me/onboarding:
+    get:
+      tags: [onboarding]
+      operationId: listMyOnboarding
+      summary: The caller's onboarding applications
+      description: |
+        The caller's **current** application for every onboarding role they hold (the newest
+        one per role), in sign-up order. Empty for an account with no professional role. Only
+        ever the caller's own. `Cache-Control: private, no-store`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The applications.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [applications]
+                additionalProperties: false
+                properties:
+                  applications:
+                    type: array
+                    items: { $ref: "#/components/schemas/OnboardingApplication" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/me/onboarding/{role}:
+    put:
+      tags: [onboarding]
+      operationId: saveMyOnboardingDetails
+      summary: Save the details of an application (partial)
+      description: |
+        A **partial** save: a key that is absent is left unchanged; `null` (or `""`) clears a
+        text field; a list replaces the stored list. Allowed while the application is `DRAFT`
+        or `CHANGES_REQUESTED`. Values are validated as they are saved; whether everything
+        required is there is only checked on submit.
+
+        After a rejection (`REJECTED`, `can_reapply: true`) this call **starts a new
+        application** for the same role with the details sent, and the account role goes back
+        to `PENDING_VERIFICATION`. The rejected application is kept as history.
+
+        Field errors are keyed by the field name. A field that does not apply to the role (see
+        `GET /v1/onboarding/requirements`) is refused with "does not apply to this role".
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - name: role
+          in: path
+          required: true
+          description: |
+            An account role code, exactly as in `GET /v1/onboarding/requirements` (upper case).
+            `403 FORBIDDEN` for a role that has no onboarding (CONSUMER, TENANT) and for any
+            platform role; `404 ONBOARDING_NOT_FOUND` for a role the caller does not hold, an
+            unknown role, or a role the caller holds without an application.
+          schema: { type: string, examples: [SERVICE_PROVIDER] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OnboardingDetailsPatch" }
+            example:
+              business_name: Kopje Plumbing
+              city: harare
+              trade: plumbing
+              contact_phone: "+263771234567"
+      responses:
+        "200":
+          description: The application after the save.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OnboardingApplicationEnvelope" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "409":
+          $ref: "#/components/responses/OnboardingInvalidState"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: "`FORBIDDEN` (the role has no onboarding or is a platform role) or `CSRF_ORIGIN` (cookie session without the web app's `Origin`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404":
+          $ref: "#/components/responses/OnboardingNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/me/onboarding/{role}/documents:
+    post:
+      tags: [onboarding]
+      operationId: uploadMyOnboardingDocument
+      summary: Attach a document (multipart upload through the API)
+      description: |
+        `multipart/form-data` with two fields: `type` (a document code the role can attach,
+        from `GET /v1/onboarding/requirements`) and `file`. Allowed while the application is
+        `DRAFT` or `CHANGES_REQUESTED`.
+
+        - At most **10 MB** per file and **10 documents** per application.
+        - Only **PDF, JPEG and PNG**. The type is decided by **inspecting the content**; the
+          part's `Content-Type` and the file extension are ignored. A PNG named `bill.pdf` is
+          accepted as `image/png` and shown as `bill.png`; text named `x.pdf` is refused.
+        - Uploading a type that is already attached **replaces** it.
+        - The display name is sanitised (no path, letters, digits, spaces and `._-()` only, at
+          most 100 characters).
+        - Rate limited per IP: bursts of 20, 20 per minute.
+
+        There is no presigned upload and no malware scan yet (see the README).
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - name: role
+          in: path
+          required: true
+          description: |
+            An account role code, exactly as in `GET /v1/onboarding/requirements` (upper case).
+            `403 FORBIDDEN` for a role that has no onboarding (CONSUMER, TENANT) and for any
+            platform role; `404 ONBOARDING_NOT_FOUND` for a role the caller does not hold, an
+            unknown role, or a role the caller holds without an application.
+          schema: { type: string, examples: [SERVICE_PROVIDER] }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [type, file]
+              properties:
+                type: { type: string, description: "Document type code.", examples: [PROOF_OF_IDENTITY] }
+                file: { type: string, format: binary }
+      responses:
+        "201":
+          description: The stored document.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [document]
+                additionalProperties: false
+                properties:
+                  document: { $ref: "#/components/schemas/OnboardingDocument" }
+        "400":
+          description: "`VALIDATION_FAILED` with `fields.type` (missing, unknown, or not for this role) and/or `fields.file` (missing, empty, or not a multipart upload)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: "`INVALID_STATE` (the application is not editable) or `TOO_MANY_DOCUMENTS` (it already holds 10)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "413":
+          description: "`FILE_TOO_LARGE`: the file is larger than 10 MB."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "415":
+          description: "`UNSUPPORTED_FILE_TYPE`: the content is not a PDF, a JPEG or a PNG."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: "`FORBIDDEN` (the role has no onboarding or is a platform role) or `CSRF_ORIGIN` (cookie session without the web app's `Origin`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404":
+          $ref: "#/components/responses/OnboardingNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/me/onboarding/{role}/documents/{id}:
+    delete:
+      tags: [onboarding]
+      operationId: deleteMyOnboardingDocument
+      summary: Remove a document
+      description: Allowed while the application is `DRAFT` or `CHANGES_REQUESTED`. The file is deleted.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - name: role
+          in: path
+          required: true
+          description: |
+            An account role code, exactly as in `GET /v1/onboarding/requirements` (upper case).
+            `403 FORBIDDEN` for a role that has no onboarding (CONSUMER, TENANT) and for any
+            platform role; `404 ONBOARDING_NOT_FOUND` for a role the caller does not hold, an
+            unknown role, or a role the caller holds without an application.
+          schema: { type: string, examples: [SERVICE_PROVIDER] }
+        - name: id
+          in: path
+          required: true
+          description: The document's ID.
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: Removed.
+        "409":
+          $ref: "#/components/responses/OnboardingInvalidState"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: "`FORBIDDEN` (the role has no onboarding or is a platform role) or `CSRF_ORIGIN` (cookie session without the web app's `Origin`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404":
+          description: "`ONBOARDING_NOT_FOUND`, or `DOCUMENT_NOT_FOUND` when the document is not one of the caller's."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/me/onboarding/{role}/documents/{id}/file:
+    get:
+      tags: [onboarding]
+      operationId: downloadMyOnboardingDocument
+      summary: Download one of the caller's own documents
+      description: In any status. `404 DOCUMENT_NOT_FOUND` for a document that is not the caller's.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - name: role
+          in: path
+          required: true
+          description: |
+            An account role code, exactly as in `GET /v1/onboarding/requirements` (upper case).
+            `403 FORBIDDEN` for a role that has no onboarding (CONSUMER, TENANT) and for any
+            platform role; `404 ONBOARDING_NOT_FOUND` for a role the caller does not hold, an
+            unknown role, or a role the caller holds without an application.
+          schema: { type: string, examples: [SERVICE_PROVIDER] }
+        - name: id
+          in: path
+          required: true
+          description: The document's ID.
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: |
+            The file, streamed. Always a download, never cacheable, never sniffed. There is no
+            public URL for a document: these authenticated routes are the only way to read one.
+          headers:
+            Content-Disposition:
+              description: "Always `attachment`, with the sanitised display name in `filename` and `filename*`."
+              schema: { type: string }
+            X-Content-Type-Options:
+              description: Always `nosniff`.
+              schema: { type: string, enum: [nosniff] }
+            Cache-Control:
+              description: Always `private, no-store`.
+              schema: { type: string, enum: ["private, no-store"] }
+          content:
+            application/pdf: { schema: { type: string, format: binary } }
+            image/jpeg: { schema: { type: string, format: binary } }
+            image/png: { schema: { type: string, format: binary } }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: "`FORBIDDEN` (the role has no onboarding or is a platform role) or `CSRF_ORIGIN` (cookie session without the web app's `Origin`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404":
+          description: "`ONBOARDING_NOT_FOUND`, or `DOCUMENT_NOT_FOUND` when the document is not one of the caller's."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/me/onboarding/{role}/submit:
+    post:
+      tags: [onboarding]
+      operationId: submitMyOnboarding
+      summary: Submit the application for review
+      description: |
+        No body. Allowed from `DRAFT` and `CHANGES_REQUESTED`. If anything required is missing
+        the answer is `400 VALIDATION_FAILED` with **every** missing item in `error.fields`:
+        `details.<name>` for a detail and `documents.<CODE>` for a document. The applicant is
+        emailed a confirmation.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - name: role
+          in: path
+          required: true
+          description: |
+            An account role code, exactly as in `GET /v1/onboarding/requirements` (upper case).
+            `403 FORBIDDEN` for a role that has no onboarding (CONSUMER, TENANT) and for any
+            platform role; `404 ONBOARDING_NOT_FOUND` for a role the caller does not hold, an
+            unknown role, or a role the caller holds without an application.
+          schema: { type: string, examples: [SERVICE_PROVIDER] }
+      responses:
+        "200":
+          description: The application, now `SUBMITTED`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OnboardingApplicationEnvelope" }
+        "400":
+          description: "`VALIDATION_FAILED`: `error.fields` names everything that is missing."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+              example:
+                error:
+                  code: VALIDATION_FAILED
+                  message: Some fields need your attention.
+                  fields:
+                    details.city: is required
+                    documents.PROOF_OF_ADDRESS: is required
+                trace_id: 7c0f1c7e-2f0b-4f58-9b61-0c1f5f0f9d11
+        "409":
+          $ref: "#/components/responses/OnboardingInvalidState"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: "`FORBIDDEN` (the role has no onboarding or is a platform role) or `CSRF_ORIGIN` (cookie session without the web app's `Origin`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404":
+          $ref: "#/components/responses/OnboardingNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/admin/onboarding:
+    get:
+      tags: [admin, onboarding]
+      operationId: adminListOnboarding
+      summary: The review queue
+      description: |
+        Requires an **admin-scope** session and one of SUPER_ADMIN, PLATFORM_ADMIN, MODERATOR
+        or MARKET_ADMIN. A MARKET_ADMIN only sees applications of its own market (the market
+        of the application's city, or of the agency being joined); applications that belong to
+        no market yet (a draft without a city, a private seller) are for the global roles only.
+
+        One page of the applications in `status` (default `SUBMITTED`), **oldest submission
+        first**. `counts` are per status within the same `role`, `q` and market scope.
+      security:
+        - cookieSession: []
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/OnboardingStatus" }
+          description: Default `SUBMITTED`.
+        - name: role
+          in: query
+          schema: { type: string }
+          description: An onboarding role code.
+        - name: q
+          in: query
+          schema: { type: string, maxLength: 100 }
+          description: Matches the applicant's name or email, or the business name (case-insensitive substring).
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OnboardingAdminPage" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: |
+            `FORBIDDEN`: not an admin-scope session, or the administrator holds none of
+            SUPER_ADMIN, PLATFORM_ADMIN, MODERATOR, MARKET_ADMIN. (`CSRF_ORIGIN` for a write
+            without the web app's `Origin`.)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404":
+          description: |
+            `ONBOARDING_NOT_FOUND`: no such application, or it belongs to a market this
+            MARKET_ADMIN does not administer. (`DOCUMENT_NOT_FOUND` on the file route.)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/admin/onboarding/{id}:
+    get:
+      tags: [admin, onboarding]
+      operationId: adminGetOnboarding
+      summary: One application in full
+      description: |
+        Same access rule as the list. Includes the **private** details (contact phone,
+        registration number), the documents, the requirement checklist and the history.
+      security:
+        - cookieSession: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The application's ID.
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The application.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OnboardingAdminApplicationEnvelope" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: |
+            `FORBIDDEN`: not an admin-scope session, or the administrator holds none of
+            SUPER_ADMIN, PLATFORM_ADMIN, MODERATOR, MARKET_ADMIN. (`CSRF_ORIGIN` for a write
+            without the web app's `Origin`.)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404":
+          description: |
+            `ONBOARDING_NOT_FOUND`: no such application, or it belongs to a market this
+            MARKET_ADMIN does not administer. (`DOCUMENT_NOT_FOUND` on the file route.)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/admin/onboarding/{id}/documents/{docId}/file:
+    get:
+      tags: [admin, onboarding]
+      operationId: adminDownloadOnboardingDocument
+      summary: Download a document of an application
+      description: |
+        Same access rule as the list. **Every access is written to the audit log** (who, which
+        document, when; never the content).
+      security:
+        - cookieSession: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The application's ID.
+          schema: { type: string, format: uuid }
+        - name: docId
+          in: path
+          required: true
+          description: The document's ID.
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: |
+            The file, streamed. Always a download, never cacheable, never sniffed. There is no
+            public URL for a document: these authenticated routes are the only way to read one.
+          headers:
+            Content-Disposition:
+              description: "Always `attachment`, with the sanitised display name in `filename` and `filename*`."
+              schema: { type: string }
+            X-Content-Type-Options:
+              description: Always `nosniff`.
+              schema: { type: string, enum: [nosniff] }
+            Cache-Control:
+              description: Always `private, no-store`.
+              schema: { type: string, enum: ["private, no-store"] }
+          content:
+            application/pdf: { schema: { type: string, format: binary } }
+            image/jpeg: { schema: { type: string, format: binary } }
+            image/png: { schema: { type: string, format: binary } }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: |
+            `FORBIDDEN`: not an admin-scope session, or the administrator holds none of
+            SUPER_ADMIN, PLATFORM_ADMIN, MODERATOR, MARKET_ADMIN. (`CSRF_ORIGIN` for a write
+            without the web app's `Origin`.)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404":
+          description: |
+            `ONBOARDING_NOT_FOUND`: no such application, or it belongs to a market this
+            MARKET_ADMIN does not administer. (`DOCUMENT_NOT_FOUND` on the file route.)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/admin/onboarding/{id}/approve:
+    post:
+      tags: [admin, onboarding]
+      operationId: adminApproveOnboarding
+      summary: Approve an application
+      description: |
+        Only from `SUBMITTED`. In **one transaction**: the application becomes `APPROVED`, the
+        account role `ACTIVE`, and what the role's outcome says is created:
+
+        | Role | Created |
+        | --- | --- |
+        | AGENCY_OWNER, LANDLORD, HOST, DEVELOPER, SERVICE_PROVIDER | a new organisation, an OWNER membership, and a public profile (`agencies`, `property-managers`, `hosts`, `developers`, `service-providers`) |
+        | AGENT | an AGENT membership in the chosen agency and a public `agents` profile linked to it |
+        | AGENCY_STAFF / AGENCY_ADMIN | a STAFF / MANAGER membership in the chosen agency; no profile |
+        | PRIVATE_SELLER | nothing; the role becomes ACTIVE |
+
+        A created profile is published and **verified**; its slug is derived from the name,
+        with `-2`, `-3`, ... on a collision. It carries public content only: never the phone,
+        the registration number or the documents. The applicant is emailed.
+
+        The body is optional; `note` is recorded in the history.
+      security:
+        - cookieSession: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The application's ID.
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                note: { type: string, maxLength: 500 }
+      responses:
+        "200":
+          description: The application and what was created.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [application, created]
+                additionalProperties: false
+                properties:
+                  application: { $ref: "#/components/schemas/OnboardingAdminApplication" }
+                  created:
+                    type: object
+                    required: [organisation_id, profile, membership_role]
+                    additionalProperties: false
+                    properties:
+                      organisation_id: { type: [string, "null"], format: uuid, description: "The organisation created; null when none was (agency members, private sellers)." }
+                      profile:
+                        oneOf:
+                          - $ref: "#/components/schemas/OnboardingProfileRef"
+                          - type: "null"
+                      membership_role:
+                        type: [string, "null"]
+                        enum: [OWNER, MANAGER, AGENT, STAFF, null]
+        "400":
+          description: "`VALIDATION_FAILED`: the application no longer meets the requirements (they changed since it was submitted); request changes instead."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: |
+            `INVALID_STATE`: the application is not `SUBMITTED`. `AGENCY_NOT_VERIFIED`: the agency
+            the applicant wants to join is no longer a published, verified agency; nothing was changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: |
+            `FORBIDDEN`: not an admin-scope session, or the administrator holds none of
+            SUPER_ADMIN, PLATFORM_ADMIN, MODERATOR, MARKET_ADMIN. (`CSRF_ORIGIN` for a write
+            without the web app's `Origin`.)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404":
+          description: |
+            `ONBOARDING_NOT_FOUND`: no such application, or it belongs to a market this
+            MARKET_ADMIN does not administer. (`DOCUMENT_NOT_FOUND` on the file route.)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/admin/onboarding/{id}/reject:
+    post:
+      tags: [admin, onboarding]
+      operationId: adminRejectOnboarding
+      summary: Reject an application
+      description: |
+        Only from `SUBMITTED`. The application becomes `REJECTED` (final), the account role
+        `REJECTED`, and nothing is created. The applicant is emailed the reason.
+      security:
+        - cookieSession: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The application's ID.
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OnboardingReason" }
+      responses:
+        "200":
+          description: The application, now `REJECTED`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OnboardingAdminApplicationEnvelope" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "409":
+          $ref: "#/components/responses/OnboardingInvalidState"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: |
+            `FORBIDDEN`: not an admin-scope session, or the administrator holds none of
+            SUPER_ADMIN, PLATFORM_ADMIN, MODERATOR, MARKET_ADMIN. (`CSRF_ORIGIN` for a write
+            without the web app's `Origin`.)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404":
+          description: |
+            `ONBOARDING_NOT_FOUND`: no such application, or it belongs to a market this
+            MARKET_ADMIN does not administer. (`DOCUMENT_NOT_FOUND` on the file route.)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/admin/onboarding/{id}/request-changes:
+    post:
+      tags: [admin, onboarding]
+      operationId: adminRequestOnboardingChanges
+      summary: Send an application back to the applicant
+      description: |
+        Only from `SUBMITTED`. The application becomes `CHANGES_REQUESTED` and editable again.
+        The applicant is emailed the reason.
+      security:
+        - cookieSession: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The application's ID.
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OnboardingReason" }
+      responses:
+        "200":
+          description: The application, now `CHANGES_REQUESTED`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OnboardingAdminApplicationEnvelope" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "409":
+          $ref: "#/components/responses/OnboardingInvalidState"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: |
+            `FORBIDDEN`: not an admin-scope session, or the administrator holds none of
+            SUPER_ADMIN, PLATFORM_ADMIN, MODERATOR, MARKET_ADMIN. (`CSRF_ORIGIN` for a write
+            without the web app's `Origin`.)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404":
+          description: |
+            `ONBOARDING_NOT_FOUND`: no such application, or it belongs to a market this
+            MARKET_ADMIN does not administer. (`DOCUMENT_NOT_FOUND` on the file route.)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
 
   /v1/agent/property-requests:
     get:
@@ -1888,6 +2687,24 @@ components:
             $ref: "#/components/schemas/AuthResult"
     ValidationFailed:
       description: "`VALIDATION_FAILED` (per-field messages in `error.fields`) or `INVALID_JSON`."
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    OnboardingNotFound:
+      description: "`ONBOARDING_NOT_FOUND`: the caller does not hold that role, the role does not exist, or there is no application."
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    OnboardingInvalidState:
+      description: "`INVALID_STATE`: the application's status does not allow this (for example editing after it was submitted, or deciding one that is not `SUBMITTED`)."
       headers:
         X-Request-Id:
           $ref: "#/components/headers/X-Request-Id"
@@ -2379,6 +3196,7 @@ components:
         - cities
         - suburbs
         - listing_features
+        - onboarding_documents
 
     ReferenceGroup:
       type: object
@@ -2448,9 +3266,9 @@ components:
           description: The `market` filter that was applied, upper-cased, or null.
         sets:
           type: object
-          description: Every set, keyed by its code. All eleven keys are always present.
+          description: Every set, keyed by its code. All twelve keys are always present.
           additionalProperties: false
-          required: [deal_types, property_categories, property_types, request_types, contact_methods, account_roles, directory_kinds, service_trades, cities, suburbs, listing_features]
+          required: [deal_types, property_categories, property_types, request_types, contact_methods, account_roles, directory_kinds, service_trades, cities, suburbs, listing_features, onboarding_documents]
           properties:
             deal_types: { type: array, items: { $ref: "#/components/schemas/ReferenceItem" } }
             property_categories: { type: array, items: { $ref: "#/components/schemas/ReferenceItem" } }
@@ -2463,6 +3281,7 @@ components:
             cities: { type: array, items: { $ref: "#/components/schemas/ReferenceItem" } }
             suburbs: { type: array, items: { $ref: "#/components/schemas/ReferenceItem" } }
             listing_features: { type: array, items: { $ref: "#/components/schemas/ReferenceItem" } }
+            onboarding_documents: { type: array, items: { $ref: "#/components/schemas/ReferenceItem" } }
 
     ReferenceSet:
       type: object
@@ -2539,17 +3358,340 @@ components:
         A role the user chose at registration, with its status. It is **not** an authorisation:
         it creates no organisation or membership and gives no access to organisation data
         (see `memberships`) or to platform administration (see `platform_roles`).
-      required: [role, status]
+      required: [role, status, onboarding_status]
       additionalProperties: false
       properties:
         role:
           $ref: "#/components/schemas/SelectableAccountRole"
         status:
           type: string
-          enum: [ACTIVE, PENDING_VERIFICATION]
+          enum: [ACTIVE, PENDING_VERIFICATION, REJECTED]
           description: |
-            `ACTIVE` for CONSUMER and TENANT. `PENDING_VERIFICATION` for every professional role
-            until an approval workflow exists.
+            `ACTIVE` for CONSUMER and TENANT. A professional role is `PENDING_VERIFICATION` until
+            a platform administrator decides its onboarding application, then `ACTIVE` (approved)
+            or `REJECTED`.
+        onboarding_status:
+          oneOf:
+            - $ref: "#/components/schemas/OnboardingStatus"
+            - type: "null"
+          description: |
+            Status of the role's current onboarding application. Null for a role that has no
+            onboarding (CONSUMER, TENANT) and for a role that was granted without one.
+
+    OnboardingStatus:
+      type: string
+      enum: [DRAFT, SUBMITTED, CHANGES_REQUESTED, APPROVED, REJECTED]
+
+    OnboardingProfileRef:
+      type: object
+      description: "The address of a public profile: `GET /v1/directory/{kind}/{slug}`."
+      required: [kind, slug]
+      additionalProperties: false
+      properties:
+        kind: { type: string, examples: [service-providers] }
+        slug: { type: string, examples: [kopje-plumbing] }
+
+    OnboardingRoleRequirements:
+      type: object
+      required: [role, label, outcome, organisation_kind, directory_kind, fields, documents]
+      additionalProperties: false
+      properties:
+        role: { type: string, description: "Account role code.", examples: [SERVICE_PROVIDER] }
+        label: { type: string, description: "The role's label from the `account_roles` reference set." }
+        outcome:
+          type: string
+          enum: [ORGANISATION, AGENCY_MEMBER, NONE]
+          description: |
+            What an approval creates. `ORGANISATION`: a new organisation owned by the applicant.
+            `AGENCY_MEMBER`: a membership in an existing verified agency. `NONE`: nothing; the role
+            just becomes ACTIVE.
+        organisation_kind:
+          type: [string, "null"]
+          enum: [AGENCY, LANDLORD, HOST, DEVELOPER, SERVICE_PROVIDER, null]
+          description: Set for `ORGANISATION`.
+        directory_kind:
+          type: [string, "null"]
+          description: The public directory the approved applicant appears in (a `directory_kinds` code); null when the role gets no public profile.
+        fields:
+          type: array
+          description: The details that apply to this role, in form order. Names are the keys of `OnboardingDetails`.
+          items:
+            type: object
+            required: [name, required]
+            additionalProperties: false
+            properties:
+              name: { type: string, enum: [business_name, tagline, description, city, areas, services, trade, registration_number, contact_phone, agency_slug, job_title, bio] }
+              required: { type: boolean, description: "Must be set before the application can be submitted." }
+        documents:
+          type: array
+          description: "The documents this role must (`required` true) or may attach, in display order."
+          items:
+            type: object
+            required: [code, label, description, required]
+            additionalProperties: false
+            properties:
+              code: { type: string, description: "A code of the `onboarding_documents` reference set; the `type` of an upload.", examples: [PROOF_OF_IDENTITY] }
+              label: { type: string }
+              description: { type: string }
+              required: { type: boolean }
+
+    OnboardingDetails:
+      type: object
+      description: |
+        Every key is always present. A text field that is not set is null; `areas` and
+        `services` are always arrays. Which keys apply to a role is in
+        `GET /v1/onboarding/requirements`; the others stay null/empty.
+      required: [business_name, tagline, description, city, areas, services, trade, registration_number, contact_phone, agency_slug, job_title, bio]
+      additionalProperties: false
+      properties:
+        business_name: { type: [string, "null"], minLength: 2, maxLength: 120, description: "Organisation outcomes. Becomes the organisation's and the profile's name." }
+        tagline: { type: [string, "null"], maxLength: 140, description: "Organisation outcomes. Public." }
+        description: { type: [string, "null"], maxLength: 2000, description: "Organisation outcomes. Plain text, line breaks allowed, no HTML. Public." }
+        city: { type: [string, "null"], description: "Organisation outcomes. A code of the `cities` reference set. Decides the application's market." }
+        areas: { type: array, maxItems: 12, items: { type: string, maxLength: 60 }, description: "Areas served. Public. Always an array (empty when unset)." }
+        services: { type: array, maxItems: 12, items: { type: string, maxLength: 60 }, description: "Organisation outcomes. Services offered. Public. Always an array." }
+        trade: { type: [string, "null"], description: "SERVICE_PROVIDER only (required there). A code of the `service_trades` reference set." }
+        registration_number: { type: [string, "null"], maxLength: 60, description: "Organisation outcomes. **Private**: for the verification team only, never public." }
+        contact_phone: { type: [string, "null"], pattern: '^\+[1-9][0-9]{7,14}$', description: "Every role. E.164. **Private**: for the verification team only, never public." }
+        agency_slug: { type: [string, "null"], description: "AGENT, AGENCY_STAFF, AGENCY_ADMIN. The slug of an existing, verified agency (`GET /v1/directory/agencies`)." }
+        job_title: { type: [string, "null"], maxLength: 80, description: "Agency members. Shown on an agent's profile." }
+        bio: { type: [string, "null"], maxLength: 1000, description: "AGENT only. Plain text. Public (the agent profile's description)." }
+
+    OnboardingDetailsPatch:
+      type: object
+      description: Any subset of the detail fields that apply to the role. Absent = unchanged; null or "" = cleared.
+      additionalProperties: false
+      properties:
+        business_name: { type: [string, "null"], minLength: 2, maxLength: 120, description: "Organisation outcomes. Becomes the organisation's and the profile's name." }
+        tagline: { type: [string, "null"], maxLength: 140, description: "Organisation outcomes. Public." }
+        description: { type: [string, "null"], maxLength: 2000, description: "Organisation outcomes. Plain text, line breaks allowed, no HTML. Public." }
+        city: { type: [string, "null"], description: "Organisation outcomes. A code of the `cities` reference set. Decides the application's market." }
+        areas: { type: [array, "null"], maxItems: 12, items: { type: string, maxLength: 60 }, description: "Areas served. Public. Always an array (empty when unset)." }
+        services: { type: [array, "null"], maxItems: 12, items: { type: string, maxLength: 60 }, description: "Organisation outcomes. Services offered. Public. Always an array." }
+        trade: { type: [string, "null"], description: "SERVICE_PROVIDER only (required there). A code of the `service_trades` reference set." }
+        registration_number: { type: [string, "null"], maxLength: 60, description: "Organisation outcomes. **Private**: for the verification team only, never public." }
+        contact_phone: { type: [string, "null"], pattern: '^\+[1-9][0-9]{7,14}$', description: "Every role. E.164. **Private**: for the verification team only, never public." }
+        agency_slug: { type: [string, "null"], description: "AGENT, AGENCY_STAFF, AGENCY_ADMIN. The slug of an existing, verified agency (`GET /v1/directory/agencies`)." }
+        job_title: { type: [string, "null"], maxLength: 80, description: "Agency members. Shown on an agent's profile." }
+        bio: { type: [string, "null"], maxLength: 1000, description: "AGENT only. Plain text. Public (the agent profile's description)." }
+
+    OnboardingDocument:
+      type: object
+      description: An attached document. Where the file is stored and its checksum are never exposed.
+      required: [id, type, file_name, content_type, size_bytes, uploaded_at]
+      additionalProperties: false
+      properties:
+        id: { type: string, format: uuid }
+        type:
+          type: object
+          required: [code, label]
+          additionalProperties: false
+          properties:
+            code: { type: string, examples: [PROOF_OF_IDENTITY] }
+            label: { type: string, examples: [Proof of identity] }
+        file_name: { type: string, maxLength: 100, description: "Sanitised display name, with the extension of the detected type." }
+        content_type: { type: string, enum: [application/pdf, image/jpeg, image/png], description: "Detected from the content." }
+        size_bytes: { type: integer, minimum: 1, maximum: 10485760 }
+        uploaded_at: { type: string, format: date-time }
+
+    OnboardingDecision:
+      type: object
+      description: The administrator's last decision. Both null until there is one, and again after the application is resubmitted.
+      required: [reason, decided_at]
+      additionalProperties: false
+      properties:
+        reason: { type: [string, "null"], description: "Why changes were requested or the application was rejected (an optional note for an approval)." }
+        decided_at: { type: [string, "null"], format: date-time }
+
+    OnboardingApplication:
+      type: object
+      description: An application as its owner sees it.
+      required: [id, role, role_label, status, details, documents, missing, can_submit, can_edit, can_reapply, decision, profile, submitted_at, updated_at]
+      additionalProperties: false
+      properties:
+        id: { type: string, format: uuid }
+        role: { type: string, examples: [SERVICE_PROVIDER] }
+        role_label: { type: string, examples: [Service provider] }
+        status: { $ref: "#/components/schemas/OnboardingStatus" }
+        details: { $ref: "#/components/schemas/OnboardingDetails" }
+        documents:
+          type: array
+          description: Newest first.
+          items: { $ref: "#/components/schemas/OnboardingDocument" }
+        missing:
+          type: object
+          description: What still has to be provided before the application can be submitted.
+          required: [fields, documents]
+          additionalProperties: false
+          properties:
+            fields: { type: array, items: { type: string }, description: "Names of required details that are not set." }
+            documents: { type: array, items: { type: string }, description: "Codes of required documents that are not attached." }
+        can_submit: { type: boolean, description: "Editable and nothing is missing." }
+        can_edit: { type: boolean, description: "`DRAFT` or `CHANGES_REQUESTED`: details and documents can be changed." }
+        can_reapply: { type: boolean, description: "`REJECTED`: saving details (PUT) starts a new application for the role." }
+        decision: { $ref: "#/components/schemas/OnboardingDecision" }
+        profile:
+          description: The public profile an approval created; null otherwise.
+          oneOf:
+            - $ref: "#/components/schemas/OnboardingProfileRef"
+            - type: "null"
+        submitted_at: { type: [string, "null"], format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    OnboardingApplicationEnvelope:
+      type: object
+      required: [application]
+      additionalProperties: false
+      properties:
+        application: { $ref: "#/components/schemas/OnboardingApplication" }
+
+    OnboardingReason:
+      type: object
+      required: [reason]
+      additionalProperties: false
+      properties:
+        reason: { type: string, minLength: 5, maxLength: 500, description: "Plain text. Emailed to the applicant and kept in the history." }
+
+    OnboardingAgencyRef:
+      type: object
+      required: [slug, name]
+      additionalProperties: false
+      properties:
+        slug: { type: string }
+        name: { type: string }
+
+    OnboardingAdminItem:
+      type: object
+      required: [id, role, role_label, status, applicant, business_name, agency, submitted_at, updated_at, document_count]
+      additionalProperties: false
+      properties:
+        id: { type: string, format: uuid }
+        role: { type: string }
+        role_label: { type: string }
+        status: { $ref: "#/components/schemas/OnboardingStatus" }
+        applicant:
+          type: object
+          required: [name, email]
+          additionalProperties: false
+          properties:
+            name: { type: string }
+            email: { type: string, format: email }
+        business_name: { type: [string, "null"] }
+        agency:
+          description: The agency the applicant wants to join (agency-member roles); null otherwise.
+          oneOf:
+            - $ref: "#/components/schemas/OnboardingAgencyRef"
+            - type: "null"
+        submitted_at: { type: [string, "null"], format: date-time }
+        updated_at: { type: string, format: date-time }
+        document_count: { type: integer, minimum: 0 }
+
+    OnboardingAdminPage:
+      type: object
+      required: [items, page, page_size, total, total_pages, counts]
+      additionalProperties: false
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/OnboardingAdminItem" } }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer, description: "Applications in the requested status." }
+        total_pages: { type: integer }
+        counts:
+          type: object
+          description: Applications per status, within the same `role`, `q` and market scope. All five keys are always present.
+          required: [SUBMITTED, CHANGES_REQUESTED, APPROVED, REJECTED, DRAFT]
+          additionalProperties: false
+          properties:
+            SUBMITTED: { type: integer }
+            CHANGES_REQUESTED: { type: integer }
+            APPROVED: { type: integer }
+            REJECTED: { type: integer }
+            DRAFT: { type: integer }
+
+    OnboardingAdminApplication:
+      type: object
+      description: The full application for an administrator, including the private details.
+      required: [id, role, role_label, status, outcome, market_code, applicant, details, agency, documents, requirements, history, decision, profile, submitted_at, created_at, updated_at]
+      additionalProperties: false
+      properties:
+        id: { type: string, format: uuid }
+        role: { type: string }
+        role_label: { type: string }
+        status: { $ref: "#/components/schemas/OnboardingStatus" }
+        outcome: { type: string, enum: [ORGANISATION, AGENCY_MEMBER, NONE] }
+        market_code: { type: [string, "null"], description: "The market the application belongs to; null when it has none (yet)." }
+        applicant:
+          type: object
+          required: [id, name, email, email_verified, created_at]
+          additionalProperties: false
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string }
+            email: { type: string, format: email }
+            email_verified: { type: boolean }
+            created_at: { type: string, format: date-time, description: "When the account was created." }
+        details: { $ref: "#/components/schemas/OnboardingDetails" }
+        agency:
+          oneOf:
+            - $ref: "#/components/schemas/OnboardingAgencyRef"
+            - type: "null"
+        documents: { type: array, items: { $ref: "#/components/schemas/OnboardingDocument" } }
+        requirements:
+          type: object
+          description: The requirement checklist, as the tables stand now.
+          required: [fields, documents]
+          additionalProperties: false
+          properties:
+            fields:
+              type: array
+              items:
+                type: object
+                required: [name, required, provided]
+                additionalProperties: false
+                properties:
+                  name: { type: string }
+                  required: { type: boolean }
+                  provided: { type: boolean }
+            documents:
+              type: array
+              items:
+                type: object
+                required: [code, label, description, required, provided]
+                additionalProperties: false
+                properties:
+                  code: { type: string }
+                  label: { type: string }
+                  description: { type: string }
+                  required: { type: boolean }
+                  provided: { type: boolean }
+        history:
+          type: array
+          description: Every transition, oldest first. Rows are never changed.
+          items:
+            type: object
+            required: [from, to, actor_name, reason, at]
+            additionalProperties: false
+            properties:
+              from: { $ref: "#/components/schemas/OnboardingStatus" }
+              to: { $ref: "#/components/schemas/OnboardingStatus" }
+              actor_name: { type: string, description: "Who did it: the applicant (submit) or the administrator. Empty if that account no longer exists." }
+              reason: { type: [string, "null"] }
+              at: { type: string, format: date-time }
+        decision: { $ref: "#/components/schemas/OnboardingDecision" }
+        profile:
+          oneOf:
+            - $ref: "#/components/schemas/OnboardingProfileRef"
+            - type: "null"
+        submitted_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    OnboardingAdminApplicationEnvelope:
+      type: object
+      required: [application]
+      additionalProperties: false
+      properties:
+        application: { $ref: "#/components/schemas/OnboardingAdminApplication" }
 
     PlatformRoleAssignment:
       type: object

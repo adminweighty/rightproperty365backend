@@ -7,6 +7,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -17,11 +18,13 @@ import (
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/markets"
+	"rightproperty365.com/backend/internal/modules/onboarding"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/httpx"
+	"rightproperty365.com/backend/internal/platform/storage"
 )
 
 const (
@@ -50,7 +53,22 @@ const (
 	// bucket: bursts of 5, refilled at 5 per minute.
 	AdminAuthRequestsPerMinute = 5
 	AdminAuthRequestsBurst     = 5
+
+	// Per-IP limit on onboarding document uploads, its own bucket: bursts of
+	// 20, refilled at 20 per minute. Each upload can be 10 MB.
+	UploadRequestsPerMinute = 20
+	UploadRequestsBurst     = 20
+	// Uploads get longer than other requests: 10 MB over a slow connection.
+	uploadTimeout = 2 * time.Minute
 )
+
+// uploadPath matches POST /v1/me/onboarding/{role}/documents, the one route
+// with a larger body limit and a longer timeout.
+var uploadPath = regexp.MustCompile(`^/v1/me/onboarding/[^/]+/documents$`)
+
+func isUpload(r *http.Request) bool {
+	return r.Method == http.MethodPost && uploadPath.MatchString(r.URL.Path)
+}
 
 // Deps is everything the router needs.
 type Deps struct {
@@ -68,6 +86,10 @@ type Deps struct {
 	ListingSearch listings.Search
 	Directory     directory.Store
 	Mailer        identity.Mailer
+	// Onboarding holds the professional onboarding applications; Files is the
+	// private object storage their documents are kept in.
+	Onboarding onboarding.Store
+	Files      storage.Storage
 
 	// Optional overrides used by tests.
 	Now    func() time.Time
@@ -129,6 +151,14 @@ func NewRouter(d Deps) (http.Handler, error) {
 	enquiriesH := businessenquiries.NewHandler(businessenquiries.NewService(d.Enquiries, enquiryOpts...), logger)
 	authn := auth.NewMiddleware(identitySvc, cfg.CORSAllowedOrigins, logger)
 
+	onboardingSvc := onboarding.NewService(d.Onboarding, d.Files, onboardingVocabulary{ref: referenceSvc},
+		agencyDirectory{directory: d.Directory, ref: referenceSvc, markets: d.Markets}, logger)
+	if d.Now != nil {
+		onboardingSvc.SetClock(d.Now)
+	}
+	onboardingH := onboarding.NewHandler(onboardingSvc, logger)
+	uploadLimiter := httpx.NewRateLimiter(UploadRequestsPerMinute, UploadRequestsBurst)
+
 	requestLimiter := httpx.NewRateLimiter(propertyRequestsPerMinute, propertyRequestsBurst)
 	enquiryLimiter := httpx.NewRateLimiter(businessEnquiriesPerMinute, businessEnquiriesBurst)
 	authLimiter := httpx.NewRateLimiter(AuthRequestsPerMinute, AuthRequestsBurst)
@@ -141,8 +171,22 @@ func NewRouter(d Deps) (http.Handler, error) {
 		httpx.Recover(logger),
 		httpx.SecurityHeaders(secure),
 		httpx.CORS(cfg.CORSAllowedOrigins),
-		httpx.BodyLimit(maxBodyBytes),
-		httpx.Timeout(requestTimeout),
+		httpx.BodyLimitFunc(func(r *http.Request) int64 {
+			if isUpload(r) {
+				return onboarding.MaxUploadBodyBytes
+			}
+			return maxBodyBytes
+		}),
+		func(next http.Handler) http.Handler {
+			normal, upload := httpx.Timeout(requestTimeout)(next), httpx.Timeout(uploadTimeout)(next)
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if isUpload(r) {
+					upload.ServeHTTP(w, r)
+					return
+				}
+				normal.ServeHTTP(w, r)
+			})
+		},
 		// After CORS so preflights never touch the session store; resolves the
 		// cookie/bearer session and enforces the CSRF origin rule for cookies.
 		authn.Authenticate,
@@ -193,6 +237,19 @@ func NewRouter(d Deps) (http.Handler, error) {
 
 		r.With(auth.RequireAuth).Get("/me", identityH.Me)
 
+		// Onboarding for professional roles. What each role has to provide is
+		// public; an application is only ever its owner's.
+		r.Get("/onboarding/requirements", onboardingH.Requirements)
+		r.Route("/me/onboarding", func(r chi.Router) {
+			r.Use(auth.RequireAuth)
+			r.Get("/", onboardingH.Mine)
+			r.Put("/{role}", onboardingH.Save)
+			r.Post("/{role}/submit", onboardingH.Submit)
+			r.With(uploadLimiter.Middleware).Post("/{role}/documents", onboardingH.Upload)
+			r.Delete("/{role}/documents/{id}", onboardingH.DeleteDocument)
+			r.Get("/{role}/documents/{id}/file", onboardingH.File)
+		})
+
 		// Platform administration. Signing in has its own endpoint and rate
 		// limit; signing out is POST /v1/auth/logout like any other session.
 		// Everything else under /admin requires an ADMIN-scope session whose
@@ -200,6 +257,19 @@ func NewRouter(d Deps) (http.Handler, error) {
 		r.Route("/admin", func(r chi.Router) {
 			r.With(adminAuthLimiter.Middleware).Post("/auth/login", identityH.AdminLogin)
 			r.With(auth.RequireAuth, auth.RequirePlatformRole(auth.AllPlatformRoles()...)).Get("/me", identityH.Me)
+
+			// Reviewing onboarding applications: an ADMIN-scope session with
+			// SUPER_ADMIN, PLATFORM_ADMIN, MODERATOR or MARKET_ADMIN (the last
+			// limited by the service to its own markets).
+			r.Route("/onboarding", func(r chi.Router) {
+				r.Use(auth.RequirePlatformRole(onboarding.AdminRoles()...))
+				r.Get("/", onboardingH.AdminList)
+				r.Get("/{id}", onboardingH.AdminGet)
+				r.Get("/{id}/documents/{docId}/file", onboardingH.AdminFile)
+				r.Post("/{id}/approve", onboardingH.AdminApprove)
+				r.Post("/{id}/reject", onboardingH.AdminReject)
+				r.Post("/{id}/request-changes", onboardingH.AdminRequestChanges)
+			})
 		})
 
 		// Request inbox for organisation members and direct sellers. The

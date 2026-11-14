@@ -18,7 +18,7 @@ import (
 const HeaderRequestID = "X-Request-Id"
 
 const (
-	corsAllowMethods  = "GET, POST, OPTIONS"
+	corsAllowMethods  = "GET, POST, PUT, DELETE, OPTIONS"
 	corsAllowHeaders  = "Content-Type, Idempotency-Key, Authorization, X-Request-Id, If-None-Match"
 	corsExposeHeaders = "X-Request-Id, Retry-After, ETag"
 	corsMaxAge        = "600"
@@ -201,6 +201,19 @@ func BodyLimit(maxBytes int64) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Body != nil {
 				r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// BodyLimitFunc is BodyLimit with a per-request limit, for the few routes
+// (file uploads) that need more than the default.
+func BodyLimitFunc(limit func(*http.Request) int64) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Body != nil {
+				r.Body = http.MaxBytesReader(w, r.Body, limit(r))
 			}
 			next.ServeHTTP(w, r)
 		})
