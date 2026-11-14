@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.17.0
+  version: 0.18.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -60,7 +60,20 @@ info:
       URL because it does not know the public address it is reached at behind a proxy, and
       because the same cached JSON must be right for every client. The `v` value changes
       whenever the image changes, so the image can be cached and a new logo is never stale.
-      Logos are served as uploaded: they are not resized, cropped or re-encoded.
+    - **Changed in 0.18.0: logos are made small and cached for a year.**
+      - A logo larger than 512 pixels on its longer side is **scaled down when it is uploaded**
+        to fit 512x512 (same proportions, never cropped, never enlarged; PNG stays PNG with its
+        transparency, JPEG stays JPEG) and is stored and served at that size. Smaller logos are
+        stored and served exactly as uploaded. No side is taken under 128 pixels, so an image
+        more than four times as wide as it is high keeps a longer side above 512 (1200x200
+        becomes 768x128). `Logo.width` / `Logo.height` are the size of the image that is
+        **served**, which can be smaller than the file that was uploaded. Logos stored before
+        0.18.0 are not touched until they are uploaded again.
+      - `GET /v1/directory/{kind}/{slug}/logo` answers `Cache-Control: public,
+        max-age=31536000, immutable` when the request's `v` is the version of the current
+        logo, which is the case for every `Logo.url` the API returns. Use `Logo.url`
+        unchanged, query string included: without `v`, or with the `v` of an earlier logo,
+        the image is still served but with the short policy (`max-age=300`).
 
     Countries and places (changed in 0.15.0)
     - The platform is global: every ISO 3166-1 country can be used (`GET /v1/countries`). Public
@@ -1543,16 +1556,24 @@ paths:
       operationId: getDirectoryProfileLogo
       summary: A profile's logo (the image itself)
       description: |
-        New in 0.17.0. The logo of a **public** profile (an agent's photo), streamed as it was
-        uploaded: a PNG or a JPEG of at most 2 MB, between 128x128 and 4096x4096 pixels. It is
-        not resized, cropped or re-encoded.
+        New in 0.17.0. The logo of a **public** profile (an agent's photo), streamed as it is
+        stored: a PNG or a JPEG. Since 0.18.0 an upload larger than 512 pixels on its longer
+        side is scaled down to fit 512x512 when it is stored (see
+        `PUT /v1/me/profiles/{kind}/{slug}/logo`), so the image is normally at most 512 pixels
+        each way; a logo stored before 0.18.0 can be as large as it was uploaded (at most 2 MB,
+        4096x4096). It is never cropped.
 
         No authentication, no cookie is read or set, and the response is the same for everyone.
         Use the `url` of a `Logo` object (prefixed with the API base URL) rather than building
         this path: it carries `?v=<version>`, which changes when the logo changes. The query
         string is only a cache key; the route always serves the current logo.
 
-        - `Cache-Control: public, max-age=300, stale-while-revalidate=86400`.
+        - `Cache-Control` (changed in 0.18.0; the same on a `200` and on a `304`):
+          - `public, max-age=31536000, immutable` when `v` is exactly the version of the
+            **current** logo (the first 12 characters of its checksum), as in every `Logo.url`;
+          - `public, max-age=300, stale-while-revalidate=86400` when `v` is missing, empty or
+            the version of another image (an old URL still serves the current logo, and must
+            not be kept for a year).
         - `ETag` is the image's checksum; `If-None-Match` answers `304`.
         - `X-Content-Type-Options: nosniff`, `Cross-Origin-Resource-Policy: cross-origin` (other
           origins may show it in an `<img>`).
@@ -1574,7 +1595,7 @@ paths:
         - name: v
           in: query
           required: false
-          description: Version of the image (the first 12 characters of its checksum). A cache key only; ignored by the server.
+          description: Version of the image (the first 12 characters of its checksum). It never changes which image is served (always the current one); it decides only how long the response may be cached - a year when it is the current logo's version, minutes otherwise.
           schema: { type: string }
         - $ref: "#/components/parameters/IfNoneMatch"
       responses:
@@ -1587,7 +1608,7 @@ paths:
               description: The SHA-256 of the image, quoted.
               schema: { type: string }
             Cache-Control:
-              description: "`public, max-age=300, stale-while-revalidate=86400`."
+              description: "`public, max-age=31536000, immutable` when `v` is the current logo's version; otherwise `public, max-age=300, stale-while-revalidate=86400`."
               schema: { type: string }
             X-Content-Type-Options:
               description: "`nosniff`."
@@ -1699,8 +1720,15 @@ paths:
         - at most **2 MB**;
         - between **128x128** and **4096x4096** pixels (each side).
 
-        It is stored and served as uploaded: no resizing, cropping or re-encoding, and no
-        moderation before it is shown. Rate limited per IP together with the other uploads:
+        Changed in 0.18.0: an image whose longer side is more than **512** pixels is scaled
+        down to fit 512x512 before it is stored (same proportions; never cropped or enlarged;
+        PNG stays PNG and keeps its transparency, JPEG stays JPEG and is turned upright when its
+        EXIF data says the photo was taken sideways). No side is taken under 128 pixels, so an
+        image more than four times as wide as it is high keeps a longer side above 512 (1200x200
+        becomes 768x128). An image of 512 pixels or less is stored exactly as uploaded. The
+        `logo` in the response (`url`, `width`, `height`) describes the **stored** image, so
+        its size can be smaller than the file that was sent. An image whose data cannot be
+        decoded is `415`. There is no moderation before it is shown. Rate limited per IP together with the other uploads:
         bursts of 20, 20 per minute. A cookie session needs the web app's `Origin` (CSRF).
       security:
         - cookieSession: []
@@ -3011,7 +3039,8 @@ paths:
         and on the listings. Tell the applicant before they choose a file. The other documents
         stay private. Its rules are a logo's, not a document's: **PNG or JPEG only** (no PDF, no
         SVG, no GIF, no WebP, no animated PNG), at most **2 MB**, between **128x128** and
-        **4096x4096** pixels. The owner can replace or remove it after approval with
+        **4096x4096** pixels. The document is kept as uploaded; the public copy made on approval
+        is scaled down to fit 512x512 when it is larger (since 0.18.0). The owner can replace or remove it after approval with
         `PUT` / `DELETE /v1/me/profiles/{kind}/{slug}/logo`.
 
         There is no presigned upload and no malware scan yet (see the README).
@@ -4705,8 +4734,10 @@ components:
       type: object
       description: |
         New in 0.17.0. The logo of a directory profile (for an agent: their photo). The image
-        is served by `GET /v1/directory/{kind}/{slug}/logo` exactly as it was uploaded (PNG or
-        JPEG, at most 2 MB, 128 to 4096 pixels each way; not resized).
+        is served by `GET /v1/directory/{kind}/{slug}/logo` as it is stored: a PNG or a JPEG,
+        scaled down at upload to fit 512x512 when it was larger (since 0.18.0; a logo stored
+        earlier can be up to 4096 pixels each way and 2 MB). Show it at whatever size the
+        layout needs; `width` and `height` give its proportions.
       required: [url, width, height]
       additionalProperties: false
       properties:
@@ -4717,8 +4748,8 @@ components:
             API base URL. It is not relative to the web site. It ends in `?v=<version>`, the
             first 12 characters of the image's checksum, so it changes whenever the logo does.
           examples: ["/v1/directory/agencies/sample-estates/logo?v=3f2a9c0d1b7e"]
-        width: { type: [integer, "null"], minimum: 1, description: "Pixel width of the image; null when not recorded." }
-        height: { type: [integer, "null"], minimum: 1, description: "Pixel height of the image; null when not recorded." }
+        width: { type: [integer, "null"], minimum: 1, description: "Pixel width of the image that is served; null when not recorded." }
+        height: { type: [integer, "null"], minimum: 1, description: "Pixel height of the image that is served; null when not recorded." }
 
     ProfileLink:
       type: object

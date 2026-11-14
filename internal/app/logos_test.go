@@ -182,7 +182,12 @@ func (e *env) listing(slug string) listings.Listing {
 // The public route
 // ---------------------------------------------------------------------------
 
-const logoCacheControl = "public, max-age=300, stale-while-revalidate=86400"
+// The cache policy of a logo: a year for the URL of the current version (the
+// one the API hands out), minutes for any other address of the same image.
+const (
+	logoCacheControl          = "public, max-age=300, stale-while-revalidate=86400"
+	logoCacheControlVersioned = "public, max-age=31536000, immutable"
+)
 
 func TestPublicLogoRoute(t *testing.T) {
 	e := newEnv(t)
@@ -200,7 +205,7 @@ func TestPublicLogoRoute(t *testing.T) {
 	wantStatus(t, rec, http.StatusOK)
 	head := rec.Header()
 	etag := head.Get("ETag")
-	if head.Get("Content-Type") != "image/png" || head.Get("Cache-Control") != logoCacheControl || etag != `"`+sample.Logo.Checksum+`"` ||
+	if head.Get("Content-Type") != "image/png" || head.Get("Cache-Control") != logoCacheControlVersioned || etag != `"`+sample.Logo.Checksum+`"` ||
 		head.Get("X-Content-Type-Options") != "nosniff" || head.Get("Content-Length") != fmt.Sprint(len(sample.Content)) {
 		t.Fatalf("headers = %v", head)
 	}
@@ -218,13 +223,36 @@ func TestPublicLogoRoute(t *testing.T) {
 	if signedIn.Code != http.StatusOK || signedIn.Header().Get("ETag") != etag || !bytes.Equal(signedIn.Body.Bytes(), sample.Content) {
 		t.Fatal("the logo differs for a signed-in caller")
 	}
-	// The version is only a cache key: the route serves the current logo with or without it.
-	wantStatus(t, e.get("/v1/directory/agencies/sample-estates/logo"), http.StatusOK)
+	// The version is only a cache key: the route serves the current logo with
+	// or without it, and with the version of another image. Only the URL of
+	// the current version may be kept for a year: anything else is kept for
+	// minutes, so that an image is never pinned to an address that is not its own.
+	const bare = "/v1/directory/agencies/sample-estates/logo"
+	version := sample.Logo.Checksum[:listings.LogoVersionLength]
+	for _, path := range []string{
+		bare,                                // no version
+		bare + "?v=",                        // an empty one
+		bare + "?v=000000000000",            // the version of another image
+		bare + "?v=" + version[:6],          // only the start of the current one
+		bare + "?v=" + sample.Logo.Checksum, // more than the version
+		bare + "?v=" + strings.ToUpper(version) + "x",
+		bare + "?version=" + version,
+	} {
+		rec := e.get(path)
+		if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != logoCacheControl || rec.Header().Get("ETag") != etag ||
+			!bytes.Equal(rec.Body.Bytes(), sample.Content) {
+			t.Fatalf("GET %s: %d Cache-Control=%q", path, rec.Code, rec.Header().Get("Cache-Control"))
+		}
+		not := e.get(path, withHeader("If-None-Match", etag))
+		if not.Code != http.StatusNotModified || not.Header().Get("Cache-Control") != logoCacheControl {
+			t.Fatalf("GET %s If-None-Match: %d Cache-Control=%q", path, not.Code, not.Header().Get("Cache-Control"))
+		}
+	}
 
-	// 304 when the client already has it.
+	// 304 when the client already has it, with the same policy as the 200.
 	for _, header := range []string{etag, "W/" + etag, `"other", ` + etag, "*"} {
 		not := e.get(logo.URL, withHeader("If-None-Match", header))
-		if not.Code != http.StatusNotModified || not.Body.Len() != 0 || not.Header().Get("ETag") != etag || not.Header().Get("Cache-Control") != logoCacheControl {
+		if not.Code != http.StatusNotModified || not.Body.Len() != 0 || not.Header().Get("ETag") != etag || not.Header().Get("Cache-Control") != logoCacheControlVersioned {
 			t.Fatalf("If-None-Match %s: %d %v", header, not.Code, not.Header())
 		}
 	}
@@ -426,7 +454,7 @@ func TestLogoAtOnboarding(t *testing.T) {
 	}
 	served := e.get(logo.URL)
 	if served.Code != http.StatusOK || served.Header().Get("Content-Type") != "image/jpeg" || !bytes.Equal(served.Body.Bytes(), photo) ||
-		served.Header().Get("Cache-Control") != logoCacheControl {
+		served.Header().Get("Cache-Control") != logoCacheControlVersioned {
 		t.Fatalf("served logo: %d %v", served.Code, served.Header())
 	}
 	// The new owner manages the profile and its logo.
@@ -575,6 +603,30 @@ func TestOwnerChangesLogo(t *testing.T) {
 	}
 	if old := e.get(before.URL); old.Code != http.StatusOK || !bytes.Equal(old.Body.Bytes(), replacement) {
 		t.Fatal("the old URL does not serve the current logo")
+	} else if old.Header().Get("Cache-Control") != logoCacheControl || served.Header().Get("Cache-Control") != logoCacheControlVersioned {
+		// The old URL now shows another image: it must not be kept for a year.
+		t.Fatalf("Cache-Control: old URL %q, new URL %q", old.Header().Get("Cache-Control"), served.Header().Get("Cache-Control"))
+	}
+
+	// A logo larger than it is ever shown is scaled down when it is stored:
+	// the profile says the size of the image that is served.
+	rec = e.putLogo("agencies", "sample-estates", logoPNG(1600, 800), owner)
+	wantStatus(t, rec, http.StatusOK)
+	large := decode[struct {
+		Profile managedBody `json:"profile"`
+	}](t, rec).Profile.Logo
+	if large == nil || *large.Width != directory.LogoStoredPixels || *large.Height != directory.LogoStoredPixels/2 {
+		t.Fatalf("large logo = %+v", large)
+	}
+	shrunk := e.get(large.URL)
+	if img, err := directory.CheckLogo(shrunk.Body.Bytes()); shrunk.Code != http.StatusOK || err != nil || img.Width != 512 || img.Height != 256 ||
+		shrunk.Header().Get("ETag") != `"`+img.Checksum+`"` || shrunk.Header().Get("Content-Length") != fmt.Sprint(shrunk.Body.Len()) ||
+		!strings.HasSuffix(large.URL, "?v="+img.Checksum[:listings.LogoVersionLength]) || shrunk.Header().Get("Content-Type") != "image/png" {
+		t.Fatalf("served large logo: %d %+v %v %v", shrunk.Code, img, err, shrunk.Header())
+	}
+	wantStatus(t, e.putLogo("agencies", "sample-estates", replacement, owner), http.StatusOK)
+	if e.storedFiles() != files {
+		t.Fatalf("%d stored files, want %d", e.storedFiles(), files)
 	}
 	// The listings of the agency show the new logo at once.
 	if l := e.listing("four-bedroom-family-home-borrowdale"); l.Advertiser.Display.Logo == nil || l.Advertiser.Display.Logo.URL != changed.Logo.URL ||

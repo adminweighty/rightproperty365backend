@@ -906,9 +906,13 @@ JSON is cached publicly and must be the same whoever asks. `v` is the first 12 c
 image's SHA-256: it changes when the logo changes, so the image can be cached hard.
 
 **Serving.** `GET /v1/directory/{kind}/{slug}/logo` streams the stored image with its stored
-content type, `Cache-Control: public, max-age=300, stale-while-revalidate=86400`, an `ETag` (the
-checksum; `If-None-Match` answers `304`), `X-Content-Type-Options: nosniff` and
-`Cross-Origin-Resource-Policy: cross-origin`. No session is read and no cookie is set. `404
+content type, an `ETag` (the checksum; `If-None-Match` answers `304`),
+`X-Content-Type-Options: nosniff` and `Cross-Origin-Resource-Policy: cross-origin`.
+`Cache-Control` depends on `v` (the same on a `200` and a `304`): when `v` is exactly the
+version of the **current** logo, which is what every `logo.url` carries, it is `public,
+max-age=31536000, immutable`, so a client that uses `logo.url` unchanged fetches each logo once;
+without `v`, or with the `v` of another image (an old URL still serves the current logo), it is
+`public, max-age=300, stale-while-revalidate=86400`, so a wrong image is never pinned. No session is read and no cookie is set. `404
 LOGO_NOT_FOUND` when the profile has none, `404 PROFILE_NOT_FOUND` when the profile is not
 public: the logo of an unverified or suspended profile stops being served although it is still
 stored.
@@ -936,6 +940,21 @@ bucket therefore stays private, and every logo request is one object read throug
   logo) is `403`. Rate limited with the other uploads (20 per minute per IP); a cookie session
   needs the web app's `Origin`.
 
+**Stored size.** Logos are shown at 32 to 112 CSS pixels, so a large upload is made small once,
+when it is stored (`directory.PrepareLogo`, used by both upload paths): an image whose longer
+side is more than **512** pixels is scaled down to fit 512x512 (same proportions, Catmull-Rom
+from `golang.org/x/image/draw`, never cropped, never enlarged) and encoded again in its own
+format: PNG stays PNG, so transparency survives; JPEG stays JPEG at quality 85, turned upright
+first when its EXIF orientation says the photo was taken sideways (encoding again drops EXIF).
+No side is taken under 128 pixels (the database's CHECK and the lower limit of a logo), so an
+image more than four times as wide as it is high keeps a longer side above 512: 1200x200 becomes
+768x128, and 4096x128 is stored as it is. An image of 512 pixels or less is stored **byte for
+byte** as uploaded. The recorded size, width, height, checksum (hence the `ETag` and `v`) and
+content type are those of the **stored** file. The limits below are checked on the upload,
+before anything is decoded in full, so at most 2 MB and 4096x4096 pixels are ever decoded. The
+onboarding `LOGO` document itself is kept as uploaded; its public copy is scaled on approval.
+Logos stored before this was built stay as they are until they are uploaded again.
+
 **Limits** (the same in both places): PNG or JPEG only, decided by sniffing the content and
 decoding the image header (which is also where width and height come from); at most **2 MB**;
 between **128x128** and **4096x4096** pixels. **SVG is refused** because it can carry scripts;
@@ -947,9 +966,11 @@ purpose (`internal/devseed/logos.go`; no third-party font or artwork). Two gaps 
 that clients exercise their fallbacks: **`agencies/sample-realty` has NO logo** (show initials),
 and **no sample agent has a photo** (fall back to the agency's logo).
 
-**Not built:** resizing, thumbnails and format conversion (the image is served exactly as
-uploaded, at whatever size, so a card downloads the full image); cropping; **moderation of logos**
-(a logo is public the moment its owner uploads it, with no review); EXIF / metadata stripping;
+**Not built:** thumbnails per display size and format conversion (one image of at most 512
+pixels is served to every card; no WebP / AVIF); cropping; shrinking the logos that were stored
+before uploads were scaled; **moderation of logos** (a logo is public the moment its owner
+uploads it, with no review); EXIF / metadata stripping for images that are not scaled (a scaled
+one is encoded again, which drops its metadata and any colour profile);
 a CDN or any cache in front of the API; cleaning up the old object if deleting it fails (it is
 logged); malware scanning (as for the documents).
 
@@ -1226,7 +1247,7 @@ So that nobody assumes these exist. They are in the updated functional specifica
 - administrator endpoints to unverify / re-verify an organisation and to suspend / reinstate a
   direct owner's role (requested, not started);
 - a display name a direct owner can choose (their account name is shown on their listings);
-- resizing, cropping and moderation of logos, and a CDN (see "Logos");
+- per-size thumbnails, cropping and moderation of logos, and a CDN (see "Logos");
 - subscription plans, and admin-recorded payments, invoices and receipts (the specification has no
   online payment in the mobile app);
 - per-country **legal texts, payment gateways and tax rules** (see "Countries": any country can
@@ -1335,9 +1356,8 @@ is audit-logged) that streams it with `Content-Disposition: attachment`,
 
 The API logs one line at startup naming the storage driver. The S3 adapter uses
 `github.com/minio/minio-go/v7`: a small client written for MinIO, which is what the stack runs, in
-place of the much larger AWS SDK. **It is tested against a fake HTTP transport only and has never
-talked to MinIO**; MinIO is in `docker-compose.yml`, but there is no Docker on the machine this
-was written on.
+place of the much larger AWS SDK. The automated tests use a fake HTTP transport; put, get and
+delete have also been run against MinIO and Amazon S3.
 
 **Uploads go through the API, not presigned URLs. This is a deliberate deviation from FR-010**
 (presigned PUT with asynchronous scanning), so that validation is enforced server-side today:

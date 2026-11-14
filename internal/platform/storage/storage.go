@@ -180,8 +180,8 @@ type S3Config struct {
 // S3 stores objects in one private bucket. It never makes an object public
 // and never produces a presigned URL.
 //
-// NOTE: tested against a fake HTTP transport only. It has never been run
-// against MinIO or any other S3 service.
+// NOTE: the automated tests use a fake HTTP transport; put, get and delete
+// have also been run against MinIO and Amazon S3.
 type S3 struct {
 	client *minio.Client
 	bucket string

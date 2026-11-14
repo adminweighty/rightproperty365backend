@@ -225,8 +225,8 @@ type Photo struct {
 type Logo struct {
 	// URL is a path RELATIVE TO THE API ORIGIN, for example
 	// "/v1/directory/agencies/sample-estates/logo?v=3f2a9c0d1b7e": a client
-	// prefixes its API base URL. The v parameter changes whenever the image
-	// changes, so a cached copy is never stale.
+	// prefixes its API base URL. The v parameter (LogoVersion) changes
+	// whenever the image changes, so a cached copy is never stale.
 	URL string `json:"url"`
 	// Width and Height are the image's size in pixels (null when unknown).
 	Width  *int `json:"width"`
@@ -238,6 +238,15 @@ type Logo struct {
 // phone number to a scanner.
 const LogoVersionLength = 12
 
+// LogoVersion is the v parameter of the logo URL of an image with this
+// checksum: its first LogoVersionLength characters.
+func LogoVersion(checksum string) string {
+	if len(checksum) > LogoVersionLength {
+		return checksum[:LogoVersionLength]
+	}
+	return checksum
+}
+
 // NewLogo builds the public form of a profile's logo from what is stored: the
 // profile's address, the image's checksum and its size. It returns nil when
 // the profile has no logo (an empty checksum).
@@ -245,11 +254,7 @@ func NewLogo(kind, slug, checksum string, width, height int) *Logo {
 	if checksum == "" {
 		return nil
 	}
-	version := checksum
-	if len(version) > LogoVersionLength {
-		version = version[:LogoVersionLength]
-	}
-	l := &Logo{URL: "/v1/directory/" + kind + "/" + slug + "/logo?v=" + version}
+	l := &Logo{URL: "/v1/directory/" + kind + "/" + slug + "/logo?v=" + LogoVersion(checksum)}
 	if width > 0 && height > 0 {
 		l.Width, l.Height = &width, &height
 	}

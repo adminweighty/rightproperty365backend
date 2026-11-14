@@ -9,14 +9,16 @@ import (
 	"errors"
 	"fmt"
 	"image"
-	_ "image/jpeg" // registers the JPEG header decoder
-	_ "image/png"  // registers the PNG header decoder
+	"image/jpeg"
+	"image/png"
 	"io"
 	"log/slog"
 	"net/http"
 	"slices"
 	"sort"
 	"time"
+
+	"golang.org/x/image/draw"
 
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/platform/auth"
@@ -29,18 +31,29 @@ import (
 // GET /v1/directory/{kind}/{slug}/logo, which serves it for a profile that is
 // public right now. Nothing here produces a storage URL.
 
-// Logo limits. A logo is not resized, cropped or re-encoded: what was
-// uploaded is what is served, so the limits are what keeps it reasonable.
+// Logo limits. MaxLogoBytes, MinLogoPixels and MaxLogoPixels are the limits
+// of what may be UPLOADED. What is STORED and served is at most
+// LogoStoredPixels on its longer side: a larger upload is scaled down and
+// re-encoded once, when it is stored (see PrepareLogo); a smaller one is
+// kept exactly as it was uploaded. A logo is never cropped or upscaled, and
+// a stored logo is itself within the limits of an upload: no side goes under
+// MinLogoPixels (the database refuses a smaller one), so a logo more than
+// four times as wide as it is high keeps a longer side above LogoStoredPixels.
 const (
 	MaxLogoBytes     = 2 << 20 // 2 MB
 	MinLogoPixels    = 128
 	MaxLogoPixels    = 4096
+	LogoStoredPixels = 512
+	LogoJPEGQuality  = 85
 	LogoKeyPrefix    = "logos"
 	LogoCacheMaxAge  = 5 * time.Minute
 	LogoCacheStale   = 24 * time.Hour
-	logoContentPNG   = "image/png"
-	logoContentJPEG  = "image/jpeg"
-	maxLogoBodyExtra = 64 << 10
+	// LogoCacheVersioned is how long a logo requested by the URL of its
+	// current version (?v=) may be cached: that URL never serves another image.
+	LogoCacheVersioned = 365 * 24 * time.Hour
+	logoContentPNG     = "image/png"
+	logoContentJPEG    = "image/jpeg"
+	maxLogoBodyExtra   = 64 << 10
 )
 
 // MaxLogoBodyBytes is the request body limit of a logo upload: the image
@@ -79,7 +92,8 @@ type Logo struct {
 	UpdatedAt   time.Time
 }
 
-// LogoImage is what CheckLogo learned about an uploaded image.
+// LogoImage describes an image: the uploaded one (CheckLogo) or the one to
+// store (PrepareLogo).
 type LogoImage struct {
 	ContentType string
 	Width       int
@@ -91,7 +105,8 @@ type LogoImage struct {
 // the bytes alone (never a file name or a Content-Type header) and must be
 // PNG or JPEG: SVG is refused because it can carry scripts, GIF, WebP and
 // animated PNG because a logo is one still image. Only the image header is
-// decoded, to learn the size in pixels.
+// decoded, to learn the size in pixels. The result describes the content as
+// uploaded; what is stored may be smaller (PrepareLogo).
 func CheckLogo(content []byte) (LogoImage, error) {
 	if len(content) > MaxLogoBytes {
 		return LogoImage{}, ErrLogoTooLarge
@@ -134,11 +149,148 @@ func animatedPNG(content []byte) bool {
 	return false
 }
 
-// StoreLogo validates an image and stores it under a new random key. The
-// caller attaches the returned Logo to a profile, and removes the object
-// again if that fails.
-func StoreLogo(ctx context.Context, files storage.Storage, content []byte, now time.Time) (Logo, error) {
+// PrepareLogo validates an uploaded image (CheckLogo) and returns the bytes
+// to store with their description. An image whose longer side is more than
+// LogoStoredPixels is scaled down to fit a square of that size (same
+// proportions, Catmull-Rom) - but never so far that its shorter side goes
+// under MinLogoPixels: a 1200x200 image becomes 768x128, not 512x85. It is
+// encoded again in its own format: PNG stays PNG, so transparency survives,
+// and JPEG stays JPEG at LogoJPEGQuality, turned upright first when its EXIF
+// data says the camera was held sideways (encoding again drops that data).
+// Any other image is returned as it is, byte for byte.
+//
+// The image is fully decoded only after CheckLogo accepted it, so at most
+// MaxLogoBytes of input and MaxLogoPixels each way are ever decoded. An image
+// whose header is valid but whose data cannot be decoded is ErrLogoUnsupported.
+func PrepareLogo(content []byte) (LogoImage, []byte, error) {
 	img, err := CheckLogo(content)
+	if err != nil {
+		return LogoImage{}, nil, err
+	}
+	// The scale is num/den: the longer side to LogoStoredPixels, or, when that
+	// would make the shorter side too small, the shorter side to MinLogoPixels.
+	longer, shorter := max(img.Width, img.Height), min(img.Width, img.Height)
+	num, den := LogoStoredPixels, longer
+	if shorter*num < MinLogoPixels*den {
+		num, den = MinLogoPixels, shorter
+	}
+	if num >= den {
+		return img, content, nil // small enough already: never upscaled
+	}
+	src, _, err := image.Decode(bytes.NewReader(content))
+	if err != nil {
+		return LogoImage{}, nil, ErrLogoUnsupported
+	}
+	scaled := func(side int) int { return (side*num + den/2) / den } // to the nearest pixel
+	dst := image.NewRGBA(image.Rect(0, 0, scaled(img.Width), scaled(img.Height)))
+	draw.CatmullRom.Scale(dst, dst.Bounds(), src, src.Bounds(), draw.Src, nil)
+
+	var out bytes.Buffer
+	if img.ContentType == logoContentJPEG {
+		dst = upright(dst, jpegOrientation(content))
+		err = jpeg.Encode(&out, dst, &jpeg.Options{Quality: LogoJPEGQuality})
+	} else {
+		err = (&png.Encoder{CompressionLevel: png.BestCompression}).Encode(&out, dst)
+	}
+	if err != nil {
+		return LogoImage{}, nil, fmt.Errorf("encode logo: %w", err)
+	}
+	if out.Len() > MaxLogoBytes {
+		// Cannot happen with real images (fewer pixels, same format). The
+		// upload is within every limit, so it is kept rather than refused.
+		return img, content, nil
+	}
+	sum := sha256.Sum256(out.Bytes())
+	return LogoImage{ContentType: img.ContentType, Width: dst.Bounds().Dx(), Height: dst.Bounds().Dy(),
+		Checksum: hex.EncodeToString(sum[:])}, out.Bytes(), nil
+}
+
+// jpegOrientation returns the EXIF orientation of a JPEG (1 to 8), or 1 when
+// it has none or it cannot be read.
+func jpegOrientation(content []byte) int {
+	const none = 1
+	for at := 2; at+4 <= len(content) && content[at] == 0xff; {
+		marker, length := content[at+1], int(binary.BigEndian.Uint16(content[at+2:at+4]))
+		if marker == 0xda || length < 2 || at+2+length > len(content) { // start of scan: no metadata after it
+			return none
+		}
+		segment := content[at+4 : at+2+length]
+		at += 2 + length
+		if marker != 0xe1 || !bytes.HasPrefix(segment, []byte("Exif\x00\x00")) {
+			continue
+		}
+		tiff := segment[6:]
+		if len(tiff) < 8 {
+			return none
+		}
+		var order binary.ByteOrder = binary.BigEndian
+		if string(tiff[:2]) == "II" {
+			order = binary.LittleEndian
+		}
+		ifd := int(order.Uint32(tiff[4:8]))
+		if ifd < 8 || ifd+2 > len(tiff) {
+			return none
+		}
+		entries := int(order.Uint16(tiff[ifd : ifd+2]))
+		for i := 0; i < entries; i++ {
+			entry := ifd + 2 + 12*i
+			if entry+12 > len(tiff) {
+				return none
+			}
+			if order.Uint16(tiff[entry:entry+2]) == 0x0112 { // the Orientation tag
+				if o := int(order.Uint16(tiff[entry+8 : entry+10])); o >= 1 && o <= 8 {
+					return o
+				}
+				return none
+			}
+		}
+		return none
+	}
+	return none
+}
+
+// upright returns img turned the way its EXIF orientation says it is to be
+// shown (orientation 1, or anything unknown, is img itself).
+func upright(img *image.RGBA, orientation int) *image.RGBA {
+	if orientation < 2 || orientation > 8 {
+		return img
+	}
+	w, h := img.Bounds().Dx(), img.Bounds().Dy()
+	out := image.NewRGBA(image.Rect(0, 0, w, h))
+	if orientation >= 5 {
+		out = image.NewRGBA(image.Rect(0, 0, h, w))
+	}
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			tx, ty := x, y
+			switch orientation {
+			case 2:
+				tx = w - 1 - x
+			case 3:
+				tx, ty = w-1-x, h-1-y
+			case 4:
+				ty = h - 1 - y
+			case 5:
+				tx, ty = y, x
+			case 6:
+				tx, ty = h-1-y, x
+			case 7:
+				tx, ty = h-1-y, w-1-x
+			case 8:
+				tx, ty = y, w-1-x
+			}
+			out.SetRGBA(tx, ty, img.RGBAAt(x, y))
+		}
+	}
+	return out
+}
+
+// StoreLogo validates an image, scales it down when it is larger than a logo
+// needs to be (PrepareLogo) and stores it under a new random key. The Logo
+// returned describes the STORED image. The caller attaches it to a profile,
+// and removes the object again if that fails.
+func StoreLogo(ctx context.Context, files storage.Storage, content []byte, now time.Time) (Logo, error) {
+	img, content, err := PrepareLogo(content)
 	if err != nil {
 		return Logo{}, err
 	}

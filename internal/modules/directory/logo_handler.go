@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/httpx"
 )
@@ -31,9 +32,22 @@ func noneMatch(header, etag string) bool {
 	return false
 }
 
+// logoCacheControl is the cache policy of a logo response. A request whose v
+// parameter is exactly the version of the CURRENT logo (the one in the URL the
+// API hands out, listings.LogoVersion) may be kept for a year without asking
+// again: when the logo changes, so does that URL. Without v, or with the v of
+// another image (an old URL still serves the current logo), the answer is
+// kept for minutes only, so a wrong image is never pinned.
+func logoCacheControl(logo Logo, version string) string {
+	if version != "" && version == listings.LogoVersion(logo.Checksum) {
+		return fmt.Sprintf("public, max-age=%d, immutable", int(LogoCacheVersioned.Seconds()))
+	}
+	return fmt.Sprintf("public, max-age=%d, stale-while-revalidate=%d", int(LogoCacheMaxAge.Seconds()), int(LogoCacheStale.Seconds()))
+}
+
 // Logo handles GET /v1/directory/{kind}/{slug}/logo: the image of a PUBLIC
 // profile's logo. It reads no session and sets no cookie; it is the same for
-// everyone and cacheable. The stored content type is sent with nosniff, so a
+// everyone and cacheable (see logoCacheControl). The stored content type is sent with nosniff, so a
 // browser never guesses another type.
 func (h *Handler) Logo(w http.ResponseWriter, r *http.Request) {
 	slug := chi.URLParam(r, "slug")
@@ -48,7 +62,7 @@ func (h *Handler) Logo(w http.ResponseWriter, r *http.Request) {
 	}
 	head := w.Header()
 	etag := etagOf(logo)
-	cache := fmt.Sprintf("public, max-age=%d, stale-while-revalidate=%d", int(LogoCacheMaxAge.Seconds()), int(LogoCacheStale.Seconds()))
+	cache := logoCacheControl(logo, r.URL.Query().Get("v"))
 	if noneMatch(r.Header.Get("If-None-Match"), etag) {
 		head.Set("Cache-Control", cache)
 		head.Set("ETag", etag)
