@@ -330,9 +330,13 @@ func TestListingBySlug(t *testing.T) {
 	// Advertiser: public profile references only.
 	a := l.Advertiser
 	if a.Type != "agency" || a.Name != "Sample Estates" || !a.Verified ||
-		a.Agency == nil || *a.Agency != (listings.ProfileRef{Kind: "agencies", Slug: "sample-estates", Name: "Sample Estates", Verified: true}) ||
-		a.Agent == nil || *a.Agent != (listings.ProfileRef{Kind: "agents", Slug: "tendai-ncube", Name: "Tendai Ncube", Verified: true}) {
+		a.Agency == nil || a.Agency.Kind != "agencies" || a.Agency.Slug != "sample-estates" || a.Agency.Name != "Sample Estates" || !a.Agency.Verified ||
+		a.Agent == nil || a.Agent.Kind != "agents" || a.Agent.Slug != "tendai-ncube" || a.Agent.Name != "Tendai Ncube" || !a.Agent.Verified {
 		t.Fatalf("advertiser: %+v", a)
+	}
+	// The agency has a logo; a sample agent has no photo (the client falls back).
+	if a.Agency.Logo == nil || a.Agent.Logo != nil {
+		t.Fatalf("logos: agency %+v, agent %+v", a.Agency.Logo, a.Agent.Logo)
 	}
 
 	// A rental has a period; a plot has no rooms; a private sale has no profiles.
@@ -343,7 +347,9 @@ func TestListingBySlug(t *testing.T) {
 		t.Fatalf("rental: %+v", rental.PricePeriod)
 	}
 	raw := e.get("/v1/listings/five-bedroom-house-victoria-falls").Body.String()
-	if !strings.Contains(raw, `"advertiser":{"type":"private_seller","name":"Private seller","verified":true,"agency":null,"agent":null}`) {
+	// A direct owner is named by their account name; nothing else about them is public.
+	if !strings.Contains(raw, `"advertiser":{"type":"private_seller","name":"Grace Mhlanga","verified":true,"agency":null,"agent":null,`+
+		`"display":{"name":"Grace Mhlanga","secondary_name":null,"role_label":"Property Seller (Vendor)","logo":null,"verified":true,"profile":null},"agent_display":null}`) {
 		t.Fatalf("private seller advertiser: %s", raw)
 	}
 	if !strings.Contains(e.get("/v1/listings/office-suite-eastlea").Body.String(), `"bedrooms":null,"bathrooms":null`) {
@@ -515,7 +521,7 @@ func TestDirectory(t *testing.T) {
 		}
 		first := page.Items[0]
 		if !first.Sponsored || !first.Verified || !first.City.Is("harare") || first.City.Label != "Harare" || first.ListingCount != 6 ||
-			first.Tagline == "" || first.Description == "" || len(first.Areas) == 0 || len(first.Services) == 0 || first.Logo != nil || first.Agency != nil || first.Trade != nil {
+			first.Tagline == "" || first.Description == "" || len(first.Areas) == 0 || len(first.Services) == 0 || first.Logo == nil || first.Agency != nil || first.Trade != nil {
 			t.Fatalf("first = %+v", first)
 		}
 	})
@@ -580,8 +586,9 @@ func TestDirectory(t *testing.T) {
 
 	t.Run("agent profile: the agency and the agent's own listings", func(t *testing.T) {
 		p := decode[detail](t, e.get("/v1/directory/agents/tendai-ncube")).Profile
-		if p.Agency == nil || *p.Agency != (listings.ProfileRef{Kind: "agencies", Slug: "sample-estates", Name: "Sample Estates", Verified: true}) {
-			t.Fatalf("agency = %+v", p.Agency)
+		if p.Agency == nil || p.Agency.Kind != "agencies" || p.Agency.Slug != "sample-estates" || p.Agency.Name != "Sample Estates" || !p.Agency.Verified ||
+			p.Agency.Logo == nil || p.Logo != nil {
+			t.Fatalf("agency = %+v, own logo = %+v", p.Agency, p.Logo)
 		}
 		if len(p.Listings) != 3 || len(p.Agents) != 0 {
 			t.Fatalf("listings=%d agents=%d", len(p.Listings), len(p.Agents))
@@ -604,8 +611,12 @@ func TestDirectory(t *testing.T) {
 			len(p.Services) != 4 || len(p.Listings) != 0 || len(p.Agents) != 0 || !p.Sponsored || p.Since == nil || *p.Since != 2012 {
 			t.Fatalf("profile = %+v", p)
 		}
-		if !strings.Contains(rec.Body.String(), `"logo":null,"agency":null`) || !strings.Contains(rec.Body.String(), `"agents":[],"listings":[]`) {
+		if !strings.Contains(rec.Body.String(), `"agency":null`) || !strings.Contains(rec.Body.String(), `"agents":[],"listings":[]`) {
 			t.Fatalf("absent values must be null or empty arrays: %s", rec.Body)
+		}
+		// The one sample business without a logo says null, not an empty object.
+		if body := e.get("/v1/directory/" + devseed.NoLogoProfile).Body.String(); !strings.Contains(body, `"logo":null,"agency":null`) {
+			t.Fatalf("a profile without a logo must say null: %s", body)
 		}
 	})
 
@@ -660,7 +671,7 @@ func TestSitemap(t *testing.T) {
 func publicGETs(e *env) []string {
 	paths := []string{
 		"/v1/reference", "/v1/markets", "/v1/countries", "/v1/countries?has_listings=true", "/v1/countries?q=king", "/v1/listings?page_size=48", "/v1/listings?q=house&sort=relevance", "/v1/listings/suggest?q=sample",
-		"/v1/listings/suggest?q=harare", "/v1/directory", "/v1/sitemap",
+		"/v1/listings/suggest?q=harare", "/v1/directory", "/v1/sitemap", "/v1/trust/summary",
 		// Country, region and the advanced filters.
 		"/v1/listings?country=ZW&region=harare&page_size=48", "/v1/listings?advertiser_type=private", "/v1/listings?has_photos=true&sort=area_desc&page_size=48",
 		"/v1/listings/suggest?q=mata", "/v1/listings/suggest?q=zimb", "/v1/reference/regions?market=ZW",

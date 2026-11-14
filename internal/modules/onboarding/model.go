@@ -12,7 +12,10 @@
 //   - documents are private: they are read only through an authenticated
 //     route, never from a public URL;
 //   - contact phone, registration number and documents never reach a public
-//     profile;
+//     profile — with ONE exception the applicant is told about: the optional
+//     LOGO document (a logo or profile photo) becomes the profile's public
+//     logo when the application is approved. It is copied to its own object;
+//     the uploaded document itself stays private like the others;
 //   - a platform role can never be obtained here.
 package onboarding
 
@@ -27,6 +30,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/platform/auth"
 )
 
@@ -106,6 +110,11 @@ const (
 	CodeTooManyDocuments  = "TOO_MANY_DOCUMENTS"
 )
 
+// DocumentLogo is the one document type that becomes PUBLIC: an optional
+// logo (for a business) or profile photo (for an agent). Unlike the other
+// documents it must be a PNG or JPEG image within directory's logo limits.
+const DocumentLogo = "LOGO"
+
 // Errors.
 var (
 	ErrNotFound          = errors.New("onboarding application not found")
@@ -116,6 +125,10 @@ var (
 	ErrTooManyDocuments  = errors.New("too many documents")
 	ErrFileTooLarge      = errors.New("file too large")
 	ErrUnsupportedFile   = errors.New("unsupported file type")
+	// ErrLogoTooLarge and ErrUnsupportedLogo are the same refusals for the
+	// LOGO document, whose limits are stricter.
+	ErrLogoTooLarge    = errors.New("logo too large")
+	ErrUnsupportedLogo = errors.New("a logo must be a PNG or JPEG image")
 )
 
 // ValidationError carries per-field messages for a 400 response.
@@ -205,8 +218,14 @@ func DefaultDocumentTypes() []DocumentType {
 		{"TRADE_LICENCE", "Trade licence", "Licence or certification for your trade, if your trade has one."},
 		{"PROOF_OF_OWNERSHIP", "Proof of ownership", "Title deed or other proof that you own the property you intend to sell or let."},
 		{"PRACTISING_CERTIFICATE", "Practising certificate", "Current practising certificate from the Law Society."},
+		{DocumentLogo, "Logo or profile photo", LogoDescription},
 	}
 }
+
+// LogoDescription is what an applicant is told about the LOGO document.
+const LogoDescription = "Optional. Your business logo, or your own photo if you are an agent. Unlike your other documents it is shown " +
+	"PUBLICLY, on your profile and on your listings, once your application is approved. PNG or JPEG, at most 2 MB, " +
+	"between 128x128 and 4096x4096 pixels."
 
 // Requirement says a role needs (or may attach) a document type. The rows
 // live in the database (onboarding_role_documents).
@@ -239,6 +258,10 @@ func DefaultRequirements() []Requirement {
 			out = append(out, Requirement{o.Role, "PRACTISING_CERTIFICATE", true})
 		case "PRIVATE_SELLER", "LANDLORD":
 			out = append(out, Requirement{o.Role, "PROOF_OF_OWNERSHIP", true})
+		}
+		// A role whose approval creates a public profile may attach its logo.
+		if o.DirectoryKind != "" {
+			out = append(out, Requirement{o.Role, DocumentLogo, false})
 		}
 	}
 	return out
@@ -472,6 +495,9 @@ type NewProfile struct {
 	MarketCode     string
 	// Specialism is set for a sales or lettings agent's profile.
 	Specialism string
+	// Logo is the profile's public logo, promoted from the applicant's LOGO
+	// document (already stored under its own key); nil when there is none.
+	Logo *directory.Logo
 }
 
 // Approval is everything an approval does, applied by the store in ONE

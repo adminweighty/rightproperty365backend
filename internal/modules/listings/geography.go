@@ -94,8 +94,17 @@ func categoryKeywords(ctx context.Context, labels Labels) (map[string]string, er
 	return out, nil
 }
 
+// Reference sets behind an advertiser's role label: what a business is
+// ("Real Estate Agency", "Law Firm") and what a person is ("Estate Agent",
+// "Landlord").
+const (
+	SetOrganisationKinds = "organisation_kinds"
+	SetAccountRoles      = "account_roles"
+)
+
 // labelledSets are the reference sets whose labels a listing shows.
-var labelledSets = []string{SetDealTypes, SetPropertyCategories, SetPropertyTypes, SetCities, SetSuburbs, SetListingFeatures, SetRegions}
+var labelledSets = []string{SetDealTypes, SetPropertyCategories, SetPropertyTypes, SetCities, SetSuburbs, SetListingFeatures, SetRegions,
+	SetOrganisationKinds, SetAccountRoles}
 
 // loadLabels loads the labels of every set a listing uses, plus the location
 // hierarchy, as one bundle. places may be nil (no regions, no country names).

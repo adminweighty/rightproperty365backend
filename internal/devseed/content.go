@@ -6,6 +6,7 @@ import (
 	"github.com/google/uuid"
 
 	"rightproperty365.com/backend/internal/modules/directory"
+	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 )
@@ -52,6 +53,7 @@ func ListingRecords(now time.Time) []listings.Record {
 		}
 	}
 
+	reviewer := identity.SeedAdminUserID
 	var out []listings.Record
 	for _, l := range AllListings() {
 		id := uuid.MustParse(l.ID)
@@ -71,6 +73,9 @@ func ListingRecords(now time.Time) []listings.Record {
 			Photos: []listings.Photo{{URL: PhotoPathPrefix + l.Image.File, Alt: l.Image.Alt, Width: l.Image.Width, Height: l.Image.Height}},
 			Status: listings.StatusPublished, PublishedAt: published, ExpiresAt: published.AddDate(0, 0, PublicationDays), UpdatedAt: published,
 			OrganisationID: owner.OrganisationID, AgentUserID: owner.AgentUserID, SellerUserID: owner.SellerUserID,
+			// The sample listings count as reviewed by the sample administrator
+			// when they were published. Nothing but this seed sets a review.
+			ReviewedAt: &published, ReviewedBy: &reviewer,
 		}
 		for _, f := range l.Features {
 			r.Features = append(r.Features, Code(f))
@@ -123,6 +128,14 @@ func ProfileRecords(now time.Time) []directory.Record {
 			Since: p.Since, Status: directory.StatusActive, UpdatedAt: updated,
 			OrganisationID: s.Organisation.ID, AgentUserID: s.AgentUserID,
 		}
+		if p.Verified {
+			// The sample businesses were verified by the seed, not by a review.
+			r.VerifiedAt = &updated
+		}
+		if logo, ok := SampleLogos()[r.Kind+"/"+r.Slug]; ok {
+			stored := logo.Logo
+			r.Logo = &stored
+		}
 		if p.Category != "" {
 			r.TradeCode = Code(p.Category)
 		}
@@ -134,7 +147,10 @@ func ProfileRecords(now time.Time) []directory.Record {
 	return out
 }
 
-// SeedMemoryContent puts the sample listings and profiles into the in-memory stores.
+// SeedMemoryContent puts the sample listings and profiles into the in-memory
+// stores. The profiles name their sample logos; SeedLogoFiles writes the
+// images. The advertiser copied onto each listing here is a snapshot: give
+// the listing store app.MemoryAdvertisers so it is resolved on every read.
 func SeedMemoryContent(ls *listings.MemoryStore, ds *directory.MemoryStore, now time.Time) {
 	for _, r := range ListingRecords(now) {
 		ls.Put(r)

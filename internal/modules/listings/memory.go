@@ -19,6 +19,27 @@ type MemoryStore struct {
 	mu      sync.RWMutex
 	records []Record
 	labels  Labels
+	// advertisers resolves who advertises a record at the moment it is read,
+	// as the Postgres adapter does with its joins. nil keeps the advertiser
+	// stored on the record (unit tests).
+	advertisers func(Record) Advertiser
+}
+
+// SetAdvertisers makes the store resolve the advertiser of every record it
+// returns from the current state of the profiles and accounts, instead of
+// from the copy on the record: verification is never read from a snapshot.
+func (s *MemoryStore) SetAdvertisers(resolve func(Record) Advertiser) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.advertisers = resolve
+}
+
+// resolved returns the record with its current advertiser. Caller holds the lock.
+func (s *MemoryStore) resolved(r Record) Record {
+	if s.advertisers != nil {
+		r.Advertiser = s.advertisers(r)
+	}
+	return r
 }
 
 // NewMemoryStore returns an empty store. labels supplies the suburb, city and
@@ -43,11 +64,32 @@ func (s *MemoryStore) public(now time.Time) []Record {
 	defer s.mu.RUnlock()
 	var out []Record
 	for _, r := range s.records {
-		if r.Public(now) { // status AND expiry, always
+		// Status, expiry AND a verified advertiser, always.
+		if r = s.resolved(r); r.Public(now) {
 			out = append(out, r)
 		}
 	}
 	return out
+}
+
+// PublicCounts implements Store.
+func (s *MemoryStore) PublicCounts(_ context.Context, now time.Time) (PublicCounts, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var c PublicCounts
+	for _, r := range s.records {
+		r = s.resolved(r)
+		if r.Status == StatusPublished && r.ExpiresAt.After(now) && r.Advertiser.Verified {
+			c.VerifiedAdvertiser++
+		}
+		if r.Public(now) {
+			c.Public++
+			if r.ReviewedAt != nil {
+				c.Reviewed++
+			}
+		}
+	}
+	return c, nil
 }
 
 // PublishedByIDs implements Store.
@@ -68,7 +110,7 @@ func (s *MemoryStore) ByIDs(_ context.Context, ids []uuid.UUID) ([]Record, error
 	var out []Record
 	for _, r := range s.records {
 		if slices.Contains(ids, r.ID) {
-			out = append(out, r)
+			out = append(out, s.resolved(r))
 		}
 	}
 	return out, nil
@@ -87,7 +129,7 @@ func (s *MemoryStore) BySlug(_ context.Context, slug string) (Record, error) {
 	defer s.mu.RUnlock()
 	for _, r := range s.records {
 		if r.Slug == slug {
-			return r, nil
+			return s.resolved(r), nil
 		}
 	}
 	return Record{}, ErrNotFound
@@ -269,7 +311,7 @@ func (s *MemoryStore) Owned(_ context.Context, organisationIDs []uuid.UUID, sell
 	for _, r := range s.records {
 		if (r.OrganisationID != nil && slices.Contains(organisationIDs, *r.OrganisationID)) ||
 			(sellerUserID != nil && r.SellerUserID != nil && *r.SellerUserID == *sellerUserID) {
-			out = append(out, r)
+			out = append(out, s.resolved(r))
 		}
 	}
 	newestFirst(out)
@@ -293,7 +335,7 @@ func (s *MemoryStore) SetStayRules(_ context.Context, id uuid.UUID, minNights, m
 			s.records[i].MaxGuests = &n
 		}
 		s.records[i].UpdatedAt = now
-		return s.records[i], nil
+		return s.resolved(s.records[i]), nil
 	}
 	return Record{}, ErrNotFound
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"rightproperty365.com/backend/internal/modules/appointments"
+	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/markets"
@@ -25,7 +26,7 @@ import (
 // to their defined state (including the shared password). Rows it does not
 // own are never touched. Callers must have passed CheckEnvironment.
 //
-// It requires migrations 0001-0008. If a sample email already belongs to a
+// It requires every migration up to 0016. If a sample email already belongs to a
 // different user row the run fails and changes nothing.
 //
 // NOTE: compiled but NEVER run — there is no Postgres on the machine this was
@@ -180,10 +181,10 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 			                      organisation_id, agent_user_id, seller_user_id, published_at, expires_at, created_at, updated_at,
 			                      slug, reference, deal, category, property_type, price_period, city_code, suburb_code,
 			                      bedrooms, bathrooms, floor_area_m2, land_area_m2, summary, description, featured, private_seller_name,
-			                      max_guests, min_nights, city_name, region_name)
+			                      max_guests, min_nights, city_name, region_name, reviewed_at, reviewed_by)
 			VALUES ($1, (SELECT id FROM markets WHERE code = $2), $3, $4::text::listing_status, $5::text::numeric, $6, $7, $8, $9, $10, $11, $12, $12,
 			        $13, $14, $15, $16, $17, $18, NULLIF($19, ''), NULLIF($20, ''), $21, $22, $23, $24, $25, $26, $27, $28, $29, $30,
-			        NULLIF($31, ''), NULLIF($32, ''))
+			        NULLIF($31, ''), NULLIF($32, ''), $33, $34)
 			ON CONFLICT (id) DO UPDATE
 			SET market_id = EXCLUDED.market_id, title = EXCLUDED.title, status = EXCLUDED.status,
 			    price_amount = EXCLUDED.price_amount, currency_code = EXCLUDED.currency_code,
@@ -198,12 +199,13 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 			    summary = EXCLUDED.summary, description = EXCLUDED.description, featured = EXCLUDED.featured,
 			    private_seller_name = EXCLUDED.private_seller_name,
 			    max_guests = EXCLUDED.max_guests, min_nights = EXCLUDED.min_nights,
-			    city_name = EXCLUDED.city_name, region_name = EXCLUDED.region_name`,
+			    city_name = EXCLUDED.city_name, region_name = EXCLUDED.region_name,
+			    reviewed_at = EXCLUDED.reviewed_at, reviewed_by = EXCLUDED.reviewed_by`,
 			l.ID, l.MarketCode, l.Title, l.Status, l.Price.Amount, l.Price.Currency,
 			l.OrganisationID, l.AgentUserID, l.SellerUserID, l.PublishedAt, l.ExpiresAt, l.UpdatedAt,
 			l.Slug, l.Reference, l.Deal, l.Category, l.PropertyType, period, l.City, l.Suburb,
 			l.Bedrooms, l.Bathrooms, l.FloorArea, l.LandArea, l.Summary, l.Description, l.Featured, sellerName,
-			l.MaxGuests, l.MinNights, l.CityName, l.RegionName); err != nil {
+			l.MaxGuests, l.MinNights, l.CityName, l.RegionName, l.ReviewedAt, l.ReviewedBy); err != nil {
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 				return fmt.Errorf("seed listing %s: its slug or reference already belongs to a different listing in this database", l.Slug)
@@ -267,11 +269,22 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 		if services == nil {
 			services = []string{}
 		}
+		// The sample logo (needs migration 0016). Re-seeding resets it, like
+		// the rest of the sample profile: a logo uploaded to a SAMPLE profile
+		// in this database is replaced (its object is left behind).
+		logo := directory.Logo{}
+		var logoKey *string
+		var logoAt *time.Time
+		if p.Logo != nil {
+			logo, logoKey, logoAt = *p.Logo, &p.Logo.ObjectKey, &p.Logo.UpdatedAt
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO directory_profiles (id, market_id, kind, slug, name, organisation_id, agent_user_id, status, created_at, updated_at,
 			                                role_title, tagline, about, city_code, trade_code, verified, sponsored, since_year,
-			                                areas, services, offerings)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, 'ACTIVE', $8, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19::jsonb)
+			                                areas, services, offerings, verified_at,
+			                                logo_object_key, logo_content_type, logo_width, logo_height, logo_checksum, logo_size_bytes, logo_updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, 'ACTIVE', $8, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19::jsonb, $20,
+			        $21, NULLIF($22, ''), NULLIF($23, 0), NULLIF($24, 0), NULLIF($25, ''), NULLIF($26::bigint, 0), $27)
 			ON CONFLICT (id) DO UPDATE
 			SET market_id = EXCLUDED.market_id, kind = EXCLUDED.kind, slug = EXCLUDED.slug, name = EXCLUDED.name,
 			    organisation_id = EXCLUDED.organisation_id, agent_user_id = EXCLUDED.agent_user_id,
@@ -279,16 +292,26 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 			    role_title = EXCLUDED.role_title, tagline = EXCLUDED.tagline, about = EXCLUDED.about,
 			    city_code = EXCLUDED.city_code, trade_code = EXCLUDED.trade_code, verified = EXCLUDED.verified,
 			    sponsored = EXCLUDED.sponsored, since_year = EXCLUDED.since_year,
-			    areas = EXCLUDED.areas, services = EXCLUDED.services, offerings = EXCLUDED.offerings`,
+			    areas = EXCLUDED.areas, services = EXCLUDED.services, offerings = EXCLUDED.offerings,
+			    verified_at = COALESCE(directory_profiles.verified_at, EXCLUDED.verified_at),
+			    logo_object_key = EXCLUDED.logo_object_key, logo_content_type = EXCLUDED.logo_content_type,
+			    logo_width = EXCLUDED.logo_width, logo_height = EXCLUDED.logo_height, logo_checksum = EXCLUDED.logo_checksum,
+			    logo_size_bytes = EXCLUDED.logo_size_bytes, logo_updated_at = EXCLUDED.logo_updated_at`,
 			p.ID, orgMarket[p.OrganisationID], p.Kind, p.Slug, p.Name, p.OrganisationID, p.AgentUserID, p.UpdatedAt,
 			p.Role, p.Tagline, p.Description, p.CityCode, trade, p.Verified, p.Sponsored, p.Since,
-			areas, services, string(offerings)); err != nil {
+			areas, services, string(offerings), p.VerifiedAt,
+			logoKey, logo.ContentType, logo.Width, logo.Height, logo.Checksum, logo.Size, logoAt); err != nil {
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 				return fmt.Errorf("seed profile %s/%s: that kind and slug already belong to a different profile in this database", p.Kind, p.Slug)
 			}
 			return fmt.Errorf("seed profile %s/%s: %w", p.Kind, p.Slug, err)
 		}
+	}
+
+	// The images the sample profiles' logos point to.
+	if err := SeedLogoFiles(ctx, files); err != nil {
+		return err
 	}
 
 	// Sample appointments (needs migration 0011), replaced on every run.

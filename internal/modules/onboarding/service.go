@@ -19,6 +19,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/logging"
 	"rightproperty365.com/backend/internal/platform/storage"
@@ -740,8 +741,21 @@ func (s *Service) Upload(ctx context.Context, p *auth.Principal, role, typeCode,
 		return DocumentView{}, ErrFileTooLarge
 	}
 	contentType := http.DetectContentType(content)
-	if !slices.Contains(AllowedContentTypes(), contentType) {
+	if !slices.Contains(AllowedContentTypes(), contentType) && typeCode != DocumentLogo {
 		return DocumentView{}, ErrUnsupportedFile
+	}
+	if typeCode == DocumentLogo {
+		// The one document that becomes public: an image only, checked now
+		// with the rules of a profile logo (and again when it is promoted).
+		switch _, err := directory.CheckLogo(content); {
+		case errors.Is(err, directory.ErrLogoTooLarge):
+			return DocumentView{}, ErrLogoTooLarge
+		case errors.Is(err, directory.ErrLogoDimensions):
+			return DocumentView{}, &ValidationError{Fields: map[string]string{"file": fmt.Sprintf("must be between %[1]dx%[1]d and %[2]dx%[2]d pixels",
+				directory.MinLogoPixels, directory.MaxLogoPixels)}}
+		case err != nil:
+			return DocumentView{}, ErrUnsupportedLogo
+		}
 	}
 	replaces := slices.ContainsFunc(app.Documents, func(d Document) bool { return d.Type == typeCode })
 	if !replaces && len(app.Documents) >= MaxDocumentsPerApp {
@@ -1253,8 +1267,16 @@ func (s *Service) Approve(ctx context.Context, p *auth.Principal, id uuid.UUID, 
 			}
 		}
 	}
+	// The applicant's LOGO document becomes the profile's public logo: a copy
+	// under its own key, so the document itself stays a private document.
+	if plan.Profile != nil {
+		plan.Profile.Logo = s.promoteLogo(ctx, app, plan.At)
+	}
 	created, err := s.store.Approve(ctx, plan)
 	if err != nil {
+		if plan.Profile != nil && plan.Profile.Logo != nil {
+			s.remove(ctx, plan.Profile.Logo.ObjectKey)
+		}
 		return Approved{}, err
 	}
 	attrs := []slog.Attr{
@@ -1276,6 +1298,38 @@ func (s *Service) Approve(ctx context.Context, p *auth.Principal, id uuid.UUID, 
 		return Approved{}, err
 	}
 	return Approved{Application: view, Created: created}, nil
+}
+
+// promoteLogo copies the application's LOGO document, if it has one, to a new
+// object for the public profile and returns it; nil when there is none. The
+// image is checked again. A logo that cannot be promoted does not stop the
+// approval: the profile is created without one (its owner can upload a logo
+// afterwards) and the reason is logged.
+func (s *Service) promoteLogo(ctx context.Context, app Application, now time.Time) *directory.Logo {
+	for _, d := range app.Documents {
+		if d.Type != DocumentLogo {
+			continue
+		}
+		logo, err := func() (directory.Logo, error) {
+			rc, err := s.files.Open(ctx, d.ObjectKey)
+			if err != nil {
+				return directory.Logo{}, err
+			}
+			defer rc.Close()
+			content, err := io.ReadAll(io.LimitReader(rc, directory.MaxLogoBytes+1))
+			if err != nil {
+				return directory.Logo{}, err
+			}
+			return directory.StoreLogo(ctx, s.files, content, now)
+		}()
+		if err != nil {
+			s.logger.ErrorContext(ctx, "onboarding logo could not be promoted; the profile is created without a logo",
+				slog.String("application_id", app.ID.String()), slog.String("error", err.Error()))
+			return nil
+		}
+		return &logo
+	}
+	return nil
 }
 
 // NotificationInfo is what an applicant email needs. It deliberately has no

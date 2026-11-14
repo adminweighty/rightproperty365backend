@@ -378,13 +378,13 @@ func TestOnboardingRequirements(t *testing.T) {
 	want := map[string]string{
 		"PRIVATE_SELLER":   "NONE - - | contact_phone=true | PROOF_OF_IDENTITY=true,PROOF_OF_OWNERSHIP=true",
 		"LANDLORD":         "NONE - - | contact_phone=true | PROOF_OF_IDENTITY=true,PROOF_OF_OWNERSHIP=true",
-		"PROPERTY_MANAGER": "ORGANISATION PROPERTY_MANAGER property-managers | " + orgFields + "registration_number=false,contact_phone=true | PROOF_OF_IDENTITY=true,BUSINESS_REGISTRATION=true,PROOF_OF_ADDRESS=true,TAX_CLEARANCE=false",
-		"SOLICITOR":        "ORGANISATION LAW_FIRM solicitors | " + orgFields + "registration_number=false,contact_phone=true | PROOF_OF_IDENTITY=true,BUSINESS_REGISTRATION=true,PROOF_OF_ADDRESS=true,TAX_CLEARANCE=false,PRACTISING_CERTIFICATE=true",
-		"SALES_AGENT":      "AGENCY_MEMBER - agents | agency_slug=true,job_title=false,bio=false,areas=false,contact_phone=true | PROOF_OF_IDENTITY=true,ESTATE_AGENTS_COUNCIL_CERTIFICATE=true",
-		"LETTINGS_AGENT":   "AGENCY_MEMBER - agents | agency_slug=true,job_title=false,bio=false,areas=false,contact_phone=true | PROOF_OF_IDENTITY=true,ESTATE_AGENTS_COUNCIL_CERTIFICATE=true",
-		"SERVICE_PROVIDER": "ORGANISATION SERVICE_PROVIDER service-providers | " + orgFields + "trade=true,registration_number=false,contact_phone=true | PROOF_OF_IDENTITY=true,BUSINESS_REGISTRATION=true,PROOF_OF_ADDRESS=true,TAX_CLEARANCE=false,TRADE_LICENCE=false",
-		"AGENCY_OWNER":     "ORGANISATION AGENCY agencies | " + orgFields + "registration_number=false,contact_phone=true | PROOF_OF_IDENTITY=true,BUSINESS_REGISTRATION=true,PROOF_OF_ADDRESS=true,TAX_CLEARANCE=false,ESTATE_AGENTS_COUNCIL_CERTIFICATE=true",
-		"AGENT":            "AGENCY_MEMBER - agents | agency_slug=true,job_title=false,bio=false,areas=false,contact_phone=true | PROOF_OF_IDENTITY=true,ESTATE_AGENTS_COUNCIL_CERTIFICATE=true",
+		"PROPERTY_MANAGER": "ORGANISATION PROPERTY_MANAGER property-managers | " + orgFields + "registration_number=false,contact_phone=true | PROOF_OF_IDENTITY=true,BUSINESS_REGISTRATION=true,PROOF_OF_ADDRESS=true,TAX_CLEARANCE=false,LOGO=false",
+		"SOLICITOR":        "ORGANISATION LAW_FIRM solicitors | " + orgFields + "registration_number=false,contact_phone=true | PROOF_OF_IDENTITY=true,BUSINESS_REGISTRATION=true,PROOF_OF_ADDRESS=true,TAX_CLEARANCE=false,PRACTISING_CERTIFICATE=true,LOGO=false",
+		"SALES_AGENT":      "AGENCY_MEMBER - agents | agency_slug=true,job_title=false,bio=false,areas=false,contact_phone=true | PROOF_OF_IDENTITY=true,ESTATE_AGENTS_COUNCIL_CERTIFICATE=true,LOGO=false",
+		"LETTINGS_AGENT":   "AGENCY_MEMBER - agents | agency_slug=true,job_title=false,bio=false,areas=false,contact_phone=true | PROOF_OF_IDENTITY=true,ESTATE_AGENTS_COUNCIL_CERTIFICATE=true,LOGO=false",
+		"SERVICE_PROVIDER": "ORGANISATION SERVICE_PROVIDER service-providers | " + orgFields + "trade=true,registration_number=false,contact_phone=true | PROOF_OF_IDENTITY=true,BUSINESS_REGISTRATION=true,PROOF_OF_ADDRESS=true,TAX_CLEARANCE=false,TRADE_LICENCE=false,LOGO=false",
+		"AGENCY_OWNER":     "ORGANISATION AGENCY agencies | " + orgFields + "registration_number=false,contact_phone=true | PROOF_OF_IDENTITY=true,BUSINESS_REGISTRATION=true,PROOF_OF_ADDRESS=true,TAX_CLEARANCE=false,ESTATE_AGENTS_COUNCIL_CERTIFICATE=true,LOGO=false",
+		"AGENT":            "AGENCY_MEMBER - agents | agency_slug=true,job_title=false,bio=false,areas=false,contact_phone=true | PROOF_OF_IDENTITY=true,ESTATE_AGENTS_COUNCIL_CERTIFICATE=true,LOGO=false",
 		"AGENCY_STAFF":     "AGENCY_MEMBER - - | agency_slug=true,job_title=false,areas=false,contact_phone=true | PROOF_OF_IDENTITY=true,PROOF_OF_EMPLOYMENT=true",
 		"AGENCY_ADMIN":     "AGENCY_MEMBER - - | agency_slug=true,job_title=false,areas=false,contact_phone=true | PROOF_OF_IDENTITY=true,PROOF_OF_EMPLOYMENT=true",
 	}
@@ -406,12 +406,16 @@ func TestOnboardingRequirements(t *testing.T) {
 
 // The migration seeds the same outcome and requirement rows as the memory store.
 func TestOnboardingMigrationSeedsTheBaseline(t *testing.T) {
-	// 0010 upserts every outcome row and resets the requirement rows.
-	raw, err := os.ReadFile(filepath.Join("..", "..", "migrations", "0010_real_estate_roles.up.sql"))
-	if err != nil {
-		t.Fatal(err)
+	// 0010 upserts every outcome row and resets the requirement rows; 0016
+	// adds the optional LOGO document to the roles that get a public profile.
+	sql := ""
+	for _, name := range []string{"0010_real_estate_roles.up.sql", "0016_logos_and_trust.up.sql"} {
+		raw, err := os.ReadFile(filepath.Join("..", "..", "migrations", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sql += string(raw)
 	}
-	sql := string(raw)
 	q := func(s string) string {
 		if s == "" {
 			return "NULL"
@@ -425,9 +429,9 @@ func TestOnboardingMigrationSeedsTheBaseline(t *testing.T) {
 		}
 	}
 	for _, r := range onboarding.DefaultRequirements() {
-		want := fmt.Sprintf("VALUES ('%s', '%s', %v);", r.Role, r.Document, r.Required)
+		want := fmt.Sprintf("VALUES ('%s', '%s', %v)", r.Role, r.Document, r.Required)
 		if !strings.Contains(sql, want) {
-			t.Fatalf("migration 0010 lacks the requirement row %s", want)
+			t.Fatalf("migrations 0010 and 0016 lack the requirement row %s", want)
 		}
 	}
 	if got, want := strings.Count(sql, "INSERT INTO onboarding_role_outcomes"), len(onboarding.DefaultOutcomes()); got != want {
@@ -1061,7 +1065,7 @@ func TestOnboardingAdminAccess(t *testing.T) {
 			provided++
 		}
 	}
-	if provided != 3 || len(d.Requirements.Documents) != 5 {
+	if provided != 3 || len(d.Requirements.Documents) != 6 {
 		t.Fatalf("checklist = %+v", d.Requirements.Documents)
 	}
 	for _, private := range []string{"object_key", "sha256", "onboarding/devseed"} {

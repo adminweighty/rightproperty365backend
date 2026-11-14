@@ -53,4 +53,8 @@ type Store interface {
 	TouchSession(ctx context.Context, id uuid.UUID, now time.Time) error
 	// RevokeSession revokes one session (idempotent).
 	RevokeSession(ctx context.Context, id uuid.UUID, now time.Time) error
+
+	// ApprovedDirectOwners returns the number of ACTIVE accounts whose
+	// PRIVATE_SELLER or LANDLORD role is approved (GET /v1/trust/summary).
+	ApprovedDirectOwners(ctx context.Context) (int, error)
 }

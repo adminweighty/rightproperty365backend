@@ -24,6 +24,7 @@ import (
 
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/platform/httpx"
+	"rightproperty365.com/backend/internal/platform/storage"
 )
 
 // Reference sets used by profiles.
@@ -97,11 +98,13 @@ type Profile struct {
 	Offerings []Offering        `json:"offerings"`
 	Trade     *listings.Coded   `json:"trade"`
 	// Specialism is set for an agent who specialises in sales or lettings.
-	Specialism   *listings.Coded      `json:"specialism"`
-	Verified     bool                 `json:"verified"`
-	Sponsored    bool                 `json:"sponsored"`
-	Since        *int                 `json:"since"`
-	Logo         *listings.Photo      `json:"logo"`
+	Specialism *listings.Coded `json:"specialism"`
+	Verified   bool            `json:"verified"`
+	Sponsored  bool            `json:"sponsored"`
+	Since      *int            `json:"since"`
+	// Logo is the profile's logo (an agent's photo); null when it has none.
+	// Its url is a path relative to the API origin.
+	Logo         *listings.Logo       `json:"logo"`
 	Agency       *listings.ProfileRef `json:"agency"`
 	ListingCount int                  `json:"listing_count"`
 	UpdatedAt    time.Time            `json:"updated_at"`
@@ -139,10 +142,15 @@ type Record struct {
 	// Specialism is "SALES", "LETTINGS" or "" (agent profiles only).
 	Specialism string
 	Verified   bool
+	// VerifiedAt is when the profile was verified (nil when it is not, or
+	// when that time was never recorded).
+	VerifiedAt *time.Time
 	Sponsored  bool
 	Since      *int
 	Status     string
 	UpdatedAt  time.Time
+	// Logo is the profile's logo; nil when it has none.
+	Logo *Logo
 
 	OrganisationID uuid.UUID
 	// AgentUserID is set for agent profiles.
@@ -189,6 +197,22 @@ type Store interface {
 	Counts(ctx context.Context) (map[string]int, error)
 	// Entries returns every profile's address and updated_at (sitemap).
 	Entries(ctx context.Context) ([]Entry, error)
+	// VerifiedOrganisations returns the number of organisations with a public
+	// profile of their own (never an agent's).
+	VerifiedOrganisations(ctx context.Context) (int, error)
+
+	// The three methods below are for a profile's OWN managers and return
+	// profiles WHATEVER THEIR STATUS. They never answer a public request.
+
+	// Find returns one profile or ErrProfileNotFound.
+	Find(ctx context.Context, kind, slug string) (Record, error)
+	// Managed returns the business profiles of the organisations and the
+	// agent profile of the user.
+	Managed(ctx context.Context, organisationIDs []uuid.UUID, agentUserID uuid.UUID) ([]Record, error)
+	// SetLogo replaces the logo of a profile (nil removes it), sets its
+	// updated_at, and returns the object key of the logo it replaced ("" when
+	// there was none). ErrProfileNotFound when the profile does not exist.
+	SetLogo(ctx context.Context, id uuid.UUID, logo *Logo, now time.Time) (previousKey string, err error)
 }
 
 // Reference supplies the directory kinds and reference labels.
@@ -210,6 +234,10 @@ type Service struct {
 	listings ListingSource
 	// places supplies the location hierarchy; nil means none.
 	places listings.Places
+	// files is the object storage logos are kept in; nil means none.
+	files  storage.Storage
+	logger *slog.Logger
+	now    func() time.Time
 }
 
 // SetPlaces gives the Service the location hierarchy behind the country and
@@ -301,8 +329,15 @@ func (s *Service) Kinds(ctx context.Context) ([]KindCount, error) {
 	return out, nil
 }
 
-func ref(r Record) listings.ProfileRef {
-	return listings.ProfileRef{Kind: r.Kind, Slug: r.Slug, Name: r.Name, Verified: r.Verified}
+// RefOf is the public reference to a profile. Verified means the profile is
+// PUBLIC (published and verified); only a public profile has a logo here,
+// because only a public profile's logo is served.
+func RefOf(r Record) listings.ProfileRef {
+	out := listings.ProfileRef{Kind: r.Kind, Slug: r.Slug, Name: r.Name, Verified: r.Verified && r.Status == StatusActive, Specialism: r.Specialism}
+	if out.Verified {
+		out.Logo = publicLogo(r)
+	}
+	return out
 }
 
 // owner returns the listing owner a profile stands for: an agency's
@@ -322,7 +357,7 @@ func (s *Service) present(ctx context.Context, r Record, cities, trades map[stri
 		Kind: r.Kind, Slug: r.Slug, Name: r.Name, Role: r.Role, Tagline: r.Tagline, Description: r.Description,
 		City:  listings.PlaceOf(cities, r.CityCode, r.CityName),
 		Areas: append([]string{}, r.Areas...), Services: append([]string{}, r.Services...), Offerings: append([]Offering{}, r.Offerings...),
-		Verified: r.Verified, Sponsored: r.Sponsored, Since: r.Since, UpdatedAt: r.UpdatedAt.UTC(),
+		Verified: r.Verified, Sponsored: r.Sponsored, Since: r.Since, UpdatedAt: r.UpdatedAt.UTC(), Logo: publicLogo(r),
 	}
 	if r.TradeCode != "" {
 		p.Trade = &listings.Coded{Code: r.TradeCode, Label: labelOr(trades, r.TradeCode)}
@@ -336,7 +371,7 @@ func (s *Service) present(ctx context.Context, r Record, cities, trades map[stri
 			return Profile{}, nil, err
 		}
 		if agency != nil {
-			a := ref(*agency)
+			a := RefOf(*agency)
 			p.Agency = &a
 		}
 	}
@@ -489,7 +524,7 @@ func (s *Service) Get(ctx context.Context, kindCode, slug string) (Detail, error
 			return Detail{}, err
 		}
 		for _, a := range agents {
-			d.Agents = append(d.Agents, ref(a))
+			d.Agents = append(d.Agents, RefOf(a))
 		}
 	}
 	return d, nil
@@ -531,7 +566,8 @@ func (s *Service) Sitemap(ctx context.Context) (Sitemap, error) {
 var slugRe = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
 // Handler serves GET /v1/directory, /v1/directory/{kind},
-// /v1/directory/{kind}/{slug} and /v1/sitemap.
+// /v1/directory/{kind}/{slug}, its logo, /v1/sitemap and the profile
+// managers' routes under /v1/me/profiles (logo_handler.go).
 type Handler struct {
 	svc    *Service
 	logger *slog.Logger
@@ -544,6 +580,7 @@ func NewHandler(svc *Service, logger *slog.Logger) *Handler {
 
 func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 	var verr *ValidationError
+	var tooLarge *http.MaxBytesError
 	switch {
 	case errors.As(err, &verr):
 		httpx.WriteError(w, r, http.StatusBadRequest, httpx.CodeValidationFailed, "Some fields need your attention.", verr.Fields)
@@ -551,6 +588,14 @@ func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 		httpx.WriteError(w, r, http.StatusNotFound, CodeKindNotFound, "This directory does not exist.", nil)
 	case errors.Is(err, ErrProfileNotFound):
 		httpx.WriteError(w, r, http.StatusNotFound, CodeProfileNotFound, "This profile does not exist.", nil)
+	case errors.Is(err, ErrLogoNotFound):
+		httpx.WriteError(w, r, http.StatusNotFound, CodeLogoNotFound, "This profile has no logo.", nil)
+	case errors.Is(err, ErrForbidden):
+		httpx.WriteError(w, r, http.StatusForbidden, httpx.CodeForbidden, "You do not have permission to do this.", nil)
+	case errors.Is(err, ErrLogoTooLarge), errors.As(err, &tooLarge):
+		httpx.WriteError(w, r, http.StatusRequestEntityTooLarge, CodeLogoTooLarge, "A logo must be at most 2 MB.", nil)
+	case errors.Is(err, ErrLogoUnsupported):
+		httpx.WriteError(w, r, http.StatusUnsupportedMediaType, CodeLogoUnsupported, "A logo must be a PNG or JPEG image.", nil)
 	default:
 		httpx.WriteInternalError(w, r, h.logger, err)
 	}

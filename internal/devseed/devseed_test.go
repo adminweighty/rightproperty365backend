@@ -373,3 +373,63 @@ func TestSeedMemoryProfiles(t *testing.T) {
 		}
 	}
 }
+
+// The sample logos are drawn here, from a font written for this purpose.
+func TestSampleLogosAreDrawn(t *testing.T) {
+	if len(glyphs) != 26 {
+		t.Fatalf("%d glyphs", len(glyphs))
+	}
+	for letter, rows := range glyphs {
+		ink := 0
+		for _, row := range rows {
+			if len(row) != 5 || strings.Trim(row, "#.") != "" {
+				t.Fatalf("glyph %c has the row %q", letter, row)
+			}
+			ink += strings.Count(row, "#")
+		}
+		if ink < 9 {
+			t.Fatalf("glyph %c is almost empty", letter)
+		}
+	}
+	logos := SampleLogos()
+	businesses := 0
+	for _, p := range Profiles() {
+		logo, has := logos[p.Key()]
+		switch {
+		case p.AgentUserID != nil:
+			if has {
+				t.Fatalf("sample agent %s has a photo", p.Key())
+			}
+		case p.Key() == NoLogoProfile:
+			if has {
+				t.Fatalf("%s must have no logo", NoLogoProfile)
+			}
+		default:
+			businesses++
+			if !has || logo.Logo.ContentType != "image/png" || logo.Logo.Width != SampleLogoSize || logo.Logo.Size != int64(len(logo.Content)) ||
+				len(logo.Logo.Checksum) != 64 || !strings.HasPrefix(logo.Logo.ObjectKey, "logos/sample") || len(Initials(p.Name)) != 2 {
+				t.Fatalf("%s: %+v", p.Key(), logo.Logo)
+			}
+		}
+	}
+	if businesses != len(logos) {
+		t.Fatalf("%d logos for %d businesses", len(logos), businesses)
+	}
+	// Deterministic: the same business, the same bytes, on every start.
+	if string(DrawLogo("SE", logoColours[1], 0)) != string(DrawLogo("SE", logoColours[1], 0)) ||
+		string(DrawLogo("SE", logoColours[1], 0)) == string(DrawLogo("SE", logoColours[1], 1)) {
+		t.Fatal("DrawLogo is not deterministic, or ignores the variant")
+	}
+	// Every sample profile record carries its logo and, when verified, a time.
+	for _, r := range ProfileRecords(time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)) {
+		_, has := logos[r.Kind+"/"+r.Slug]
+		if (r.Logo != nil) != has || (r.Verified && r.VerifiedAt == nil) {
+			t.Fatalf("%s/%s: logo %v, verified at %v", r.Kind, r.Slug, r.Logo != nil, r.VerifiedAt)
+		}
+	}
+	for _, r := range ListingRecords(time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)) {
+		if (r.ReviewedAt != nil) != (r.Status == "PUBLISHED") || (r.ReviewedAt != nil) != (r.ReviewedBy != nil) {
+			t.Fatalf("listing %s: reviewed at %v", r.Slug, r.ReviewedAt)
+		}
+	}
+}

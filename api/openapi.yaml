@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.16.0
+  version: 0.17.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -24,6 +24,43 @@ info:
     - The public catalogue (`/v1/listings`, `/v1/directory`, `/v1/sitemap`, `/v1/reference`)
       never returns a phone number, an email address or a street address for anyone. A test
       walks every public response to enforce it.
+
+    Verified advertisers, logos and who advertises a listing (new in 0.17.0)
+    - **Only listings of a verified advertiser are public.** A listing is returned by any public
+      endpoint only while it is PUBLISHED, not expired, **and** its advertiser is verified: the
+      organisation that owns it is active and has a published, verified profile of its own, or -
+      for a direct owner - the owner's `PRIVATE_SELLER` or `LANDLORD` role is approved (`ACTIVE`).
+      The rule is applied when the listing is read (search with every search engine, the detail,
+      suggestions, the sitemap, profile pages, the country counts, availability), so it takes
+      effect the moment the verification changes. A listing hidden for this reason answers
+      `404 LISTING_NOT_FOUND` everywhere - never `410` - and takes no property request,
+      appointment or request to stay (`404 LISTING_NOT_FOUND`). An assigned agent's own
+      verification does not hide a listing; the agent is then simply not shown as verified.
+      `GET /v1/trust/summary` gives the numbers.
+    - **What "verified" does and does not mean.** It means the ADVERTISER was verified. It does
+      not mean the listing itself was checked: `Listing.verification.listing_reviewed` says
+      whether it was, and today only the sample data sets it (there are no endpoints to submit,
+      review or publish a listing yet).
+    - **Changed response shapes** (additive unless marked):
+      - `Listing.advertiser` gains `display` and `agent_display`; `Listing` gains `verification`.
+      - `ProfileRef` (in `Listing.advertiser.agency` / `.agent`, `DirectoryProfile.agency`,
+        `DirectoryProfileDetail.agents`) gains `logo`.
+      - **Changed:** `DirectoryProfile.logo` was always null and documented as a `Photo`
+        (`url`, `alt`, `width`, `height`); it is now a `Logo` (`url`, `width`, `height`) or null.
+      - **Changed value:** for a direct owner, `Listing.advertiser.name` used to be the fixed
+        text `Private seller`; it is now the owner's name (for example `Grace Mhlanga`), the same
+        as `advertiser.display.name`. Only the name is public: never an email address, a phone
+        number or an address.
+      - **Changed status:** `GET /v1/listings/{slug}` and the routes that take a `listing_id`
+        answer `404` for a listing whose advertiser is not verified.
+    - **Logo URLs are relative to the API.** `Logo.url` is a path such as
+      `/v1/directory/agencies/sample-estates/logo?v=3f2a9c0d1b7e`. It is relative to the **API
+      origin**, not to the web site: prefix it with the API base URL the client already uses
+      (the same value it puts in front of `/v1/listings`). The API does not return an absolute
+      URL because it does not know the public address it is reached at behind a proxy, and
+      because the same cached JSON must be right for every client. The `v` value changes
+      whenever the image changes, so the image can be cached and a new logo is never stale.
+      Logos are served as uploaded: they are not resized, cropped or re-encoded.
 
     Countries and places (changed in 0.15.0)
     - The platform is global: every ISO 3166-1 country can be used (`GET /v1/countries`). Public
@@ -76,6 +113,11 @@ tags:
   - name: reference
   - name: listings
   - name: directory
+  - name: trust
+    description: |
+      The numbers behind the statement that every listing comes from a verified advertiser.
+      The statement itself is enforced where listings are read (see "Verified advertisers" in
+      the introduction); this endpoint only counts.
   - name: availability
     description: |
       The availability calendar of short-stay listings (category `short-stay`). Whoever lists
@@ -542,9 +584,11 @@ paths:
       operationId: searchListings
       summary: Search listings
       description: |
-        Public search over listings. **Only listings that are PUBLISHED and not yet expired are
-        ever returned** (status and `expires_at > now` are enforced in the query, and every
-        search hit is re-read from the database before it is returned).
+        Public search over listings. **Only listings that are PUBLISHED, not yet expired and
+        advertised by a verified advertiser are ever returned** (status, `expires_at > now` and
+        the advertiser's verification are enforced in the query, and every search hit is
+        re-read from the database before it is returned, so a search index that is behind
+        cannot bring back a listing whose advertiser is no longer verified).
 
         Every filter is optional and filters combine with AND. Code filters take codes from the
         reference data; a code that is unknown or inactive is `400 VALIDATION_FAILED` on that
@@ -888,12 +932,15 @@ paths:
       operationId: getListing
       summary: One listing
       description: |
-        The listing, if it is PUBLISHED and not expired.
+        The listing, if it is PUBLISHED, not expired and advertised by a verified advertiser.
 
         - `410 LISTING_UNAVAILABLE`: the listing was public once and no longer is (expired, sold,
           let, paused or closed). The page can say "This listing is no longer available".
         - `404 LISTING_NOT_FOUND`: no such slug, **or** a listing that has never been public
-          (draft, pending review). Drafts are deliberately indistinguishable from unknown slugs.
+          (draft, pending review), **or** (new in 0.17.0) a listing whose advertiser is not
+          verified right now, whatever its status. Drafts and listings of unverified advertisers
+          are deliberately indistinguishable from unknown slugs: `410` would reveal that an
+          advertiser lost its verification.
       parameters:
         - name: slug
           in: path
@@ -1490,6 +1537,309 @@ paths:
         "504":
           $ref: "#/components/responses/Timeout"
 
+  /v1/directory/{kind}/{slug}/logo:
+    get:
+      tags: [directory]
+      operationId: getDirectoryProfileLogo
+      summary: A profile's logo (the image itself)
+      description: |
+        New in 0.17.0. The logo of a **public** profile (an agent's photo), streamed as it was
+        uploaded: a PNG or a JPEG of at most 2 MB, between 128x128 and 4096x4096 pixels. It is
+        not resized, cropped or re-encoded.
+
+        No authentication, no cookie is read or set, and the response is the same for everyone.
+        Use the `url` of a `Logo` object (prefixed with the API base URL) rather than building
+        this path: it carries `?v=<version>`, which changes when the logo changes. The query
+        string is only a cache key; the route always serves the current logo.
+
+        - `Cache-Control: public, max-age=300, stale-while-revalidate=86400`.
+        - `ETag` is the image's checksum; `If-None-Match` answers `304`.
+        - `X-Content-Type-Options: nosniff`, `Cross-Origin-Resource-Policy: cross-origin` (other
+          origins may show it in an `<img>`).
+        - `404 LOGO_NOT_FOUND` when the profile has no logo; `404 PROFILE_NOT_FOUND` when the
+          profile is not public (unknown, unverified or suspended) - its logo then stops being
+          served even though it is still stored.
+      security: []
+      parameters:
+        - name: kind
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/DirectoryKind"
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[a-z0-9]+(-[a-z0-9]+)*$", maxLength: 80 }
+          example: sample-estates
+        - name: v
+          in: query
+          required: false
+          description: Version of the image (the first 12 characters of its checksum). A cache key only; ignored by the server.
+          schema: { type: string }
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: The image.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            ETag:
+              description: The SHA-256 of the image, quoted.
+              schema: { type: string }
+            Cache-Control:
+              description: "`public, max-age=300, stale-while-revalidate=86400`."
+              schema: { type: string }
+            X-Content-Type-Options:
+              description: "`nosniff`."
+              schema: { type: string }
+          content:
+            image/png:
+              schema: { type: string, format: binary }
+            image/jpeg:
+              schema: { type: string, format: binary }
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "404":
+          description: "`DIRECTORY_KIND_NOT_FOUND`, `PROFILE_NOT_FOUND` (no such profile, or it is not public) or `LOGO_NOT_FOUND` (the profile has no logo)."
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/me/profiles:
+    get:
+      tags: [directory]
+      operationId: listMyProfiles
+      summary: The directory profiles the caller may manage
+      description: |
+        New in 0.17.0. The profiles whose public presentation (today: the logo) the caller may
+        change, so a client knows what to offer:
+
+        - the business profiles (an agency's, a law firm's, a property manager's, a
+          developer's, a host's, a service provider's) of the organisations in which the caller
+          is `OWNER` or `MANAGER`;
+        - the caller's own agent profile.
+
+        Profiles are returned whatever their status: `verified` is false for one that is not
+        public (yet, or any more). An empty list for a caller who manages none. Sorted by kind,
+        then name. `Cache-Control: private, no-store`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The profiles.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [profiles]
+                additionalProperties: false
+                properties:
+                  profiles:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ManagedProfile"
+              example:
+                profiles:
+                  - kind: agencies
+                    slug: sample-estates
+                    name: Sample Estates
+                    verified: true
+                    logo: { url: "/v1/directory/agencies/sample-estates/logo?v=3f2a9c0d1b7e", width: 256, height: 256 }
+                  - { kind: agents, slug: rudo-moyo, name: Rudo Moyo, verified: true, logo: null }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/me/profiles/{kind}/{slug}/logo:
+    parameters:
+      - name: kind
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/DirectoryKind"
+      - name: slug
+        in: path
+        required: true
+        schema: { type: string, pattern: "^[a-z0-9]+(-[a-z0-9]+)*$", maxLength: 80 }
+        example: sample-estates
+    put:
+      tags: [directory]
+      operationId: putMyProfileLogo
+      summary: Set or replace a profile's logo (multipart upload)
+      description: |
+        New in 0.17.0. `multipart/form-data` with one field, `file`. The image replaces the
+        profile's logo at once and is **public**: it is shown on the profile and on the
+        listings.
+
+        Who may: an `OWNER` or `MANAGER` of the organisation that owns a business profile; for
+        an agent profile, the agent themselves (not the agency's owner). `404
+        PROFILE_NOT_FOUND` for a profile of an organisation the caller does not belong to (its
+        existence is not confirmed); `403 FORBIDDEN` for a member of the organisation whose
+        role may not (an `AGENT` cannot change the agency's logo).
+
+        The image:
+        - **PNG or JPEG only**, decided by **inspecting the content** (the part's
+          `Content-Type` and the file name are ignored). SVG is refused because it can carry
+          scripts; GIF, WebP and animated PNG are refused.
+        - at most **2 MB**;
+        - between **128x128** and **4096x4096** pixels (each side).
+
+        It is stored and served as uploaded: no resizing, cropping or re-encoding, and no
+        moderation before it is shown. Rate limited per IP together with the other uploads:
+        bursts of 20, 20 per minute. A cookie session needs the web app's `Origin` (CSRF).
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        "200":
+          description: The profile with its new logo. `logo.url` has a new `v`.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [profile]
+                additionalProperties: false
+                properties:
+                  profile:
+                    $ref: "#/components/schemas/ManagedProfile"
+        "400":
+          description: "`VALIDATION_FAILED` with `fields.file`: missing, empty, not a multipart upload, or an image smaller than 128x128 or larger than 4096x4096 pixels."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: "`FORBIDDEN` (a member of the organisation whose role may not change this profile) or `CSRF_ORIGIN` (cookie session without the web app's `Origin`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404":
+          description: "`PROFILE_NOT_FOUND`: no such profile, or one of an organisation the caller does not belong to."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "413":
+          description: "`FILE_TOO_LARGE`: the image is larger than 2 MB."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "415":
+          description: "`UNSUPPORTED_FILE_TYPE`: the content is not a still PNG or JPEG image."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+    delete:
+      tags: [directory]
+      operationId: deleteMyProfileLogo
+      summary: Remove a profile's logo
+      description: |
+        New in 0.17.0. Removes the logo: the profile and its listings then say `logo: null` and
+        `GET /v1/directory/{kind}/{slug}/logo` answers `404 LOGO_NOT_FOUND`. Removing a logo
+        that is not there is still `204`. Same authorisation, rate limit and CSRF rule as `PUT`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "204":
+          description: Removed (or there was none).
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: "`FORBIDDEN` or `CSRF_ORIGIN`, as for `PUT`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404":
+          description: "`PROFILE_NOT_FOUND`, as for `PUT`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/trust/summary:
+    get:
+      tags: [trust]
+      operationId: getTrustSummary
+      summary: How many advertisers are verified and how many listings are public
+      description: |
+        New in 0.17.0. Real numbers for a statement such as "every listing is from a verified
+        advertiser". Public and cacheable (`public, max-age=60, stale-while-revalidate=300`).
+
+        `listings_from_verified_advertisers` is counted on its own (PUBLISHED, unexpired
+        listings whose advertiser is verified) and **equals `public_listings`**: a listing of
+        an unverified advertiser is never public. `listings_reviewed` is how many of the
+        public listings were themselves reviewed by a platform administrator or moderator;
+        until a review workflow exists only the sample data is marked, so do not present it as
+        "all listings are checked".
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: The numbers.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/Cache-Control"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrustSummary"
+              example:
+                verified_advertisers: { organisations: 27, direct_owners: 1 }
+                public_listings: 24
+                listings_from_verified_advertisers: 24
+                listings_reviewed: 24
+                generated_at: "2026-11-14T09:00:00Z"
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
   /v1/sitemap:
     get:
       tags: [directory]
@@ -1497,7 +1847,8 @@ paths:
       summary: Everything a sitemap needs
       description: |
         The slug and `updated_at` of every public listing (newest first) and the kind, slug and
-        `updated_at` of every public profile. Not paginated.
+        `updated_at` of every public profile. Not paginated. A listing whose advertiser is not
+        verified is not public and is not listed.
       parameters:
         - $ref: "#/components/parameters/IfNoneMatch"
       responses:
@@ -1662,7 +2013,7 @@ paths:
         "403":
           $ref: "#/components/responses/CsrfOrigin"
         "404":
-          description: The listing does not exist (`LISTING_NOT_FOUND`).
+          description: "The listing does not exist (`LISTING_NOT_FOUND`) - or, since 0.17.0, its advertiser is not verified right now, so it is not public and takes no request."
           headers:
             X-Request-Id:
               $ref: "#/components/headers/X-Request-Id"
@@ -2653,6 +3004,16 @@ paths:
           most 100 characters).
         - Rate limited per IP: bursts of 20, 20 per minute.
 
+        **The `LOGO` document is different (new in 0.17.0).** It is optional, offered to every
+        role whose approval creates a public profile (see `GET /v1/onboarding/requirements`),
+        and it is the **one upload that becomes public**: when the application is approved it
+        becomes the logo of the profile (for an agent, their photo) and is shown on the profile
+        and on the listings. Tell the applicant before they choose a file. The other documents
+        stay private. Its rules are a logo's, not a document's: **PNG or JPEG only** (no PDF, no
+        SVG, no GIF, no WebP, no animated PNG), at most **2 MB**, between **128x128** and
+        **4096x4096** pixels. The owner can replace or remove it after approval with
+        `PUT` / `DELETE /v1/me/profiles/{kind}/{slug}/logo`.
+
         There is no presigned upload and no malware scan yet (see the README).
       security:
         - cookieSession: []
@@ -2689,7 +3050,7 @@ paths:
                 properties:
                   document: { $ref: "#/components/schemas/OnboardingDocument" }
         "400":
-          description: "`VALIDATION_FAILED` with `fields.type` (missing, unknown, or not for this role) and/or `fields.file` (missing, empty, or not a multipart upload)."
+          description: "`VALIDATION_FAILED` with `fields.type` (missing, unknown, or not for this role) and/or `fields.file` (missing, empty, not a multipart upload, or - for `LOGO` - an image smaller than 128x128 or larger than 4096x4096 pixels)."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
@@ -2699,12 +3060,12 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
         "413":
-          description: "`FILE_TOO_LARGE`: the file is larger than 10 MB."
+          description: "`FILE_TOO_LARGE`: the file is larger than 10 MB (2 MB for `LOGO`)."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
         "415":
-          description: "`UNSUPPORTED_FILE_TYPE`: the content is not a PDF, a JPEG or a PNG."
+          description: "`UNSUPPORTED_FILE_TYPE`: the content is not a PDF, a JPEG or a PNG (for `LOGO`: not a still PNG or JPEG image)."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
@@ -3414,7 +3775,7 @@ paths:
         "403":
           $ref: "#/components/responses/CsrfOrigin"
         "404":
-          description: "`LISTING_NOT_FOUND` or `RECIPIENT_NOT_FOUND`."
+          description: "`LISTING_NOT_FOUND` (also, since 0.17.0, for a listing whose advertiser is not verified right now) or `RECIPIENT_NOT_FOUND`."
           content:
             application/json:
               schema:
@@ -4340,34 +4701,216 @@ components:
         width: { type: integer, minimum: 1, description: Pixel width of the image file. }
         height: { type: integer, minimum: 1 }
 
+    Logo:
+      type: object
+      description: |
+        New in 0.17.0. The logo of a directory profile (for an agent: their photo). The image
+        is served by `GET /v1/directory/{kind}/{slug}/logo` exactly as it was uploaded (PNG or
+        JPEG, at most 2 MB, 128 to 4096 pixels each way; not resized).
+      required: [url, width, height]
+      additionalProperties: false
+      properties:
+        url:
+          type: string
+          description: |
+            A path **relative to the API origin** (it starts with `/v1/`): prefix it with the
+            API base URL. It is not relative to the web site. It ends in `?v=<version>`, the
+            first 12 characters of the image's checksum, so it changes whenever the logo does.
+          examples: ["/v1/directory/agencies/sample-estates/logo?v=3f2a9c0d1b7e"]
+        width: { type: [integer, "null"], minimum: 1, description: "Pixel width of the image; null when not recorded." }
+        height: { type: [integer, "null"], minimum: 1, description: "Pixel height of the image; null when not recorded." }
+
+    ProfileLink:
+      type: object
+      description: New in 0.17.0. The address of a public profile page (`/v1/directory/{kind}/{slug}`).
+      required: [kind, slug]
+      additionalProperties: false
+      properties:
+        kind:
+          $ref: "#/components/schemas/DirectoryKind"
+        slug: { type: string }
+
     ProfileRef:
       type: object
       description: A PUBLIC reference to a directory profile (`/v1/directory/{kind}/{slug}`). Never contact details.
-      required: [kind, slug, name, verified]
+      required: [kind, slug, name, verified, logo]
       additionalProperties: false
       properties:
         kind:
           $ref: "#/components/schemas/DirectoryKind"
         slug: { type: string }
         name: { type: string }
+        verified:
+          type: boolean
+          description: |
+            True when the profile is public: published and verified. Inside
+            `Listing.advertiser`, `agency.verified` equals `advertiser.verified`, and
+            `agent.verified` is true only when the agent's own profile is verified **and** the
+            business is. A reference with `verified: false` has no public page to link to.
+        logo:
+          oneOf:
+            - $ref: "#/components/schemas/Logo"
+            - type: "null"
+          description: |
+            New in 0.17.0. The profile's own logo; null when it has none, or when the profile is
+            not public. For an agent it is the agent's own photo only: fall back to the
+            agency's logo, then to initials (or use `advertiser.display.logo`, which already
+            applies that order).
+
+    AdvertiserDisplay:
+      type: object
+      description: |
+        New in 0.17.0. Everything a listing card needs to show who advertises the listing,
+        already resolved, so a client needs no further lookup. Precedence:
+
+        | The listing belongs to | `name` | `secondary_name` | `role_label` | `logo` | `verified` | `profile` |
+        |---|---|---|---|---|---|---|
+        | a business with an assigned agent | the business | the agent | the business's kind | the business's logo, else the agent's photo, else null | the business is verified | the business's page |
+        | a business, no agent profile | the business | null | the business's kind | the business's logo, else null | the business is verified | the business's page |
+        | a direct owner, for sale | the owner's name | null | `Property Seller (Vendor)` | null | the owner's `PRIVATE_SELLER` / `LANDLORD` role is approved | null |
+        | a direct owner, to rent | the owner's name | null | `Landlord` | null | as above | null |
+
+        A "business" is any organisation: an agency, a law firm, a property manager, a
+        developer or a host. `role_label` is the label of the organisation's kind in the
+        `organisation_kinds` reference set (`Real Estate Agency`, `Law Firm`, `Property
+        Manager`, `Property Developer`, `Host`), or of the owner's role in `account_roles`: read
+        it, do not hard-code it. A direct owner's `name` falls back to `Private seller` when
+        the account's name is not known.
+
+        `verified` never comes from a copy: it is the stored verification, read with the
+        listing. On a listing returned by a public endpoint it is always true (an unverified
+        advertiser's listing is not public).
+      required: [name, secondary_name, role_label, logo, verified, profile]
+      additionalProperties: false
+      properties:
+        name: { type: string, examples: [Sample Estates] }
+        secondary_name: { type: [string, "null"], description: "The assigned agent's name when the listing has both a business and an agent.", examples: [Tendai Ncube] }
+        role_label: { type: string, examples: [Real Estate Agency] }
+        logo:
+          oneOf:
+            - $ref: "#/components/schemas/Logo"
+            - type: "null"
+          description: The best logo there is; null means show initials.
         verified: { type: boolean }
+        profile:
+          oneOf:
+            - $ref: "#/components/schemas/ProfileLink"
+            - type: "null"
+          description: The public page to link the name and the logo to; null for a direct owner (they have no public page).
+
+    AgentDisplay:
+      type: object
+      description: |
+        New in 0.17.0. The assigned agent as a person, for a detail page that shows the agent
+        next to the business, each with their own Verified badge.
+      required: [name, role_label, verified, logo, profile]
+      additionalProperties: false
+      properties:
+        name: { type: string, examples: [Tendai Ncube] }
+        role_label:
+          type: string
+          description: "The label of `AGENT` in `account_roles` (`Estate Agent`), or of `SALES_AGENT` / `LETTINGS_AGENT` for an agent with that specialism."
+          examples: [Estate Agent]
+        verified: { type: boolean, description: "True only when the agent's own profile is verified and the business is. It does not decide whether the listing is public." }
+        logo:
+          oneOf:
+            - $ref: "#/components/schemas/Logo"
+            - type: "null"
+          description: The agent's own photo; null when they have none (no fallback here).
+        profile:
+          oneOf:
+            - $ref: "#/components/schemas/ProfileLink"
+            - type: "null"
+          description: The agent's public page; null when their profile is not public.
+
+    ListingVerification:
+      type: object
+      description: |
+        New in 0.17.0. Which checks stand behind a listing.
+
+        `advertiser_verified` is **always true** on a listing returned by a public endpoint:
+        that is the guarantee. `listing_reviewed` is a separate, weaker fact: whether a platform
+        administrator or moderator reviewed the listing itself. There is no review workflow
+        yet, so today it is true only for the sample data; a real listing says `false`.
+      required: [advertiser_verified, advertiser_verified_at, listing_reviewed, listing_reviewed_at]
+      additionalProperties: false
+      properties:
+        advertiser_verified: { type: boolean }
+        advertiser_verified_at:
+          type: [string, "null"]
+          format: date-time
+          description: When the business's profile was verified, or the direct owner's role approved. Null when that time was not recorded.
+        listing_reviewed: { type: boolean }
+        listing_reviewed_at: { type: [string, "null"], format: date-time }
+
+    ManagedProfile:
+      type: object
+      description: New in 0.17.0. A directory profile as the people who manage it see it (`GET /v1/me/profiles`).
+      required: [kind, slug, name, verified, logo]
+      additionalProperties: false
+      properties:
+        kind:
+          $ref: "#/components/schemas/DirectoryKind"
+        slug: { type: string }
+        name: { type: string }
+        verified: { type: boolean, description: "True when the profile is public (published and verified)." }
+        logo:
+          oneOf:
+            - $ref: "#/components/schemas/Logo"
+            - type: "null"
+          description: The profile's logo; null when it has none. The image is served only while the profile is public.
+
+    TrustSummary:
+      type: object
+      description: New in 0.17.0. See `GET /v1/trust/summary`.
+      required: [verified_advertisers, public_listings, listings_from_verified_advertisers, listings_reviewed, generated_at]
+      additionalProperties: false
+      properties:
+        verified_advertisers:
+          type: object
+          required: [organisations, direct_owners]
+          additionalProperties: false
+          properties:
+            organisations: { type: integer, minimum: 0, description: "Active organisations with a published, verified profile of their own (every kind, service providers included)." }
+            direct_owners: { type: integer, minimum: 0, description: "Active accounts whose `PRIVATE_SELLER` or `LANDLORD` role is approved." }
+        public_listings: { type: integer, minimum: 0, description: Listings the API shows right now. }
+        listings_from_verified_advertisers: { type: integer, minimum: 0, description: "PUBLISHED, unexpired listings whose advertiser is verified. Equals `public_listings`." }
+        listings_reviewed: { type: integer, minimum: 0, description: Public listings that were themselves reviewed. }
+        generated_at: { type: string, format: date-time, description: To the minute. }
 
     ListingAdvertiser:
       type: object
       description: |
-        Who advertises the listing, as public profile references only. There is no phone
-        number, email address or street address here or anywhere else in a listing: a listing
-        is answered with `POST /v1/property-requests`.
-      required: [type, name, verified, agency, agent]
+        Who advertises the listing: public profile references and, for a direct owner, the
+        owner's name. There is no phone number, email address or street address here or
+        anywhere else in a listing: a listing is answered with `POST /v1/property-requests`.
+
+        For a card, read `display`; for a detail page that also shows the agent as a person,
+        read `agent_display`. `name` and `verified` repeat `display.name` and
+        `display.verified` for clients written before 0.17.0.
+      required: [type, name, verified, agency, agent, display, agent_display]
       additionalProperties: false
       properties:
         type:
           type: string
           enum: [agency, private_seller]
+          description: "`agency` for every business (an agency, a law firm, a property manager, a developer, a host); `private_seller` for a direct owner, whether they sell or let."
         name:
           type: string
-          description: The agency's name, or the private seller's display name (`Private seller` in the sample data).
-        verified: { type: boolean }
+          description: |
+            Equals `display.name`: the business's name, or the direct owner's name.
+            **Changed in 0.17.0** for a direct owner: it used to be the fixed text `Private
+            seller` and is now the owner's account name (for example `Grace Mhlanga`).
+        verified:
+          type: boolean
+          description: "Equals `display.verified`: the business is verified, or the direct owner's role is approved. Read from the stored verification every time, never from a copy on the listing."
+        display:
+          $ref: "#/components/schemas/AdvertiserDisplay"
+        agent_display:
+          oneOf:
+            - $ref: "#/components/schemas/AgentDisplay"
+            - type: "null"
+          description: The assigned agent as a person. Null for a direct owner and when the listing has no assigned agent with a profile.
         agency:
           oneOf:
             - $ref: "#/components/schemas/ProfileRef"
@@ -4388,7 +4931,7 @@ components:
       description: A public listing. The same object is used in search results, on the detail endpoint and on profiles.
       required: [id, slug, reference, title, deal, category, property_type, price, price_period, suburb, city, region, country, market_code,
                  bedrooms, bathrooms, floor_area, land_area, max_guests, min_nights, summary, description, features, featured, photos, advertiser,
-                 published_at, expires_at, updated_at, availability]
+                 verification, published_at, expires_at, updated_at, availability]
       additionalProperties: false
       properties:
         id: { type: string, format: uuid, description: "Use as `listing_id` in `POST /v1/property-requests`." }
@@ -4447,6 +4990,8 @@ components:
             $ref: "#/components/schemas/Photo"
         advertiser:
           $ref: "#/components/schemas/ListingAdvertiser"
+        verification:
+          $ref: "#/components/schemas/ListingVerification"
         published_at: { type: string, format: date-time, description: Start of the current publication cycle (UTC). }
         expires_at: { type: string, format: date-time, description: End of the current publication cycle (90 days after `published_at`). Always in the future for a returned listing. }
         updated_at: { type: string, format: date-time }
@@ -4484,8 +5029,31 @@ components:
           type: agency
           name: Sample Estates
           verified: true
-          agency: { kind: agencies, slug: sample-estates, name: Sample Estates, verified: true }
-          agent: { kind: agents, slug: tendai-ncube, name: Tendai Ncube, verified: true }
+          agency:
+            kind: agencies
+            slug: sample-estates
+            name: Sample Estates
+            verified: true
+            logo: { url: "/v1/directory/agencies/sample-estates/logo?v=3f2a9c0d1b7e", width: 256, height: 256 }
+          agent: { kind: agents, slug: tendai-ncube, name: Tendai Ncube, verified: true, logo: null }
+          display:
+            name: Sample Estates
+            secondary_name: Tendai Ncube
+            role_label: Real Estate Agency
+            logo: { url: "/v1/directory/agencies/sample-estates/logo?v=3f2a9c0d1b7e", width: 256, height: 256 }
+            verified: true
+            profile: { kind: agencies, slug: sample-estates }
+          agent_display:
+            name: Tendai Ncube
+            role_label: Estate Agent
+            verified: true
+            logo: null
+            profile: { kind: agents, slug: tendai-ncube }
+        verification:
+          advertiser_verified: true
+          advertiser_verified_at: "2026-11-01T00:00:00Z"
+          listing_reviewed: true
+          listing_reviewed_at: "2026-11-10T08:00:00Z"
         published_at: "2026-11-10T08:00:00Z"
         expires_at: "2027-02-08T08:00:00Z"
         updated_at: "2026-11-10T08:00:00Z"
@@ -4878,9 +5446,14 @@ components:
         since: { type: [integer, "null"], description: Year the business started, when known. }
         logo:
           oneOf:
-            - $ref: "#/components/schemas/Photo"
+            - $ref: "#/components/schemas/Logo"
             - type: "null"
-          description: Always null today (the sample data has no logos and uploads are not built).
+          description: |
+            **Changed in 0.17.0** (it was always null, and documented as a `Photo`). The
+            profile's logo, or an agent's photo; null when it has none. Uploaded at onboarding
+            (the `LOGO` document) or with `PUT /v1/me/profiles/{kind}/{slug}/logo`. In the sample
+            data every business has a generated logo except `agencies/sample-realty`, and no
+            agent has a photo, so both fallbacks can be tried.
         agency:
           oneOf:
             - $ref: "#/components/schemas/ProfileRef"

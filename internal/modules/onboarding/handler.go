@@ -62,6 +62,10 @@ func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 		httpx.WriteError(w, r, http.StatusConflict, CodeTooManyDocuments, fmt.Sprintf("An application can hold at most %d documents.", MaxDocumentsPerApp), nil)
 	case errors.Is(err, ErrFileTooLarge), errors.As(err, &tooLarge):
 		httpx.WriteError(w, r, http.StatusRequestEntityTooLarge, CodeFileTooLarge, "The file is larger than 10 MB.", nil)
+	case errors.Is(err, ErrLogoTooLarge):
+		httpx.WriteError(w, r, http.StatusRequestEntityTooLarge, CodeFileTooLarge, "A logo must be at most 2 MB.", nil)
+	case errors.Is(err, ErrUnsupportedLogo):
+		httpx.WriteError(w, r, http.StatusUnsupportedMediaType, CodeUnsupportedFile, "A logo must be a PNG or JPEG image.", nil)
 	case errors.Is(err, ErrUnsupportedFile):
 		httpx.WriteError(w, r, http.StatusUnsupportedMediaType, CodeUnsupportedFile, "Only PDF, JPEG and PNG files are accepted.", nil)
 	default:

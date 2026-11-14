@@ -101,8 +101,12 @@ func present(r Record, labels map[string]map[string]string) Listing {
 		Price:        r.Price, City: PlaceOf(labels[SetCities], r.City, r.CityName),
 		MarketCode: r.MarketCode, Bedrooms: r.Bedrooms, Bathrooms: r.Bathrooms, FloorArea: r.FloorArea, LandArea: r.LandArea,
 		Summary: r.Summary, Description: r.Description, Featured: r.Featured,
-		Features: make([]Coded, 0, len(r.Features)), Photos: append([]Photo{}, r.Photos...), Advertiser: r.Advertiser,
+		Features: make([]Coded, 0, len(r.Features)), Photos: append([]Photo{}, r.Photos...), Advertiser: presentAdvertiser(r, labels),
 		PublishedAt: r.PublishedAt.UTC(), ExpiresAt: r.ExpiresAt.UTC(), UpdatedAt: r.UpdatedAt.UTC(),
+	}
+	l.Verification = Verification{
+		AdvertiserVerified: r.Advertiser.Verified, AdvertiserVerifiedAt: utcTime(r.Advertiser.VerifiedAt),
+		ListingReviewed: r.ReviewedAt != nil, ListingReviewedAt: utcTime(r.ReviewedAt),
 	}
 	if r.PricePeriod != "" {
 		period := r.PricePeriod
@@ -136,6 +140,108 @@ func present(r Record, labels map[string]map[string]string) Listing {
 		l.Features = append(l.Features, coded(labels[SetListingFeatures], f))
 	}
 	return l
+}
+
+func utcTime(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	u := t.UTC()
+	return &u
+}
+
+// Account roles and agent specialisms behind the role labels.
+const (
+	roleAgent         = "AGENT"
+	roleSalesAgent    = "SALES_AGENT"
+	roleLettingsAgent = "LETTINGS_AGENT"
+	roleLandlord      = "LANDLORD"
+	rolePrivateSeller = "PRIVATE_SELLER"
+
+	specialismSales    = "SALES"
+	specialismLettings = "LETTINGS"
+)
+
+// agentRole is the account role an agent's label comes from.
+func agentRole(specialism string) string {
+	switch specialism {
+	case specialismSales:
+		return roleSalesAgent
+	case specialismLettings:
+		return roleLettingsAgent
+	}
+	return roleAgent
+}
+
+// presentAdvertiser derives the public advertiser block from what the Store
+// read. The precedence rules (also in the OpenAPI description):
+//
+//   - a business (organisation) listing: display.name is the business's name,
+//     display.secondary_name the assigned agent's name, display.role_label
+//     the label of the organisation's kind, display.logo the business's
+//     logo, else the agent's photo, else null, display.verified the
+//     business's verification, display.profile the business's public page;
+//   - a listing with an agent and no business: the agent takes the
+//     business's place;
+//   - a direct owner: display.name is the owner's name, display.role_label
+//     "Property Seller (Vendor)" for a sale and "Landlord" for a rental,
+//     display.verified the owner's approved role, no logo and no profile.
+//
+// advertiser.name and advertiser.verified always equal display's.
+func presentAdvertiser(r Record, labels map[string]map[string]string) Advertiser {
+	a := r.Advertiser
+	roles := labels[SetAccountRoles]
+	link := func(ref *ProfileRef) *ProfileLink {
+		if ref == nil || !ref.Verified { // an unverified profile has no public page
+			return nil
+		}
+		return &ProfileLink{Kind: ref.Kind, Slug: ref.Slug}
+	}
+	// Copies: the record's own refs are never changed.
+	if a.Agency != nil {
+		ref := *a.Agency
+		ref.Verified = a.Verified
+		a.Agency = &ref
+	}
+	if a.Agent != nil {
+		ref := *a.Agent
+		// An agent is shown as verified only under a verified business.
+		ref.Verified = ref.Verified && (a.Agency == nil || a.Verified)
+		a.Agent = &ref
+		a.AgentDisplay = &AgentDisplay{
+			Name: ref.Name, RoleLabel: coded(roles, agentRole(ref.Specialism)).Label, Verified: ref.Verified,
+			Logo: ref.Logo, Profile: link(&ref),
+		}
+	}
+	switch {
+	case a.Type == AdvertiserPrivateSeller:
+		role := rolePrivateSeller
+		if r.Deal == DealRent {
+			role = roleLandlord
+		}
+		name := a.Name
+		if name == "" {
+			name = DefaultSellerName
+		}
+		a.Display = AdvertiserDisplay{Name: name, RoleLabel: coded(roles, role).Label, Verified: a.Verified}
+		a.Agency, a.Agent, a.AgentDisplay = nil, nil, nil
+	case a.Agency == nil && a.Agent != nil && a.Name == "":
+		a.Display = AdvertiserDisplay{Name: a.Agent.Name, RoleLabel: a.AgentDisplay.RoleLabel, Logo: a.Agent.Logo, Verified: a.Verified, Profile: link(a.Agent)}
+	default:
+		a.Display = AdvertiserDisplay{Name: a.Name, RoleLabel: coded(labels[SetOrganisationKinds], a.OrganisationKind).Label, Verified: a.Verified}
+		if a.Agency != nil {
+			a.Display.Name, a.Display.Logo, a.Display.Profile = a.Agency.Name, a.Agency.Logo, link(a.Agency)
+		}
+		if a.Agent != nil {
+			name := a.Agent.Name
+			a.Display.SecondaryName = &name
+			if a.Display.Logo == nil {
+				a.Display.Logo = a.Agent.Logo
+			}
+		}
+	}
+	a.Name, a.Verified = a.Display.Name, a.Display.Verified
+	return a
 }
 
 // Present converts records for other modules (the directory lists an
@@ -287,11 +393,8 @@ func (s *Service) BySlug(ctx context.Context, slug string) (Listing, error) {
 	if err != nil {
 		return Listing{}, err
 	}
-	if !r.Public(now) {
-		if r.EverPublished() {
-			return Listing{}, ErrUnavailable
-		}
-		return Listing{}, ErrNotFound
+	if err := publicError(r, now); err != nil {
+		return Listing{}, err
 	}
 	listings, err := s.Present(ctx, []Record{r})
 	if err != nil {
@@ -307,13 +410,39 @@ func (s *Service) PublicRecord(ctx context.Context, slug string) (Record, error)
 	if err != nil {
 		return Record{}, err
 	}
-	if !r.Public(s.now().UTC()) {
-		if r.EverPublished() {
-			return Record{}, ErrUnavailable
-		}
-		return Record{}, ErrNotFound
+	if err := publicError(r, s.now().UTC()); err != nil {
+		return Record{}, err
 	}
 	return r, nil
+}
+
+// publicError says why a record is not public (nil when it is). A listing
+// whose advertiser is not verified is ErrNotFound, whatever its history:
+// "no longer available" would reveal that an advertiser lost its
+// verification.
+func publicError(r Record, now time.Time) error {
+	switch {
+	case r.Public(now):
+		return nil
+	case !r.Advertiser.Verified || !r.EverPublished():
+		return ErrNotFound
+	}
+	return ErrUnavailable
+}
+
+// AdvertiserVerified reports whether the advertiser of a listing is verified
+// right now. known is false when the catalogue has no such listing.
+func (s *Service) AdvertiserVerified(ctx context.Context, id uuid.UUID) (verified, known bool, err error) {
+	records, err := s.store.ByIDs(ctx, []uuid.UUID{id})
+	if err != nil || len(records) == 0 {
+		return false, false, err
+	}
+	return records[0].Advertiser.Verified, true, nil
+}
+
+// PublicCounts returns the listing numbers of the trust summary.
+func (s *Service) PublicCounts(ctx context.Context) (PublicCounts, error) {
+	return s.store.PublicCounts(ctx, s.now().UTC())
 }
 
 // Owned returns the listings an organisation's members or a direct owner

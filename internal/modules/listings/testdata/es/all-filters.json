@@ -647,6 +647,15 @@
           }
         },
         {
+          "bool": {
+            "must_not": {
+              "term": {
+                "advertiser_verified": false
+              }
+            }
+          }
+        },
+        {
           "term": {
             "featured": true
           }

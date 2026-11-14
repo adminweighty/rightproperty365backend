@@ -10,8 +10,12 @@
 //     Elasticsearch adapter planned for later) therefore cannot resurrect an
 //     expired or unpublished listing.
 //   - A listing names who advertises it only as PUBLIC profile references
-//     (kind, slug, name, verified). No phone number, email address or street
-//     address exists in this package's types at all.
+//     (kind, slug, name, verified, logo) and, for a direct owner, the owner's
+//     name. No phone number, email address or street address exists in this
+//     package's types at all.
+//   - A listing is public only while its advertiser is verified. The Store
+//     reads the advertiser's verification together with the listing, every
+//     time: no copy on the listing or in the search index is trusted.
 package listings
 
 import (
@@ -217,6 +221,41 @@ type Photo struct {
 	Height int    `json:"height"`
 }
 
+// Logo is the public logo (or, for an agent, photo) of a directory profile.
+type Logo struct {
+	// URL is a path RELATIVE TO THE API ORIGIN, for example
+	// "/v1/directory/agencies/sample-estates/logo?v=3f2a9c0d1b7e": a client
+	// prefixes its API base URL. The v parameter changes whenever the image
+	// changes, so a cached copy is never stale.
+	URL string `json:"url"`
+	// Width and Height are the image's size in pixels (null when unknown).
+	Width  *int `json:"width"`
+	Height *int `json:"height"`
+}
+
+// LogoVersionLength is the number of checksum characters in a logo URL's v
+// parameter. Twelve hexadecimal characters can never look like a ten-digit
+// phone number to a scanner.
+const LogoVersionLength = 12
+
+// NewLogo builds the public form of a profile's logo from what is stored: the
+// profile's address, the image's checksum and its size. It returns nil when
+// the profile has no logo (an empty checksum).
+func NewLogo(kind, slug, checksum string, width, height int) *Logo {
+	if checksum == "" {
+		return nil
+	}
+	version := checksum
+	if len(version) > LogoVersionLength {
+		version = version[:LogoVersionLength]
+	}
+	l := &Logo{URL: "/v1/directory/" + kind + "/" + slug + "/logo?v=" + version}
+	if width > 0 && height > 0 {
+		l.Width, l.Height = &width, &height
+	}
+	return l
+}
+
 // ProfileRef is a PUBLIC reference to a directory profile. It is everything
 // a listing says about a person or business: no contact details.
 type ProfileRef struct {
@@ -224,6 +263,20 @@ type ProfileRef struct {
 	Slug     string `json:"slug"`
 	Name     string `json:"name"`
 	Verified bool   `json:"verified"`
+	// Logo is the profile's own logo or photo; null when it has none (or the
+	// profile is not public). For an agent it is the agent's own photo only:
+	// a client falls back to the agency's logo, then to initials.
+	Logo *Logo `json:"logo"`
+
+	// Specialism is an agent's specialism ("SALES", "LETTINGS" or ""). It
+	// decides the agent's role label and is not serialised.
+	Specialism string `json:"-"`
+}
+
+// ProfileLink is the address of a public profile page.
+type ProfileLink struct {
+	Kind string `json:"kind"`
+	Slug string `json:"slug"`
 }
 
 // Advertiser types.
@@ -232,16 +285,89 @@ const (
 	AdvertiserPrivateSeller = "private_seller"
 )
 
+// DefaultSellerName is shown for a direct owner whose account name is not known.
+const DefaultSellerName = "Private seller"
+
+// AdvertiserDisplay is everything a listing card needs to show who
+// advertises the listing, already resolved (see Advertiser).
+type AdvertiserDisplay struct {
+	// Name is the business's name; for a direct owner, the owner's name.
+	Name string `json:"name"`
+	// SecondaryName is the assigned agent's name when the listing has both a
+	// business and an agent; null otherwise.
+	SecondaryName *string `json:"secondary_name"`
+	// RoleLabel says what the advertiser is, in the reference data's words:
+	// "Real Estate Agency", "Law Firm", "Host", "Landlord", ...
+	RoleLabel string `json:"role_label"`
+	// Logo is the best logo there is: the business's, else the assigned
+	// agent's photo, else null (show initials).
+	Logo *Logo `json:"logo"`
+	// Verified is true only when the business (or the direct owner) is verified.
+	Verified bool `json:"verified"`
+	// Profile is the public page to link to; null when there is none.
+	Profile *ProfileLink `json:"profile"`
+}
+
+// AgentDisplay is the assigned agent of a listing as a person, for a detail page.
+type AgentDisplay struct {
+	Name string `json:"name"`
+	// RoleLabel is "Estate Agent", or "Sales Agent" / "Lettings Agent" for an
+	// agent with that specialism.
+	RoleLabel string `json:"role_label"`
+	// Verified is true only when the agent's own profile is verified AND the
+	// business is.
+	Verified bool `json:"verified"`
+	// Logo is the agent's own photo; null when they have none.
+	Logo    *Logo        `json:"logo"`
+	Profile *ProfileLink `json:"profile"`
+}
+
 // Advertiser says who advertises a listing.
+//
+// Type, Agency, Agent and the unserialised fields are what the Store read
+// together with the listing (never a copy kept on the listing: a business
+// that stops being verified stops showing as verified on its listings at
+// once). For a direct owner the Store also sets Name (the owner's account
+// name) and Verified. Name, Verified, Display and AgentDisplay are derived
+// when the listing is presented.
 type Advertiser struct {
-	// Type is "agency" or "private_seller".
+	// Type is "agency" (any business: an agency, a law firm, a property
+	// manager, a developer, a host) or "private_seller" (a direct owner).
 	Type string `json:"type"`
-	// Name is the agency's name, or the private seller's display name.
-	Name     string `json:"name"`
-	Verified bool   `json:"verified"`
-	// Agency and Agent are directory profiles; both are null for a private seller.
+	// Name equals Display.Name.
+	Name string `json:"name"`
+	// Verified equals Display.Verified: the business's own verification, or
+	// the direct owner's approved PRIVATE_SELLER / LANDLORD role.
+	Verified bool `json:"verified"`
+	// Agency and Agent are directory profiles; both are null for a direct owner.
 	Agency *ProfileRef `json:"agency"`
 	Agent  *ProfileRef `json:"agent"`
+	// Display is what a card shows; AgentDisplay the assigned agent as a
+	// person (null when the listing has no assigned agent with a profile).
+	Display      AdvertiserDisplay `json:"display"`
+	AgentDisplay *AgentDisplay     `json:"agent_display"`
+
+	// OrganisationKind is the kind of the owning organisation ("AGENCY",
+	// "LAW_FIRM", ...; "" for a direct owner). Not serialised.
+	OrganisationKind string `json:"-"`
+	// VerifiedAt is when the business's profile was verified, or the direct
+	// owner's role approved; nil when not verified or not recorded. It is
+	// shown as Listing.Verification.AdvertiserVerifiedAt.
+	VerifiedAt *time.Time `json:"-"`
+}
+
+// Verification is what a listing says about the checks behind it.
+type Verification struct {
+	// AdvertiserVerified is true on every listing the API returns publicly:
+	// a listing whose advertiser is not verified is not public.
+	AdvertiserVerified bool `json:"advertiser_verified"`
+	// AdvertiserVerifiedAt is when the business was verified or the direct
+	// owner's role approved; null when that time was not recorded.
+	AdvertiserVerifiedAt *time.Time `json:"advertiser_verified_at"`
+	// ListingReviewed says a platform administrator or moderator reviewed
+	// the listing itself; ListingReviewedAt when.
+	ListingReviewed   bool       `json:"listing_reviewed"`
+	ListingReviewedAt *time.Time `json:"listing_reviewed_at"`
 }
 
 // Listing is the public representation of a listing.
@@ -281,9 +407,11 @@ type Listing struct {
 	Featured    bool       `json:"featured"`
 	Photos      []Photo    `json:"photos"`
 	Advertiser  Advertiser `json:"advertiser"`
-	PublishedAt time.Time  `json:"published_at"`
-	ExpiresAt   time.Time  `json:"expires_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	// Verification says which checks stand behind the listing.
+	Verification Verification `json:"verification"`
+	PublishedAt  time.Time    `json:"published_at"`
+	ExpiresAt    time.Time    `json:"expires_at"`
+	UpdatedAt    time.Time    `json:"updated_at"`
 	// Availability is set for short stays only (null otherwise): when the
 	// lister last changed the calendar and the first night that is free.
 	// The calendar itself is GET /v1/listings/{slug}/availability.
@@ -367,6 +495,12 @@ type Record struct {
 	OrganisationID *uuid.UUID
 	AgentUserID    *uuid.UUID
 	SellerUserID   *uuid.UUID
+
+	// ReviewedAt and ReviewedBy record that a platform administrator or
+	// moderator reviewed the listing itself. Only the sample-data seed sets
+	// them today: there is no review workflow yet.
+	ReviewedAt *time.Time
+	ReviewedBy *uuid.UUID
 }
 
 // Version is a number that grows with every change of the record: its
@@ -382,9 +516,12 @@ type Summary struct {
 	Reference string `json:"reference"`
 }
 
-// Public reports whether the record may be shown at the given instant.
+// Public reports whether the record may be shown at the given instant: it is
+// PUBLISHED, not expired, AND its advertiser is verified (the owning business
+// is verified, or the direct owner's role is approved). An assigned agent's
+// own verification does not gate the listing.
 func (r Record) Public(now time.Time) bool {
-	return r.Status == StatusPublished && r.ExpiresAt.After(now)
+	return r.Status == StatusPublished && r.ExpiresAt.After(now) && r.Advertiser.Verified
 }
 
 // EverPublished reports whether the listing has been public at some point, so
@@ -575,6 +712,20 @@ type Store interface {
 	SetStayRules(ctx context.Context, id uuid.UUID, minNights, maxGuests *int, now time.Time) (Record, error)
 	// PublishedSlugs returns the slug and updated_at of every public listing (sitemap).
 	PublishedSlugs(ctx context.Context, now time.Time) ([]SlugEntry, error)
+	// PublicCounts returns the listing numbers of GET /v1/trust/summary.
+	PublicCounts(ctx context.Context, now time.Time) (PublicCounts, error)
+}
+
+// PublicCounts are the listing numbers of the trust summary.
+type PublicCounts struct {
+	// Public is every listing that is public right now.
+	Public int
+	// VerifiedAdvertiser counts the PUBLISHED, unexpired listings whose
+	// advertiser is verified. It is counted on its own, without the public
+	// rule, so it equals Public exactly when that rule holds.
+	VerifiedAdvertiser int
+	// Reviewed is the number of public listings that were reviewed.
+	Reviewed int
 }
 
 // SlugEntry is one sitemap entry.

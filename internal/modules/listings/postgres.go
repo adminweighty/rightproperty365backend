@@ -24,35 +24,66 @@ type PostgresStore struct{ pool *pgxpool.Pool }
 // NewPostgresStore returns the Postgres adapter.
 func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore { return &PostgresStore{pool: pool} }
 
-// publicCondition is the FR-006 rule. It appears in every query that can
+// advertiserVerifiedCondition is true for a listing whose advertiser is
+// verified: the owning organisation is ACTIVE and has a published, verified
+// profile of its own (never an agent's), or — for a direct owner — the
+// owner's account is ACTIVE and their PRIVATE_SELLER or LANDLORD role is
+// approved. It is self-contained (sub-queries on l only), so every query can
+// use it; scanRecord computes the same thing from the joins of recordFrom.
+const advertiserVerifiedCondition = `(CASE WHEN l.organisation_id IS NOT NULL THEN EXISTS (
+		SELECT 1 FROM organisations vo JOIN directory_profiles vp ON vp.organisation_id = vo.id
+		WHERE vo.id = l.organisation_id AND vo.status = 'ACTIVE' AND vp.kind <> 'agents' AND vp.status = 'ACTIVE' AND vp.verified)
+	ELSE EXISTS (
+		SELECT 1 FROM user_account_roles vr JOIN users vu ON vu.id = vr.user_id
+		WHERE vr.user_id = l.seller_user_id AND vu.status = 'ACTIVE' AND vr.role IN ('PRIVATE_SELLER', 'LANDLORD') AND vr.status = 'ACTIVE') END)`
+
+// publishedCondition is status and expiry alone (FR-006).
+const publishedCondition = `l.status = 'PUBLISHED' AND l.expires_at > $1 AND l.slug IS NOT NULL`
+
+// publicCondition is the rule of everything public: PUBLISHED, unexpired AND
+// advertised by a verified advertiser. It appears in every query that can
 // return a listing to the public.
-const publicCondition = `l.status = 'PUBLISHED' AND l.expires_at > $1 AND l.slug IS NOT NULL`
+const publicCondition = publishedCondition + ` AND ` + advertiserVerifiedCondition
 
 const recordColumns = `
 	l.id, l.slug, COALESCE(l.reference, ''), l.title, COALESCE(l.deal, ''), COALESCE(l.category, ''), COALESCE(l.property_type, ''),
 	l.price_amount::text, l.currency_code, COALESCE(l.price_period, ''), COALESCE(l.suburb_code, ''), COALESCE(l.city_code, ''), m.code,
 	l.bedrooms, l.bathrooms, l.floor_area_m2, l.land_area_m2, l.max_guests, l.min_nights, COALESCE(l.summary, ''), COALESCE(l.description, ''), l.featured,
 	l.status::text, l.published_at, l.expires_at, l.updated_at, l.organisation_id, l.agent_user_id, l.seller_user_id,
-	COALESCE(l.private_seller_name, 'Private seller'), COALESCE(l.city_name, ''), COALESCE(l.region_name, ''),
+	COALESCE(l.private_seller_name, '` + DefaultSellerName + `'), COALESCE(l.city_name, ''), COALESCE(l.region_name, ''),
 	ag.kind, ag.slug, ag.name, ag.verified, at.slug, at.name, at.verified,
 	COALESCE((SELECT array_agg(f.feature_code ORDER BY f.position) FROM listing_features f WHERE f.listing_id = l.id), '{}'),
 	COALESCE((SELECT jsonb_agg(jsonb_build_object('url', p.url, 'alt', p.alt, 'width', p.width, 'height', p.height) ORDER BY p.position)
-	          FROM listing_photos p WHERE p.listing_id = l.id), '[]'::jsonb)::text`
+	          FROM listing_photos p WHERE p.listing_id = l.id), '[]'::jsonb)::text,
+	o.name, COALESCE(o.kind::text, ''), COALESCE(o.status = 'ACTIVE', false),
+	ag.verified_at, COALESCE(ag.logo_checksum, ''), COALESCE(ag.logo_width, 0), COALESCE(ag.logo_height, 0),
+	COALESCE(at.specialism, ''), COALESCE(at.logo_checksum, ''), COALESCE(at.logo_width, 0), COALESCE(at.logo_height, 0),
+	su.full_name, sr.approved_at, l.reviewed_at, l.reviewed_by`
 
-// recordFrom joins the public profiles of the listing's agency and agent.
-// Only name, slug and the verified flag are read: profiles have no contact columns.
+// recordFrom joins who advertises the listing, read with the listing every
+// time: the organisation and its own profile, the assigned agent's profile,
+// and — for a direct owner — the owner's name and approved role. Profiles
+// have no contact columns; of the owner only the name is read.
 const recordFrom = `
 	FROM listings l
 	JOIN markets m ON m.id = l.market_id
+	LEFT JOIN organisations o ON o.id = l.organisation_id
 	LEFT JOIN LATERAL (
-		-- The organisation's own public profile: an agency's, or a host's,
+		-- The organisation's own published profile: an agency's, or a host's,
 		-- property manager's, developer's or law firm's (never an agent's).
-		SELECT p.kind, p.slug, p.name, p.verified
+		-- A verified one first, so "verified" here means what
+		-- advertiserVerifiedCondition means.
+		SELECT p.kind, p.slug, p.name, p.verified, p.verified_at, p.logo_checksum, p.logo_width, p.logo_height
 		FROM directory_profiles p
 		WHERE p.kind <> 'agents' AND p.organisation_id = l.organisation_id AND p.status = 'ACTIVE'
-		ORDER BY (p.kind = 'agencies') DESC, p.created_at, p.id
+		ORDER BY p.verified DESC, (p.kind = 'agencies') DESC, p.created_at, p.id
 		LIMIT 1) ag ON true
-	LEFT JOIN directory_profiles at ON at.kind = 'agents' AND at.agent_user_id = l.agent_user_id AND at.status = 'ACTIVE'`
+	LEFT JOIN directory_profiles at ON at.kind = 'agents' AND at.agent_user_id = l.agent_user_id AND at.status = 'ACTIVE'
+	LEFT JOIN users su ON su.id = l.seller_user_id AND su.status = 'ACTIVE'
+	LEFT JOIN LATERAL (
+		-- When the direct owner's role was approved; NULL when it is not.
+		SELECT max(r.updated_at) AS approved_at FROM user_account_roles r
+		WHERE r.user_id = l.seller_user_id AND r.role IN ('PRIVATE_SELLER', 'LANDLORD') AND r.status = 'ACTIVE') sr ON true`
 
 func scanRecord(row pgx.CollectableRow) (Record, error) {
 	var (
@@ -63,12 +94,21 @@ func scanRecord(row pgx.CollectableRow) (Record, error) {
 		agKind                       *string
 		agVerified, atVerified       *bool
 		photos                       string
+
+		orgName, ownerName                 *string
+		orgKind, agChecksum, atChecksum    string
+		atSpecialism                       string
+		orgActive                          bool
+		agVerifiedAt, ownerApprovedAt      *time.Time
+		agWidth, agHeight, atWidth, atHigh int
 	)
 	if err := row.Scan(&r.ID, &r.Slug, &r.Reference, &r.Title, &r.Deal, &r.Category, &r.PropertyType,
 		&priceText, &r.Price.Currency, &r.PricePeriod, &r.Suburb, &r.City, &r.MarketCode,
 		&r.Bedrooms, &r.Bathrooms, &r.FloorArea, &r.LandArea, &r.MaxGuests, &r.MinNights, &r.Summary, &r.Description, &r.Featured,
 		&r.Status, &publishedAt, &expiresAt, &r.UpdatedAt, &r.OrganisationID, &r.AgentUserID, &r.SellerUserID,
-		&sellerName, &r.CityName, &r.RegionName, &agKind, &agSlug, &agName, &agVerified, &atSlug, &atNm, &atVerified, &r.Features, &photos); err != nil {
+		&sellerName, &r.CityName, &r.RegionName, &agKind, &agSlug, &agName, &agVerified, &atSlug, &atNm, &atVerified, &r.Features, &photos,
+		&orgName, &orgKind, &orgActive, &agVerifiedAt, &agChecksum, &agWidth, &agHeight,
+		&atSpecialism, &atChecksum, &atWidth, &atHigh, &ownerName, &ownerApprovedAt, &r.ReviewedAt, &r.ReviewedBy); err != nil {
 		return Record{}, err
 	}
 	if v, ok := new(big.Rat).SetString(priceText); ok {
@@ -83,20 +123,65 @@ func scanRecord(row pgx.CollectableRow) (Record, error) {
 	if err := json.Unmarshal([]byte(photos), &r.Photos); err != nil {
 		return Record{}, fmt.Errorf("decode photos: %w", err)
 	}
+	var agent *ProfileRef
+	if atSlug != nil && atNm != nil {
+		agent = &ProfileRef{Kind: "agents", Slug: *atSlug, Name: *atNm, Verified: atVerified != nil && *atVerified, Specialism: atSpecialism}
+		if agent.Verified { // only a public profile serves its logo
+			agent.Logo = NewLogo(agent.Kind, agent.Slug, atChecksum, atWidth, atHigh)
+		}
+	}
 	switch {
-	case agSlug != nil && agName != nil:
-		r.Advertiser = Advertiser{Type: AdvertiserAgency, Name: *agName, Verified: agVerified != nil && *agVerified,
-			Agency: &ProfileRef{Kind: "agencies", Slug: *agSlug, Name: *agName, Verified: agVerified != nil && *agVerified}}
-		if agKind != nil {
-			r.Advertiser.Agency.Kind = *agKind
+	case r.OrganisationID != nil:
+		// A business. It is verified when the organisation is ACTIVE and its
+		// own published profile is verified.
+		verified := orgActive && agVerified != nil && *agVerified
+		r.Advertiser = Advertiser{Type: AdvertiserAgency, Verified: verified, OrganisationKind: orgKind, Agent: agent}
+		if orgName != nil {
+			r.Advertiser.Name = *orgName
 		}
-		if atSlug != nil && atNm != nil {
-			r.Advertiser.Agent = &ProfileRef{Kind: "agents", Slug: *atSlug, Name: *atNm, Verified: atVerified != nil && *atVerified}
+		if verified {
+			r.Advertiser.VerifiedAt = agVerifiedAt
 		}
+		if agSlug != nil && agName != nil {
+			ref := &ProfileRef{Kind: "agencies", Slug: *agSlug, Name: *agName, Verified: verified}
+			if agKind != nil {
+				ref.Kind = *agKind
+			}
+			if verified {
+				ref.Logo = NewLogo(ref.Kind, ref.Slug, agChecksum, agWidth, agHeight)
+			}
+			r.Advertiser.Agency, r.Advertiser.Name = ref, ref.Name
+		}
+	case r.SellerUserID == nil && agent != nil:
+		// An agent without a business: nobody verified stands behind it.
+		r.Advertiser = Advertiser{Type: AdvertiserAgency, Agent: agent}
 	default:
+		// A direct owner: their account name, and whether their role is approved.
 		r.Advertiser = Advertiser{Type: AdvertiserPrivateSeller, Name: sellerName}
+		if ownerName != nil {
+			r.Advertiser.Name = *ownerName
+			if ownerApprovedAt != nil {
+				r.Advertiser.Verified, r.Advertiser.VerifiedAt = true, ownerApprovedAt
+			}
+		}
 	}
 	return r, nil
+}
+
+// PublicCounts implements Store.
+func (s *PostgresStore) PublicCounts(ctx context.Context, now time.Time) (PublicCounts, error) {
+	var c PublicCounts
+	err := s.pool.QueryRow(ctx, `
+		SELECT count(*) FILTER (WHERE `+advertiserVerifiedCondition+`),
+		       count(*) FILTER (WHERE `+advertiserVerifiedCondition+` AND l.reviewed_at IS NOT NULL)
+		FROM listings l WHERE `+publishedCondition, now).Scan(&c.VerifiedAdvertiser, &c.Reviewed)
+	if err != nil {
+		return PublicCounts{}, err
+	}
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM listings l WHERE `+publicCondition, now).Scan(&c.Public); err != nil {
+		return PublicCounts{}, err
+	}
+	return c, nil
 }
 
 func (s *PostgresStore) records(ctx context.Context, where string, args ...any) ([]Record, error) {

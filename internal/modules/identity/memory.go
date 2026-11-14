@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -415,6 +416,34 @@ func (s *MemoryStore) RevokeSession(_ context.Context, id uuid.UUID, now time.Ti
 // ---------------------------------------------------------------------------
 // Seed and test helpers (not part of Store)
 // ---------------------------------------------------------------------------
+
+// ApprovedDirectOwners implements Store.
+func (s *MemoryStore) ApprovedDirectOwners(context.Context) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for id, u := range s.users {
+		if u.Status != StatusActive {
+			continue
+		}
+		for _, r := range s.accountRoles[id] {
+			if r.Status == AccountRoleActive && slices.Contains(auth.DirectOwnerRoles(), r.Role) {
+				n++
+				break
+			}
+		}
+	}
+	return n, nil
+}
+
+// Organisation returns an organisation (the listings' advertiser resolver
+// needs its name and kind).
+func (s *MemoryStore) Organisation(id uuid.UUID) (MemoryOrganisation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	o, ok := s.organisations[id]
+	return o, ok
+}
 
 // PutOrganisation adds or replaces an organisation.
 func (s *MemoryStore) PutOrganisation(o MemoryOrganisation) {

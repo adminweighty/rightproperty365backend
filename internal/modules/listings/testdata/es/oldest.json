@@ -244,6 +244,15 @@
           }
         },
         {
+          "bool": {
+            "must_not": {
+              "term": {
+                "advertiser_verified": false
+              }
+            }
+          }
+        },
+        {
           "term": {
             "advertiser_type": "private"
           }

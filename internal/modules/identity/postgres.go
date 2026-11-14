@@ -247,6 +247,15 @@ func (s *PostgresStore) UserByID(ctx context.Context, id uuid.UUID) (User, error
 	return s.loadUser(ctx, `id = $1`, id)
 }
 
+// ApprovedDirectOwners implements Store.
+func (s *PostgresStore) ApprovedDirectOwners(ctx context.Context) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx, `
+		SELECT count(DISTINCT r.user_id) FROM user_account_roles r JOIN users u ON u.id = r.user_id
+		WHERE u.status = 'ACTIVE' AND r.status = 'ACTIVE' AND r.role IN ('PRIVATE_SELLER', 'LANDLORD')`).Scan(&n)
+	return n, err
+}
+
 // CreateVerificationToken implements Store.
 func (s *PostgresStore) CreateVerificationToken(ctx context.Context, userID uuid.UUID, tokenHash []byte, expiresAt, now time.Time) error {
 	_, err := s.pool.Exec(ctx, `

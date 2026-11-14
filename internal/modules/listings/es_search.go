@@ -21,12 +21,21 @@ type J = map[string]any
 // outranks property type, which outranks the long text.
 var esTextFields = []string{"title^4", "suburb_label^3", "city_label^3", "city_name^3", "region_name^3", "property_type_label^2", "summary", "description", "reference", "keywords"}
 
-// esPublic is the FR-006 rule inside Elasticsearch: only PUBLISHED documents
-// whose publication has not ended. The database re-checks every hit as well.
+// esPublic is the public rule inside Elasticsearch: only PUBLISHED documents
+// whose publication has not ended and whose advertiser was not unverified
+// when the document was written. The database re-checks every hit as well,
+// so a document that is behind (an advertiser unverified since) is dropped.
+//
+// The advertiser clause excludes `advertiser_verified: false` rather than
+// requiring `true`, so the documents of an index built before the field
+// existed (mapping version 4) still match until the index is rebuilt: the
+// search keeps working during a deployment, and the database check above is
+// what guarantees the rule either way.
 func esPublic(now time.Time) []any {
 	return []any{
 		J{"term": J{"status": StatusPublished}},
 		J{"range": J{"expires_at": J{"gt": now.UTC().Format(esTimeLayout)}}},
+		J{"bool": J{"must_not": J{"term": J{"advertiser_verified": false}}}},
 	}
 }
 

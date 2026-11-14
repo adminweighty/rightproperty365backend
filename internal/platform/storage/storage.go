@@ -1,7 +1,10 @@
-// Package storage keeps private files (onboarding documents today).
+// Package storage keeps files: onboarding documents and profile logos.
 //
 // Objects are private: nothing here produces a public URL. A file is only
-// ever read back through an authenticated API route that streams it.
+// ever read back through an API route that streams it — an authenticated one
+// for a document; for a logo, which is public content, the public route of
+// the directory, which decides on every request whether the profile (and so
+// its logo) is public.
 //
 // Keys are chosen by the caller and must contain no user input; NewKey makes
 // a random one.
@@ -48,7 +51,7 @@ type Storage interface {
 var keyRe = regexp.MustCompile(`^[a-z0-9]+(/[a-z0-9]+)*$`)
 
 // NewKey returns "<prefix>/<32 random hex digits>". The prefix is a fixed
-// word chosen by the code ("onboarding"), never anything a user sent.
+// word chosen by the code ("onboarding", "logos"), never anything a user sent.
 func NewKey(prefix string) (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {

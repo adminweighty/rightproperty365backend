@@ -23,6 +23,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/onboarding"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
+	"rightproperty365.com/backend/internal/modules/trust"
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/httpx"
@@ -75,12 +76,20 @@ const (
 	uploadTimeout = 2 * time.Minute
 )
 
-// uploadPath matches POST /v1/me/onboarding/{role}/documents, the one route
-// with a larger body limit and a longer timeout.
-var uploadPath = regexp.MustCompile(`^/v1/me/onboarding/[^/]+/documents$`)
+// uploadPath matches POST /v1/me/onboarding/{role}/documents and logoPath
+// PUT /v1/me/profiles/{kind}/{slug}/logo: the two routes with a larger body
+// limit and a longer timeout.
+var (
+	uploadPath = regexp.MustCompile(`^/v1/me/onboarding/[^/]+/documents$`)
+	logoPath   = regexp.MustCompile(`^/v1/me/profiles/[^/]+/[^/]+/logo$`)
+)
+
+func isLogoUpload(r *http.Request) bool {
+	return r.Method == http.MethodPut && logoPath.MatchString(r.URL.Path)
+}
 
 func isUpload(r *http.Request) bool {
-	return r.Method == http.MethodPost && uploadPath.MatchString(r.URL.Path)
+	return (r.Method == http.MethodPost && uploadPath.MatchString(r.URL.Path)) || isLogoUpload(r)
 }
 
 // Deps is everything the router needs.
@@ -156,7 +165,20 @@ func NewRouter(d Deps) (http.Handler, error) {
 	listingsH := listings.NewHandler(listingsSvc, logger)
 	directorySvc := directory.NewService(d.Directory, vocab, listingsSvc)
 	directorySvc.SetPlaces(geography)
+	// Logos are kept in the object storage and served by the API itself.
+	directorySvc.SetFiles(d.Files, logger)
+	if d.Now != nil {
+		directorySvc.SetClock(d.Now)
+	}
 	directoryH := directory.NewHandler(directorySvc, logger)
+	// The numbers behind "every listing is from a verified advertiser".
+	trustH := trust.NewHandler(trust.Sources{
+		Listings: listingsSvc.PublicCounts, Organisations: directorySvc.VerifiedOrganisations,
+		DirectOwners: d.Identity.ApprovedDirectOwners, Now: d.Now,
+	}, logger)
+	// A listing whose advertiser is not verified takes no request, no
+	// appointment and no request to stay.
+	requestStore := verifiedListings{Store: d.Requests, catalogue: listingsSvc}
 
 	identityOpts := []identity.Option{
 		identity.WithAdminSessionTTLs(cfg.AdminSessionTTL, cfg.AdminSessionIdleTTL),
@@ -185,14 +207,14 @@ func NewRouter(d Deps) (http.Handler, error) {
 	// Appointments: routed with the request and enquiry rules, named from the
 	// public catalogue, shown in the market's time zone.
 	appointmentsSvc := appointments.NewService(appointments.Deps{
-		Store: d.Appointments, Listings: d.Requests, Profiles: d.Enquiries,
+		Store: d.Appointments, Listings: requestStore, Profiles: d.Enquiries,
 		Catalogue: listingCards{store: d.Listings}, Zones: marketZones{markets: d.Markets},
 		People: people{identity: d.Identity}, Vocabulary: vocab, Now: d.Now,
 	})
 	// A viewing or consultation request with a preferred slot creates its
 	// appointment in the same transaction.
 	requestOpts = append(requestOpts, propertyrequests.WithAppointmentPlanner(appointmentsSvc))
-	requestsSvc := propertyrequests.NewService(d.Requests, requestOpts...)
+	requestsSvc := propertyrequests.NewService(requestStore, requestOpts...)
 	enquiriesSvc := businessenquiries.NewService(d.Enquiries, enquiryOpts...)
 	requestsH := propertyrequests.NewHandler(requestsSvc, logger)
 	requestsH.SetListingNames(listingNames{svc: listingsSvc})
@@ -222,7 +244,10 @@ func NewRouter(d Deps) (http.Handler, error) {
 		httpx.SecurityHeaders(secure),
 		httpx.CORS(cfg.CORSAllowedOrigins),
 		httpx.BodyLimitFunc(func(r *http.Request) int64 {
-			if isUpload(r) {
+			switch {
+			case isLogoUpload(r):
+				return directory.MaxLogoBodyBytes
+			case isUpload(r):
 				return onboarding.MaxUploadBodyBytes
 			}
 			return maxBodyBytes
@@ -269,7 +294,11 @@ func NewRouter(d Deps) (http.Handler, error) {
 		r.Get("/directory", directoryH.Kinds)
 		r.Get("/directory/{kind}", directoryH.List)
 		r.Get("/directory/{kind}/{slug}", directoryH.Get)
+		// A public profile's logo: an image, no session, no cookie.
+		r.Get("/directory/{kind}/{slug}/logo", directoryH.Logo)
 		r.Get("/sitemap", directoryH.Sitemap)
+		// How many advertisers are verified and how many listings are public.
+		r.Get("/trust/summary", trustH.Summary)
 
 		// The only way to contact a directory profile. Open to guests and
 		// signed-in customers alike.
@@ -304,6 +333,16 @@ func NewRouter(d Deps) (http.Handler, error) {
 			r.Get("/{id}/availability", availabilityH.Calendar)
 			r.With(calendarLimiter.Middleware).Put("/{id}/availability", availabilityH.Change)
 			r.With(calendarLimiter.Middleware).Patch("/{id}/stay-rules", availabilityH.StayRules)
+		})
+
+		// The directory profiles the caller may manage, and their logos. The
+		// service decides who may change which (auth/capabilities.go): 404 for
+		// another organisation's profile, 403 for a member whose role may not.
+		r.Route("/me/profiles", func(r chi.Router) {
+			r.Use(auth.RequireAuth)
+			r.Get("/", directoryH.Mine)
+			r.With(uploadLimiter.Middleware).Put("/{kind}/{slug}/logo", directoryH.PutLogo)
+			r.With(uploadLimiter.Middleware).Delete("/{kind}/{slug}/logo", directoryH.DeleteLogo)
 		})
 
 		// Appointments. A signed-in customer asks for one and manages their

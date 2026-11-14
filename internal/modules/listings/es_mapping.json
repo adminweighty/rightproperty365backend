@@ -5,7 +5,7 @@
   },
   "mappings": {
     "dynamic": "strict",
-    "_meta": { "mapping_version": 4 },
+    "_meta": { "mapping_version": 5 },
     "properties": {
       "id": { "type": "keyword" },
       "slug": { "type": "keyword" },
@@ -44,6 +44,7 @@
       "market": { "type": "keyword" },
       "region": { "type": "keyword" },
       "advertiser_type": { "type": "keyword" },
+      "advertiser_verified": { "type": "boolean" },
       "has_photos": { "type": "boolean" },
       "max_guests": { "type": "integer" },
       "min_nights": { "type": "integer" },

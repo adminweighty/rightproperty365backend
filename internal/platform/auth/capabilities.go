@@ -6,8 +6,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// This file is the ONE place that answers "may this caller manage listings
-// or appointments". Routes must ask here instead of looking at organisation
+// This file is the ONE place that answers "may this caller manage listings,
+// appointments or a directory profile". Routes must ask here instead of looking at organisation
 // kinds or roles themselves.
 //
 // NOTE: there are still no endpoints that create or publish a listing, for
@@ -64,6 +64,26 @@ func (p *Principal) MayManageAppointments(organisationID uuid.UUID) bool {
 func (p *Principal) MayAssignWork(organisationID uuid.UUID) bool {
 	m, ok := p.membership(organisationID)
 	return ok && (m.Role == RoleOwner || m.Role == RoleManager)
+}
+
+// MayManageProfile reports whether the caller may change a directory
+// profile's public presentation (its logo today), given who the profile
+// belongs to:
+//
+//   - an agent profile (agentUserID set): only the agent themselves, while
+//     they are still a member of the organisation;
+//   - any other profile (an agency's, a law firm's, a host's, ...): an OWNER
+//     or MANAGER of the organisation that owns it. An AGENT or STAFF member
+//     may not change the business's profile.
+func (p *Principal) MayManageProfile(organisationID uuid.UUID, agentUserID *uuid.UUID) bool {
+	m, ok := p.membership(organisationID)
+	if !ok {
+		return false
+	}
+	if agentUserID != nil {
+		return *agentUserID == p.UserID
+	}
+	return m.Role == RoleOwner || m.Role == RoleManager
 }
 
 // IsDirectOwner reports whether the caller is an APPROVED individual owner

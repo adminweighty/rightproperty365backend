@@ -107,6 +107,15 @@
               "gt": "2026-11-14T09:00:00.000Z"
             }
           }
+        },
+        {
+          "bool": {
+            "must_not": {
+              "term": {
+                "advertiser_verified": false
+              }
+            }
+          }
         }
       ],
       "minimum_should_match": 1,

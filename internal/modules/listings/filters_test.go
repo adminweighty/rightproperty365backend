@@ -62,7 +62,7 @@ func placesStore() (*MemoryStore, *Service) {
 	// 2: a private seller's flat in Victoria Falls, no photos, small, older.
 	store.Put(filterRecord(2, func(r *Record) {
 		r.City, r.Suburb = "victoria-falls", "falls-centre"
-		r.Advertiser, r.Photos = Advertiser{Type: AdvertiserPrivateSeller, Name: "Grace Mhlanga"}, nil
+		r.Advertiser, r.Photos = Advertiser{Type: AdvertiserPrivateSeller, Name: "Grace Mhlanga", Verified: true}, nil
 		r.Bedrooms, r.Bathrooms, r.FloorArea, r.LandArea = intp(2), intp(1), intp(80), nil
 		r.PublishedAt = esNow.AddDate(0, 0, -40)
 	}))
@@ -386,11 +386,11 @@ func TestMappingVersionAndNewFields(t *testing.T) {
 	if err := json.Unmarshal(IndexMapping, &mapping); err != nil {
 		t.Fatal(err)
 	}
-	if mapping.Mappings.Meta.Version != MappingVersion || MappingVersion != 4 {
+	if mapping.Mappings.Meta.Version != MappingVersion || MappingVersion != 5 {
 		t.Fatalf("mapping _meta version %d, code says %d: raise both together and note the reindex", mapping.Mappings.Meta.Version, MappingVersion)
 	}
 	for field, want := range map[string]string{
-		"market": "keyword", "region": "keyword", "advertiser_type": "keyword", "has_photos": "boolean",
+		"market": "keyword", "region": "keyword", "advertiser_type": "keyword", "advertiser_verified": "boolean", "has_photos": "boolean",
 		"floor_area": "integer", "land_area": "integer", "published_at": "date", "city_name": "text", "region_name": "text",
 	} {
 		if got := mapping.Mappings.Properties[field].Type; got != want {
@@ -477,5 +477,41 @@ func TestShortStaySearchAndGuests(t *testing.T) {
 	if !strings.Contains(sql, "pc.description ILIKE $2") || !strings.Contains(sql, "pc.label ILIKE $2") || !strings.Contains(sql, "l.max_guests >= $3") ||
 		!strings.Contains(searchFrom, "pc.set_code = 'property_categories' AND pc.code = l.category") {
 		t.Fatalf("database search: %s", sql)
+	}
+}
+
+// The rule "only listings of a verified advertiser are public" is in every
+// adapter's query: the Postgres WHERE clause (search, facets, suggestions,
+// by-owner, the sitemap and the counts all start from publicCondition) and
+// the Elasticsearch filter (search and suggestions).
+func TestEveryAdapterFiltersOnAVerifiedAdvertiser(t *testing.T) {
+	sql := where(Query{}, esNow, "").sql()
+	for _, part := range []string{"l.status = 'PUBLISHED'", "l.expires_at > $1",
+		"vo.status = 'ACTIVE' AND vp.kind <> 'agents' AND vp.status = 'ACTIVE' AND vp.verified",
+		"vu.status = 'ACTIVE' AND vr.role IN ('PRIVATE_SELLER', 'LANDLORD') AND vr.status = 'ACTIVE'"} {
+		if !strings.Contains(sql, part) {
+			t.Fatalf("the Postgres public condition lacks %q:\n%s", part, sql)
+		}
+	}
+	if !strings.HasPrefix(publicCondition, publishedCondition) || !strings.Contains(publicCondition, advertiserVerifiedCondition) {
+		t.Fatal("publicCondition is not status, expiry and a verified advertiser")
+	}
+	for name, body := range map[string]J{"search": BuildSearchBody(Query{Page: 1, PageSize: 12}, esNow), "suggest": BuildSuggestBody("bor", 8, esNow)} {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(raw), `{"bool":{"must_not":{"term":{"advertiser_verified":false}}}}`) {
+			t.Fatalf("the Elasticsearch %s body does not filter on a verified advertiser: %s", name, raw)
+		}
+	}
+	// The document says what the database said when it was written.
+	r := sampleRecord()
+	if !BuildDocument(r, testLabels).AdvertiserVerified {
+		t.Fatal("a verified advertiser's document says unverified")
+	}
+	r.Advertiser.Verified = false
+	if BuildDocument(r, testLabels).AdvertiserVerified {
+		t.Fatal("an unverified advertiser's document says verified")
 	}
 }

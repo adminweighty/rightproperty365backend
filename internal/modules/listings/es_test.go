@@ -236,8 +236,9 @@ func TestDocumentHoldsOnlyPublicListingData(t *testing.T) {
 	private := regexp.MustCompile(`(?i)phone|e-?mail|address|contact|customer|guest|owner|user|organisation|agent|seller|advertiser|password|token`)
 	for key := range fields {
 		// advertiser_type is the KIND of advertiser ("agency" or "private"),
-		// which the public listing shows anyway; it never says who.
-		if private.MatchString(key) && key != "advertiser_type" {
+		// which the public listing shows anyway; advertiser_verified is one
+		// boolean. Neither says who.
+		if private.MatchString(key) && key != "advertiser_type" && key != "advertiser_verified" {
 			t.Fatalf("document field %q looks like private or account data", key)
 		}
 	}

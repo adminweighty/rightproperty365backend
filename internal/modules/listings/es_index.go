@@ -56,7 +56,8 @@ type ESTransport interface {
 //	3  max_guests, min_nights, keywords (short stays; price_period gains "night")
 //	4  city_name, region_name (free-text places of a listing in a country
 //	   without reference places; city and suburb may now be absent)
-const MappingVersion = 4
+//	5  advertiser_verified (only listings of a verified advertiser are public)
+const MappingVersion = 5
 
 // IndexMapping is the explicit mapping of a listings index.
 //
@@ -93,7 +94,12 @@ type Document struct {
 	Region string `json:"region,omitempty"`
 	// AdvertiserType is "agency" or "private": the kind of advertiser, never who.
 	AdvertiserType string `json:"advertiser_type"`
-	HasPhotos      bool   `json:"has_photos"`
+	// AdvertiserVerified says the advertiser was verified when the document
+	// was written: a single boolean, never who. Searches filter on it so the
+	// totals and facets are right; the database still has the last word on
+	// every hit.
+	AdvertiserVerified bool `json:"advertiser_verified"`
+	HasPhotos          bool `json:"has_photos"`
 	// MaxGuests and MinNights are set for short stays only.
 	MaxGuests *int `json:"max_guests,omitempty"`
 	MinNights *int `json:"min_nights,omitempty"`
@@ -165,7 +171,7 @@ func BuildDocument(r Record, labels map[string]map[string]string) Document {
 		return coded(labels[set], code).Label
 	}
 	return Document{
-		Region: labels[keyCityRegion][r.City], AdvertiserType: advertiser, HasPhotos: len(r.Photos) > 0,
+		Region: labels[keyCityRegion][r.City], AdvertiserType: advertiser, AdvertiserVerified: r.Advertiser.Verified, HasPhotos: len(r.Photos) > 0,
 		CityName: r.CityName, RegionName: r.RegionName,
 		MaxGuests: r.MaxGuests, MinNights: r.MinNights, Keywords: labels[keyCategoryKeywords][r.Category],
 		ID: r.ID.String(), Slug: r.Slug, Reference: r.Reference, Title: r.Title, Summary: r.Summary, Description: r.Description,

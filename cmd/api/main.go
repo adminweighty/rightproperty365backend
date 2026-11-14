@@ -73,7 +73,8 @@ func run() error {
 	}
 	var deliveryLog mail.DeliveryLog
 
-	// Private file storage (onboarding documents).
+	// Object storage: onboarding documents (private) and profile logos
+	// (public, but only ever served by the API).
 	files, err := storage.Open(cfg, logger)
 	if err != nil {
 		return err
@@ -105,6 +106,10 @@ func run() error {
 		memListings := listings.NewMemoryStore(reference.NewService(referenceStore, nil))
 		memDirectory := directory.NewMemoryStore()
 		devseed.SeedMemoryContent(memListings, memDirectory, time.Now())
+		// ...whose logos are drawn at start-up and kept in the file storage.
+		if err := devseed.SeedLogoFiles(ctx, files); err != nil {
+			return fmt.Errorf("seed sample logos: %w", err)
+		}
 		listingStore, listingSearch, directoryStore = memListings, memListings, memDirectory
 		memRequests := propertyrequests.NewMemoryStore()
 		// Development sample data: 18 published listings, each with its
@@ -129,6 +134,9 @@ func run() error {
 
 		memIdentity := identity.NewMemoryStore()
 		identityStore = memIdentity
+		// Who advertises a listing — and whether they are verified — is read
+		// from the profiles and accounts every time, never from a copy.
+		memListings.SetAdvertisers(app.MemoryAdvertisers(memDirectory, memIdentity))
 		memOnboarding := onboarding.NewMemoryStore(onboarding.MemoryDeps{
 			Identity: memIdentity, Directory: memDirectory, Enquiries: memEnquiries,
 			MarketID: func(code string) (uuid.UUID, bool) {

@@ -55,7 +55,7 @@ func codes(items []refItem) string {
 var wantSetSizes = map[string]int{
 	"deal_types": 2, "property_categories": 4, "property_types": 12, "request_types": 5, "contact_methods": 3,
 	"account_roles": 15, "directory_kinds": 7, "service_trades": 7, "cities": 14, "suburbs": 24, "listing_features": 59,
-	"onboarding_documents": 9, "organisation_kinds": 6, "regions": 14, "price_periods": 2,
+	"onboarding_documents": 10, "organisation_kinds": 6, "regions": 14, "price_periods": 2,
 }
 
 func TestReferenceAllSets(t *testing.T) {
@@ -412,7 +412,8 @@ func TestPlatformRolesAreDeniedEvenIfInTheReferenceTable(t *testing.T) {
 // solicitors directory) are the same rows the memory store and cmd/seed use.
 func TestMigrationSeedsTheSameReferenceRows(t *testing.T) {
 	sql := ""
-	for _, name := range []string{"0007_reference_data.up.sql", "0009_onboarding.up.sql", "0010_real_estate_roles.up.sql", "0012_locations.up.sql", "0013_uk_short_stays.up.sql", "0015_availability.up.sql"} {
+	for _, name := range []string{"0007_reference_data.up.sql", "0009_onboarding.up.sql", "0010_real_estate_roles.up.sql", "0012_locations.up.sql", "0013_uk_short_stays.up.sql", "0015_availability.up.sql",
+		"0016_logos_and_trust.up.sql"} {
 		raw, err := os.ReadFile(filepath.Join("..", "..", "migrations", name))
 		if err != nil {
 			t.Fatal(err)

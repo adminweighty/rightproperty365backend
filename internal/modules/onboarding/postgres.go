@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -11,6 +12,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"rightproperty365.com/backend/internal/modules/directory"
+	"rightproperty365.com/backend/internal/modules/listings"
+	"rightproperty365.com/backend/internal/platform/auth"
 )
 
 // PostgresStore is the Postgres adapter (migrations/0009_onboarding.up.sql).
@@ -462,15 +467,24 @@ func (s *PostgresStore) Approve(ctx context.Context, p Approval) (Created, error
 			if services == nil {
 				services = []string{}
 			}
+			// The logo columns stay NULL when the applicant attached no logo.
+			logo := directory.Logo{}
+			var logoKey *string
+			var logoAt *time.Time
+			if p.Profile.Logo != nil {
+				logo, logoKey, logoAt = *p.Profile.Logo, &p.Profile.Logo.ObjectKey, &p.At
+			}
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO directory_profiles (id, market_id, kind, slug, name, organisation_id, agent_user_id, status,
 					role_title, tagline, about, city_code, trade_code, verified, sponsored, areas, services, created_at, updated_at, specialism,
-					city_name)
+					city_name, verified_at, logo_object_key, logo_content_type, logo_width, logo_height, logo_checksum, logo_size_bytes, logo_updated_at)
 				VALUES ($1, $2, $3, $4, $5, $6, $7, 'ACTIVE', NULLIF($8, ''), NULLIF($9, ''), NULLIF($10, ''), NULLIF($11, ''), NULLIF($12, ''),
-					true, false, $13, $14, $15, $15, NULLIF($16, ''), NULLIF($17, ''))`,
+					true, false, $13, $14, $15, $15, NULLIF($16, ''), NULLIF($17, ''), $15,
+					$18, NULLIF($19, ''), NULLIF($20, 0), NULLIF($21, 0), NULLIF($22, ''), NULLIF($23::bigint, 0), $24)`,
 				p.Profile.ID, market, p.Profile.Kind, slug, p.Profile.Name, p.Profile.OrganisationID, p.Profile.AgentUserID,
 				p.Profile.RoleTitle, p.Profile.Tagline, p.Profile.Description, p.Profile.CityCode, p.Profile.TradeCode,
-				areas, services, p.At, p.Profile.Specialism, p.Profile.CityName); err != nil {
+				areas, services, p.At, p.Profile.Specialism, p.Profile.CityName,
+				logoKey, logo.ContentType, logo.Width, logo.Height, logo.Checksum, logo.Size, logoAt); err != nil {
 				return fmt.Errorf("insert profile: %w", err)
 			}
 			created.Profile = &ProfileRef{Kind: p.Profile.Kind, Slug: slug}
@@ -478,6 +492,18 @@ func (s *PostgresStore) Approve(ctx context.Context, p Approval) (Created, error
 		}
 		if err := setAccountRole(ctx, tx, p.UserID, p.Role, RoleStatusActive, p.At); err != nil {
 			return err
+		}
+		if slices.Contains(auth.DirectOwnerRoles(), p.Role) {
+			// A direct owner's listings become public with this approval: each is
+			// touched (the search index orders writes by updated_at) and the
+			// index is told, in this same transaction.
+			if _, err := tx.Exec(ctx, `
+				WITH touched AS (UPDATE listings SET updated_at = $2 WHERE seller_user_id = $1 AND organisation_id IS NULL RETURNING id)
+				INSERT INTO outbox_events (id, event_type, aggregate_type, aggregate_id, payload, created_at, available_at)
+				SELECT gen_random_uuid(), $3, $4, t.id, jsonb_build_object('listing_id', t.id), $2, $2 FROM touched t`,
+				p.UserID, p.At, listings.EventListingUpdated, listings.AggregateListing); err != nil {
+				return fmt.Errorf("refresh the owner's listings: %w", err)
+			}
 		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE onboarding_applications

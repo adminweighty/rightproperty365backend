@@ -84,3 +84,33 @@ func TestCapabilities(t *testing.T) {
 		}
 	}
 }
+
+// Who may change a directory profile's public presentation (its logo).
+func TestMayManageProfile(t *testing.T) {
+	org, other := uuid.New(), uuid.New()
+	me, colleague := uuid.New(), uuid.New()
+	for _, tc := range []struct {
+		role            string
+		business, mine  bool
+		colleaguesPhoto bool
+	}{
+		{RoleOwner, true, true, false},
+		{RoleManager, true, true, false},
+		// An agent changes their own photo, never the business's logo.
+		{RoleAgent, false, true, false},
+		{RoleStaff, false, true, false},
+	} {
+		p := &Principal{UserID: me, Memberships: []Membership{{OrganisationID: org, OrganisationKind: KindAgency, Role: tc.role}}}
+		if p.MayManageProfile(org, nil) != tc.business || p.MayManageProfile(org, &me) != tc.mine || p.MayManageProfile(org, &colleague) != tc.colleaguesPhoto {
+			t.Fatalf("%s: business %v, own %v, a colleague's %v", tc.role, p.MayManageProfile(org, nil), p.MayManageProfile(org, &me), p.MayManageProfile(org, &colleague))
+		}
+		// Never in an organisation the caller is not a member of — not even
+		// their own agent profile once they have left it.
+		if p.MayManageProfile(other, nil) || p.MayManageProfile(other, &me) {
+			t.Fatalf("%s manages a profile of another organisation", tc.role)
+		}
+	}
+	if (&Principal{UserID: me}).MayManageProfile(org, &me) {
+		t.Fatal("a caller without a membership manages a profile")
+	}
+}

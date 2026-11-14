@@ -143,6 +143,9 @@ including the shared password, and touches nothing else). Where it may run:
 After seeding a database that Elasticsearch searches, rebuild the index (`/app/reindex`): the seed
 writes listings directly and the search index only learns about them from a reindex.
 
+The seed also writes the sample logos (one small PNG per sample business, see "Logos") to the
+configured file storage and marks the sample listings as reviewed. It needs migration 0016.
+
 Sign in and read the organisation inbox (PowerShell; `-SessionVariable` keeps the cookie, and the
 `Origin` header is required on cookie-authenticated POSTs):
 
@@ -228,6 +231,10 @@ All configuration comes from environment variables. For local development you ma
 | GET | `/v1/reference`, `/v1/reference/{set}` | Reference data behind every drop-down, filter and list (public, cacheable) |
 | GET | `/v1/listings`, `/v1/listings/suggest`, `/v1/listings/{slug}` | Public listing search, suggestions and detail |
 | GET | `/v1/directory`, `/v1/directory/{kind}`, `/v1/directory/{kind}/{slug}`, `/v1/sitemap` | Public directories, profiles and sitemap data |
+| GET | `/v1/directory/{kind}/{slug}/logo` | A public profile's logo: the image itself, cacheable, no session |
+| GET | `/v1/me/profiles` | The directory profiles the caller may manage |
+| PUT, DELETE | `/v1/me/profiles/{kind}/{slug}/logo` | Set (multipart) or remove a profile's logo |
+| GET | `/v1/trust/summary` | How many advertisers are verified and how many listings are public (public, cacheable) |
 | POST | `/v1/property-requests` | The single entry point for every customer enquiry (guest or signed-in) |
 | POST | `/v1/business-enquiries` | The only way to contact a directory profile (guest or signed-in) |
 | GET | `/v1/inbox/business-enquiries` | Business enquiries received by the caller's organisation(s) |
@@ -702,6 +709,9 @@ stale-while-revalidate=120`, a strong `ETag`, `304` on `If-None-Match`).
 | GET | `/v1/directory/{kind}/{slug}` | `{profile}` with its agents and public listings |
 | GET | `/v1/sitemap` | Every public listing slug and profile kind/slug with `updated_at` |
 
+**Since 0.17.0 a listing is also public only while its advertiser is verified** (see "Verified
+advertisers"); such a listing answers `404`, not `410`.
+
 **Only PUBLISHED and unexpired listings are ever returned (FR-006).** `status = 'PUBLISHED' AND
 expires_at > now` is part of every query that can return a listing. Search sits behind a `Search`
 port (`internal/modules/listings`): the Postgres and memory adapters implement every filter,
@@ -763,7 +773,8 @@ re-checks status and expiry, so an index that is behind cannot bring back an exp
   the region of its city.
 - **Profiles** carry name, role, tagline, description, city, region, country, areas, services, offerings, trade,
   verified, sponsored, since, `agency` (for agents), `listing_count`; the detail adds an agency's
-  `agents` and the profile's public `listings`. `logo` is always null (there are none).
+  `agents` and the profile's public `listings`. `logo` is `{url, width, height}` or null (see
+  "Logos").
 - **Photos are not uploaded anywhere.** `photos[].url` is a site-relative path
   (`/assets/images/<file>.jpg`) naming the web app's own sample image files, returned exactly as
   stored. **Object storage (MinIO) and uploads are not built.**
@@ -773,6 +784,174 @@ real titles, prices, descriptions, features, photos, slugs and references
 (`internal/devseed/data/sample.json`, converted from the web's sample data). Publication dates are
 relative to the moment of seeding, so the sample listings are always recent; the one expired
 listing (`expired-two-bedroom-flat-avenues`) answers `410`.
+
+## Verified advertisers: what "verified" means here, and what enforces it
+
+The site says that its listings and sellers are verified. This section is what makes that
+statement true, and where it stops being true.
+
+**The rule.** A listing is public only while ALL of these hold:
+
+1. its status is `PUBLISHED`;
+2. it has not expired;
+3. **its advertiser is verified**: the organisation that owns it is `ACTIVE` and has a profile
+   of its own (an agency's, a law firm's, a property manager's, a developer's, a host's; never an
+   agent's) that is published (`ACTIVE`) and `verified`; or, for a direct owner, the owner's
+   account is `ACTIVE` and their `PRIVATE_SELLER` or `LANDLORD` account role is `ACTIVE`
+   (approved through onboarding).
+
+An assigned agent's own profile does **not** gate the listing: if the agent is not verified the
+listing stays public under its verified agency and the agent is simply not shown as verified.
+
+**Where it is enforced.** In one place per store, which everything public goes through:
+
+| Path | How |
+| --- | --- |
+| `GET /v1/listings` (database search), facets, `suggest`, the sitemap, profile pages, country counts | PostgreSQL: `publicCondition` in `listings/postgres.go` is status, expiry AND `advertiserVerifiedCondition` (two `EXISTS` sub-queries on the profiles and the account roles). Memory: `Record.Public`, with the advertiser resolved on every read |
+| `GET /v1/listings` (Elasticsearch) | The document has one boolean, `advertiser_verified` (never who), and the query excludes the documents that say `false`, so totals and facets are right. **Every hit is then re-read from the database**, so a document that is behind is dropped |
+| `GET /v1/listings/{slug}`, `/availability` | `404 LISTING_NOT_FOUND`, never `410`: "no longer available" would reveal that an advertiser lost its verification |
+| `POST /v1/property-requests` (requests to stay included), `POST /v1/appointments` | `404 LISTING_NOT_FOUND` (`app.verifiedListings` wraps the request store) |
+| `GET /v1/directory/...` | Profiles were already public only when published and verified |
+
+The verification is **never copied**: not onto the listing, and the copy in the search index
+is not trusted. It is read with the listing, every time, so an advertiser who stops being
+verified disappears from every public endpoint with the next request, and reappears when they
+are verified again. Their people keep their inboxes and their own pages (`/v1/me/...`).
+
+**What a listing says.** `advertiser.verified` / `advertiser.display.verified` (always true on
+anything returned publicly) and
+
+```json
+"verification": {"advertiser_verified": true, "advertiser_verified_at": "2026-11-01T00:00:00Z",
+                 "listing_reviewed": true, "listing_reviewed_at": "2026-11-10T08:00:00Z"}
+```
+
+`advertiser_verified_at` is `directory_profiles.verified_at` (set by an approval; backfilled
+with the profile's creation time by migration 0016 for profiles that were already verified) or,
+for a direct owner, the time their role row last changed to `ACTIVE`. In the memory store an
+owner's time is the account's creation time.
+
+**The numbers.** `GET /v1/trust/summary` returns `{verified_advertisers: {organisations,
+direct_owners}, public_listings, listings_from_verified_advertisers, listings_reviewed,
+generated_at}`. `listings_from_verified_advertisers` is counted on its own and equals
+`public_listings`; a test asserts it.
+
+### What is NOT true yet: read before writing "all listings are verified"
+
+- **The listing itself is not reviewed.** `listing_reviewed` exists (`listings.reviewed_at`,
+  `reviewed_by`) but **only the sample-data seed sets it**: there are still no endpoints to
+  create, submit, review or publish a listing. The **listing moderation workflow** (an advertiser
+  submits -> `PENDING_REVIEW` -> a Moderator approves or rejects with a reason, with an audit
+  trail) is specified and not built. Until it exists, **the only verified claim that is enforced
+  end to end is ADVERTISER verification**. A real listing created by any future endpoint will say
+  `listing_reviewed: false` until that workflow sets it.
+- **No administrator endpoint to unverify or re-verify.** Requested and **not started**:
+  `POST /v1/admin/organisations/{id}/unverify` / `verify` and
+  `POST /v1/admin/users/{id}/roles/{role}/suspend` / `reinstate`, with a required reason, an
+  audit line and a history row. Today a profile becomes verified only by an onboarding approval,
+  and nothing in the API takes verification away; doing so is a database change
+  (`UPDATE directory_profiles SET verified = false ...`), which the rule above then honours at
+  once. With Elasticsearch, also touch the listings (`UPDATE listings SET updated_at = now()
+  WHERE organisation_id = ...`) and run `cmd/reindex`, otherwise the totals and facets count
+  the hidden listings until the next reindex (the listings themselves are never shown: the
+  database re-check drops them).
+- **An account role has no `SUSPENDED` status.** A direct owner is "not verified" when their
+  role is `PENDING_VERIFICATION` or `REJECTED`.
+- **Verification is the placeholder process of "Professional onboarding"**: which documents
+  prove what, per country, is still an undecided business and legal question.
+- **Index events on a verification change** are written in one case only, because it is the only
+  change the API can make: when a direct owner's role is approved, their listings are touched
+  and a `LISTING_UPDATED` event is written for each, in the approval's transaction (PostgreSQL;
+  never run). A newly approved organisation has no listings yet.
+
+## Logos: businesses, agents and the listing card
+
+Every public profile can have a logo; for an agent it is their photo. Listings show it.
+
+**What a client reads.** `Listing.advertiser.display` is the card, already resolved:
+
+```json
+"display": {"name": "Sample Estates", "secondary_name": "Tendai Ncube", "role_label": "Real Estate Agency",
+            "logo": {"url": "/v1/directory/agencies/sample-estates/logo?v=3f2a9c0d1b7e", "width": 256, "height": 256},
+            "verified": true, "profile": {"kind": "agencies", "slug": "sample-estates"}},
+"agent_display": {"name": "Tendai Ncube", "role_label": "Estate Agent", "verified": true, "logo": null,
+                  "profile": {"kind": "agents", "slug": "tendai-ncube"}}
+```
+
+| The listing belongs to | `display.name` | `secondary_name` | `role_label` | `logo` | `profile` |
+| --- | --- | --- | --- | --- | --- |
+| a business with an assigned agent | the business | the agent | the business's kind | the business's, else the agent's photo, else null | the business's page |
+| a business, no agent profile | the business | null | the business's kind | the business's, else null | the business's page |
+| a direct owner, for sale | the owner's account name | null | Property Seller (Vendor) | null | null |
+| a direct owner, to rent | the owner's account name | null | Landlord | null | null |
+
+`role_label` comes from the reference data (`organisation_kinds` for a business, `account_roles`
+for a person), so renaming a row renames it everywhere. `agent_display` is the agent as a person,
+with their own verified flag (true only when their profile is verified **and** the business is).
+`advertiser.name` and `advertiser.verified` repeat `display`'s for older clients.
+
+**A direct owner's name is now public.** `advertiser.name` used to be the fixed text "Private
+seller"; it is now the owner's account name (the sample: "Grace Mhlanga"). **The name is the only
+personal data of a direct owner that is public**: never an email address, a phone number or an
+address (the leak test walks every public response). A "display name" the owner could choose
+instead of their account name is **not built**.
+
+**The URL is relative to the API, on purpose.** `logo.url` is a path such as
+`/v1/directory/agencies/sample-estates/logo?v=3f2a9c0d1b7e`. Clients prefix **the API base URL
+they already use** (not the web site's origin: the web calls the API on another origin, and an
+`<img src>` taken as it is would resolve against the web site). It is not an absolute URL
+because the API does not know the public address it is reached at behind a proxy (there is no
+`PUBLIC_API_URL` setting, and a wrong one would break every image), and because the catalogue
+JSON is cached publicly and must be the same whoever asks. `v` is the first 12 characters of the
+image's SHA-256: it changes when the logo changes, so the image can be cached hard.
+
+**Serving.** `GET /v1/directory/{kind}/{slug}/logo` streams the stored image with its stored
+content type, `Cache-Control: public, max-age=300, stale-while-revalidate=86400`, an `ETag` (the
+checksum; `If-None-Match` answers `304`), `X-Content-Type-Options: nosniff` and
+`Cross-Origin-Resource-Policy: cross-origin`. No session is read and no cookie is set. `404
+LOGO_NOT_FOUND` when the profile has none, `404 PROFILE_NOT_FOUND` when the profile is not
+public: the logo of an unverified or suspended profile stops being served although it is still
+stored.
+
+**Where the image lives.** In the same **private** object storage as the onboarding documents,
+under its own random key (`logos/<32 hex digits>`). Nothing makes an object public and no
+storage URL is ever returned: the API route is the only way out. With `STORAGE_DRIVER=s3` the
+bucket therefore stays private, and every logo request is one object read through the API.
+
+**Uploading.**
+
+- *At onboarding:* an optional document type `LOGO` ("Logo or profile photo") for every role
+  whose approval creates a public profile (the organisation roles, and AGENT / SALES_AGENT /
+  LETTINGS_AGENT). **It is the one onboarding upload that becomes public**, and the requirements
+  endpoint says so in its description so that a client can warn the applicant. On approval it is
+  **copied** to a `logos/` object and attached to the new profile, in the approval's
+  transaction; the uploaded document itself stays a private document like the others (the
+  reviewer sees it in the review detail). If the copy fails the approval still goes through
+  without a logo, and the reason is logged.
+- *Afterwards:* `GET /v1/me/profiles` lists the profiles the caller may manage;
+  `PUT /v1/me/profiles/{kind}/{slug}/logo` (multipart `file`) replaces the logo and `DELETE`
+  removes it. Who may is decided in `auth/capabilities.go` (`MayManageProfile`): an OWNER or
+  MANAGER of the organisation for a business profile; the agent themselves for an agent profile.
+  Another organisation's profile is `404`; a member whose role may not (an AGENT and the agency's
+  logo) is `403`. Rate limited with the other uploads (20 per minute per IP); a cookie session
+  needs the web app's `Origin`.
+
+**Limits** (the same in both places): PNG or JPEG only, decided by sniffing the content and
+decoding the image header (which is also where width and height come from); at most **2 MB**;
+between **128x128** and **4096x4096** pixels. **SVG is refused** because it can carry scripts;
+GIF, WebP, animated PNG, PDF and text named `.png` are refused.
+
+**Sample data.** The seed draws a 256x256 PNG for every sample business with the standard
+library: a coloured square with the business's initials in a small bitmap font written for the
+purpose (`internal/devseed/logos.go`; no third-party font or artwork). Two gaps are deliberate, so
+that clients exercise their fallbacks: **`agencies/sample-realty` has NO logo** (show initials),
+and **no sample agent has a photo** (fall back to the agency's logo).
+
+**Not built:** resizing, thumbnails and format conversion (the image is served exactly as
+uploaded, at whatever size, so a card downloads the full image); cropping; **moderation of logos**
+(a logo is public the moment its owner uploads it, with no review); EXIF / metadata stripping;
+a CDN or any cache in front of the API; cleaning up the old object if deleting it fails (it is
+logged); malware scanning (as for the documents).
 
 ## Search: Elasticsearch behind a port, the database underneath
 
@@ -802,6 +981,13 @@ The API and the worker each log one line at startup naming the driver:
 
 **PostgreSQL stays the source of truth.**
 
+> **After deploying verified advertisers (mapping version 5), run `cmd/reindex` once.** Documents
+> now carry `advertiser_verified` (one boolean) and every search excludes the documents that say
+> `false`. The mapping is strict, so until the index is rebuilt the old index **refuses every
+> new or changed document** (the worker's index events fail and are retried). Searches keep
+> working in the meantime: an old document has no such field, is not excluded, and is re-checked
+> against the database like every hit.
+>
 > **After deploying the global countries (mapping version 4), run `cmd/reindex` once.**
 > Documents gained `city_name` and `region_name` (the free-text city and region of a listing in
 > a country without reference places) and `city` / `suburb` may now be absent. The mapping is
@@ -852,7 +1038,7 @@ sub-field for title, suburb and city labels, `scaled_float` for the price with t
 separately, integers for bedrooms and bathrooms, dates, a `version`, and a `geo_point` `location`
 that is mapped but unused. **A document holds public listing data only** — no customer, no contact
 detail, no owner account, and nothing that says who the advertiser is (only `advertiser_type`:
-`agency` or `private`); a test checks every field name and that every field is in the mapping.
+`agency` or `private`, and the boolean `advertiser_verified`); a test checks every field name and that every field is in the mapping.
 A document's `region` is read from the reference data when it is built, so **moving a city to
 another region needs a reindex** for Elasticsearch to follow (the database adapter follows at
 once).
@@ -1033,6 +1219,14 @@ So that nobody assumes these exist. They are in the updated functional specifica
   stays");
 - creating, editing and publishing listings (only a short stay's calendar and stay rules can
   be changed through the API);
+- the **listing moderation workflow**: submit -> `PENDING_REVIEW` -> approve or reject by a
+  Moderator, with reasons and an audit trail. Until it exists `listing_reviewed` is set by the
+  sample-data seed only, and the only verified claim enforced end to end is ADVERTISER
+  verification (see "Verified advertisers");
+- administrator endpoints to unverify / re-verify an organisation and to suspend / reinstate a
+  direct owner's role (requested, not started);
+- a display name a direct owner can choose (their account name is shown on their listings);
+- resizing, cropping and moderation of logos, and a CDN (see "Logos");
 - subscription plans, and admin-recorded payments, invoices and receipts (the specification has no
   online payment in the mobile app);
 - per-country **legal texts, payment gateways and tax rules** (see "Countries": any country can
@@ -1120,6 +1314,9 @@ administrators see them, nobody else, and nothing copies them to a profile.
 | `LANDLORD`, `PRIVATE_SELLER` | PROOF_OF_IDENTITY, PROOF_OF_OWNERSHIP | |
 
 ### File storage
+
+Profile logos live in the same storage and are public **through the API only** (see "Logos");
+everything below is about the onboarding documents.
 
 Documents are **private objects**. There is no public URL for one: the only way to read a document
 is an authenticated API route (the owner's, or an authorised administrator's, whose every access
@@ -1610,7 +1807,7 @@ cmd/adminctl   create platform administrators / set their password (Postgres onl
 cmd/seed       development sample data into Postgres (refuses outside APP_ENV=development)
 cmd/mailpreview  render every email template to tmp/mail-preview/ (sends nothing)
 internal/modules/onboarding  professional onboarding: applications, documents, review, approval
-internal/platform/storage    private file storage: local folder (development) and S3/MinIO
+internal/platform/storage    private file storage (onboarding documents, profile logos): local folder (development) and S3/MinIO
 cmd/reindex    rebuild the Elasticsearch listings index and swap the alias (needs a cluster)
 internal/platform/config     env configuration + validation
 internal/platform/logging    slog JSON logger, request-ID propagation
@@ -1632,7 +1829,8 @@ internal/modules/businessenquiries POST /v1/business-enquiries, GET /v1/inbox/bu
 internal/modules/appointments      /v1/appointments, /v1/me/appointments, /v1/inbox/appointments, /v1/inbox/summary (handler, service, store: postgres + memory)
 internal/modules/notifications     outbox events -> emails; verification/reset mailer; data lookups (postgres + memory)
 internal/modules/listings          GET /v1/listings, /v1/listings/suggest, /v1/listings/{slug}; Search port (postgres + memory)
-internal/modules/directory         GET /v1/directory, /v1/directory/{kind}[/{slug}], /v1/sitemap (postgres + memory)
+internal/modules/directory         GET /v1/directory, /v1/directory/{kind}[/{slug}], /v1/sitemap; profile logos: the public image route and /v1/me/profiles (postgres + memory)
+internal/modules/trust             GET /v1/trust/summary: verified advertisers and public listings, counted
 internal/modules/reference         GET /v1/reference, /v1/reference/{set}; the rows other modules validate against
 internal/modules/identity          /v1/auth/*, /v1/me: accounts, sessions, tokens, roles, Mailer (store: postgres + memory)
 migrations/    embedded SQL (NNNN_name.up.sql / .down.sql)
@@ -1724,6 +1922,14 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0016_logos_and_trust` adds the logo columns of `directory_profiles` (`logo_object_key`,
+  `logo_content_type`, `logo_width`, `logo_height`, `logo_checksum`, `logo_size_bytes`,
+  `logo_updated_at`, with CHECK constraints: all or none, PNG or JPEG, 128 to 4096 pixels, at most
+  2 MB) and `verified_at`, `listings.reviewed_at` / `reviewed_by`, the `LOGO` reference row and
+  its nine per-role rows (upserts: running them twice changes nothing). It only adds nullable
+  columns; one `UPDATE` backfills `verified_at` with `created_at` on profiles that are already
+  verified. **The API of this release needs it: it selects these columns.** Its down migration
+  drops every logo reference (the objects stay in storage). **Not run by me.**
 - `0015_availability` adds `listing_availability` (unavailable ranges of nights per listing,
   with the private reason and note), `listing_availability_audit` (the trail),
   `listings.availability_updated_at`, two indexes for "my listings", the stay columns of

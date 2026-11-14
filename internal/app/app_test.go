@@ -182,6 +182,11 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 	if err := devseed.SeedMemoryOnboarding(context.Background(), e.identity, e.onboard, e.files, hasher, seedPassword, e.now); err != nil {
 		t.Fatal(err)
 	}
+	// As cmd/api: the sample logos' images, and advertisers resolved on every read.
+	if err := devseed.SeedLogoFiles(context.Background(), e.files); err != nil {
+		t.Fatal(err)
+	}
+	e.listings.SetAdvertisers(MemoryAdvertisers(e.directory, e.identity))
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	e.marketStore = markets.NewMemoryStore()
 	e.calendars = availability.NewMemoryStore()
