@@ -347,14 +347,22 @@
     },
     "price": {
       "aggs": {
-        "max": {
-          "max": {
-            "field": "price"
-          }
-        },
-        "min": {
-          "min": {
-            "field": "price"
+        "values": {
+          "aggs": {
+            "max": {
+              "max": {
+                "field": "price"
+              }
+            },
+            "min": {
+              "min": {
+                "field": "price"
+              }
+            }
+          },
+          "terms": {
+            "field": "currency",
+            "size": 200
           }
         }
       },
@@ -391,11 +399,6 @@
                 "bedrooms": {
                   "gte": 3
                 }
-              }
-            },
-            {
-              "term": {
-                "currency": "USD"
               }
             }
           ]
@@ -673,6 +676,8 @@
               "title^4",
               "suburb_label^3",
               "city_label^3",
+              "city_name^3",
+              "region_name^3",
               "property_type_label^2",
               "summary",
               "description",

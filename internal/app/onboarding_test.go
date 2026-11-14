@@ -371,7 +371,10 @@ func TestOnboardingRequirements(t *testing.T) {
 			t.Fatalf("%s has no label", r.Role)
 		}
 	}
-	const orgFields = "business_name=true,tagline=false,description=true,city=true,areas=false,services=false,"
+	// A business names its country, and its city as a code (where the
+	// country has cities in the reference data) or as free text: one of the
+	// two is required, which the two "false" flags cannot say.
+	const orgFields = "business_name=true,tagline=false,description=true,country=true,city=false,city_name=false,areas=false,services=false,"
 	want := map[string]string{
 		"PRIVATE_SELLER":   "NONE - - | contact_phone=true | PROOF_OF_IDENTITY=true,PROOF_OF_OWNERSHIP=true",
 		"LANDLORD":         "NONE - - | contact_phone=true | PROOF_OF_IDENTITY=true,PROOF_OF_OWNERSHIP=true",
@@ -460,7 +463,7 @@ func TestRegistrationCreatesDraftApplications(t *testing.T) {
 			t.Fatalf("new application = %+v", a)
 		}
 		// Every detail key is present; text is null and lists are arrays.
-		if len(a.Details) != 12 || a.Details["business_name"] != nil || a.Details["areas"] == nil {
+		if len(a.Details) != 14 || a.Details["business_name"] != nil || a.Details["areas"] == nil {
 			t.Fatalf("details = %+v", a.Details)
 		}
 	}
@@ -794,7 +797,7 @@ func TestOnboardingSubmitAndStateRules(t *testing.T) {
 
 	// Everything missing is listed, fields and documents together.
 	env := wantError(t, submit(), http.StatusBadRequest, httpx.CodeValidationFailed)
-	want := []string{"details.business_name", "details.description", "details.city", "details.trade", "details.contact_phone",
+	want := []string{"details.business_name", "details.description", "details.country", "details.city", "details.trade", "details.contact_phone",
 		"documents.PROOF_OF_IDENTITY", "documents.BUSINESS_REGISTRATION", "documents.PROOF_OF_ADDRESS"}
 	if len(env.Error.Fields) != len(want) {
 		t.Fatalf("fields = %v, want %v", env.Error.Fields, want)

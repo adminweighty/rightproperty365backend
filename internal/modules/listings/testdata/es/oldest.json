@@ -129,14 +129,22 @@
     },
     "price": {
       "aggs": {
-        "max": {
-          "max": {
-            "field": "price"
-          }
-        },
-        "min": {
-          "min": {
-            "field": "price"
+        "values": {
+          "aggs": {
+            "max": {
+              "max": {
+                "field": "price"
+              }
+            },
+            "min": {
+              "min": {
+                "field": "price"
+              }
+            }
+          },
+          "terms": {
+            "field": "currency",
+            "size": 200
           }
         }
       },
@@ -146,11 +154,6 @@
             {
               "term": {
                 "region": "matabeleland-north"
-              }
-            },
-            {
-              "term": {
-                "currency": "USD"
               }
             }
           ]

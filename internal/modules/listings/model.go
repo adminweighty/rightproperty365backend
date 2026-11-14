@@ -19,6 +19,8 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -98,7 +100,7 @@ func CheckRecord(r Record) error {
 		if (r.MaxGuests != nil && *r.MaxGuests < 1) || (r.MinNights != nil && *r.MinNights < 1) {
 			return fmt.Errorf("listing %s: max_guests and min_nights must be at least 1", r.Slug)
 		}
-		return nil
+		return checkPlace(r)
 	}
 	if r.PricePeriod == PricePeriodNight {
 		return fmt.Errorf("listing %s: only a short stay is priced per night", r.Slug)
@@ -106,10 +108,62 @@ func CheckRecord(r Record) error {
 	if r.MaxGuests != nil || r.MinNights != nil {
 		return fmt.Errorf("listing %s: max_guests and min_nights are for short stays only", r.Slug)
 	}
+	return checkPlace(r)
+}
+
+// MaxPlaceNameLength bounds a free-text city or region name.
+const MaxPlaceNameLength = 80
+
+// CheckPlaceName validates a free-text city or region name: plain text of at
+// most MaxPlaceNameLength characters, with no markup and no control
+// characters. It returns "" when the name is fine.
+func CheckPlaceName(name string) string {
+	switch {
+	case strings.TrimSpace(name) != name:
+		return "must not start or end with a space"
+	case len([]rune(name)) > MaxPlaceNameLength:
+		return fmt.Sprintf("must be at most %d characters", MaxPlaceNameLength)
+	case strings.ContainsAny(name, "<>"):
+		return "must be plain text, without HTML"
+	}
+	for _, c := range name {
+		if c < 0x20 || c == 0x7f {
+			return "must be plain text on one line"
+		}
+	}
+	return ""
+}
+
+var countryCodeRe = regexp.MustCompile(`^[A-Z]{2}$`)
+
+// checkPlace enforces where a listing is: a country always; a city either as
+// a reference code or, for a country without reference places, as free text
+// (never both); a suburb only under a city code; a free-text region only
+// with a free-text city.
+func checkPlace(r Record) error {
+	if !countryCodeRe.MatchString(r.MarketCode) {
+		return fmt.Errorf("listing %s: a country (ISO 3166-1 alpha-2 code) is required, got %q", r.Slug, r.MarketCode)
+	}
+	switch {
+	case r.City == "" && r.CityName == "":
+		return fmt.Errorf("listing %s: a city is required, as a reference code or as free text", r.Slug)
+	case r.City != "" && (r.CityName != "" || r.RegionName != ""):
+		return fmt.Errorf("listing %s: a city code and a free-text city or region cannot be combined", r.Slug)
+	case r.City == "" && r.Suburb != "":
+		return fmt.Errorf("listing %s: a suburb needs a city code", r.Slug)
+	}
+	if problem := CheckPlaceName(r.CityName); problem != "" {
+		return fmt.Errorf("listing %s: city_name %s", r.Slug, problem)
+	}
+	if problem := CheckPlaceName(r.RegionName); problem != "" {
+		return fmt.Errorf("listing %s: region_name %s", r.Slug, problem)
+	}
 	return nil
 }
 
-// DefaultCurrency is assumed for min_price / max_price when no currency is given.
+// DefaultCurrency is the currency named by an empty price facet: when no
+// currency or country was chosen and nothing matched, there is no currency
+// to take from the results. It is never used to filter silently any more.
 const DefaultCurrency = "USD"
 
 // Errors.
@@ -125,6 +179,28 @@ var (
 type Coded struct {
 	Code  string `json:"code"`
 	Label string `json:"label"`
+}
+
+// Place is a city, a suburb or a region of a listing or a profile. Code is
+// the reference-data code (use it as the filter of the same name) and Label
+// its current label. For a place that was typed as free text — a city in a
+// country that has no reference places yet — Code is null and Label is the
+// text as it was entered; such a place cannot be filtered on, only found
+// with q.
+type Place struct {
+	Code  *string `json:"code"`
+	Label string  `json:"label"`
+}
+
+// Is reports whether the place is the reference row with that code.
+func (p Place) Is(code string) bool { return p.Code != nil && *p.Code == code }
+
+// CodeOr returns the place's code, or "" for a free-text place.
+func (p Place) CodeOr() string {
+	if p.Code == nil {
+		return ""
+	}
+	return *p.Code
 }
 
 // Money is an exact decimal amount with its ISO 4217 currency. Never a float.
@@ -179,10 +255,15 @@ type Listing struct {
 	PropertyType Coded     `json:"property_type"`
 	Price        Money     `json:"price"`
 	PricePeriod  *string   `json:"price_period"`
-	Suburb       Coded     `json:"suburb"`
-	City         Coded     `json:"city"`
-	// Region is the region (province) of the city; null when the city has none.
-	Region *Coded `json:"region"`
+	// Suburb is null when the listing names none (always the case for a
+	// free-text city).
+	Suburb *Place `json:"suburb"`
+	// City is always present: a reference city (code set) or a free-text one
+	// (code null).
+	City Place `json:"city"`
+	// Region is the region (province) of the city, or the free-text region
+	// that came with a free-text city; null when there is none.
+	Region *Place `json:"region"`
 	// Country is the listing's market as a country; MarketCode is its code.
 	Country    Country `json:"country"`
 	MarketCode string  `json:"market_code"`
@@ -218,10 +299,14 @@ type Record struct {
 	Price        Money
 	PricePeriod  string // "", "month" or "night"
 	// Short stays only.
-	MaxGuests   *int
-	MinNights   *int
-	Suburb      string
-	City        string
+	MaxGuests *int
+	MinNights *int
+	Suburb    string
+	City      string
+	// CityName and RegionName are free text, for a listing in a country that
+	// has no reference places: set instead of City (never with it).
+	CityName    string
+	RegionName  string
 	MarketCode  string
 	Bedrooms    *int
 	Bathrooms   *int
@@ -353,17 +438,39 @@ type Facets struct {
 	Suburb       []FacetCount `json:"suburb"`
 	Bedrooms     []FacetCount `json:"bedrooms"`
 	Features     []FacetCount `json:"features"`
-	Price        PriceRange   `json:"price"`
+	// Price is the price range in the search's one currency. It is NULL when
+	// no currency or country was chosen and the results span more than one
+	// currency: there is no single range to show, and Currencies says which
+	// currencies a client can ask the user to pick from.
+	Price *PriceRange `json:"price"`
+	// Currencies counts the results by the currency they are priced in
+	// (ignoring the price filter, like Price), most listings first.
+	Currencies []CurrencyCount `json:"currencies"`
 	// Country and Region count by market and by the region of the city.
 	Country []FacetCount `json:"country"`
 	Region  []FacetCount `json:"region"`
+}
+
+// CurrencyCount is one currency with the number of matching listings priced in it.
+type CurrencyCount struct {
+	Code  string `json:"code"`
+	Count int    `json:"count"`
+}
+
+// PriceStat is the number of listings priced in one currency and their
+// lowest and highest price.
+type PriceStat struct {
+	Count    int
+	Min, Max *big.Rat
 }
 
 // RawFacets are facet counts by code, before labels and ordering are applied.
 type RawFacets struct {
 	Deal, Category, PropertyType, City, Suburb, Features map[string]int
 	Bedrooms                                             map[int]int
-	PriceMin, PriceMax                                   *big.Rat
+	// Prices is keyed by currency and holds the listings that match every
+	// filter except the price filter.
+	Prices map[string]PriceStat
 	// Country is keyed by market code, Region by region code.
 	Country, Region map[string]int
 }
@@ -411,6 +518,9 @@ type Store interface {
 	// PublishedByOwner returns the public listings of an organisation
 	// (organisationID) or of one agent (agentUserID), newest first.
 	PublishedByOwner(ctx context.Context, organisationID, agentUserID *uuid.UUID, now time.Time) ([]Record, error)
+	// CountByCountry returns the number of public listings per country code
+	// (GET /v1/countries: which countries have listings right now).
+	CountByCountry(ctx context.Context, now time.Time) (map[string]int, error)
 	// PublishedSlugs returns the slug and updated_at of every public listing (sitemap).
 	PublishedSlugs(ctx context.Context, now time.Time) ([]SlugEntry, error)
 }

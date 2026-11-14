@@ -164,10 +164,16 @@ var expiredAt = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 // organisation and assigned agent, or its direct seller) plus the EXPIRED one.
 func Listings() []propertyrequests.Listing {
 	out := make([]propertyrequests.Listing, 0, ListingCount+BackendListingCount+1)
+	countries := listingMarkets()
 	for _, a := range Accounts() {
 		for _, n := range a.Listings {
+			// The listing's own country; its owner's when the sample does not say.
+			country := countries[propertyrequests.SeedListingID(n)]
+			if country == "" {
+				country = MarketOf(a.Organisation)
+			}
 			l := propertyrequests.Listing{
-				ID: propertyrequests.SeedListingID(n), MarketID: MarketID(MarketOf(a.Organisation)), Status: propertyrequests.ListingStatusPublished,
+				ID: propertyrequests.SeedListingID(n), MarketID: MarketID(country), Status: propertyrequests.ListingStatusPublished,
 			}
 			person := a.ID
 			if a.DirectSeller {

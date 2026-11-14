@@ -127,40 +127,18 @@ type Data struct {
 	Location        string
 }
 
-// zoneAbbreviations name the zones whose name changes with the season: the
-// United Kingdom is on Greenwich Mean Time in winter and British Summer Time
-// in summer. Keyed by IANA zone, then by the abbreviation Go reports for the
-// instant.
-var zoneAbbreviations = map[string]map[string]string{
-	"Europe/London": {"GMT": "Greenwich Mean Time", "BST": "British Summer Time"},
-}
-
-// zoneNames are the names of the time zones of the markets, as people say them.
-var zoneNames = map[string]string{
-	"Africa/Harare":       "Central Africa Time",
-	"Africa/Gaborone":     "Central Africa Time",
-	"Africa/Johannesburg": "South Africa Standard Time",
-	"Asia/Dubai":          "Gulf Standard Time",
-	"UTC":                 "Coordinated Universal Time",
-}
-
 // LocalDateTime writes an instant in an IANA time zone and names the zone,
 // because the reader may be somewhere else: "Tuesday 17 November 2026, 10:00
-// (Central Africa Time)". An unknown zone is shown in UTC.
+// (Central Africa Time)". The zone is any country's default zone: it is
+// named by season where its clocks change, and by its offset where the table
+// in zones.go has no name for it. An unknown zone is shown in UTC.
 func LocalDateTime(t time.Time, zone string) string {
 	loc, err := time.LoadLocation(zone)
 	if err != nil || zone == "" {
 		loc, zone = time.UTC, "UTC"
 	}
 	local := t.In(loc)
-	name, ok := zoneNames[zone]
-	if !ok {
-		name = zone
-	}
-	if abbreviation, _ := local.Zone(); zoneAbbreviations[zone][abbreviation] != "" {
-		name = zoneAbbreviations[zone][abbreviation]
-	}
-	return local.Format("Monday 2 January 2006, 15:04") + " (" + name + ")"
+	return local.Format("Monday 2 January 2006, 15:04") + " (" + ZoneName(zone, local) + ")"
 }
 
 // appointmentTypeNames are the plain-language names of appointment types.

@@ -58,13 +58,22 @@ func coded(labels map[string]string, code string) Coded {
 	return Coded{Code: code, Label: code} // the row was retired: show the code rather than nothing
 }
 
+// PlaceOf builds the public form of a place: the reference row with that
+// code, or — when there is no code — the free text as it was entered.
+func PlaceOf(labels map[string]string, code, freeText string) Place {
+	if code == "" {
+		return Place{Label: freeText}
+	}
+	return Place{Code: &code, Label: coded(labels, code).Label}
+}
+
 // present turns a stored record into its public form.
 func present(r Record, labels map[string]map[string]string) Listing {
 	l := Listing{
 		ID: r.ID, Slug: r.Slug, Reference: r.Reference, Title: r.Title,
 		Deal: coded(labels[SetDealTypes], r.Deal), Category: coded(labels[SetPropertyCategories], r.Category),
 		PropertyType: coded(labels[SetPropertyTypes], r.PropertyType),
-		Price:        r.Price, Suburb: coded(labels[SetSuburbs], r.Suburb), City: coded(labels[SetCities], r.City),
+		Price:        r.Price, City: PlaceOf(labels[SetCities], r.City, r.CityName),
 		MarketCode: r.MarketCode, Bedrooms: r.Bedrooms, Bathrooms: r.Bathrooms, FloorArea: r.FloorArea, LandArea: r.LandArea,
 		Summary: r.Summary, Description: r.Description, Featured: r.Featured,
 		Features: make([]Coded, 0, len(r.Features)), Photos: append([]Photo{}, r.Photos...), Advertiser: r.Advertiser,
@@ -82,10 +91,17 @@ func present(r Record, labels map[string]map[string]string) Listing {
 			l.MinNights = &one
 		}
 	}
-	// The region is the region of the city; the country is the market.
-	if region := labels[keyCityRegion][r.City]; region != "" {
-		c := coded(labels[SetRegions], region)
-		l.Region = &c
+	if r.Suburb != "" {
+		suburb := PlaceOf(labels[SetSuburbs], r.Suburb, "")
+		l.Suburb = &suburb
+	}
+	// The region is the region of the city (or the free text that came with
+	// a free-text city); the country is the market.
+	if region := labels[keyCityRegion][r.City]; r.City != "" && region != "" {
+		p := PlaceOf(labels[SetRegions], region, "")
+		l.Region = &p
+	} else if r.City == "" && r.RegionName != "" {
+		l.Region = &Place{Label: r.RegionName}
 	}
 	l.Country = Country{Code: r.MarketCode, Name: r.MarketCode}
 	if name := labels[keyCountryNames][r.MarketCode]; name != "" {
@@ -153,7 +169,7 @@ func (s *Service) facets(raw RawFacets, q Query, labels map[string]map[string]st
 	build := func(counts map[string]int, set string, byCount bool) []FacetCount {
 		out := make([]FacetCount, 0, len(counts))
 		for code, n := range counts {
-			if n > 0 {
+			if n > 0 && code != "" { // a free-text place has no code and no facet value
 				out = append(out, FacetCount{Code: code, Label: coded(labels[set], code).Label, Count: n})
 			}
 		}
@@ -169,8 +185,38 @@ func (s *Service) facets(raw RawFacets, q Query, labels map[string]map[string]st
 		Deal: build(raw.Deal, SetDealTypes, false), Category: build(raw.Category, SetPropertyCategories, false),
 		PropertyType: build(raw.PropertyType, SetPropertyTypes, false), City: build(raw.City, SetCities, false),
 		Suburb: build(raw.Suburb, SetSuburbs, false), Features: build(raw.Features, SetListingFeatures, true),
-		Bedrooms: []FacetCount{}, Price: PriceRange{Currency: currencyOf(q)},
+		Bedrooms: []FacetCount{}, Currencies: []CurrencyCount{},
 		Country: build(raw.Country, keyCountryNames, false), Region: build(raw.Region, SetRegions, false),
+	}
+	// One currency per search. It is the one asked for, the country's, or —
+	// when neither was given — the only currency the results are priced in.
+	// Results in several currencies have no single price range: price is
+	// null and the client asks the user to pick from `currencies`.
+	for code, stat := range raw.Prices {
+		if stat.Count > 0 && code != "" {
+			f.Currencies = append(f.Currencies, CurrencyCount{Code: code, Count: stat.Count})
+		}
+	}
+	sort.Slice(f.Currencies, func(i, j int) bool {
+		if f.Currencies[i].Count != f.Currencies[j].Count {
+			return f.Currencies[i].Count > f.Currencies[j].Count
+		}
+		return f.Currencies[i].Code < f.Currencies[j].Code
+	})
+	currency := q.Currency
+	switch {
+	case currency != "":
+	case len(f.Currencies) == 1:
+		currency = f.Currencies[0].Code
+	case len(f.Currencies) == 0:
+		currency = DefaultCurrency
+	}
+	if currency != "" {
+		f.Price = &PriceRange{Currency: currency}
+		if stat, ok := raw.Prices[currency]; ok && stat.Min != nil && stat.Max != nil {
+			lo, hi := FormatAmount(stat.Min), FormatAmount(stat.Max)
+			f.Price.Min, f.Price.Max = &lo, &hi
+		}
 	}
 	// Each suburb names its city, so a client can group them.
 	for i := range f.Suburb {
@@ -189,10 +235,6 @@ func (s *Service) facets(raw RawFacets, q Query, labels map[string]map[string]st
 			label = "1 bedroom"
 		}
 		f.Bedrooms = append(f.Bedrooms, FacetCount{Code: strconv.Itoa(n), Label: label, Count: raw.Bedrooms[n]})
-	}
-	if raw.PriceMin != nil {
-		lo, hi := FormatAmount(raw.PriceMin), FormatAmount(raw.PriceMax)
-		f.Price.Min, f.Price.Max = &lo, &hi
 	}
 	return f
 }
@@ -287,6 +329,11 @@ func (s *Service) Summaries(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID
 	return out, nil
 }
 
+// CountByCountry returns the number of public listings per country code.
+func (s *Service) CountByCountry(ctx context.Context) (map[string]int, error) {
+	return s.store.CountByCountry(ctx, s.now().UTC())
+}
+
 // Slugs returns every public listing's slug and updated_at.
 func (s *Service) Slugs(ctx context.Context) ([]SlugEntry, error) {
 	out, err := s.store.PublishedSlugs(ctx, s.now().UTC())
@@ -312,7 +359,46 @@ func (s *Service) Resolve(ctx context.Context, q Query) (Query, map[string]strin
 	if err := s.checkPlaces(ctx, &q, fields); err != nil {
 		return q, nil, err
 	}
+	if err := s.chooseCurrency(ctx, &q, fields); err != nil {
+		return q, nil, err
+	}
 	return q, fields, nil
+}
+
+// CurrencyNeededMessage is the message of the 400 on `currency` when a price
+// filter has no single currency to apply to.
+const CurrencyNeededMessage = "Choose a currency or a country to filter by price."
+
+// chooseCurrency settles the one currency of a priced search. A currency
+// that was asked for, or the country's, is already on the query. Otherwise
+// the results (without the price filter) decide: one currency is used, and
+// several are refused, because a price range across currencies means nothing
+// and nothing is ever converted.
+func (s *Service) chooseCurrency(ctx context.Context, q *Query, fields map[string]string) error {
+	if !q.priced() || q.Currency != "" || len(fields) > 0 {
+		return nil
+	}
+	probe := *q
+	probe.MinPrice, probe.MaxPrice, probe.Page, probe.PageSize = nil, nil, 1, 1
+	hits, err := s.search.Search(ctx, probe, s.now().UTC())
+	if err != nil {
+		return fmt.Errorf("search listings: %w", err)
+	}
+	var currencies []string
+	for code, stat := range hits.Facets.Prices {
+		if stat.Count > 0 && code != "" {
+			currencies = append(currencies, code)
+		}
+	}
+	switch len(currencies) {
+	case 0:
+		q.Currency = DefaultCurrency // nothing matches anyway
+	case 1:
+		q.Currency = currencies[0]
+	default:
+		fields["currency"] = CurrencyNeededMessage
+	}
+	return nil
 }
 
 // CheckCodes validates the reference codes of a query against the active

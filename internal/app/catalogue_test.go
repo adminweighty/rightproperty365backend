@@ -257,7 +257,7 @@ func TestListingFacets(t *testing.T) {
 	}
 	// Nothing matches: empty arrays and null prices, never missing keys.
 	none := e.get("/v1/listings?q=zzzz")
-	if body := none.Body.String(); !strings.Contains(body, `"facets":{"deal":[],"category":[],"property_type":[],"city":[],"suburb":[],"bedrooms":[],"features":[],"price":{"currency":"USD","min":null,"max":null},"country":[],"region":[]}`) {
+	if body := none.Body.String(); !strings.Contains(body, `"facets":{"deal":[],"category":[],"property_type":[],"city":[],"suburb":[],"bedrooms":[],"features":[],"price":{"currency":"USD","min":null,"max":null},"currencies":[],"country":[],"region":[]}`) {
 		t.Fatalf("empty facets = %s", body)
 	}
 }
@@ -303,8 +303,8 @@ func TestListingBySlug(t *testing.T) {
 		t.Fatalf("identity: %+v", l)
 	}
 	if l.Deal != (listings.Coded{Code: "sale", Label: "For sale"}) || l.Category != (listings.Coded{Code: "residential", Label: "Residential"}) ||
-		l.PropertyType != (listings.Coded{Code: "house", Label: "House"}) || l.Suburb != (listings.Coded{Code: "borrowdale", Label: "Borrowdale"}) ||
-		l.City != (listings.Coded{Code: "harare", Label: "Harare"}) || l.MarketCode != "ZW" {
+		l.PropertyType != (listings.Coded{Code: "house", Label: "House"}) || l.Suburb == nil || !l.Suburb.Is("borrowdale") || l.Suburb.Label != "Borrowdale" ||
+		!l.City.Is("harare") || l.City.Label != "Harare" || l.MarketCode != "ZW" {
 		t.Fatalf("classification: %+v %+v %+v %+v %+v", l.Deal, l.Category, l.PropertyType, l.Suburb, l.City)
 	}
 	if l.Price != (listings.Money{Amount: "385000.00", Currency: "USD"}) || l.PricePeriod != nil {
@@ -514,7 +514,7 @@ func TestDirectory(t *testing.T) {
 			t.Fatalf("order = %s", got)
 		}
 		first := page.Items[0]
-		if !first.Sponsored || !first.Verified || first.City != (listings.Coded{Code: "harare", Label: "Harare"}) || first.ListingCount != 6 ||
+		if !first.Sponsored || !first.Verified || !first.City.Is("harare") || first.City.Label != "Harare" || first.ListingCount != 6 ||
 			first.Tagline == "" || first.Description == "" || len(first.Areas) == 0 || len(first.Services) == 0 || first.Logo != nil || first.Agency != nil || first.Trade != nil {
 			t.Fatalf("first = %+v", first)
 		}
@@ -638,7 +638,7 @@ func TestSitemap(t *testing.T) {
 	rec := e.get("/v1/sitemap")
 	wantStatus(t, rec, http.StatusOK)
 	s := decode[directory.Sitemap](t, rec)
-	if len(s.Listings) != 23 || len(s.Profiles) != 34 {
+	if len(s.Listings) != 24 || len(s.Profiles) != 34 {
 		t.Fatalf("sitemap: %d listings, %d profiles", len(s.Listings), len(s.Profiles))
 	}
 	for _, l := range s.Listings {
@@ -659,7 +659,7 @@ func TestSitemap(t *testing.T) {
 // including each listing and each profile.
 func publicGETs(e *env) []string {
 	paths := []string{
-		"/v1/reference", "/v1/markets", "/v1/listings?page_size=48", "/v1/listings?q=house&sort=relevance", "/v1/listings/suggest?q=sample",
+		"/v1/reference", "/v1/markets", "/v1/countries", "/v1/countries?has_listings=true", "/v1/countries?q=king", "/v1/listings?page_size=48", "/v1/listings?q=house&sort=relevance", "/v1/listings/suggest?q=sample",
 		"/v1/listings/suggest?q=harare", "/v1/directory", "/v1/sitemap",
 		// Country, region and the advanced filters.
 		"/v1/listings?country=ZW&region=harare&page_size=48", "/v1/listings?advertiser_type=private", "/v1/listings?has_photos=true&sort=area_desc&page_size=48",
@@ -672,6 +672,9 @@ func publicGETs(e *env) []string {
 	for _, l := range devseed.AllListings() {
 		paths = append(paths, "/v1/listings/"+l.Slug)
 	}
+	// A country without reference places (free-text city and region).
+	paths = append(paths, "/v1/listings?country=MU", "/v1/listings?q=grand+baie", "/v1/listings?country=FR", "/v1/directory/hosts?country=MU",
+		"/v1/reference/cities?market=MU")
 	// The United Kingdom and the short stays.
 	paths = append(paths, "/v1/listings?country=GB", "/v1/listings?category=short-stay&guests_min=2", "/v1/listings?q=airbnb",
 		"/v1/reference/regions?market=GB", "/v1/reference/price_periods", "/v1/directory/agencies?country=GB", "/v1/directory/hosts?region=scotland")
@@ -756,7 +759,7 @@ func TestPublicResponsesCarryNoContactDetails(t *testing.T) {
 			}
 		}
 		// Public and cacheable, the same for everyone.
-		if cc := rec.Header().Get("Cache-Control"); !strings.HasPrefix(cc, "public, max-age=") && path != "/v1/markets" {
+		if cc := rec.Header().Get("Cache-Control"); !strings.HasPrefix(cc, "public, max-age=") {
 			t.Fatalf("%s Cache-Control = %q", path, cc)
 		}
 		if vary := strings.ToLower(strings.Join(rec.Header().Values("Vary"), ",")); strings.Contains(vary, "cookie") || rec.Header().Get("Set-Cookie") != "" {

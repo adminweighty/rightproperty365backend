@@ -68,7 +68,7 @@ func pendingProviderDetails() onboarding.Details {
 	return onboarding.Details{
 		BusinessName: text("Sample Roofing Repairs"), Tagline: text("Roof repairs and waterproofing in Harare"),
 		Description: text("A sample business used to try the verification flow. Leak tracing, tile and sheet replacement, and waterproofing."),
-		City:        text("harare"), Areas: []string{"Borrowdale", "Avondale"}, Services: []string{"Leak repairs", "Waterproofing"},
+		Country:     text(MarketCode), City: text("harare"), Areas: []string{"Borrowdale", "Avondale"}, Services: []string{"Leak repairs", "Waterproofing"},
 		Trade: text(Code(Sample().firstTrade())), RegistrationNumber: text("SAMPLE-0001"), ContactPhone: text("+263770000001"),
 	}
 }
@@ -238,8 +238,8 @@ func seedPostgresOnboarding(ctx context.Context, tx pgx.Tx, files storage.Storag
 	d := pendingProviderDetails()
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO onboarding_applications (id, user_id, role, status, business_name, tagline, description, city_code, areas, services,
-			trade_code, registration_number, contact_phone, market_code, submitted_at, created_at, updated_at)
-		SELECT $1, $2, $3, 'SUBMITTED', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $14
+			trade_code, registration_number, contact_phone, market_code, submitted_at, created_at, updated_at, country_code)
+		SELECT $1, $2, $3, 'SUBMITTED', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $14, $13
 		WHERE NOT EXISTS (SELECT 1 FROM onboarding_applications WHERE user_id = $2 AND role = $3)`,
 		PendingProviderApplicationID, PendingProviderID, identity.AccountRoleServiceProvider, d.BusinessName, d.Tagline, d.Description,
 		d.City, d.Areas, d.Services, d.Trade, d.RegistrationNumber, d.ContactPhone, MarketCode, submitted, now)

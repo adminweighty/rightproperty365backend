@@ -81,27 +81,27 @@
     },
     "price": {
       "aggs": {
-        "max": {
-          "max": {
-            "field": "price"
-          }
-        },
-        "min": {
-          "min": {
-            "field": "price"
+        "values": {
+          "aggs": {
+            "max": {
+              "max": {
+                "field": "price"
+              }
+            },
+            "min": {
+              "min": {
+                "field": "price"
+              }
+            }
+          },
+          "terms": {
+            "field": "currency",
+            "size": 200
           }
         }
       },
       "filter": {
-        "bool": {
-          "filter": [
-            {
-              "term": {
-                "currency": "USD"
-              }
-            }
-          ]
-        }
+        "match_all": {}
       }
     },
     "property_type": {

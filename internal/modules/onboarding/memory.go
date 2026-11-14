@@ -390,7 +390,8 @@ func (s *MemoryStore) Approve(ctx context.Context, p Approval) (Created, error) 
 		}
 		s.deps.Directory.Put(directory.Record{
 			ID: p.Profile.ID, Kind: p.Profile.Kind, Slug: slug, Name: p.Profile.Name, Role: p.Profile.RoleTitle,
-			Tagline: p.Profile.Tagline, Description: p.Profile.Description, CityCode: p.Profile.CityCode, TradeCode: p.Profile.TradeCode,
+			Tagline: p.Profile.Tagline, Description: p.Profile.Description, CityCode: p.Profile.CityCode, CityName: p.Profile.CityName,
+			MarketCode: p.Profile.MarketCode, TradeCode: p.Profile.TradeCode,
 			Areas: append([]string{}, p.Profile.Areas...), Services: append([]string{}, p.Profile.Services...),
 			Verified: true, Status: directory.StatusActive, UpdatedAt: p.At, Specialism: p.Profile.Specialism,
 			OrganisationID: p.Profile.OrganisationID, AgentUserID: p.Profile.AgentUserID,

@@ -78,16 +78,19 @@ type Offering struct {
 
 // Profile is the public representation of a profile, as it appears in lists.
 type Profile struct {
-	Kind        string         `json:"kind"`
-	Slug        string         `json:"slug"`
-	Name        string         `json:"name"`
-	Role        string         `json:"role"`
-	Tagline     string         `json:"tagline"`
-	Description string         `json:"description"`
-	City        listings.Coded `json:"city"`
-	// Region and Country are derived from the city: its region (province)
-	// and its market. Null when the profile has no city, or the city has none.
-	Region    *listings.Coded   `json:"region"`
+	Kind        string `json:"kind"`
+	Slug        string `json:"slug"`
+	Name        string `json:"name"`
+	Role        string `json:"role"`
+	Tagline     string `json:"tagline"`
+	Description string `json:"description"`
+	// City is a reference city (code set) or, in a country without reference
+	// places, a free-text one (code null, label as entered).
+	City listings.Place `json:"city"`
+	// Region is the region (province) of the city, or the free text that came
+	// with a free-text city; null when there is none. Country is the
+	// profile's own country (every profile has one).
+	Region    *listings.Place   `json:"region"`
 	Country   *listings.Country `json:"country"`
 	Areas     []string          `json:"areas"`
 	Services  []string          `json:"services"`
@@ -123,10 +126,16 @@ type Record struct {
 	Tagline     string
 	Description string
 	CityCode    string
-	Areas       []string
-	Services    []string
-	Offerings   []Offering
-	TradeCode   string
+	// CityName and RegionName are free text, for a profile in a country that
+	// has no reference places: set instead of CityCode (never with it).
+	CityName   string
+	RegionName string
+	// MarketCode is the profile's country (ISO 3166-1 alpha-2).
+	MarketCode string
+	Areas      []string
+	Services   []string
+	Offerings  []Offering
+	TradeCode  string
 	// Specialism is "SALES", "LETTINGS" or "" (agent profiles only).
 	Specialism string
 	Verified   bool
@@ -145,8 +154,10 @@ type Filter struct {
 	Q     string
 	City  string
 	Trade string
-	// Country (a market code) and Region (a regions code) narrow by the
-	// profile's city. The Service resolves them into Cities.
+	// Country (any enabled ISO country code) keeps the profiles of that
+	// country, whether their city is a reference city or free text. Region
+	// (a regions code) narrows by the profile's city: the Service resolves it
+	// into Cities.
 	Country string
 	Region  string
 	// Cities, when not nil, is the set of city codes a profile's city must
@@ -233,13 +244,21 @@ func (n placeNames) countryOf(city string) string {
 	return n.geo.RegionCountry[n.geo.CityRegion[city]]
 }
 
-// locate sets a profile's region and country from its city.
-func (n placeNames) locate(p *Profile) {
-	city := p.City.Code
-	if region := n.geo.CityRegion[city]; region != "" {
-		p.Region = &listings.Coded{Code: region, Label: labelOr(n.regions, region)}
+// locate sets a profile's region (from its city, or the free text that came
+// with a free-text city) and its country (its own; a row from before
+// profiles carried one falls back to the country of its city).
+func (n placeNames) locate(p *Profile, r Record) {
+	city := r.CityCode
+	if region := n.geo.CityRegion[city]; city != "" && region != "" {
+		p.Region = &listings.Place{Code: &region, Label: labelOr(n.regions, region)}
+	} else if city == "" && r.RegionName != "" {
+		p.Region = &listings.Place{Label: r.RegionName}
 	}
-	if code := n.countryOf(city); code != "" {
+	code := r.MarketCode
+	if code == "" {
+		code = n.countryOf(city)
+	}
+	if code != "" {
 		p.Country = &listings.Country{Code: code, Name: code}
 		if info, ok := n.geo.Countries[code]; ok {
 			p.Country.Name = info.Name
@@ -301,7 +320,7 @@ func owner(r Record) (organisationID, agentUserID *uuid.UUID) {
 func (s *Service) present(ctx context.Context, r Record, cities, trades map[string]string) (Profile, []listings.Listing, error) {
 	p := Profile{
 		Kind: r.Kind, Slug: r.Slug, Name: r.Name, Role: r.Role, Tagline: r.Tagline, Description: r.Description,
-		City:  listings.Coded{Code: r.CityCode, Label: labelOr(cities, r.CityCode)},
+		City:  listings.PlaceOf(cities, r.CityCode, r.CityName),
 		Areas: append([]string{}, r.Areas...), Services: append([]string{}, r.Services...), Offerings: append([]Offering{}, r.Offerings...),
 		Verified: r.Verified, Sponsored: r.Sponsored, Since: r.Since, UpdatedAt: r.UpdatedAt.UTC(),
 	}
@@ -383,7 +402,7 @@ func (s *Service) List(ctx context.Context, kindCode string, f Filter, page, siz
 	// like the listings search: a mismatch is reported on the narrower one.
 	if f.Country != "" || f.Region != "" {
 		if _, ok := places.geo.Countries[f.Country]; f.Country != "" && !ok {
-			fields["country"] = "is not a known country; see GET /v1/markets"
+			fields["country"] = "is not a known country; see GET /v1/countries"
 		}
 		if f.Region != "" {
 			switch _, ok := places.regions[f.Region]; {
@@ -401,13 +420,18 @@ func (s *Service) List(ctx context.Context, kindCode string, f Filter, page, siz
 				fields["city"] = "is not a city of that country"
 			}
 		}
-		f.Cities = []string{}
-		for city := range cities {
-			if (f.Region == "" || places.geo.CityRegion[city] == f.Region) && (f.Country == "" || places.countryOf(city) == f.Country) {
-				f.Cities = append(f.Cities, city)
+		// A region narrows by city; a country is the profile's own country
+		// and is filtered by the store, so it also finds profiles whose city
+		// is free text.
+		if f.Region != "" {
+			f.Cities = []string{}
+			for city := range cities {
+				if places.geo.CityRegion[city] == f.Region {
+					f.Cities = append(f.Cities, city)
+				}
 			}
+			sort.Strings(f.Cities)
 		}
-		sort.Strings(f.Cities)
 	}
 	if len(fields) > 0 {
 		return Page{}, &ValidationError{Fields: fields}
@@ -423,7 +447,7 @@ func (s *Service) List(ctx context.Context, kindCode string, f Filter, page, siz
 		if err != nil {
 			return Page{}, err
 		}
-		places.locate(&p)
+		places.locate(&p, r)
 		out.Items = append(out.Items, p)
 	}
 	return out, nil
@@ -451,7 +475,7 @@ func (s *Service) Get(ctx context.Context, kindCode, slug string) (Detail, error
 		return Detail{}, err
 	}
 	p, owned, err := s.present(ctx, r, cities, trades)
-	places.locate(&p)
+	places.locate(&p, r)
 	if err != nil {
 		return Detail{}, err
 	}
@@ -552,7 +576,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	fields := map[string]string{}
 	page, size := listings.ParsePaging(v, fields)
 	f := Filter{Q: strings.TrimSpace(v.Get("q")), City: v.Get("city"), Trade: v.Get("trade")}
-	// country: a market code in any case (`market` is an alias); region: a regions code.
+	// country: any enabled ISO country code, in any case (`market` is an alias); region: a regions code.
 	f.Country, f.Region = strings.ToUpper(strings.TrimSpace(v.Get("country"))), strings.TrimSpace(v.Get("region"))
 	if market := strings.ToUpper(strings.TrimSpace(v.Get("market"))); market != "" {
 		if f.Country != "" && f.Country != market {

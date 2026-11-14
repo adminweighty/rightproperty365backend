@@ -15,6 +15,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/listings"
+	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/platform/storage"
 )
 
@@ -49,6 +50,21 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 		return fmt.Errorf("begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	// Countries: every ISO country (also upserted by migration 0014). A row
+	// keeps its ID and its `enabled` flag; name, currency and zone are reset
+	// to the table in internal/modules/markets.
+	for _, m := range markets.Seed() {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO markets (id, code, name, currency_code, timezone, status, sort_order)
+			VALUES ($1, $2, $3, $4, $5, 'ACTIVE', $6)
+			ON CONFLICT (code) DO UPDATE
+			SET name = EXCLUDED.name, currency_code = EXCLUDED.currency_code, timezone = EXCLUDED.timezone,
+			    status = 'ACTIVE', updated_at = now()`,
+			m.ID, m.Code, m.Name, m.CurrencyCode, m.Timezone, m.SortOrder); err != nil {
+			return fmt.Errorf("seed country %s: %w", m.Code, err)
+		}
+	}
 
 	// Reference data: the baseline rows (also inserted by migration 0007).
 	// Existing rows keep their `active` flag, so re-seeding does not undo an
@@ -164,9 +180,10 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 			                      organisation_id, agent_user_id, seller_user_id, published_at, expires_at, created_at, updated_at,
 			                      slug, reference, deal, category, property_type, price_period, city_code, suburb_code,
 			                      bedrooms, bathrooms, floor_area_m2, land_area_m2, summary, description, featured, private_seller_name,
-			                      max_guests, min_nights)
-			VALUES ($1, $2, $3, $4::text::listing_status, $5::text::numeric, $6, $7, $8, $9, $10, $11, $12, $12,
-			        $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)
+			                      max_guests, min_nights, city_name, region_name)
+			VALUES ($1, (SELECT id FROM markets WHERE code = $2), $3, $4::text::listing_status, $5::text::numeric, $6, $7, $8, $9, $10, $11, $12, $12,
+			        $13, $14, $15, $16, $17, $18, NULLIF($19, ''), NULLIF($20, ''), $21, $22, $23, $24, $25, $26, $27, $28, $29, $30,
+			        NULLIF($31, ''), NULLIF($32, ''))
 			ON CONFLICT (id) DO UPDATE
 			SET market_id = EXCLUDED.market_id, title = EXCLUDED.title, status = EXCLUDED.status,
 			    price_amount = EXCLUDED.price_amount, currency_code = EXCLUDED.currency_code,
@@ -180,12 +197,13 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 			    floor_area_m2 = EXCLUDED.floor_area_m2, land_area_m2 = EXCLUDED.land_area_m2,
 			    summary = EXCLUDED.summary, description = EXCLUDED.description, featured = EXCLUDED.featured,
 			    private_seller_name = EXCLUDED.private_seller_name,
-			    max_guests = EXCLUDED.max_guests, min_nights = EXCLUDED.min_nights`,
-			l.ID, MarketID(l.MarketCode), l.Title, l.Status, l.Price.Amount, l.Price.Currency,
+			    max_guests = EXCLUDED.max_guests, min_nights = EXCLUDED.min_nights,
+			    city_name = EXCLUDED.city_name, region_name = EXCLUDED.region_name`,
+			l.ID, l.MarketCode, l.Title, l.Status, l.Price.Amount, l.Price.Currency,
 			l.OrganisationID, l.AgentUserID, l.SellerUserID, l.PublishedAt, l.ExpiresAt, l.UpdatedAt,
 			l.Slug, l.Reference, l.Deal, l.Category, l.PropertyType, period, l.City, l.Suburb,
 			l.Bedrooms, l.Bathrooms, l.FloorArea, l.LandArea, l.Summary, l.Description, l.Featured, sellerName,
-			l.MaxGuests, l.MinNights); err != nil {
+			l.MaxGuests, l.MinNights, l.CityName, l.RegionName); err != nil {
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 				return fmt.Errorf("seed listing %s: its slug or reference already belongs to a different listing in this database", l.Slug)

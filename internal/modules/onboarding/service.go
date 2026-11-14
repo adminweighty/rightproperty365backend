@@ -33,6 +33,8 @@ type Vocabulary interface {
 	// CityMarkets returns the market code of every active city ("" when a
 	// city applies to every market).
 	CityMarkets(ctx context.Context) (map[string]string, error)
+	// Countries returns the codes of the enabled countries (ISO 3166-1 alpha-2).
+	Countries(ctx context.Context) ([]string, error)
 	// TradeCodes returns the active service trades.
 	TradeCodes(ctx context.Context) ([]string, error)
 	// DocumentTypes returns the active onboarding document types in display order.
@@ -91,6 +93,9 @@ type catalogue struct {
 	docTypes   map[string]DocumentType
 	docOrder   []string
 	roleLabels map[string]string
+	// cityCountries are the countries that have cities in the reference
+	// data: there a city is chosen by code, elsewhere it is typed.
+	cityCountries map[string]bool
 }
 
 func (s *Service) catalogue(ctx context.Context) (*catalogue, error) {
@@ -110,7 +115,17 @@ func (s *Service) catalogue(ctx context.Context) (*catalogue, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load role labels: %w", err)
 	}
-	c := &catalogue{outcomes: map[string]RoleOutcome{}, required: map[string][]Requirement{}, docTypes: map[string]DocumentType{}, roleLabels: labels}
+	cities, err := s.vocab.CityMarkets(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("load cities: %w", err)
+	}
+	c := &catalogue{outcomes: map[string]RoleOutcome{}, required: map[string][]Requirement{}, docTypes: map[string]DocumentType{}, roleLabels: labels,
+		cityCountries: map[string]bool{}}
+	for _, country := range cities {
+		if country != "" {
+			c.cityCountries[country] = true
+		}
+	}
 	for _, t := range types {
 		c.docTypes[t.Code] = t
 		c.docOrder = append(c.docOrder, t.Code)
@@ -274,6 +289,15 @@ func (c *catalogue) missing(a Application) Missing {
 	for _, f := range FieldsFor(c.outcomes[a.Role]) {
 		if f.Required && !a.Details.isSet(f.Name) {
 			m.Fields = append(m.Fields, f.Name)
+		}
+	}
+	// A business needs a city: its code where the country has cities in the
+	// reference data, free text elsewhere.
+	if c.outcomes[a.Role].Outcome == OutcomeOrganisation && !a.Details.isSet(FieldCity) && !a.Details.isSet(FieldCityName) {
+		if a.Country != nil && !c.cityCountries[*a.Country] {
+			m.Fields = append(m.Fields, FieldCityName)
+		} else {
+			m.Fields = append(m.Fields, FieldCity)
 		}
 	}
 	for _, r := range c.required[a.Role] {
@@ -520,18 +544,8 @@ func (s *Service) applyPatch(ctx context.Context, outcome RoleOutcome, d *Detail
 			d.ContactPhone = v
 		}
 	}
-	if v, ok := text(FieldCity, 0, 80, false); ok {
-		markets, err := s.vocab.CityMarkets(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if v == nil {
-			d.City, *marketCode = nil, ""
-		} else if market, known := markets[*v]; !known {
-			fields[FieldCity] = "is not a known value; see GET /v1/reference/cities"
-		} else {
-			d.City, *marketCode = v, market
-		}
+	if err := s.applyPlace(ctx, d, marketCode, fields, text); err != nil {
+		return nil, err
 	}
 	if v, ok := text(FieldTrade, 0, 80, false); ok {
 		trades, err := s.vocab.TradeCodes(ctx)
@@ -564,6 +578,97 @@ func (s *Service) applyPatch(ctx context.Context, outcome RoleOutcome, d *Detail
 	}
 	return fields, nil
 }
+
+// applyPlace applies country, city and city_name. The platform is global:
+// any enabled country may be chosen. Where the country has cities in the
+// reference data the city is one of their codes; elsewhere it is free text
+// (city_name). A city code sent without a country names its own country, so
+// a client that only knows `city` keeps working. The application's market
+// (what a market administrator is scoped by) is its country.
+func (s *Service) applyPlace(ctx context.Context, d *Details, marketCode *string, fields map[string]string,
+	text func(name string, min, max int, multiline bool) (*string, bool)) error {
+	country, hasCountry := text(FieldCountry, 0, 2, false)
+	city, hasCity := text(FieldCity, 0, 80, false)
+	cityName, hasCityName := text(FieldCityName, 0, maxCityNameRunes, false)
+	if !hasCountry && !hasCity && !hasCityName {
+		return nil
+	}
+	cityCountry, err := s.vocab.CityMarkets(ctx)
+	if err != nil {
+		return err
+	}
+	hasCities := map[string]bool{}
+	for _, c := range cityCountry {
+		hasCities[c] = true
+	}
+	newCountry, newCity, newCityName := d.Country, d.City, d.CityName
+	if hasCountry {
+		newCountry = nil
+		if country != nil {
+			code := strings.ToUpper(*country)
+			known, err := s.vocab.Countries(ctx)
+			if err != nil {
+				return err
+			}
+			if !slices.Contains(known, code) {
+				fields[FieldCountry] = "is not a known country; see GET /v1/countries"
+				return nil
+			}
+			newCountry = &code
+		}
+	}
+	if hasCity {
+		if newCity = city; city != nil {
+			newCityName = nil
+		}
+	}
+	if hasCityName {
+		switch {
+		case cityName != nil && hasCity && city != nil:
+			fields[FieldCityName] = "cannot be combined with city; send one of them"
+			return nil
+		case cityName != nil && strings.ContainsAny(*cityName, "<>"):
+			fields[FieldCityName] = "must be plain text, without HTML"
+			return nil
+		case cityName != nil:
+			newCityName, newCity = cityName, nil
+		default:
+			newCityName = nil
+		}
+	}
+	if newCity != nil {
+		of, known := cityCountry[*newCity]
+		switch {
+		case !known:
+			if hasCity {
+				fields[FieldCity] = "is not a known value; see GET /v1/reference/cities"
+				return nil
+			}
+			newCity = nil // the stored city was retired
+		case of == "":
+		case newCountry == nil || (hasCity && !hasCountry):
+			newCountry = &of // a city names its country
+		case *newCountry != of && hasCity:
+			fields[FieldCity] = "is not a city of that country; see GET /v1/reference/cities?market=" + *newCountry
+			return nil
+		case *newCountry != of:
+			newCity = nil // the country changed: its old city no longer applies
+		}
+	}
+	if newCityName != nil && newCountry != nil && hasCities[*newCountry] {
+		if hasCityName {
+			fields[FieldCityName] = "this country has a list of cities: send city, a code from GET /v1/reference/cities?market=" + *newCountry
+			return nil
+		}
+		newCityName = nil // the country changed to one whose cities are chosen by code
+	}
+	d.Country, d.City, d.CityName = newCountry, newCity, newCityName
+	*marketCode = deref(newCountry)
+	return nil
+}
+
+// maxCityNameRunes bounds a free-text city name.
+const maxCityNameRunes = 80
 
 // Submit sends the application for review.
 func (s *Service) Submit(ctx context.Context, p *auth.Principal, role string) (ApplicationView, error) {
@@ -1099,7 +1204,7 @@ func (s *Service) Approve(ctx context.Context, p *auth.Principal, id uuid.UUID, 
 	switch outcome.Outcome {
 	case OutcomeOrganisation:
 		if app.MarketCode == "" {
-			return Approved{}, &ValidationError{Fields: map[string]string{"details.city": "has no market; request changes instead"}}
+			return Approved{}, &ValidationError{Fields: map[string]string{"details.country": "is required; request changes instead"}}
 		}
 		orgID, err := newID()
 		if err != nil {
@@ -1116,7 +1221,7 @@ func (s *Service) Approve(ctx context.Context, p *auth.Principal, id uuid.UUID, 
 			// Public content only: no phone, no registration number, no documents.
 			plan.Profile = &NewProfile{
 				ID: profileID, Kind: outcome.DirectoryKind, Slug: Slugify(name), Name: name,
-				Tagline: deref(app.Tagline), Description: deref(app.Description), CityCode: deref(app.City), TradeCode: deref(app.Trade),
+				Tagline: deref(app.Tagline), Description: deref(app.Description), CityCode: deref(app.City), CityName: deref(app.CityName), TradeCode: deref(app.Trade),
 				Areas: app.Areas, Services: app.Services, OrganisationID: orgID, MarketCode: app.MarketCode,
 			}
 		}

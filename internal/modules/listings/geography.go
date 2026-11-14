@@ -156,7 +156,7 @@ func (s *Service) checkPlaces(ctx context.Context, q *Query, fields map[string]s
 	if q.Country != "" {
 		info, ok := g.Countries[q.Country]
 		if !ok {
-			fields["country"] = "is not a known country; see GET /v1/markets"
+			fields["country"] = "is not a known country; see GET /v1/countries"
 			return nil
 		}
 		// Prices are compared within one currency: the country's, unless asked otherwise.

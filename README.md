@@ -1,6 +1,7 @@
 # RightProperty365 Backend
 
-Go backend for RightProperty365, a multi-country property marketplace (Zimbabwe first).
+Go backend for RightProperty365, a global property marketplace: any country can be listed in,
+and the public is shown the countries that have listings (Zimbabwe and the United Kingdom first).
 
 It is a **modular monolith** exposing a versioned REST API (`/v1`), with separate binaries for the
 API, the background worker and database migrations. The API contract lives in
@@ -19,7 +20,7 @@ go run ./cmd/api              # listens on http://localhost:8080
 ```powershell
 curl.exe http://localhost:8080/healthz
 curl.exe http://localhost:8080/readyz          # {"status":"ready","store":"memory"}
-curl.exe http://localhost:8080/v1/markets
+curl.exe "http://localhost:8080/v1/countries?has_listings=true"
 ```
 
 Submit a property request (PowerShell):
@@ -41,13 +42,13 @@ Invoke-RestMethod -Method Post -Uri http://localhost:8080/v1/property-requests -
 
 In development without a database the API seeds its in-memory stores with the data below (defined
 once in `internal/devseed`; the web app's sample data uses the same names): 28 organisations, 33
-accounts, 23 listings and 34 directory profiles (the web's 29, three solicitors, and the United
+accounts, 24 listings and 34 directory profiles (the web's 29, three solicitors, and the United
 Kingdom's agency and host). Listing IDs are
 `0195c0de-0000-7000-8000-000000000001` … `…000000000018`: the web's 18 **PUBLISHED** listings in
 market ZW, each with an organisation **and** a named assigned agent, or a direct seller. Listing
 `…000000000099` is **EXPIRED** (requests get `410`).
 
-Five more PUBLISHED listings exist only on the backend (`internal/devseed/backend_samples.go`;
+Six more PUBLISHED listings exist only on the backend (`internal/devseed/backend_samples.go`;
 the web's sample files do not have them):
 
 | ID | Reference | Slug | What | Owner |
@@ -57,6 +58,7 @@ the web's sample files do not have them):
 | `…021` | `RP-GB-10003` | `serviced-apartment-shoreditch` | London (Shoreditch), **short stay**, GBP 185 per night, 2 guests, 2 nights minimum | Sample Homes London |
 | `…022` | `RP-ZW-10019` | `safari-lodge-victoria-falls` | Victoria Falls, **short stay**, USD 320 per night, 8 guests, 2 nights minimum | Sample Falls Stays (host) |
 | `…023` | `RP-ZW-10020` | `garden-guest-house-avondale` | Harare (Avondale), **short stay**, USD 75 per night, 4 guests, 1 night minimum | Sample Showrooms (host) |
+| `…024` | `RP-MU-10001` | `beach-villa-grand-baie` | Grand Baie, Mauritius (**free-text** city and region: the country has no reference places), **short stay**, MUR 8,500 per night, 6 guests, 3 nights minimum | Sample Falls Stays (host) |
 
 All accounts are email-verified and share one password: **`DEV_SEED_PASSWORD` in
 [`.env.example`](.env.example)**. They are created only when `APP_ENV=development` and that
@@ -81,7 +83,7 @@ seeded).
 | `sample-heights@example.test` | Sample Heights Owner | Sample Heights | `DEVELOPER` | `OWNER` | `developers/sample-heights` |
 | `sample-property-management@example.test` | Sample Property Management Owner | Sample Property Management | `LANDLORD` | `OWNER` | `property-managers/sample-property-management` |
 | `sample-rentals-bulawayo@example.test` | Sample Rentals Bulawayo Owner | Sample Rentals Bulawayo | `LANDLORD` | `OWNER` | `property-managers/sample-rentals-bulawayo` |
-| `sample-falls-stays@example.test` | Sample Falls Stays Owner | Sample Falls Stays | `HOST` | `OWNER` | listing 22 (short stay); `hosts/sample-falls-stays` |
+| `sample-falls-stays@example.test` | Sample Falls Stays Owner | Sample Falls Stays | `HOST` | `OWNER` | listings 22 and 24 (short stays; 24 is in Mauritius); `hosts/sample-falls-stays` |
 | `sample-showrooms@example.test` | Sample Showrooms Owner | Sample Showrooms | `HOST` | `OWNER` | listing 23 (short stay); `hosts/sample-showrooms` |
 | `sample-homes-london@example.test` | Sample Homes London Owner | Sample Homes London (market **GB**) | `AGENCY` | `OWNER` | listings 19, 20, 21; `agencies/sample-homes-london` |
 | `sample-stays-edinburgh@example.test` | Sample Stays Edinburgh Owner | Sample Stays Edinburgh (market **GB**) | `HOST` | `OWNER` | `hosts/sample-stays-edinburgh` |
@@ -222,7 +224,7 @@ All configuration comes from environment variables. For local development you ma
 | --- | --- | --- |
 | GET | `/healthz` | Liveness (always 200) |
 | GET | `/readyz` | Readiness (pings the database when configured; reports the store in use) |
-| GET | `/v1/markets` | Markets: ZW and GB active (Zimbabwe first); AE, BW, ZA planned |
+| GET | `/v1/countries`, `/v1/markets` | Every country (249); `?has_listings=true` for the ones the public is shown; `?q=` for drop-downs. `/v1/markets` is the older name of the same data |
 | GET | `/v1/reference`, `/v1/reference/{set}` | Reference data behind every drop-down, filter and list (public, cacheable) |
 | GET | `/v1/listings`, `/v1/listings/suggest`, `/v1/listings/{slug}` | Public listing search, suggestions and detail |
 | GET | `/v1/directory`, `/v1/directory/{kind}`, `/v1/directory/{kind}/{slug}`, `/v1/sitemap` | Public directories, profiles and sitemap data |
@@ -427,36 +429,134 @@ never answered.
 advisory-lock overlap check and the `cmd/seed` rows have never run against a database. Everything
 above is tested on the in-memory stores.
 
-## Markets: Zimbabwe and the United Kingdom
+## Countries: the platform is global
 
-| Code | Country | Currency | Time zone | Status |
-| --- | --- | --- | --- | --- |
-| `ZW` | Zimbabwe | USD | Africa/Harare | ACTIVE (the launch market, always listed first) |
-| `GB` | United Kingdom | GBP | Europe/London | ACTIVE (migration `0013`) |
-| `AE`, `BW`, `ZA` | United Arab Emirates, Botswana, South Africa | AED, BWP, ZAR | | PLANNED |
+> "There is no limit country it's a global but we start listing the countries based on the
+> listings we have." (the project owner, 2026-11-14)
 
-A market is a country. Everything market-aware follows the market of the thing itself:
+**Any country may be used by a lister. What the public sees in country lists is the countries
+that have published listings.** Those are two different things, and the API keeps them apart:
 
+| | Which countries | Where |
+| --- | --- | --- |
+| A lister, an applicant, a search filter | **every** country: the full ISO 3166-1 list, 249 rows | `GET /v1/countries` (with `?q=` for a searchable drop-down) |
+| The public (country lists, the search's country facet, suggestions) | only the countries with at least one **published, unexpired** listing right now | `GET /v1/countries?has_listings=true`, `facets.country`, `suggest` |
+
+- **The table.** `internal/modules/markets/countries.go` holds every officially assigned ISO
+  3166-1 alpha-2 code with an English short name, its ISO 4217 currency and a default IANA time
+  zone. It is data in the repository (compiled by hand from the three standards; never fetched
+  at run time). Tests check the count (249), every code and currency's shape, that every zone
+  loads, and that migration `0014` and `cmd/seed` write exactly these rows. **It has not been
+  reconciled line by line against the standards**: check a row before relying on it for anything
+  legal.
+- **A market is a country.** The table is still called `markets` and `GET /v1/markets` still
+  works: it returns the same response as `GET /v1/countries`. ZW, GB, AE, BW and ZA keep the IDs
+  and rows they had; the others get an ID derived from their code.
+- **Nothing is "planned" any more.** `status` is kept in the table and the JSON so existing
+  clients do not break, but it is always `ACTIVE` and gates nothing. For the rare case a
+  country must be switched off there is `markets.enabled` (default true): a disabled country is
+  not listed and is refused as a `country` (`UPDATE markets SET enabled = false WHERE code = 'XX'`;
+  there is no admin endpoint). Its existing listings and profiles are not hidden by that.
+- **One time zone per country: the capital's.** Countries with several zones (the United States,
+  Canada, Russia, Australia, Brazil, Indonesia, Mexico, ...) will need a **per-city time zone**
+  before appointments or stays there are shown in local time. Not built.
+- **One currency per country**, the one prices are normally quoted in. Zimbabwe stays `USD`, as
+  it was seeded from the start. A listing may still be priced in any currency.
+- **Each response item**: `{id, code, name, currency_code, timezone, status, listing_count,
+  has_listings}`. Order: Zimbabwe, the United Kingdom, then by name; with `has_listings=true`,
+  by listing count (highest first), then name. Cacheable for a minute with an ETag, so a count
+  can lag a newly published listing by that long.
+
+### Places: reference rows where they exist, free text where they do not
+
+Regions, cities and suburbs stay reference rows per country, **but they can no longer be assumed
+to exist**: only Zimbabwe and the United Kingdom have any (`GET /v1/reference/cities?market=MU`
+is an empty list).
+
+- On a **listing**, a **directory profile** and an **onboarding application** the country is
+  required. Region, city and suburb are reference codes where the country has rows; where it
+  has none, the city (and optionally the region) is **free text**: plain text, at most 80
+  characters, no HTML (`city_name`, `region_name` in the tables; `listings.CheckPlaceName`).
+  A row has a city code or free text, never both, and a suburb only under a city code.
+- **In JSON a place is always `{code: string | null, label: string}`** (`listings.Place`):
+  `{"code":"harare","label":"Harare"}` for a reference place,
+  `{"code":null,"label":"Grand Baie"}` for free text. The fields keep their names (`city`,
+  `suburb`, `region`).
+  > **This changes two things both clients read.** `code` used to be always a string and is
+  > now **nullable**. A listing's `suburb` used to be always an object and is now **null** when
+  > the listing has none. Never build a `city=` filter from a null code.
+- **Hierarchy validation applies only to codes.** A free-text place is found by `q` and
+  returned on the item; it is **not** filterable, and it is not in the `city`, `suburb` or
+  `region` facets or in suggestions.
+- **Listings need a city**, as a code or as free text (`listings.CheckRecord`). The brief said
+  region, city and suburb are optional; a listing without any city cannot be found by place, so
+  the rule here is stricter. Profiles and applications follow the onboarding rule below.
+- **Onboarding** (a business): `country` is required; then `city` (a code) when that country
+  has cities in the reference data, otherwise `city_name`. A `city` sent without a `country`
+  names its own country, so a client that only knows `city` keeps working. The application's
+  market, which is what a `MARKET_ADMIN` is scoped by, is its country. `GET
+  /v1/onboarding/requirements` now lists `country` (required), `city` and `city_name` (neither
+  flagged required: exactly one is needed) where it listed `city` (required).
+- **Directories**: `country` is the profile's own country and accepts any country code;
+  it used to be derived from the profile's city.
+
+### One currency per search
+
+Prices are never converted, so a price range only means something inside one currency. The
+currency of a search is: `currency` when given, else the currency of the selected `country`,
+else the **only** currency the results are priced in.
+
+> **This changed.** A search without a country used to assume **USD** silently: the price facet
+> and `min_price` / `max_price` ignored every listing priced in another currency without saying
+> so. Now, when no country or currency is chosen and the results span more than one currency:
+>
+> - `facets.price` is **`null`** and `facets.currencies` is `[{code, count}]`, so the client can
+>   ask the user to pick a currency;
+> - `min_price` / `max_price` are `400 VALIDATION_FAILED` on `currency`: "Choose a currency or a
+>   country to filter by price."
+>
+> When the results share one currency, or a country or currency is given, nothing changed.
+> `facets.currencies` is always present.
+
+A priced search without a currency costs one extra search (without the price filter) to learn
+which currencies the results are in.
+
+### Elsewhere
+
+- **Appointments** for a listing or profile are shown in its country's default zone, and
+  emails name the zone correctly for any country: by season where the clocks change ("Eastern
+  Daylight Time" / "Eastern Standard Time", "British Summer Time" / "Greenwich Mean Time"),
+  and for a zone the name table (`internal/platform/mail/zones.go`) does not cover, by its
+  offset and IANA name ("UTC+13:00, Pacific/Tongatapu").
+- Phone numbers are E.164 everywhere.
+- **Sample data**: one listing is in a country without reference places — a short stay in
+  Grand Baie, Mauritius, priced in MUR, with a free-text city and region — owned by the
+  existing host Sample Falls Stays.
 - **Reference data** for the United Kingdom (`?market=GB`): regions `england`, `scotland`,
   `wales`, `northern-ireland`; cities London, Manchester, Birmingham, Leeds, Liverpool, Bristol
   (England), Edinburgh, Glasgow (Scotland), Cardiff (Wales), Belfast (Northern Ireland); areas
   of London (`camden`, `greenwich`, `kensington`, `shoreditch`, `wimbledon`) and one of
-  Manchester (`northern-quarter`, because a sample listing is there). Codes stay unique per set;
-  **none collided** with an existing code, so nothing is prefixed.
-- **Search**: `country=GB` (or `market=GB`), its regions, cities and areas, with the same
-  hierarchy check as Zimbabwe. Directories take `country=GB` and `region=` too.
-- **Money is single-currency per search and is never converted.** With `country=GB` the price
-  filter and the price facet use GBP; with `country=ZW`, USD; an explicit `currency` wins.
-  **Without a country the default is unchanged: USD.** A search without a country returns
-  listings of every market, each item with its own `price.currency`, while `min_price` /
-  `max_price` and the price facet only consider listings priced in USD — a GBP listing is in
-  the results but never in a USD price range. Use `country` (or `currency`) to work in GBP.
-- **Onboarding**: an application's market is the market of its city, so an application in a UK
-  city belongs to GB and a `MARKET_ADMIN` for GB sees it (and not Zimbabwe's). This is the
-  existing rule; it has **no UK-specific test**.
-- **Appointments** for a UK listing or profile are shown in `Europe/London`, and emails name the
-  zone by season: "Greenwich Mean Time" in winter, "British Summer Time" in summer.
-- Phone numbers are E.164 everywhere; nothing is UK-specific.
+  Manchester (`northern-quarter`). Codes stay unique per set.
+
+### Not built: what a country still needs before real trading
+
+Being able to list in a country is not the same as being ready to trade there. The BRD asks
+for these per country and **none is built or configured**:
+
+- **legal texts** (terms, privacy notice, consent wording, advertising and agency rules) —
+  one privacy version string is recorded today, the same everywhere;
+- **payment gateways** and the currencies they settle in (there are no payments at all yet);
+- **tax rules** (VAT / GST / sales tax on fees, invoices and receipts);
+- required **onboarding documents** per country (today's are placeholders, the same everywhere);
+- reference **regions, cities and suburbs** for every country but Zimbabwe and the United
+  Kingdom, and an admin endpoint to add them (rows are added in the database today);
+- a **per-city time zone** for countries with several zones;
+- translated labels (everything is English).
+
+**Not verified:** migration `0014`, the `enabled` column, the Postgres queries that read the
+new columns (`city_name`, `region_name`, `country_code`), the per-currency price query and the
+Elasticsearch per-currency aggregation have never run against a database or a cluster. They are
+tested on the in-memory stores, by query-builder tests and against a fake transport only.
 
 ## Short stays
 
@@ -517,14 +617,16 @@ re-checks status and expiry, so an index that is behind cannot bring back an exp
   comma-separated; all must be present), `featured`. Codes are reference-data codes; an unknown
   or inactive code is `400 VALIDATION_FAILED` on that parameter.
 - **Location: country, region, city, suburb.** One hierarchy, all reference data: a country is a
-  market (`GET /v1/markets`), a region is a row of the `regions` set (Zimbabwe's ten provinces),
+  country (`GET /v1/countries`; any country), a region is a row of the `regions` set (Zimbabwe's ten provinces),
   a city's `parent_code` is its region and a suburb's `parent_code` is its city. `country=ZW`
   (any case; `market` is an alias) and `region=matabeleland-north` filter listings; a listing's
   region is the region of its city, so nothing is stored twice. The levels must agree — a suburb
   with its city, a city with its region, a region with its country, also when a level in between
   is left out — and a mismatch is `400 VALIDATION_FAILED` on the **narrower** parameter
-  (`?region=bulawayo&city=harare` -> `city`). When `country` selects a market and no `currency` is
-  given, the price filter and facet use that market's currency (otherwise `USD`).
+  (`?region=bulawayo&city=harare` -> `city`). When `country` is given and no `currency` is,
+  the price filter and facet use that country's currency; without either, see "One currency
+  per search". A listing in a country without reference places has a free-text city, which is
+  searchable by `q` but is not a filter: see "Places".
 - **Advanced filters**: `bedrooms_max`, `bathrooms_max`, `floor_area_min`, `floor_area_max`,
   `land_area_min`, `land_area_max` (square metres; a listing without the value never matches),
   `listed_within_days` (1–365), `advertiser_type` (`agency` or `private`), `reference` (exact,
@@ -534,7 +636,8 @@ re-checks status and expiry, so an index that is behind cannot bring back an exp
   `oldest`, `area_desc` (largest floor area first, listings without one last).
   **Paging**: `page` from 1, `page_size` 1–48 (default 12).
 - **Facets**: `deal`, `category`, `property_type`, `city`, `suburb`, `bedrooms`, `features`,
-  `country`, `region` as `[{code, label, count}]`, and `price: {currency, min, max}`. Each facet
+  `country`, `region` as `[{code, label, count}]`, `price: {currency, min, max} | null` and
+  `currencies: [{code, count}]` (see "One currency per search"). Each facet
   counts the listings that match every *other* filter, so choosing a value does not hide its
   alternatives. Each `suburb` value also carries `city` (its city's code), so a client can group
   suburbs by city.
@@ -543,9 +646,10 @@ re-checks status and expiry, so an index that is behind cannot bring back an exp
 - **By slug**: an expired, sold, let, paused or closed listing is `410` (the page can say "no
   longer available"); an unknown slug **and a draft that was never public** are both `404`, so
   drafts are not revealed.
-- **A listing** carries id, slug, reference, title, `deal` / `category` / `property_type` /
-  `suburb` / `city` as `{code, label}`, `region: {code, label} | null` and
-  `country: {code, name}` (derived from the city and the market; `market_code` is kept),
+- **A listing** carries id, slug, reference, title, `deal` / `category` / `property_type` as
+  `{code, label}`, `city: {code | null, label}`, `suburb` and `region` as
+  `{code | null, label} | null` (see "Places") and `country: {code, name}` (the listing's own
+  country; `market_code` is kept),
   `price {amount, currency}` (a decimal string, never a
   float), `price_period`, market, bedrooms, bathrooms, floor and land area (m²), summary,
   description, features, featured, photos `{url, alt, width, height}`, the three dates, and
@@ -556,8 +660,9 @@ re-checks status and expiry, so an index that is behind cannot bring back an exp
   walks every public GET (reference, listings, each listing, directories, each profile, sitemap)
   and fails on any key named like contact data or any value that looks like an email address or a
   phone number.
-- **Directories** take `country` (or `market`) and `region` as well as `city`, with the same
-  hierarchy check; a profile's `region` and `country` are derived from its city.
+- **Directories** take `country` (or `market`; any country code) and `region` as well as
+  `city`, with the same hierarchy check; a profile's `country` is its own and its `region` is
+  the region of its city.
 - **Profiles** carry name, role, tagline, description, city, region, country, areas, services, offerings, trade,
   verified, sponsored, since, `agency` (for agents), `listing_count`; the detail adds an agency's
   `agents` and the profile's public `listings`. `logo` is always null (there are none).
@@ -598,6 +703,16 @@ The API and the worker each log one line at startup naming the driver:
 `search driver selected: database (...)` or `search driver selected: elasticsearch (...)`.
 
 **PostgreSQL stays the source of truth.**
+
+> **After deploying the global countries (mapping version 4), run `cmd/reindex` once.**
+> Documents gained `city_name` and `region_name` (the free-text city and region of a listing in
+> a country without reference places) and `city` / `suburb` may now be absent. The mapping is
+> strict: until the index is rebuilt, a listing with a free-text city is refused by the old
+> index (its worker event fails and is retried) and so is missing from Elasticsearch results,
+> and `q` does not match free-text places there. Listings that have a city code are unaffected.
+> The price facet is now aggregated **per currency** (a `terms` aggregation on `currency` with
+> `min` / `max` inside); that needs no mapping change. The database driver needs only migration
+> `0014`.
 
 - Elasticsearch only proposes listing IDs, a total and facet counts. **Every hit is re-read from
   the database**, which checks `status = 'PUBLISHED' AND expires_at > now` again, before anything
@@ -817,6 +932,9 @@ So that nobody assumes these exist. They are in the updated functional specifica
   bookings, availability calendars, ICS invites, calendar sync, reminders);
 - subscription plans, and admin-recorded payments, invoices and receipts (the specification has no
   online payment in the mobile app);
+- per-country **legal texts, payment gateways and tax rules** (see "Countries": any country can
+  be listed in, but none of these is configured for any country);
+- a per-city time zone for countries with several zones;
 - account deletion;
 - CAPTCHA or adaptive bot protection, and duplicate or spam detection;
 - administrator MFA;
@@ -993,14 +1111,14 @@ Optional `?market=ZW` keeps that market's rows plus the rows that apply everywhe
 | `account_roles` | 11 | with `group` (code, label, sort) and `requires_verification`; **never** a platform role |
 | `directory_kinds` | 6 | with `singular_label` and `description` |
 | `service_trades` | 7 | service-provider trades |
-| `regions` | 14 | `ZW`: Zimbabwe's ten provinces (codes are slugs, e.g. `matabeleland-north`); `GB`: `england`, `scotland`, `wales`, `northern-ireland`. Planned markets have none yet |
+| `regions` | 14 | `ZW`: Zimbabwe's ten provinces (codes are slugs, e.g. `matabeleland-north`); `GB`: `england`, `scotland`, `wales`, `northern-ireland`. Every other country has none yet |
 | `cities` | 14 | `ZW`: 4; `GB`: 10. `parent_code` is the region (Harare -> `harare`, Bulawayo -> `bulawayo`, Mutare -> `manicaland`, Victoria Falls -> `matabeleland-north`; London -> `england`, Edinburgh -> `scotland`, ...) |
 | `suburbs` | 24 | `ZW`: 18; `GB`: 6. `parent_code` is the city |
 | `listing_features` | 59 | features and amenities |
 
 Each row has a stable `code` (what clients send and tables store), a `label` (what people read),
-`sort_order` and an internal `active` flag; only active rows are returned. Markets are not a set:
-they keep `GET /v1/markets`. The baseline is exactly what the web app used to hard-code, defined
+`sort_order` and an internal `active` flag; only active rows are returned. Countries are not a set:
+they have `GET /v1/countries`. The baseline is exactly what the web app used to hard-code, defined
 once in `internal/devseed/reference.go`, inserted by migration `0007` and upserted by `cmd/seed`
 (a test keeps the migration and the Go data in step).
 
@@ -1404,7 +1522,7 @@ internal/platform/elastic    Elasticsearch client (official Go client, transport
 internal/platform/mail       email templates, renderer, Resend client, log mailer, delivery log
 internal/platform/migrate    embedded-SQL migration runner
 internal/modules/health            /healthz, /readyz
-internal/modules/markets           GET /v1/markets
+internal/modules/markets           GET /v1/countries, /v1/markets (every ISO country)
 internal/modules/propertyrequests  POST /v1/property-requests, GET /v1/agent/property-requests (handler, service, store: postgres + memory)
 internal/modules/businessenquiries POST /v1/business-enquiries, GET /v1/inbox/business-enquiries (handler, service, store: postgres + memory)
 internal/modules/appointments      /v1/appointments, /v1/me/appointments, /v1/inbox/appointments, /v1/inbox/summary (handler, service, store: postgres + memory)
@@ -1502,6 +1620,16 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0014_global_countries` upserts every ISO 3166-1 country into `markets` (by code: the five
+  existing rows keep their IDs; AE, BW and ZA become ACTIVE), adds `markets.enabled`, the
+  free-text place columns `city_name` / `region_name` on `listings` and `directory_profiles`
+  (with CHECK constraints: 1–80 characters, no markup, never next to a city code),
+  `country_code` and `city_name` on `onboarding_applications` (a business application's
+  country is backfilled from the market it already had) and an index on
+  `directory_profiles (market_id, kind)`. It rewrites no other existing value. Its down
+  migration is lossy and says how: the added countries are kept and go back to PLANNED, and a
+  listing or profile whose city was free text is taken off the site. Written for the staging
+  database that already holds data, but **not run by me**.
 - `0013_uk_short_stays` adds the United Kingdom market (ACTIVE) and a display order for markets;
   the short-stay category, its five property types, the `price_periods` set and the United
   Kingdom's regions, cities and areas (upserts that keep a row's `active` flag); `max_guests` and

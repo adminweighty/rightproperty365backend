@@ -64,6 +64,7 @@ func ListingRecords(now time.Time) []listings.Record {
 			ID: id, Slug: l.Slug, Reference: l.Reference, Title: l.Title, Deal: l.Deal, Category: l.Category,
 			PropertyType: Code(l.PropertyType), Price: listings.Money{Amount: l.Price.Amount, Currency: l.Price.Currency},
 			PricePeriod: l.PricePeriod, Suburb: Code(l.Suburb), City: Code(l.City), MarketCode: l.MarketCode,
+			CityName: l.CityName, RegionName: l.RegionName,
 			Bedrooms: l.Bedrooms, Bathrooms: l.Bathrooms, FloorArea: l.FloorArea, LandArea: l.LandArea,
 			MaxGuests: l.MaxGuests, MinNights: l.MinNights,
 			Summary: l.Summary, Description: l.Description, Featured: l.Featured,
@@ -118,7 +119,7 @@ func ProfileRecords(now time.Time) []directory.Record {
 		s := seeded[p.Kind+"/"+p.Slug]
 		r := directory.Record{
 			ID: s.ID, Kind: p.Kind, Slug: p.Slug, Name: p.Name, Role: p.Role, Tagline: p.Tagline, Description: p.About,
-			CityCode: Code(p.City), Areas: p.Areas, Services: p.Services, Verified: p.Verified, Sponsored: p.Sponsored,
+			CityCode: Code(p.City), MarketCode: MarketOf(s.Organisation), Areas: p.Areas, Services: p.Services, Verified: p.Verified, Sponsored: p.Sponsored,
 			Since: p.Since, Status: directory.StatusActive, UpdatedAt: updated,
 			OrganisationID: s.Organisation.ID, AgentUserID: s.AgentUserID,
 		}

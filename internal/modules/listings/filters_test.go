@@ -167,7 +167,7 @@ func TestCountrySetsTheDefaultCurrencyAndListingsCarryRegionAndCountry(t *testin
 		t.Fatalf("price facet = %+v", page.Facets.Price)
 	}
 	l := page.Items[0]
-	if l.Region == nil || l.Region.Code != "gauteng" || l.Region.Label != "Gauteng" || l.Country != (Country{Code: "ZA", Name: "South Africa"}) || l.MarketCode != "ZA" {
+	if l.Region == nil || !l.Region.Is("gauteng") || l.Region.Label != "Gauteng" || l.Country != (Country{Code: "ZA", Name: "South Africa"}) || l.MarketCode != "ZA" {
 		t.Fatalf("region / country = %+v / %+v", l.Region, l.Country)
 	}
 	raw, _ := json.Marshal(l)
@@ -357,7 +357,7 @@ func TestElasticSearchAdapterReadsCountryAndRegionFacets(t *testing.T) {
 		return 200, `{"timed_out":false,"_shards":{"failed":0},"hits":{"total":{"value":3},"hits":[]},"aggregations":{
 			"country":{"values":{"buckets":[{"key":"ZW","doc_count":18}]}},
 			"region":{"values":{"buckets":[{"key":"harare","doc_count":11},{"key":"matabeleland-north","doc_count":2}]}},
-			"price":{"min":{"value":null},"max":{"value":null}}}}`
+			"price":{"values":{"buckets":[]}}}}`
 	}}
 	hits, err := NewElasticSearch(es, "rp365-test", time.Second).Search(context.Background(), Query{Country: "ZW", Page: 1, PageSize: 12}, esNow)
 	if err != nil {
@@ -386,12 +386,12 @@ func TestMappingVersionAndNewFields(t *testing.T) {
 	if err := json.Unmarshal(IndexMapping, &mapping); err != nil {
 		t.Fatal(err)
 	}
-	if mapping.Mappings.Meta.Version != MappingVersion || MappingVersion != 3 {
+	if mapping.Mappings.Meta.Version != MappingVersion || MappingVersion != 4 {
 		t.Fatalf("mapping _meta version %d, code says %d: raise both together and note the reindex", mapping.Mappings.Meta.Version, MappingVersion)
 	}
 	for field, want := range map[string]string{
 		"market": "keyword", "region": "keyword", "advertiser_type": "keyword", "has_photos": "boolean",
-		"floor_area": "integer", "land_area": "integer", "published_at": "date",
+		"floor_area": "integer", "land_area": "integer", "published_at": "date", "city_name": "text", "region_name": "text",
 	} {
 		if got := mapping.Mappings.Properties[field].Type; got != want {
 			t.Errorf("mapping of %s = %q, want %q", field, got, want)

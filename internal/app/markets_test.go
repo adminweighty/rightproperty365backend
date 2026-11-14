@@ -20,12 +20,15 @@ func TestMarketsListTheUnitedKingdomAfterZimbabwe(t *testing.T) {
 	got := decode[struct {
 		Data []markets.Market `json:"data"`
 	}](t, rec).Data
-	var order []string
-	for _, m := range got {
-		order = append(order, m.Code+":"+m.Status)
+	// Every country is listed and none is "planned" any more; Zimbabwe and
+	// the United Kingdom still lead, the rest follow by name.
+	if len(got) != markets.CountryCount || got[0].Code != "ZW" || got[1].Code != "GB" || got[2].Code != "AF" {
+		t.Fatalf("%d markets, starting %s %s %s", len(got), got[0].Code, got[1].Code, got[2].Code)
 	}
-	if strings.Join(order, ",") != "ZW:ACTIVE,GB:ACTIVE,AE:PLANNED,BW:PLANNED,ZA:PLANNED" {
-		t.Fatalf("markets = %v", order)
+	for _, m := range got {
+		if m.Status != markets.StatusActive {
+			t.Fatalf("%s has status %s", m.Code, m.Status)
+		}
 	}
 	gb := got[1]
 	if gb.Name != "United Kingdom" || gb.CurrencyCode != "GBP" || gb.Timezone != "Europe/London" || gb.ID != markets.UnitedKingdomID {
@@ -133,7 +136,7 @@ func TestUnitedKingdomSearchAndCurrencies(t *testing.T) {
 	}
 	for _, l := range gb.Items {
 		if l.Price.Currency != "GBP" || l.Country != (listings.Country{Code: "GB", Name: "United Kingdom"}) || l.MarketCode != "GB" ||
-			!strings.HasPrefix(l.Reference, "RP-GB-1") || l.Region == nil || l.Region.Code != "england" ||
+			!strings.HasPrefix(l.Reference, "RP-GB-1") || l.Region == nil || !l.Region.Is("england") ||
 			l.Advertiser.Agency == nil || l.Advertiser.Agency.Slug != "sample-homes-london" || len(l.Photos) != 1 {
 			t.Fatalf("GB listing %s: %+v", l.Slug, l)
 		}
@@ -149,32 +152,34 @@ func TestUnitedKingdomSearchAndCurrencies(t *testing.T) {
 		t.Fatalf("an explicit USD price filter matched %d GBP listings", got.Total)
 	}
 
-	// No country: the default is unchanged. Every listing is returned, each
-	// with its own currency; the price facet and filter use USD only, and
-	// never mix currencies.
+	// No country and no currency: every listing is returned, each with its
+	// own currency. The results span several currencies, so there is no
+	// price range (it used to be USD, silently) and a price filter is
+	// refused until a currency or a country is chosen. See countries_test.go.
 	all := e.search("?page_size=48")
 	currencies := map[string]int{}
 	for _, l := range all.Items {
 		currencies[l.Price.Currency]++
 	}
-	if all.Total != 23 || currencies["GBP"] != 3 || currencies["USD"] != 20 || all.Facets.Price.Currency != "USD" || *all.Facets.Price.Max == "1250000.00" {
+	if all.Total != 24 || currencies["GBP"] != 3 || currencies["USD"] != 20 || currencies["MUR"] != 1 || all.Facets.Price != nil {
 		t.Fatalf("mixed results: total %d, currencies %v, price facet %+v", all.Total, currencies, all.Facets.Price)
 	}
-	for _, l := range e.search("?max_price=2000&page_size=48").Items {
+	wantStatus(t, e.get("/v1/listings?max_price=2000"), http.StatusBadRequest)
+	for _, l := range e.search("?currency=USD&max_price=2000&page_size=48").Items {
 		if l.Price.Currency != "USD" {
-			t.Fatalf("the default price filter returned %s priced in %s", l.Slug, l.Price.Currency)
+			t.Fatalf("the USD price filter returned %s priced in %s", l.Slug, l.Price.Currency)
 		}
 	}
 	if got := e.search("?currency=GBP&max_price=2000"); got.Total != 2 || got.Facets.Price.Currency != "GBP" {
 		t.Fatalf("currency=GBP: %d", got.Total)
 	}
 	countries := facet(all.Facets.Country)
-	if countries != "GB=3,ZW=20" {
+	if countries != "MU=1,GB=3,ZW=20" {
 		t.Fatalf("country facet = %s", countries)
 	}
 	// Directories and suggestions follow.
 	if got := decode[directoryPage](t, e.get("/v1/directory/agencies?country=GB")); got.Total != 1 || got.Items[0].Slug != "sample-homes-london" ||
-		got.Items[0].Region.Code != "england" || got.Items[0].Country.Name != "United Kingdom" || got.Items[0].ListingCount != 3 {
+		!got.Items[0].Region.Is("england") || got.Items[0].Country.Name != "United Kingdom" || got.Items[0].ListingCount != 3 {
 		t.Fatalf("GB agencies = %+v", got.Items)
 	}
 	if got := decode[directoryPage](t, e.get("/v1/directory/hosts?region=scotland")); got.Total != 1 || got.Items[0].Slug != "sample-stays-edinburgh" {
@@ -188,8 +193,8 @@ func TestUnitedKingdomSearchAndCurrencies(t *testing.T) {
 func TestShortStays(t *testing.T) {
 	e := newEnv(t)
 	short := e.search("?category=short-stay")
-	if short.Total != 3 {
-		t.Fatalf("category=short-stay: %d, want 3", short.Total)
+	if short.Total != 4 { // Victoria Falls, Harare, London and Grand Baie (Mauritius)
+		t.Fatalf("category=short-stay: %d, want 4", short.Total)
 	}
 	bySlug := map[string]listings.Listing{}
 	for _, l := range short.Items {
@@ -212,7 +217,7 @@ func TestShortStays(t *testing.T) {
 	}
 
 	// guests_min: short stays that sleep at least that many.
-	for query, want := range map[string]int{"?guests_min=1": 3, "?guests_min=3": 2, "?guests_min=4": 2, "?guests_min=5": 1, "?guests_min=9": 0, "?category=short-stay&guests_min=4&country=ZW": 2, "?category=residential&guests_min=1": 0} {
+	for query, want := range map[string]int{"?guests_min=1": 4, "?guests_min=3": 3, "?guests_min=4": 3, "?guests_min=5": 2, "?guests_min=7": 1, "?guests_min=9": 0, "?category=short-stay&guests_min=4&country=ZW": 2, "?category=residential&guests_min=1": 0} {
 		if got := e.search(query); got.Total != want {
 			t.Fatalf("%s: %d, want %d", query, got.Total, want)
 		}
@@ -227,7 +232,7 @@ func TestShortStays(t *testing.T) {
 	// The brand name is not a category, but searching for it finds the short stays.
 	for _, q := range []string{"airbnb", "Airbnb", "AIRBNB lodge"} {
 		got := e.search("?q=" + strings.ReplaceAll(q, " ", "+"))
-		want := 3
+		want := 4
 		if strings.Contains(q, "lodge") {
 			want = 1
 		}
@@ -256,7 +261,7 @@ func TestShortStays(t *testing.T) {
 		t.Fatalf("a listing that is not a short stay must carry null max_guests / min_nights: %s", other)
 	}
 	// The category facet offers it like the others.
-	if got := facet(e.search("").Facets.Category); !strings.Contains(got, "short-stay=3") {
+	if got := facet(e.search("").Facets.Category); !strings.Contains(got, "short-stay=4") {
 		t.Fatalf("category facet = %s", got)
 	}
 }
@@ -267,7 +272,8 @@ func TestShortStayRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	two := 2
-	valid := listings.Record{Slug: "x", Category: listings.CategoryShortStay, Deal: "rent", PricePeriod: "night", MaxGuests: &two, MinNights: &two}
+	valid := listings.Record{Slug: "x", Category: listings.CategoryShortStay, Deal: "rent", PricePeriod: "night", MaxGuests: &two, MinNights: &two,
+		MarketCode: "ZW", City: "harare"}
 	if err := listings.CheckRecord(valid); err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +296,7 @@ func TestShortStayRules(t *testing.T) {
 			t.Errorf("%s was accepted", name)
 		}
 	}
-	if err := listings.CheckRecord(listings.Record{Slug: "y", Category: "residential", Deal: "rent", PricePeriod: "month"}); err != nil {
+	if err := listings.CheckRecord(listings.Record{Slug: "y", Category: "residential", Deal: "rent", PricePeriod: "month", MarketCode: "MU", CityName: "Grand Baie"}); err != nil {
 		t.Fatal(err)
 	}
 }

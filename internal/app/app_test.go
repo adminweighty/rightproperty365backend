@@ -117,12 +117,14 @@ type env struct {
 	listings  *listings.MemoryStore
 	directory *directory.MemoryStore
 	onboard   *onboarding.MemoryStore
-	appts     *appointments.MemoryStore
-	files     *storage.Local
-	mail      *captureMailer
-	logs      *bytes.Buffer
-	now       time.Time
-	seq       int
+	// marketStore holds the countries (all enabled unless a test says otherwise).
+	marketStore *markets.MemoryStore
+	appts       *appointments.MemoryStore
+	files       *storage.Local
+	mail        *captureMailer
+	logs        *bytes.Buffer
+	now         time.Time
+	seq         int
 }
 
 func newEnv(t *testing.T) *env {
@@ -166,7 +168,10 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 	// Onboarding: its own store, and document files in a per-test directory.
 	e.onboard = onboarding.NewMemoryStore(onboarding.MemoryDeps{
 		Identity: e.identity, Directory: e.directory, Enquiries: e.enquiries,
-		MarketID: func(code string) (uuid.UUID, bool) { return markets.ZimbabweID, code == devseed.MarketCode },
+		MarketID: func(code string) (uuid.UUID, bool) {
+			id := markets.IDFor(code)
+			return id, id != uuid.Nil
+		},
 	})
 	if e.files, err = storage.NewLocal(t.TempDir()); err != nil {
 		t.Fatal(err)
@@ -175,11 +180,12 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		t.Fatal(err)
 	}
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	e.marketStore = markets.NewMemoryStore()
 	e.handler, err = NewRouter(Deps{
 		Config:    cfg,
 		Logger:    logging.New(e.logs, slog.LevelInfo, "api", cfg.Env),
 		Health:    health.NewHandler(health.StoreMemory, nil, logger),
-		Markets:   markets.NewMemoryStore(),
+		Markets:   e.marketStore,
 		Requests:  e.requests,
 		Enquiries: e.enquiries,
 		Reference: e.reference,

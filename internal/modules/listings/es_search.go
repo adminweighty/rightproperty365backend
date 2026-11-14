@@ -19,7 +19,7 @@ type J = map[string]any
 
 // Text fields searched by q, with their weights. Title outranks place, which
 // outranks property type, which outranks the long text.
-var esTextFields = []string{"title^4", "suburb_label^3", "city_label^3", "property_type_label^2", "summary", "description", "reference", "keywords"}
+var esTextFields = []string{"title^4", "suburb_label^3", "city_label^3", "city_name^3", "region_name^3", "property_type_label^2", "summary", "description", "reference", "keywords"}
 
 // esPublic is the FR-006 rule inside Elasticsearch: only PUBLISHED documents
 // whose publication has not ended. The database re-checks every hit as well.
@@ -161,7 +161,6 @@ func BuildSearchBody(q Query, now time.Time) J {
 	facetAgg := func(name, field string, size int) J {
 		return J{"filter": esAll(allExcept(facets, name)), "aggs": J{"values": J{"terms": J{"field": field, "size": size}}}}
 	}
-	priceFilter := append(allExcept(facets, "price"), J{"term": J{"currency": currencyOf(q)}})
 	aggs := J{
 		"deal":          facetAgg("deal", "deal", 50),
 		"category":      facetAgg("category", "category", 50),
@@ -173,9 +172,12 @@ func BuildSearchBody(q Query, now time.Time) J {
 		"bedrooms":      facetAgg("bedrooms", "bedrooms", 60),
 		// Features are counted within the full result (they have no "other choice").
 		"features": J{"filter": esAll(allExcept(facets, "")), "aggs": J{"values": J{"terms": J{"field": "features", "size": 1000}}}},
-		"price": J{"filter": esAll(priceFilter), "aggs": J{
-			"min": J{"min": J{"field": "price"}}, "max": J{"max": J{"field": "price"}},
-		}},
+		// Prices per currency, without the price filter: nothing is converted,
+		// and the Service decides which currency the search is in.
+		"price": J{"filter": esAll(allExcept(facets, "price")), "aggs": J{"values": J{
+			"terms": J{"field": "currency", "size": 200},
+			"aggs":  J{"min": J{"min": J{"field": "price"}}, "max": J{"max": J{"field": "price"}}},
+		}}},
 	}
 
 	newest := []any{J{"published_at": "desc"}, J{"id": "asc"}}
@@ -340,12 +342,18 @@ func (e *ElasticSearch) Search(ctx context.Context, q Query, now time.Time) (Hit
 			Country, Region                                  esBuckets
 			PropertyType                                     esBuckets `json:"property_type"`
 			Price                                            struct {
-				Min struct {
-					Value *float64 `json:"value"`
-				} `json:"min"`
-				Max struct {
-					Value *float64 `json:"value"`
-				} `json:"max"`
+				Values struct {
+					Buckets []struct {
+						Key      string `json:"key"`
+						DocCount int    `json:"doc_count"`
+						Min      struct {
+							Value *float64 `json:"value"`
+						} `json:"min"`
+						Max struct {
+							Value *float64 `json:"value"`
+						} `json:"max"`
+					} `json:"buckets"`
+				} `json:"values"`
 			} `json:"price"`
 		} `json:"aggregations"`
 	}
@@ -371,9 +379,13 @@ func (e *ElasticSearch) Search(ctx context.Context, q Query, now time.Time) (Hit
 			hits.Facets.Bedrooms[bedrooms] = n
 		}
 	}
-	if a.Price.Min.Value != nil && a.Price.Max.Value != nil {
-		hits.Facets.PriceMin = new(big.Rat).SetFloat64(*a.Price.Min.Value)
-		hits.Facets.PriceMax = new(big.Rat).SetFloat64(*a.Price.Max.Value)
+	hits.Facets.Prices = map[string]PriceStat{}
+	for _, b := range a.Price.Values.Buckets {
+		stat := PriceStat{Count: b.DocCount}
+		if b.Min.Value != nil && b.Max.Value != nil {
+			stat.Min, stat.Max = new(big.Rat).SetFloat64(*b.Min.Value), new(big.Rat).SetFloat64(*b.Max.Value)
+		}
+		hits.Facets.Prices[b.Key] = stat
 	}
 	return hits, nil
 }

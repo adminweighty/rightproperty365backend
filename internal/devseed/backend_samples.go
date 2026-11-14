@@ -22,18 +22,32 @@ import (
 // MarketUK is the United Kingdom market.
 const MarketUK = "GB"
 
-// BackendListingCount is the number of PUBLISHED sample listings added here
-// (IDs 19..23), on top of the web's ListingCount.
-const BackendListingCount = 5
+// MarketMauritius is a country WITHOUT reference places: the sample listing
+// there names its city and region as free text.
+const MarketMauritius = "MU"
 
-// MarketID returns the ID of a market by its code (Zimbabwe when unknown).
+// BackendListingCount is the number of PUBLISHED sample listings added here
+// (IDs 19..24), on top of the web's ListingCount.
+const BackendListingCount = 6
+
+// MarketID returns the ID of a country by its code (Zimbabwe when the code
+// is not a country code). Every ISO country has one: see markets.IDFor.
 func MarketID(code string) uuid.UUID {
-	for _, m := range markets.Seed() {
-		if m.Code == code {
-			return m.ID
-		}
+	if id := markets.IDFor(code); id != uuid.Nil {
+		return id
 	}
 	return markets.ZimbabweID
+}
+
+// listingMarkets is the country of every sample listing, by listing ID. A
+// listing's country is its own: an organisation in one country may list a
+// property in another.
+func listingMarkets() map[uuid.UUID]string {
+	out := map[uuid.UUID]string{}
+	for _, l := range AllListings() {
+		out[uuid.MustParse(l.ID)] = l.MarketCode
+	}
+	return out
 }
 
 // MarketOf returns the market code of an organisation (ZW unless it says otherwise).
@@ -68,7 +82,7 @@ var backendBusinesses = []business{
 // businessListings says which sample listings a business's owner is
 // responsible for: the hosts own the short stays.
 var businessListings = map[string][]int{
-	hostFallsStays: {22},
+	hostFallsStays: {22, 24},
 	hostShowrooms:  {23},
 }
 
@@ -105,10 +119,11 @@ func backendListing(n int, market, reference, slug, image string, width, height 
 	return l
 }
 
-// BackendListings returns the five sample listings added on the backend:
+// BackendListings returns the six sample listings added on the backend:
 // three in the United Kingdom, priced in GBP (a sale, a monthly rent and a
-// short stay), and two short stays in Zimbabwe, priced in USD per night and
-// owned by the sample hosts. They are published before the web's listings,
+// short stay), two short stays in Zimbabwe, priced in USD per night and
+// owned by the sample hosts, and one short stay in Mauritius, priced in MUR,
+// whose city and region are free text. They are published before the web's listings,
 // so "newest first" still starts with those.
 func BackendListings() []SampleListing {
 	london := backendListing(19, MarketUK, "RP-GB-10001", "three-bedroom-terraced-house-kensington", "listing-townhouse-greendale.jpg", 1200, 813, "2026-10-20T08:00:00Z")
@@ -159,7 +174,20 @@ func BackendListings() []SampleListing {
 	harare.Description = "A sample short stay. A two-bedroom guest house in a walled garden with its own entrance, solar backup and water included. Sleeps four."
 	harare.Features, harare.Image.Alt = []string{"Private entrance", "Solar backup", "Water included", "Walled and gated"}, "Cottage in a garden"
 
-	return []SampleListing{london, manchester, shoreditch, falls, harare}
+	// A country without reference places: the city and the region are free
+	// text, and the price is in that country's currency. Owned by an existing
+	// host (a business may list a property abroad).
+	mauritius := backendListing(24, MarketMauritius, "RP-MU-10001", "beach-villa-grand-baie", "listing-house-borrowdale.jpg", 1200, 900, "2026-10-10T08:00:00Z")
+	mauritius.Title, mauritius.Deal, mauritius.Category, mauritius.PropertyType = "Beach villa with a pool for up to six guests", "rent", listings.CategoryShortStay, "Holiday home"
+	mauritius.Price.Amount, mauritius.Price.Currency, mauritius.PricePeriod = "8500.00", "MUR", listings.PricePeriodNight
+	mauritius.CityName, mauritius.RegionName = "Grand Baie", "Rivière du Rempart"
+	mauritius.Bedrooms, mauritius.Bathrooms, mauritius.FloorArea = guests(3), guests(2), guests(180)
+	mauritius.MaxGuests, mauritius.MinNights = guests(6), guests(3)
+	mauritius.Summary = "Sample listing: a holiday villa let by the night in Grand Baie, Mauritius."
+	mauritius.Description = "A sample short stay in a country that has no list of cities yet, so its city and region are written as free text. A three-bedroom villa with a private pool, a short walk from the beach. Sleeps six. Minimum stay three nights."
+	mauritius.Features, mauritius.Image.Alt = []string{"Swimming pool", "Veranda", "Walled and gated"}, "House with a garden and a pool"
+
+	return []SampleListing{london, manchester, shoreditch, falls, harare, mauritius}
 }
 
 // AllListings returns the web's sample listings followed by the backend's.

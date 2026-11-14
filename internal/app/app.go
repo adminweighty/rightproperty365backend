@@ -161,7 +161,9 @@ func NewRouter(d Deps) (http.Handler, error) {
 
 	secure := cfg.Env != config.EnvDevelopment
 	identityH := identity.NewHandler(identitySvc, logger, secure)
-	marketsH := markets.NewHandler(d.Markets, logger)
+	// Countries with their listing counts: every country can be used, and
+	// ?has_listings=true is what the public's country lists show.
+	marketsH := markets.NewHandler(d.Markets, listingsSvc.CountByCountry, logger)
 	// Appointments: routed with the request and enquiry rules, named from the
 	// public catalogue, shown in the market's time zone.
 	appointmentsSvc := appointments.NewService(appointments.Deps{
@@ -181,7 +183,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 	appointmentLimiter := httpx.NewRateLimiter(appointmentsPerMinute, appointmentsBurst)
 	authn := auth.NewMiddleware(identitySvc, cfg.CORSAllowedOrigins, logger)
 
-	onboardingSvc := onboarding.NewService(d.Onboarding, d.Files, onboardingVocabulary{ref: referenceSvc},
+	onboardingSvc := onboarding.NewService(d.Onboarding, d.Files, onboardingVocabulary{ref: referenceSvc, markets: d.Markets},
 		agencyDirectory{directory: d.Directory, ref: referenceSvc, markets: d.Markets}, logger)
 	if d.Now != nil {
 		onboardingSvc.SetClock(d.Now)
@@ -227,6 +229,9 @@ func NewRouter(d Deps) (http.Handler, error) {
 	r.Get("/healthz", d.Health.Live)
 	r.Get("/readyz", d.Health.Ready)
 	r.Route("/v1", func(r chi.Router) {
+		// Every country (the platform is global). /markets is the older name
+		// of the same data, kept for existing clients.
+		r.Get("/countries", marketsH.List)
 		r.Get("/markets", marketsH.List)
 
 		// Reference data behind every drop-down, filter and list. Public and cacheable.

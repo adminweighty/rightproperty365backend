@@ -252,10 +252,15 @@ type Field struct {
 
 // Detail field names.
 const (
-	FieldBusinessName       = "business_name"
-	FieldTagline            = "tagline"
-	FieldDescription        = "description"
-	FieldCity               = "city"
+	FieldBusinessName = "business_name"
+	FieldTagline      = "tagline"
+	FieldDescription  = "description"
+	FieldCity         = "city"
+	// FieldCountry is the ISO 3166-1 alpha-2 code of the country the business
+	// is in; FieldCityName is its city as free text, for a country that has
+	// no cities in the reference data (FieldCity is the code where it has).
+	FieldCountry            = "country"
+	FieldCityName           = "city_name"
 	FieldAreas              = "areas"
 	FieldServices           = "services"
 	FieldTrade              = "trade"
@@ -273,7 +278,10 @@ func FieldsFor(o RoleOutcome) []Field {
 	switch o.Outcome {
 	case OutcomeOrganisation:
 		fields := []Field{
-			{FieldBusinessName, true}, {FieldTagline, false}, {FieldDescription, true}, {FieldCity, true},
+			{FieldBusinessName, true}, {FieldTagline, false}, {FieldDescription, true}, {FieldCountry, true},
+			// One of the two is required: `city` (a code) where the country
+			// has cities in the reference data, otherwise `city_name`.
+			{FieldCity, false}, {FieldCityName, false},
 			{FieldAreas, false}, {FieldServices, false},
 		}
 		if o.DirectoryKind == KindServiceProviders {
@@ -296,10 +304,14 @@ func FieldsFor(o RoleOutcome) []Field {
 // contact_phone and registration_number are PRIVATE: they are for the
 // verification team and are never copied to a public profile.
 type Details struct {
-	BusinessName       *string  `json:"business_name"`
-	Tagline            *string  `json:"tagline"`
-	Description        *string  `json:"description"`
-	City               *string  `json:"city"`
+	BusinessName *string `json:"business_name"`
+	Tagline      *string `json:"tagline"`
+	Description  *string `json:"description"`
+	City         *string `json:"city"`
+	// Country is the ISO 3166-1 alpha-2 code of the business's country and
+	// CityName its city as free text (set instead of City, never with it).
+	Country            *string  `json:"country"`
+	CityName           *string  `json:"city_name"`
 	Areas              []string `json:"areas"`
 	Services           []string `json:"services"`
 	Trade              *string  `json:"trade"`
@@ -320,6 +332,10 @@ func (d *Details) text(name string) **string {
 		return &d.Description
 	case FieldCity:
 		return &d.City
+	case FieldCountry:
+		return &d.Country
+	case FieldCityName:
+		return &d.CityName
 	case FieldTrade:
 		return &d.Trade
 	case FieldRegistrationNumber:
@@ -440,12 +456,14 @@ type NewProfile struct {
 	ID   uuid.UUID
 	Kind string
 	// Slug is the wanted slug; the store appends -2, -3, ... on a collision.
-	Slug           string
-	Name           string
-	RoleTitle      string
-	Tagline        string
-	Description    string
-	CityCode       string
+	Slug        string
+	Name        string
+	RoleTitle   string
+	Tagline     string
+	Description string
+	CityCode    string
+	// CityName is the free-text city (set instead of CityCode).
+	CityName       string
 	TradeCode      string
 	Areas          []string
 	Services       []string

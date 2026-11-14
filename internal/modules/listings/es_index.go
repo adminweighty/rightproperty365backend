@@ -54,7 +54,9 @@ type ESTransport interface {
 //	1  the first mapping
 //	2  region, advertiser_type, has_photos (country / region and advanced filters)
 //	3  max_guests, min_nights, keywords (short stays; price_period gains "night")
-const MappingVersion = 3
+//	4  city_name, region_name (free-text places of a listing in a country
+//	   without reference places; city and suburb may now be absent)
+const MappingVersion = 4
 
 // IndexMapping is the explicit mapping of a listings index.
 //
@@ -76,11 +78,17 @@ type Document struct {
 	Category          string `json:"category"`
 	PropertyType      string `json:"property_type"`
 	PropertyTypeLabel string `json:"property_type_label"`
-	City              string `json:"city"`
-	CityLabel         string `json:"city_label"`
-	Suburb            string `json:"suburb"`
-	SuburbLabel       string `json:"suburb_label"`
-	Market            string `json:"market"`
+	// City and Suburb are reference codes; both are absent for a listing
+	// whose city is free text (CityName), so they never form a facet value.
+	City        string `json:"city,omitempty"`
+	CityLabel   string `json:"city_label,omitempty"`
+	Suburb      string `json:"suburb,omitempty"`
+	SuburbLabel string `json:"suburb_label,omitempty"`
+	// CityName and RegionName are the free-text city and region of a listing
+	// in a country without reference places: searchable by q, not filterable.
+	CityName   string `json:"city_name,omitempty"`
+	RegionName string `json:"region_name,omitempty"`
+	Market     string `json:"market"`
 	// Region is the region of the city (reference data), "" when it has none.
 	Region string `json:"region,omitempty"`
 	// AdvertiserType is "agency" or "private": the kind of advertiser, never who.
@@ -150,12 +158,19 @@ func BuildDocument(r Record, labels map[string]map[string]string) Document {
 	if r.Advertiser.Type == AdvertiserPrivateSeller {
 		advertiser = AdvertiserFilterPrivate
 	}
+	place := func(set, code string) string {
+		if code == "" {
+			return ""
+		}
+		return coded(labels[set], code).Label
+	}
 	return Document{
 		Region: labels[keyCityRegion][r.City], AdvertiserType: advertiser, HasPhotos: len(r.Photos) > 0,
+		CityName: r.CityName, RegionName: r.RegionName,
 		MaxGuests: r.MaxGuests, MinNights: r.MinNights, Keywords: labels[keyCategoryKeywords][r.Category],
 		ID: r.ID.String(), Slug: r.Slug, Reference: r.Reference, Title: r.Title, Summary: r.Summary, Description: r.Description,
 		Deal: r.Deal, Category: r.Category, PropertyType: r.PropertyType, PropertyTypeLabel: coded(labels[SetPropertyTypes], r.PropertyType).Label,
-		City: r.City, CityLabel: coded(labels[SetCities], r.City).Label, Suburb: r.Suburb, SuburbLabel: coded(labels[SetSuburbs], r.Suburb).Label,
+		City: r.City, CityLabel: place(SetCities, r.City), Suburb: r.Suburb, SuburbLabel: place(SetSuburbs, r.Suburb),
 		Market: r.MarketCode, Currency: r.Price.Currency, Price: amount, PricePeriod: r.PricePeriod,
 		Bedrooms: r.Bedrooms, Bathrooms: r.Bathrooms, FloorArea: r.FloorArea, LandArea: r.LandArea,
 		Features: features, Featured: r.Featured, Status: r.Status,

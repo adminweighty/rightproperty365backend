@@ -79,7 +79,7 @@ func (s *PostgresStore) Requirements(ctx context.Context) ([]Requirement, error)
 const applicationColumns = `a.id, a.user_id, a.role, a.status, a.business_name, a.tagline, a.description, a.city_code, a.areas, a.services,
 	a.trade_code, a.registration_number, a.contact_phone, a.agency_slug, COALESCE(a.agency_name, ''), a.job_title, a.bio,
 	COALESCE(a.market_code, ''), COALESCE(a.decision_reason, ''), a.decided_at, a.submitted_at, a.profile_kind, a.profile_slug,
-	a.created_at, a.updated_at, u.full_name, u.email, u.email_verified_at IS NOT NULL, u.created_at`
+	a.created_at, a.updated_at, u.full_name, u.email, u.email_verified_at IS NOT NULL, u.created_at, a.country_code, a.city_name`
 
 const applicationFrom = ` FROM onboarding_applications a JOIN users u ON u.id = a.user_id `
 
@@ -89,7 +89,7 @@ func scanApplication(row pgx.CollectableRow) (Application, error) {
 	if err := row.Scan(&a.ID, &a.UserID, &a.Role, &a.Status, &a.BusinessName, &a.Tagline, &a.Description, &a.City, &a.Areas, &a.Services,
 		&a.Trade, &a.RegistrationNumber, &a.ContactPhone, &a.AgencySlug, &a.AgencyName, &a.JobTitle, &a.Bio,
 		&a.MarketCode, &a.DecisionReason, &a.DecidedAt, &a.SubmittedAt, &profileKind, &profileSlug,
-		&a.CreatedAt, &a.UpdatedAt, &a.Applicant.Name, &a.Applicant.Email, &a.Applicant.EmailVerified, &a.Applicant.CreatedAt); err != nil {
+		&a.CreatedAt, &a.UpdatedAt, &a.Applicant.Name, &a.Applicant.Email, &a.Applicant.EmailVerified, &a.Applicant.CreatedAt, &a.Country, &a.CityName); err != nil {
 		return Application{}, err
 	}
 	a.Applicant.ID = a.UserID
@@ -216,10 +216,10 @@ func (s *PostgresStore) SaveDetails(ctx context.Context, id uuid.UUID, d Details
 		UPDATE onboarding_applications SET
 			business_name = $2, tagline = $3, description = $4, city_code = $5, areas = $6, services = $7, trade_code = $8,
 			registration_number = $9, contact_phone = $10, agency_slug = $11, agency_name = NULLIF($12, ''), job_title = $13, bio = $14,
-			market_code = NULLIF($15, ''), updated_at = $16
+			market_code = NULLIF($15, ''), updated_at = $16, country_code = $17, city_name = $18
 		WHERE id = $1 AND status IN `+editableStatuses,
 		id, d.BusinessName, d.Tagline, d.Description, d.City, areas, services, d.Trade,
-		d.RegistrationNumber, d.ContactPhone, d.AgencySlug, agencyName, d.JobTitle, d.Bio, marketCode, now)
+		d.RegistrationNumber, d.ContactPhone, d.AgencySlug, agencyName, d.JobTitle, d.Bio, marketCode, now, d.Country, d.CityName)
 	if err != nil {
 		return fmt.Errorf("save details: %w", err)
 	}
@@ -464,12 +464,13 @@ func (s *PostgresStore) Approve(ctx context.Context, p Approval) (Created, error
 			}
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO directory_profiles (id, market_id, kind, slug, name, organisation_id, agent_user_id, status,
-					role_title, tagline, about, city_code, trade_code, verified, sponsored, areas, services, created_at, updated_at, specialism)
+					role_title, tagline, about, city_code, trade_code, verified, sponsored, areas, services, created_at, updated_at, specialism,
+					city_name)
 				VALUES ($1, $2, $3, $4, $5, $6, $7, 'ACTIVE', NULLIF($8, ''), NULLIF($9, ''), NULLIF($10, ''), NULLIF($11, ''), NULLIF($12, ''),
-					true, false, $13, $14, $15, $15, NULLIF($16, ''))`,
+					true, false, $13, $14, $15, $15, NULLIF($16, ''), NULLIF($17, ''))`,
 				p.Profile.ID, market, p.Profile.Kind, slug, p.Profile.Name, p.Profile.OrganisationID, p.Profile.AgentUserID,
 				p.Profile.RoleTitle, p.Profile.Tagline, p.Profile.Description, p.Profile.CityCode, p.Profile.TradeCode,
-				areas, services, p.At, p.Profile.Specialism); err != nil {
+				areas, services, p.At, p.Profile.Specialism, p.Profile.CityName); err != nil {
 				return fmt.Errorf("insert profile: %w", err)
 			}
 			created.Profile = &ProfileRef{Kind: p.Profile.Kind, Slug: slug}

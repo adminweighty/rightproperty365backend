@@ -276,8 +276,29 @@ func (c inboxCounts) NewBusinessEnquiries(ctx context.Context, p *auth.Principal
 	return n, nil
 }
 
-// onboardingVocabulary adapts the reference data to onboarding.Vocabulary.
-type onboardingVocabulary struct{ ref *reference.Service }
+// onboardingVocabulary adapts the reference data (and the countries) to
+// onboarding.Vocabulary. markets may be nil where no country is validated
+// (the notification handlers).
+type onboardingVocabulary struct {
+	ref     *reference.Service
+	markets markets.Store
+}
+
+// Countries implements onboarding.Vocabulary: every enabled country.
+func (v onboardingVocabulary) Countries(ctx context.Context) ([]string, error) {
+	if v.markets == nil {
+		return nil, nil
+	}
+	all, err := v.markets.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(all))
+	for _, m := range all {
+		out = append(out, m.Code)
+	}
+	return out, nil
+}
 
 // RoleLabels implements onboarding.Vocabulary.
 func (v onboardingVocabulary) RoleLabels(ctx context.Context) (map[string]string, error) {
@@ -340,9 +361,12 @@ func (a agencyDirectory) VerifiedAgency(ctx context.Context, slug string) (*onbo
 	if err != nil {
 		return nil, err
 	}
-	out := &onboarding.Agency{Slug: r.Slug, Name: r.Name, OrganisationID: r.OrganisationID, CityCode: r.CityCode}
-	// The agency's market is the market of its city; an agency whose city
-	// applies to every market falls back to the first market.
+	out := &onboarding.Agency{Slug: r.Slug, Name: r.Name, OrganisationID: r.OrganisationID, CityCode: r.CityCode, MarketCode: r.MarketCode}
+	if out.MarketCode != "" {
+		return out, nil // the agency's own country
+	}
+	// A profile from before profiles carried a country: the market of its
+	// city, else the first market.
 	cities, err := onboardingVocabulary{ref: a.ref}.CityMarkets(ctx)
 	if err != nil {
 		return nil, err

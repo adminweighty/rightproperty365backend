@@ -33,7 +33,7 @@ const recordColumns = `
 	l.price_amount::text, l.currency_code, COALESCE(l.price_period, ''), COALESCE(l.suburb_code, ''), COALESCE(l.city_code, ''), m.code,
 	l.bedrooms, l.bathrooms, l.floor_area_m2, l.land_area_m2, l.max_guests, l.min_nights, COALESCE(l.summary, ''), COALESCE(l.description, ''), l.featured,
 	l.status::text, l.published_at, l.expires_at, l.updated_at, l.organisation_id, l.agent_user_id, l.seller_user_id,
-	COALESCE(l.private_seller_name, 'Private seller'),
+	COALESCE(l.private_seller_name, 'Private seller'), COALESCE(l.city_name, ''), COALESCE(l.region_name, ''),
 	ag.kind, ag.slug, ag.name, ag.verified, at.slug, at.name, at.verified,
 	COALESCE((SELECT array_agg(f.feature_code ORDER BY f.position) FROM listing_features f WHERE f.listing_id = l.id), '{}'),
 	COALESCE((SELECT jsonb_agg(jsonb_build_object('url', p.url, 'alt', p.alt, 'width', p.width, 'height', p.height) ORDER BY p.position)
@@ -68,7 +68,7 @@ func scanRecord(row pgx.CollectableRow) (Record, error) {
 		&priceText, &r.Price.Currency, &r.PricePeriod, &r.Suburb, &r.City, &r.MarketCode,
 		&r.Bedrooms, &r.Bathrooms, &r.FloorArea, &r.LandArea, &r.MaxGuests, &r.MinNights, &r.Summary, &r.Description, &r.Featured,
 		&r.Status, &publishedAt, &expiresAt, &r.UpdatedAt, &r.OrganisationID, &r.AgentUserID, &r.SellerUserID,
-		&sellerName, &agKind, &agSlug, &agName, &agVerified, &atSlug, &atNm, &atVerified, &r.Features, &photos); err != nil {
+		&sellerName, &r.CityName, &r.RegionName, &agKind, &agSlug, &agName, &agVerified, &atSlug, &atNm, &atVerified, &r.Features, &photos); err != nil {
 		return Record{}, err
 	}
 	if v, ok := new(big.Rat).SetString(priceText); ok {
@@ -160,6 +160,27 @@ func (s *PostgresStore) PublishedByOwner(ctx context.Context, organisationID, ag
 	return nil, nil
 }
 
+// CountByCountry implements Store.
+func (s *PostgresStore) CountByCountry(ctx context.Context, now time.Time) (map[string]int, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT m.code, count(*) FROM listings l JOIN markets m ON m.id = l.market_id
+		WHERE `+publicCondition+` GROUP BY m.code`, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var code string
+		var n int
+		if err := rows.Scan(&code, &n); err != nil {
+			return nil, err
+		}
+		out[code] = n
+	}
+	return out, rows.Err()
+}
+
 // PublishedSlugs implements Store.
 func (s *PostgresStore) PublishedSlugs(ctx context.Context, now time.Time) ([]SlugEntry, error) {
 	rows, err := s.pool.Query(ctx, `SELECT l.slug, l.updated_at FROM listings l WHERE `+publicCondition+` ORDER BY l.published_at DESC, l.id`, now)
@@ -211,7 +232,7 @@ func where(q Query, now time.Time, skip string) *builder {
 	for _, w := range terms(q.Q) {
 		p := b.arg(likePattern(w))
 		b.conds = append(b.conds, fmt.Sprintf(
-			`(l.title ILIKE %[1]s OR sb.label ILIKE %[1]s OR ct.label ILIKE %[1]s OR pt.label ILIKE %[1]s OR l.summary ILIKE %[1]s OR l.description ILIKE %[1]s OR l.reference ILIKE %[1]s OR pc.label ILIKE %[1]s OR pc.description ILIKE %[1]s)`, p))
+			`(l.title ILIKE %[1]s OR sb.label ILIKE %[1]s OR ct.label ILIKE %[1]s OR l.city_name ILIKE %[1]s OR l.region_name ILIKE %[1]s OR pt.label ILIKE %[1]s OR l.summary ILIKE %[1]s OR l.description ILIKE %[1]s OR l.reference ILIKE %[1]s OR pc.label ILIKE %[1]s OR pc.description ILIKE %[1]s)`, p))
 	}
 	eq := func(name, column, value string) {
 		if skip != name && value != "" {
@@ -289,7 +310,7 @@ func where(q Query, now time.Time, skip string) *builder {
 func (b *builder) sql() string { return strings.Join(b.conds, " AND ") }
 
 func (s *PostgresStore) countBy(ctx context.Context, column string, b *builder) (map[string]int, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+column+`, count(*) `+searchFrom+` WHERE `+b.sql()+` AND `+column+` IS NOT NULL GROUP BY 1`, b.args...)
+	rows, err := s.pool.Query(ctx, `SELECT `+column+`, count(*) `+searchFrom+` WHERE `+b.sql()+` AND `+column+` IS NOT NULL AND `+column+` <> '' GROUP BY 1`, b.args...)
 	if err != nil {
 		return nil, err
 	}
@@ -331,7 +352,7 @@ func (s *PostgresStore) Search(ctx context.Context, q Query, now time.Time) (Hit
 		for _, w := range terms(q.Q) {
 			p := page.arg(likePattern(w))
 			parts = append(parts, fmt.Sprintf(
-				`(CASE WHEN l.title ILIKE %[1]s THEN 4 ELSE 0 END + CASE WHEN sb.label ILIKE %[1]s OR ct.label ILIKE %[1]s THEN 3 ELSE 0 END + CASE WHEN pt.label ILIKE %[1]s THEN 2 ELSE 0 END + CASE WHEN l.summary ILIKE %[1]s OR l.description ILIKE %[1]s OR l.reference ILIKE %[1]s OR pc.label ILIKE %[1]s OR pc.description ILIKE %[1]s THEN 1 ELSE 0 END)`, p))
+				`(CASE WHEN l.title ILIKE %[1]s THEN 4 ELSE 0 END + CASE WHEN sb.label ILIKE %[1]s OR ct.label ILIKE %[1]s OR l.city_name ILIKE %[1]s OR l.region_name ILIKE %[1]s THEN 3 ELSE 0 END + CASE WHEN pt.label ILIKE %[1]s THEN 2 ELSE 0 END + CASE WHEN l.summary ILIKE %[1]s OR l.description ILIKE %[1]s OR l.reference ILIKE %[1]s OR pc.label ILIKE %[1]s OR pc.description ILIKE %[1]s THEN 1 ELSE 0 END)`, p))
 		}
 		if len(parts) > 0 {
 			order = `(` + strings.Join(parts, " + ") + `) DESC, l.featured DESC, ` + order
@@ -395,15 +416,28 @@ func (s *PostgresStore) Search(ctx context.Context, q Query, now time.Time) (Hit
 		return Hits{}, err
 	}
 
+	// Prices per currency, without the price filter: nothing is converted,
+	// and the Service decides which currency the search is in.
 	price := where(q, now, "price")
-	price.add(`l.currency_code = %s`, currencyOf(q))
-	var lo, hi *string
-	if err := s.pool.QueryRow(ctx, `SELECT min(l.price_amount)::text, max(l.price_amount)::text `+searchFrom+` WHERE `+price.sql(), price.args...).Scan(&lo, &hi); err != nil {
+	priceRows, err := s.pool.Query(ctx, `SELECT l.currency_code, count(*), min(l.price_amount)::text, max(l.price_amount)::text `+
+		searchFrom+` WHERE `+price.sql()+` GROUP BY 1`, price.args...)
+	if err != nil {
 		return Hits{}, fmt.Errorf("facet price: %w", err)
 	}
-	if lo != nil && hi != nil {
-		hits.Facets.PriceMin, _ = new(big.Rat).SetString(*lo)
-		hits.Facets.PriceMax, _ = new(big.Rat).SetString(*hi)
+	defer priceRows.Close()
+	hits.Facets.Prices = map[string]PriceStat{}
+	for priceRows.Next() {
+		var currency, lo, hi string
+		var stat PriceStat
+		if err := priceRows.Scan(&currency, &stat.Count, &lo, &hi); err != nil {
+			return Hits{}, fmt.Errorf("facet price: %w", err)
+		}
+		stat.Min, _ = new(big.Rat).SetString(lo)
+		stat.Max, _ = new(big.Rat).SetString(hi)
+		hits.Facets.Prices[currency] = stat
+	}
+	if err := priceRows.Err(); err != nil {
+		return Hits{}, fmt.Errorf("facet price: %w", err)
 	}
 	return hits, nil
 }

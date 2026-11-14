@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.14.0
-  summary: Multi-country property marketplace API (Zimbabwe first).
+  version: 0.15.0
+  summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
 
@@ -24,6 +24,20 @@ info:
     - The public catalogue (`/v1/listings`, `/v1/directory`, `/v1/sitemap`, `/v1/reference`)
       never returns a phone number, an email address or a street address for anyone. A test
       walks every public response to enforce it.
+
+    Countries and places (changed in 0.15.0)
+    - The platform is global: every ISO 3166-1 country can be used (`GET /v1/countries`). Public
+      country lists show only the countries that have listings (`?has_listings=true`).
+    - **Breaking for clients that read places.** A city, suburb or region is now a `Place`:
+      `{code: string | null, label: string}`. `code` used to be always a string; it is **null**
+      for a place written as free text (a city in a country without reference places). A
+      listing's `suburb` used to be always an object and is now **null** when the listing has
+      none. Affected: `Listing.city`, `Listing.suburb`, `Listing.region`,
+      `DirectoryProfile.city`, `DirectoryProfile.region`.
+    - **Breaking for clients that read the price facet.** `facets.price` is now **null** when no
+      `country` or `currency` was chosen and the results span more than one currency (it used
+      to be a USD range, silently), and `min_price` / `max_price` are then refused with `400` on
+      `currency`. `facets.currencies` is new. See `GET /v1/listings`.
 
     Reference data
     - Every drop-down, filter and list value comes from `GET /v1/reference` (or
@@ -159,25 +173,64 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
 
-  /v1/markets:
+  /v1/countries:
     get:
       tags: [markets]
-      operationId: listMarkets
-      summary: List markets
+      operationId: listCountries
+      summary: List countries
       description: |
-        Returns all markets: the active ones first, in their display order (Zimbabwe `ZW`, the
-        launch market, then the United Kingdom `GB`), then the planned ones (`AE`, `BW`, `ZA`)
-        by country code. A market is a country: its `code` is the `country` filter of listings
-        and directories and the `market` filter of the reference data, its `currency_code` is
-        the default currency of price filters when that country is selected (`USD` for ZW,
-        `GBP` for GB), and its `timezone` is the zone appointment times are shown in
-        (`Africa/Harare`, `Europe/London`).
+        **The platform is global.** This returns every enabled country: the full ISO 3166-1
+        list (249 countries and territories), each with its ISO 4217 currency and a default
+        IANA time zone (the capital's). Any of them may be used by a lister, on a listing, a
+        directory profile or an onboarding application. There is no short list of countries
+        that are "switched on", and no country is "planned".
+
+        **What the public is shown.** A country list on a public page (a search filter, a
+        footer, a home page) should show only the countries that have listings:
+        `?has_listings=true` returns the countries with at least one **published, unexpired**
+        listing, ordered by `listing_count` (highest first), then name. Use the unfiltered list
+        (with `?q=` for a searchable drop-down) only where a person chooses the country of
+        something they are creating.
+
+        A country's `code` is the `country` filter of listings and directories and the `market`
+        filter of the reference data; its `currency_code` is the currency of price filters when
+        that country is selected; its `timezone` is the zone appointment times are shown in.
+        Countries with several time zones (the United States, Canada, Russia, Australia,
+        Brazil, ...) have **one** default zone here; a per-city time zone is not built.
+
+        Regions, cities and suburbs are reference data per country
+        (`GET /v1/reference/cities?market=GB`) and **most countries have none yet**: there, a
+        city is written as free text (see the `Place` schema).
+
+        Order without `has_listings`: Zimbabwe, the United Kingdom, then every other country by
+        name (accents ignored). `GET /v1/markets` is the older name of this endpoint and
+        returns exactly the same response.
+
+        Cacheable like the reference data: `Cache-Control: public, max-age=60,
+        stale-while-revalidate=300`, a strong `ETag`, `304` on `If-None-Match`. Counts can
+        therefore lag a newly published listing by up to a minute.
+      parameters:
+        - name: has_listings
+          in: query
+          description: "`true`: only countries with at least one published, unexpired listing, ordered by listing count (highest first), then name. `false` is accepted and filters nothing."
+          schema: { type: boolean }
+        - name: q
+          in: query
+          description: "Keeps countries whose name contains the text, or whose code equals it. Case and diacritics are ignored (`reunion` finds `Réunion`, `king` finds `United Kingdom`, `gb` finds `GB`). At most 100 characters."
+          schema: { type: string, maxLength: 100 }
+          example: king
+        - $ref: "#/components/parameters/IfNoneMatch"
       responses:
         "200":
-          description: The markets.
+          description: The countries.
           headers:
             X-Request-Id:
               $ref: "#/components/headers/X-Request-Id"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              description: "`public, max-age=60, stale-while-revalidate=300`."
+              schema: { type: string }
           content:
             application/json:
               schema:
@@ -197,6 +250,91 @@ paths:
                     currency_code: USD
                     timezone: Africa/Harare
                     status: ACTIVE
+                    listing_count: 20
+                    has_listings: true
+                  - id: 0195c0de-0000-7000-8000-00000000a005
+                    code: GB
+                    name: United Kingdom
+                    currency_code: GBP
+                    timezone: Europe/London
+                    status: ACTIVE
+                    listing_count: 3
+                    has_listings: true
+                  - id: 0195c0de-0000-7000-8000-0000c0de4d55
+                    code: MU
+                    name: Mauritius
+                    currency_code: MUR
+                    timezone: Indian/Mauritius
+                    status: ACTIVE
+                    listing_count: 1
+                    has_listings: true
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "400":
+          description: "`VALIDATION_FAILED`. `error.fields` is keyed by the parameter: `has_listings` (not `true` or `false`) or `q` (longer than 100 characters)."
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/markets:
+    get:
+      tags: [markets]
+      operationId: listMarkets
+      summary: List countries (older name of GET /v1/countries)
+      description: |
+        **Kept for compatibility.** Exactly the same parameters, response, caching and errors
+        as `GET /v1/countries`; new clients should call that.
+
+        **Changed in 0.15.0 — read this if you already call it.** It used to return five
+        markets, two `ACTIVE` and three `PLANNED`. It now returns **every country (249)**, all
+        with `status: ACTIVE`, and each item gained `listing_count` and `has_listings`. A
+        client that printed this list as "where we operate" must switch to
+        `?has_listings=true`. The response is now cacheable (it was not).
+      parameters:
+        - name: has_listings
+          in: query
+          description: See `GET /v1/countries`.
+          schema: { type: boolean }
+        - name: q
+          in: query
+          description: See `GET /v1/countries`.
+          schema: { type: string, maxLength: 100 }
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: The countries, as `GET /v1/countries`.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            ETag:
+              $ref: "#/components/headers/ETag"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                additionalProperties: false
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Market"
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "400":
+          description: "`VALIDATION_FAILED` on `has_listings` or `q`, as `GET /v1/countries`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
         "500":
           $ref: "#/components/responses/InternalError"
         "504":
@@ -227,7 +365,7 @@ paths:
         | `account_roles` | `roles` at registration | `group`, `requires_verification` |
         | `directory_kinds` | directory sections and `recipient.kind` | `singular_label`, `description` |
         | `service_trades` | service-provider trades | — |
-        | `regions` | regions (provinces, states, nations) of a market; Zimbabwe has its ten provinces, the United Kingdom its four nations, the planned markets none yet | `market_code` |
+        | `regions` | regions (provinces, states, nations) of a market; Zimbabwe has its ten provinces, the United Kingdom its four nations, most other countries none yet | `market_code` |
         | `cities` | cities of a market | `market_code`, `parent_code` = its region |
         | `suburbs` | suburbs of a city | `market_code`, `parent_code` = its city |
         | `listing_features` | listing features and amenities | — |
@@ -242,7 +380,7 @@ paths:
         `england`, `scotland`, `wales`, `northern-ireland`; ten cities; a few areas of London and
         one of Manchester).
 
-        Markets are not a set: use `GET /v1/markets`. Platform administrator roles are never in
+        Countries are not a set: use `GET /v1/countries`. Platform administrator roles are never in
         `account_roles` and can never be chosen at registration, whatever this endpoint returns.
 
         **Order.** Each set is ordered by `sort_order`, then `label` (account roles by their
@@ -394,7 +532,7 @@ paths:
         parameter.
 
         **Location.** Listings can be narrowed at four levels, which form one hierarchy in the
-        reference data: `country` (a market: `GET /v1/markets`) > `region` (the `regions` set,
+        reference data: `country` (any country: `GET /v1/countries`) > `region` (the `regions` set,
         for example Zimbabwe's provinces) > `city` (`cities`; `parent_code` is its region) >
         `suburb` (`suburbs`; `parent_code` is its city). A listing stores its market, city and
         suburb; its region is the region of its city. The levels combine, and they must agree:
@@ -402,9 +540,35 @@ paths:
         when a level in between is left out). A mismatch is `400 VALIDATION_FAILED` on the
         **narrower** parameter (`region=bulawayo&city=harare` -> field `city`).
 
-        **Price and currency.** Prices are never converted. `min_price` / `max_price` and the
-        price facet use one currency: `currency` when given, otherwise the currency of the
-        selected `country`, otherwise `USD`.
+        **Any country, and free-text places.** `country` accepts the code of any enabled
+        country. One that has no listings is a valid search: `200`, no items, and a price facet
+        in that country's currency. An unknown code is `400` on `country`. Most countries have
+        no regions, cities or suburbs in the reference data yet; a listing there carries its
+        city (and optionally its region) as **free text**: `city: {code: null, label: "Grand
+        Baie"}`. Free-text places are matched by `q` and returned on the item, but they are
+        **not filterable** (`city=`, `region=` and `suburb=` take reference codes only) and do
+        not appear in the `city`, `suburb` or `region` facets or in suggestions. The hierarchy
+        check applies only to codes.
+
+        **Price and currency: one currency per search (changed in 0.15.0).** Prices are never
+        converted, so a price range only means something within one currency. The currency
+        of a search is, in this order: `currency` when given; the currency of the selected
+        `country`; otherwise the **only** currency the results are priced in.
+
+        When no `currency` or `country` is given and the results span **more than one**
+        currency there is no currency to use:
+        - `facets.price` is `null`, and `facets.currencies` lists the currencies of the
+          results (`[{code, count}]`, most listings first) so the client can ask the user to
+          pick one;
+        - `min_price` / `max_price` are refused: `400 VALIDATION_FAILED`, field `currency`,
+          message "Choose a currency or a country to filter by price.".
+
+        When the results share one currency, or `currency` or `country` is given, the price
+        filter and facet work as before. **This replaces the old behaviour**, where a search
+        without a country silently used `USD`: a price filter then dropped every listing
+        priced in another currency without saying so. `facets.currencies` is always present.
+        When nothing matches, `facets.price` is `{currency: "USD", min: null, max: null}` unless
+        a currency or country was chosen.
 
         **Sorting.** `newest` (default without `q`), `relevance` (default with `q`; title matches
         rank above suburb/city, then property type, then the rest; without `q` featured listings
@@ -417,7 +581,8 @@ paths:
         **Facets.** Each facet counts the listings that match every *other* filter (and `q`),
         so selecting a value does not hide its alternatives (`bedrooms` leaves out both
         `bedrooms_min` and `bedrooms_max`). `features` counts within the full result. `country`
-        and `region` are facets too, and each `suburb` value names its `city`. Only values with at least one listing appear.
+        and `region` are facets too, and each `suburb` value names its `city`. Only values with at least one listing appear:
+        the `country` facet lists the countries that have results, never all 249.
 
         **Sitemaps** should use `GET /v1/sitemap`, not this endpoint.
 
@@ -474,7 +639,7 @@ paths:
           example: borrowdale
         - name: country
           in: query
-          description: A market code from `GET /v1/markets` (ISO 3166-1 alpha-2), in any case. Also sets the default `currency`. A market without listings is valid and returns nothing.
+          description: "The code of any enabled country (`GET /v1/countries`; ISO 3166-1 alpha-2), in any case. Also sets the `currency` of the search unless `currency` is given. A country without listings is valid: `200`, no items, price facet in that country's currency. Unknown code: `400` on `country`."
           schema: { type: string, pattern: "^[A-Za-z]{2}$" }
           example: ZW
         - name: market
@@ -529,7 +694,7 @@ paths:
           schema: { type: boolean }
         - name: min_price
           in: query
-          description: Lowest price, as a decimal amount. With a price filter only listings priced in `currency` match.
+          description: "Lowest price, as a decimal amount. With a price filter only listings priced in the search's one currency match. `400` on `currency` when neither `currency` nor `country` is given and the results span more than one currency."
           schema: { type: string, pattern: "^[0-9]+(\\.[0-9]+)?$" }
           example: "100000"
         - name: max_price
@@ -539,8 +704,8 @@ paths:
           example: "300000"
         - name: currency
           in: query
-          description: ISO 4217 code for `min_price` / `max_price` and for the price facet. Defaults to the currency of the selected `country`, else `USD`. Prices in other currencies are never converted.
-          schema: { type: string, pattern: "^[A-Za-z]{3}$", default: USD }
+          description: "ISO 4217 code for `min_price` / `max_price` and for the price facet. Without it: the currency of the selected `country`, else the only currency the results are priced in. There is no default any more (it used to be `USD`): with results in several currencies and neither `currency` nor `country`, `facets.price` is null and a price filter is `400` on this parameter. Prices are never converted."
+          schema: { type: string, pattern: "^[A-Za-z]{3}$" }
         - name: bedrooms_min
           in: query
           description: At least this many bedrooms (0–50). Listings without a bedroom count never match.
@@ -595,7 +760,10 @@ paths:
             `floor_area_max`, `land_area_min`, `land_area_max`, `listed_within_days`,
             `advertiser_type`, `reference`, `has_photos`, `guests_min`. A maximum lower than its minimum is
             reported on the `_max` parameter; a location that does not belong to the wider one
-            on the narrower parameter (`suburb`, `city` or `region`).
+            on the narrower parameter (`suburb`, `city` or `region`). `currency` is also where a
+            price filter without a single currency is reported: `min_price` or `max_price`
+            with neither `currency` nor `country`, when the results span more than one currency
+            ("Choose a currency or a country to filter by price.").
           headers:
             X-Request-Id:
               $ref: "#/components/headers/X-Request-Id"
@@ -617,7 +785,9 @@ paths:
         Up to 8 suggestions for a search box: suburbs first, then cities, then regions, then
         countries, then listing titles; within each, names that start with the term come first.
         Only suburbs, cities, regions and countries that have at least one public listing, and
-        only public listings, are suggested. A term shorter than 2 characters returns an empty
+        only public listings, are suggested: a `country` suggestion is never one of the 249
+        countries without listings. Free-text cities and regions are not suggested (a
+        suggestion's `value` is a filter code, and they have none). A term shorter than 2 characters returns an empty
         list.
       parameters:
         - name: q
@@ -796,7 +966,7 @@ paths:
           example: harare
         - name: country
           in: query
-          description: A market code from `GET /v1/markets`, in any case (`market` is an alias). Keeps profiles whose city is in that country. `400` on `country` when unknown.
+          description: "The code of any enabled country (`GET /v1/countries`), in any case (`market` is an alias). Keeps the profiles of that country — the profile's own country, whether its city is a reference city or free text. A country without profiles is valid and returns nothing. `400` on `country` when unknown."
           schema: { type: string, pattern: "^[A-Za-z]{2}$" }
           example: ZW
         - name: market
@@ -2020,6 +2190,7 @@ paths:
             schema: { $ref: "#/components/schemas/OnboardingDetailsPatch" }
             example:
               business_name: Kopje Plumbing
+              country: ZW
               city: harare
               trade: plumbing
               contact_phone: "+263771234567"
@@ -3828,16 +3999,18 @@ components:
           enum: [month, night, null]
           description: "A `price_periods` code: `month` for a monthly rent, `night` for a short stay (always, and only, category `short-stay`); null for a sale price. Labels (`per month`, `per night`) are in `GET /v1/reference/price_periods`."
         suburb:
-          allOf: [{ $ref: "#/components/schemas/Coded" }]
-          description: "`suburbs` code and label."
+          oneOf:
+            - $ref: "#/components/schemas/Place"
+            - type: "null"
+          description: "`suburbs` code and label. **Null when the listing names no suburb** (always the case when its city is free text). Changed in 0.15.0: it used to be always an object."
         city:
-          allOf: [{ $ref: "#/components/schemas/Coded" }]
-          description: "`cities` code and label."
+          allOf: [{ $ref: "#/components/schemas/Place" }]
+          description: "Always present. A `cities` code and label, or — in a country without reference places — `code: null` and the city as free text in `label`. Changed in 0.15.0: `code` is nullable."
         region:
           oneOf:
-            - $ref: "#/components/schemas/Coded"
+            - $ref: "#/components/schemas/Place"
             - type: "null"
-          description: "`regions` code and label of the city's region (province); null when the city has none."
+          description: "The region (province) of the city: a `regions` code and label, or `code: null` with the free-text region that came with a free-text city. Null when there is none."
         country:
           $ref: "#/components/schemas/Country"
         market_code: { type: string, pattern: "^[A-Z]{2}$", description: "The same code as `country.code`." }
@@ -3902,12 +4075,35 @@ components:
 
     Country:
       type: object
-      description: A market shown as a country.
+      description: The country of a listing or a profile (its own; every listing and profile has one).
       required: [code, name]
       additionalProperties: false
       properties:
-        code: { type: string, pattern: "^[A-Z]{2}$", description: "Market code; use it as the `country` filter." }
+        code: { type: string, pattern: "^[A-Z]{2}$", description: "ISO 3166-1 alpha-2 code; use it as the `country` filter." }
         name: { type: string, examples: [Zimbabwe] }
+
+    Place:
+      type: object
+      description: |
+        A city, a suburb or a region of a listing or a profile.
+
+        - A **reference place**: `code` is the reference-data code (use it as the filter of the
+          same name) and `label` its current label. If the row has been retired the label
+          repeats the code.
+        - A **free-text place**: `code` is `null` and `label` is the text as it was entered
+          (plain text, at most 80 characters). This is how a city or region is written in a
+          country that has no reference places yet. It cannot be used as a filter; `q` finds it.
+
+        **Changed in 0.15.0:** `code` used to be a non-null string (this used to be `Coded`).
+        Clients must treat `code` as optional and must not build a filter from a null code.
+      required: [code, label]
+      additionalProperties: false
+      properties:
+        code: { type: [string, "null"], description: "Reference code, or null for a free-text place." }
+        label: { type: string, maxLength: 120 }
+      examples:
+        - { code: harare, label: Harare }
+        - { code: null, label: Grand Baie }
 
     FacetCount:
       type: object
@@ -3923,22 +4119,22 @@ components:
 
     ListingFacets:
       type: object
-      description: All keys are always present; a facet with no values is an empty array.
-      required: [deal, category, property_type, city, suburb, bedrooms, features, price, country, region]
+      description: "All keys are always present; a facet with no values is an empty array. `price` can be null (see it)."
+      required: [deal, category, property_type, city, suburb, bedrooms, features, price, currencies, country, region]
       additionalProperties: false
       properties:
         country:
           type: array
-          description: "By market: `code` is the market code, `label` the country name. Ignores the `country` filter, like every facet ignores its own. Ordered by label."
+          description: "By country: `code` is the country code, `label` the country name. Only countries that have results are listed. Ignores the `country` filter, like every facet ignores its own. Ordered by label."
           items: { $ref: "#/components/schemas/FacetCount" }
         region:
           type: array
-          description: "By the region of the listing's city: `code` is a `regions` code. Ignores the `region` filter. Listings whose city has no region are not counted. Ordered by label."
+          description: "By the region of the listing's city: `code` is a `regions` code. Ignores the `region` filter. Listings whose city has no region, or whose city and region are free text, are not counted. Ordered by label."
           items: { $ref: "#/components/schemas/FacetCount" }
         deal: { type: array, items: { $ref: "#/components/schemas/FacetCount" }, description: Ordered by label. }
         category: { type: array, items: { $ref: "#/components/schemas/FacetCount" } }
         property_type: { type: array, items: { $ref: "#/components/schemas/FacetCount" } }
-        city: { type: array, items: { $ref: "#/components/schemas/FacetCount" } }
+        city: { type: array, items: { $ref: "#/components/schemas/FacetCount" }, description: "Reference cities only: a listing whose city is free text is not counted here." }
         suburb: { type: array, items: { $ref: "#/components/schemas/FacetCount" }, description: "Each value carries `city`, the code of its city." }
         bedrooms:
           type: array
@@ -3949,14 +4145,35 @@ components:
           description: Ordered by count (highest first), then label.
           items: { $ref: "#/components/schemas/FacetCount" }
         price:
-          type: object
-          description: Lowest and highest price, in `currency`, among the listings matching every filter except the price filter. Both null when there are none.
+          type: [object, "null"]
+          description: |
+            Lowest and highest price, in `currency`, among the listings matching every filter
+            except the price filter; `min` and `max` are null when there are none in that
+            currency. `currency` is the search's one currency: the `currency` parameter, else
+            the selected country's, else the only currency the results are priced in (`USD`
+            when nothing matches).
+
+            **Null (changed in 0.15.0)** when neither `currency` nor `country` was given and the
+            results span more than one currency: there is no single range. Show `currencies`
+            and ask the user to pick one, then repeat the search with `currency=`.
           required: [currency, min, max]
           additionalProperties: false
           properties:
             currency: { type: string, pattern: "^[A-Z]{3}$" }
             min: { type: [string, "null"], examples: ["600.00"] }
             max: { type: [string, "null"], examples: ["640000.00"] }
+        currencies:
+          type: array
+          description: "New in 0.15.0. The currencies the results are priced in, with the number of listings in each, most listings first (then by code). Counted like `price`: every filter applies except the price filter. Empty when nothing matches."
+          items:
+            type: object
+            required: [code, count]
+            additionalProperties: false
+            properties:
+              code: { type: string, pattern: "^[A-Z]{3}$" }
+              count: { type: integer, minimum: 1 }
+          examples:
+            - [{ code: USD, count: 20 }, { code: GBP, count: 3 }, { code: MUR, count: 1 }]
 
     ListingPage:
       type: object
@@ -4025,18 +4242,18 @@ components:
         tagline: { type: string }
         description: { type: string, description: Plain text "about" paragraph. }
         city:
-          allOf: [{ $ref: "#/components/schemas/Coded" }]
-          description: "`cities` code and label."
+          allOf: [{ $ref: "#/components/schemas/Place" }]
+          description: "A `cities` code and label, or — in a country without reference places — `code: null` and the city as free text in `label`. Changed in 0.15.0: `code` is nullable. (A profile without any city, which onboarding does not allow, has `code: null` and an empty label.)"
         region:
           oneOf:
-            - $ref: "#/components/schemas/Coded"
+            - $ref: "#/components/schemas/Place"
             - type: "null"
-          description: "`regions` code and label of the city's region; null when the profile has no city or the city has no region."
+          description: "`regions` code and label of the city's region, or `code: null` with a free-text region; null when there is none."
         country:
           oneOf:
             - $ref: "#/components/schemas/Country"
             - type: "null"
-          description: The country (market) of the profile's city; null when the profile has no city.
+          description: "The profile's own country. Every profile has one; the type stays nullable for compatibility. Changed in 0.15.0: it is the profile's country, no longer derived from its city."
         areas: { type: array, items: { type: string }, description: Free-text names of the areas served. Not reference codes. }
         services: { type: array, items: { type: string }, description: "Names of the services offered; any of them can be sent as `service` in a business enquiry." }
         offerings:
@@ -4368,14 +4585,25 @@ components:
           description: The public directory the approved applicant appears in (a `directory_kinds` code); null when the role gets no public profile.
         fields:
           type: array
-          description: The details that apply to this role, in form order. Names are the keys of `OnboardingDetails`.
+          description: |
+            The details that apply to this role, in form order. Names are the keys of
+            `OnboardingDetails`.
+
+            **Changed in 0.15.0 for the `ORGANISATION` outcome:** `country` is new and required;
+            `city` is no longer flagged `required` and `city_name` is new, because **exactly one
+            of the two is needed**, which a per-field flag cannot say: `city` (a code) when the
+            chosen country has cities in the reference data, `city_name` (free text) when it has
+            none. A form should ask for the country first, load
+            `GET /v1/reference/cities?market=<country>` and show a drop-down when it is not
+            empty, a text box when it is. An application's `missing.fields` names the one that
+            is missing (`city` or `city_name`).
           items:
             type: object
             required: [name, required]
             additionalProperties: false
             properties:
-              name: { type: string, enum: [business_name, tagline, description, city, areas, services, trade, registration_number, contact_phone, agency_slug, job_title, bio] }
-              required: { type: boolean, description: "Must be set before the application can be submitted." }
+              name: { type: string, enum: [business_name, tagline, description, country, city, city_name, areas, services, trade, registration_number, contact_phone, agency_slug, job_title, bio] }
+              required: { type: boolean, description: "Must be set before the application can be submitted. See the note above for `city` and `city_name`." }
         documents:
           type: array
           description: "The documents this role must (`required` true) or may attach, in display order."
@@ -4395,13 +4623,15 @@ components:
         Every key is always present. A text field that is not set is null; `areas` and
         `services` are always arrays. Which keys apply to a role is in
         `GET /v1/onboarding/requirements`; the others stay null/empty.
-      required: [business_name, tagline, description, city, areas, services, trade, registration_number, contact_phone, agency_slug, job_title, bio]
+      required: [business_name, tagline, description, city, country, city_name, areas, services, trade, registration_number, contact_phone, agency_slug, job_title, bio]
       additionalProperties: false
       properties:
         business_name: { type: [string, "null"], minLength: 2, maxLength: 120, description: "Organisation outcomes. Becomes the organisation's and the profile's name." }
         tagline: { type: [string, "null"], maxLength: 140, description: "Organisation outcomes. Public." }
         description: { type: [string, "null"], maxLength: 2000, description: "Organisation outcomes. Plain text, line breaks allowed, no HTML. Public." }
-        city: { type: [string, "null"], description: "Organisation outcomes. A code of the `cities` reference set. Decides the application's market." }
+        country: { type: [string, "null"], pattern: "^[A-Z]{2}$", description: "New in 0.15.0. Organisation outcomes, **required**. The code of any enabled country (`GET /v1/countries`). It is the application's market (`market_code`), which is what a Market Administrator is scoped by, and becomes the country of the organisation and its profile. Null for the other outcomes." }
+        city: { type: [string, "null"], description: "Organisation outcomes. A code of the `cities` reference set, **where the country has cities in the reference data** (`GET /v1/reference/cities?market=GB` is not empty); it must be a city of `country`. Required there. Null when `city_name` is used." }
+        city_name: { type: [string, "null"], maxLength: 80, description: "New in 0.15.0. Organisation outcomes. The city as free text (plain text, no HTML), **where the country has no cities in the reference data**; required there. Null when `city` is used. Public: it becomes the profile's `city.label` with `city.code: null`." }
         areas: { type: array, maxItems: 12, items: { type: string, maxLength: 60 }, description: "Areas served. Public. Always an array (empty when unset)." }
         services: { type: array, maxItems: 12, items: { type: string, maxLength: 60 }, description: "Organisation outcomes. Services offered. Public. Always an array." }
         trade: { type: [string, "null"], description: "SERVICE_PROVIDER only (required there). A code of the `service_trades` reference set." }
@@ -4419,7 +4649,9 @@ components:
         business_name: { type: [string, "null"], minLength: 2, maxLength: 120, description: "Organisation outcomes. Becomes the organisation's and the profile's name." }
         tagline: { type: [string, "null"], maxLength: 140, description: "Organisation outcomes. Public." }
         description: { type: [string, "null"], maxLength: 2000, description: "Organisation outcomes. Plain text, line breaks allowed, no HTML. Public." }
-        city: { type: [string, "null"], description: "Organisation outcomes. A code of the `cities` reference set. Decides the application's market." }
+        country: { type: [string, "null"], description: "Organisation outcomes. The code of any enabled country, in any case. `400` when unknown. Changing it clears a stored `city` of another country, and a stored `city_name` when the new country has reference cities." }
+        city: { type: [string, "null"], description: "Organisation outcomes. A `cities` code. `400` when unknown, or when it is not a city of the `country` sent in the same request. **Sent without `country`, it sets the country to the city's own** (so a client that only knows `city` keeps working). Clears `city_name`." }
+        city_name: { type: [string, "null"], maxLength: 80, description: "Organisation outcomes. Free-text city, plain text without HTML. `400` when the country has cities in the reference data (send `city` instead), or when sent together with a non-null `city`. Clears `city`." }
         areas: { type: [array, "null"], maxItems: 12, items: { type: string, maxLength: 60 }, description: "Areas served. Public. Always an array (empty when unset)." }
         services: { type: [array, "null"], maxItems: 12, items: { type: string, maxLength: 60 }, description: "Organisation outcomes. Services offered. Public. Always an array." }
         trade: { type: [string, "null"], description: "SERVICE_PROVIDER only (required there). A code of the `service_trades` reference set." }
@@ -5035,28 +5267,39 @@ components:
 
     Market:
       type: object
-      required: [id, code, name, currency_code, timezone, status]
+      description: A country. ("Market" is the older name of the same thing.)
+      required: [id, code, name, currency_code, timezone, status, listing_count, has_listings]
       additionalProperties: false
       properties:
         id:
           type: string
           format: uuid
+          description: Stable. The five countries that existed before 0.15.0 (ZW, GB, AE, BW, ZA) keep the IDs they had.
         code:
           type: string
           description: ISO 3166-1 alpha-2 country code.
           pattern: "^[A-Z]{2}$"
         name:
           type: string
+          description: "English short name as people say it (`Russia`, `South Korea`), not ISO's inverted form."
         currency_code:
           type: string
-          description: ISO 4217 currency code.
+          description: ISO 4217 currency code of the country (one per country). Zimbabwe is `USD`.
           pattern: "^[A-Z]{3}$"
         timezone:
           type: string
-          description: IANA time zone name.
+          description: "IANA time zone name: the country's default zone, its capital's. One per country, also for countries with several zones."
         status:
           type: string
-          enum: [ACTIVE, PLANNED, SUSPENDED]
+          enum: [ACTIVE]
+          description: "**Always `ACTIVE` since 0.15.0.** Kept so existing clients do not break; it no longer gates anything and `PLANNED` no longer exists. A country that has been switched off is not returned at all (and is refused as a `country`)."
+        listing_count:
+          type: integer
+          minimum: 0
+          description: New in 0.15.0. Published, unexpired listings in the country right now.
+        has_listings:
+          type: boolean
+          description: "New in 0.15.0. `listing_count > 0`: whether the public should be shown this country."
 
     IdempotencyKey:
       type: string

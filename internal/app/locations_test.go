@@ -112,7 +112,7 @@ func TestListingsByCountryAndRegion(t *testing.T) {
 			t.Fatalf("region=%s: %d, want %d", region, got.Total, want)
 		}
 		for _, l := range got.Items {
-			if l.Region == nil || l.Region.Code != region || l.Country != (listings.Country{Code: "ZW", Name: "Zimbabwe"}) || l.MarketCode != "ZW" {
+			if l.Region == nil || !l.Region.Is(region) || l.Country != (listings.Country{Code: "ZW", Name: "Zimbabwe"}) || l.MarketCode != "ZW" {
 				t.Fatalf("region=%s returned %s with region %+v country %+v", region, l.Slug, l.Region, l.Country)
 			}
 		}
@@ -315,9 +315,9 @@ func TestDirectoryByCountryAndRegion(t *testing.T) {
 	all := page("agencies?country=ZW&page_size=48")
 	byRegion := map[string]int{}
 	for _, p := range all.Items {
-		region := devseed.CityRegions[p.City.Code]
+		region := devseed.CityRegions[p.City.CodeOr()]
 		byRegion[region]++
-		if p.Region == nil || p.Region.Code != region || p.Region.Label == "" || p.Country == nil || *p.Country != (listings.Country{Code: "ZW", Name: "Zimbabwe"}) {
+		if p.Region == nil || !p.Region.Is(region) || p.Region.Label == "" || p.Country == nil || *p.Country != (listings.Country{Code: "ZW", Name: "Zimbabwe"}) {
 			t.Fatalf("profile %s: region %+v country %+v", p.Slug, p.Region, p.Country)
 		}
 	}
@@ -330,8 +330,8 @@ func TestDirectoryByCountryAndRegion(t *testing.T) {
 			t.Fatalf("agencies?region=%s: %d, want %d", region, got.Total, want)
 		}
 		for _, p := range got.Items {
-			if p.Region.Code != region {
-				t.Fatalf("agencies?region=%s returned %s in %s", region, p.Slug, p.Region.Code)
+			if !p.Region.Is(region) {
+				t.Fatalf("agencies?region=%s returned %s in %s", region, p.Slug, p.Region.CodeOr())
 			}
 		}
 	}

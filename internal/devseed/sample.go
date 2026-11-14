@@ -40,11 +40,15 @@ type SampleListing struct {
 	PricePeriod string `json:"pricePeriod"`
 	Suburb      string `json:"suburb"`
 	City        string `json:"city"`
-	MarketCode  string `json:"marketCode"`
-	Bedrooms    *int   `json:"bedrooms"`
-	Bathrooms   *int   `json:"bathrooms"`
-	FloorArea   *int   `json:"floorArea"`
-	LandArea    *int   `json:"landArea"`
+	// CityName and RegionName are free text, for a backend sample in a
+	// country without reference places (set instead of City and Suburb).
+	CityName   string `json:"cityName"`
+	RegionName string `json:"regionName"`
+	MarketCode string `json:"marketCode"`
+	Bedrooms   *int   `json:"bedrooms"`
+	Bathrooms  *int   `json:"bathrooms"`
+	FloorArea  *int   `json:"floorArea"`
+	LandArea   *int   `json:"landArea"`
 	// MaxGuests and MinNights are set for short stays only (backend samples).
 	MaxGuests   *int     `json:"maxGuests"`
 	MinNights   *int     `json:"minNights"`

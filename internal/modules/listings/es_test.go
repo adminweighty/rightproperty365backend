@@ -171,7 +171,9 @@ func TestSearchBodyRules(t *testing.T) {
 	if has(doc.Aggs["bedrooms"].Filter.Bool.Filter, `"bedrooms"`) || has(doc.Aggs["price"].Filter.Bool.Filter, `"price"`) {
 		t.Fatal("bedrooms and price facets must ignore their own filter")
 	}
-	if !has(doc.Aggs["price"].Filter.Bool.Filter, `"currency":"USD"`) || !has(doc.Aggs["features"].Filter.Bool.Filter, `"deal":"sale"`) {
+	// The price facet is per currency (nothing is converted): it leaves the
+	// price filter out, currency term included.
+	if has(doc.Aggs["price"].Filter.Bool.Filter, `"currency"`) || !has(doc.Aggs["price"].Filter.Bool.Filter, `"deal":"sale"`) || !has(doc.Aggs["features"].Filter.Bool.Filter, `"deal":"sale"`) {
 		t.Fatal("price is per currency; features count within the full result")
 	}
 	// Prices are compared within one currency only.
@@ -308,7 +310,9 @@ const searchResponse = `{
     "suburb": {"values": {"buckets": [{"key": "borrowdale", "doc_count": 1}]}},
     "bedrooms": {"values": {"buckets": [{"key": 3, "doc_count": 4}, {"key": 4, "doc_count": 3}]}},
     "features": {"values": {"buckets": [{"key": "borehole", "doc_count": 5}]}},
-    "price": {"min": {"value": 950.0}, "max": {"value": 385000.5}}
+    "price": {"values": {"buckets": [
+      {"key": "USD", "doc_count": 6, "min": {"value": 950.0}, "max": {"value": 385000.5}},
+      {"key": "GBP", "doc_count": 1, "min": {"value": 185.0}, "max": {"value": 185.0}}]}}
   }
 }`
 
@@ -331,16 +335,18 @@ func TestElasticSearchAdapterParsesHitsAndAggregations(t *testing.T) {
 		f.Features["borehole"] != 5 || f.Bedrooms[3] != 4 || f.Bedrooms[4] != 3 || f.Category["residential"] != 7 {
 		t.Fatalf("facets = %+v", f)
 	}
-	if FormatAmount(f.PriceMin) != "950.00" || FormatAmount(f.PriceMax) != "385000.50" {
-		t.Fatalf("price facet = %s..%s", FormatAmount(f.PriceMin), FormatAmount(f.PriceMax))
+	usd, gbp := f.Prices["USD"], f.Prices["GBP"]
+	if len(f.Prices) != 2 || usd.Count != 6 || FormatAmount(usd.Min) != "950.00" || FormatAmount(usd.Max) != "385000.50" ||
+		gbp.Count != 1 || FormatAmount(gbp.Min) != "185.00" {
+		t.Fatalf("price facet = %+v", f.Prices)
 	}
 
 	// Nothing matches.
 	es.respond = func(string, string, []byte) (int, string) {
-		return 200, `{"hits":{"total":{"value":0},"hits":[]},"aggregations":{"price":{"min":{"value":null},"max":{"value":null}}}}`
+		return 200, `{"hits":{"total":{"value":0},"hits":[]},"aggregations":{"price":{"values":{"buckets":[]}}}}`
 	}
 	empty, err := adapter.Search(context.Background(), Query{Page: 1, PageSize: 12}, esNow)
-	if err != nil || empty.Total != 0 || len(empty.IDs) != 0 || empty.Facets.PriceMin != nil {
+	if err != nil || empty.Total != 0 || len(empty.IDs) != 0 || len(empty.Facets.Prices) != 0 {
 		t.Fatalf("empty = %+v, %v", empty, err)
 	}
 }

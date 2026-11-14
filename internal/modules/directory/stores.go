@@ -63,7 +63,7 @@ func (s *MemoryStore) active() []Record {
 }
 
 func matchesText(r Record, q string) bool {
-	haystack := strings.ToLower(strings.Join([]string{r.Name, r.Role, r.Tagline, r.Description, strings.Join(r.Services, " "), strings.Join(r.Areas, " ")}, " "))
+	haystack := strings.ToLower(strings.Join([]string{r.Name, r.Role, r.Tagline, r.Description, strings.Join(r.Services, " "), strings.Join(r.Areas, " "), r.CityName}, " "))
 	for _, w := range strings.Fields(strings.ToLower(q)) {
 		if !strings.Contains(haystack, w) {
 			return false
@@ -77,6 +77,7 @@ func (s *MemoryStore) List(_ context.Context, kind string, f Filter, limit, offs
 	var found []Record
 	for _, r := range s.active() {
 		if r.Kind == kind && (f.City == "" || r.CityCode == f.City) && (f.Cities == nil || slices.Contains(f.Cities, r.CityCode)) &&
+			(f.Country == "" || r.MarketCode == f.Country) &&
 			(f.Trade == "" || r.TradeCode == f.Trade) && matchesText(r, f.Q) {
 			found = append(found, r)
 		}
@@ -165,13 +166,18 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore { return &PostgresStore
 
 const profileColumns = `p.id, p.kind, p.slug, p.name, COALESCE(p.role_title, ''), COALESCE(p.tagline, ''), COALESCE(p.about, ''),
 	COALESCE(p.city_code, ''), p.areas, p.services, p.offerings::text, COALESCE(p.trade_code, ''), p.verified, p.sponsored,
-	p.since_year, p.status, p.updated_at, p.organisation_id, p.agent_user_id, COALESCE(p.specialism, '')`
+	p.since_year, p.status, p.updated_at, p.organisation_id, p.agent_user_id, COALESCE(p.specialism, ''),
+	COALESCE(mk.code, ''), COALESCE(p.city_name, ''), COALESCE(p.region_name, '')`
+
+// profileFrom joins the profile's country (its market).
+const profileFrom = ` FROM directory_profiles p LEFT JOIN markets mk ON mk.id = p.market_id `
 
 func scanProfile(row pgx.CollectableRow) (Record, error) {
 	var r Record
 	var offerings string
 	if err := row.Scan(&r.ID, &r.Kind, &r.Slug, &r.Name, &r.Role, &r.Tagline, &r.Description, &r.CityCode, &r.Areas, &r.Services,
-		&offerings, &r.TradeCode, &r.Verified, &r.Sponsored, &r.Since, &r.Status, &r.UpdatedAt, &r.OrganisationID, &r.AgentUserID, &r.Specialism); err != nil {
+		&offerings, &r.TradeCode, &r.Verified, &r.Sponsored, &r.Since, &r.Status, &r.UpdatedAt, &r.OrganisationID, &r.AgentUserID, &r.Specialism,
+		&r.MarketCode, &r.CityName, &r.RegionName); err != nil {
 		return Record{}, err
 	}
 	if err := json.Unmarshal([]byte(offerings), &r.Offerings); err != nil {
@@ -182,7 +188,7 @@ func scanProfile(row pgx.CollectableRow) (Record, error) {
 }
 
 func (s *PostgresStore) profiles(ctx context.Context, tail string, args ...any) ([]Record, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+profileColumns+` FROM directory_profiles p WHERE p.status = 'ACTIVE' AND p.verified AND `+tail, args...)
+	rows, err := s.pool.Query(ctx, `SELECT `+profileColumns+profileFrom+`WHERE p.status = 'ACTIVE' AND p.verified AND `+tail, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -204,16 +210,19 @@ func (s *PostgresStore) List(ctx context.Context, kind string, f Filter, limit, 
 	if f.Cities != nil { // the cities of the country and/or region asked for
 		add(`p.city_code = ANY($%d::text[])`, f.Cities)
 	}
+	if f.Country != "" { // the profile's own country
+		add(`mk.code = $%d`, f.Country)
+	}
 	if f.Trade != "" {
 		add(`p.trade_code = $%d`, f.Trade)
 	}
 	for _, w := range strings.Fields(f.Q) {
 		add(`(p.name || ' ' || COALESCE(p.role_title, '') || ' ' || COALESCE(p.tagline, '') || ' ' || COALESCE(p.about, '') || ' ' ||
-		     array_to_string(p.services, ' ') || ' ' || array_to_string(p.areas, ' ')) ILIKE $%d`, "%"+likeEscaper.Replace(w)+"%")
+		     array_to_string(p.services, ' ') || ' ' || array_to_string(p.areas, ' ') || ' ' || COALESCE(p.city_name, '')) ILIKE $%d`, "%"+likeEscaper.Replace(w)+"%")
 	}
 	where := strings.Join(conds, " AND ")
 	var total int
-	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM directory_profiles p WHERE p.status = 'ACTIVE' AND p.verified AND `+where, args...).Scan(&total); err != nil {
+	if err := s.pool.QueryRow(ctx, `SELECT count(*)`+profileFrom+`WHERE p.status = 'ACTIVE' AND p.verified AND `+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	args = append(args, limit, offset)

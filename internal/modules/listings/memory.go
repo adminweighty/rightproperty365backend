@@ -121,6 +121,17 @@ func (s *MemoryStore) PublishedByOwner(_ context.Context, organisationID, agentU
 	return out, nil
 }
 
+// CountByCountry implements Store.
+func (s *MemoryStore) CountByCountry(_ context.Context, now time.Time) (map[string]int, error) {
+	out := map[string]int{}
+	for _, r := range s.public(now) {
+		if r.MarketCode != "" {
+			out[r.MarketCode]++
+		}
+	}
+	return out, nil
+}
+
 // PublishedSlugs implements Store.
 func (s *MemoryStore) PublishedSlugs(_ context.Context, now time.Time) ([]SlugEntry, error) {
 	records := s.public(now)
@@ -157,7 +168,8 @@ func score(r Record, words []string, suburb, city, propertyType, keywords string
 	if len(words) == 0 {
 		return 1
 	}
-	title, place := strings.ToLower(r.Title), strings.ToLower(suburb+" "+city)
+	// A free-text city or region is searchable like a reference one.
+	title, place := strings.ToLower(r.Title), strings.ToLower(suburb+" "+city+" "+r.CityName+" "+r.RegionName)
 	// keywords are the category's label and description ("Short stays ...
 	// Airbnb-style stays"), so a category can be found by what people call it.
 	kind, rest := strings.ToLower(propertyType), strings.ToLower(r.Summary+" "+r.Description+" "+r.Reference+" "+keywords)
@@ -268,7 +280,7 @@ func (s *MemoryStore) Search(ctx context.Context, q Query, now time.Time) (Hits,
 	facets := RawFacets{
 		Deal: map[string]int{}, Category: map[string]int{}, PropertyType: map[string]int{}, City: map[string]int{},
 		Suburb: map[string]int{}, Features: map[string]int{}, Bedrooms: map[int]int{},
-		Country: map[string]int{}, Region: map[string]int{},
+		Country: map[string]int{}, Region: map[string]int{}, Prices: map[string]PriceStat{},
 	}
 	var matched []scored
 	for _, c := range candidates {
@@ -281,10 +293,10 @@ func (s *MemoryStore) Search(ctx context.Context, q Query, now time.Time) (Hits,
 		if matches(c.Record, q, "property_type") {
 			facets.PropertyType[c.PropertyType]++
 		}
-		if matches(c.Record, q, "city") {
+		if c.City != "" && matches(c.Record, q, "city") {
 			facets.City[c.City]++
 		}
-		if matches(c.Record, q, "suburb") {
+		if c.Suburb != "" && matches(c.Record, q, "suburb") {
 			facets.Suburb[c.Suburb]++
 		}
 		if matches(c.Record, q, "country") && c.MarketCode != "" {
@@ -296,14 +308,16 @@ func (s *MemoryStore) Search(ctx context.Context, q Query, now time.Time) (Hits,
 		if matches(c.Record, q, "bedrooms") && c.Bedrooms != nil {
 			facets.Bedrooms[*c.Bedrooms]++
 		}
-		if matches(c.Record, q, "price") && c.Price.Currency == currencyOf(q) {
-			a := amount(c.Record)
-			if facets.PriceMin == nil || a.Cmp(facets.PriceMin) < 0 {
-				facets.PriceMin = a
+		if matches(c.Record, q, "price") { // per currency: nothing is converted
+			a, stat := amount(c.Record), facets.Prices[c.Price.Currency]
+			stat.Count++
+			if stat.Min == nil || a.Cmp(stat.Min) < 0 {
+				stat.Min = a
 			}
-			if facets.PriceMax == nil || a.Cmp(facets.PriceMax) > 0 {
-				facets.PriceMax = a
+			if stat.Max == nil || a.Cmp(stat.Max) > 0 {
+				stat.Max = a
 			}
+			facets.Prices[c.Price.Currency] = stat
 		}
 		if matches(c.Record, q, "") {
 			matched = append(matched, c)
@@ -381,11 +395,17 @@ func (s *MemoryStore) Suggest(ctx context.Context, term string, limit int, now t
 			found = append(found, candidate{Suggestion{Type: kind, Label: label, Value: value}, strings.HasPrefix(h, needle), rank})
 		}
 	}
+	// Only reference places are suggested: a suggestion's value is a filter
+	// code, and a free-text city has none.
 	for _, r := range records {
-		add("suburb", suburbs[r.Suburb]+", "+cities[r.City], r.Suburb, suburbs[r.Suburb], 0)
+		if r.Suburb != "" {
+			add("suburb", suburbs[r.Suburb]+", "+cities[r.City], r.Suburb, suburbs[r.Suburb], 0)
+		}
 	}
 	for _, r := range records {
-		add("city", cities[r.City], r.City, cities[r.City], 1)
+		if r.City != "" {
+			add("city", cities[r.City], r.City, cities[r.City], 1)
+		}
 	}
 	for _, r := range records {
 		add("listing", r.Title, r.Slug, r.Title, 2)

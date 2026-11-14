@@ -5,7 +5,7 @@
   },
   "mappings": {
     "dynamic": "strict",
-    "_meta": { "mapping_version": 3 },
+    "_meta": { "mapping_version": 4 },
     "properties": {
       "id": { "type": "keyword" },
       "slug": { "type": "keyword" },
@@ -39,6 +39,8 @@
           "suggest": { "type": "search_as_you_type" }
         }
       },
+      "city_name": { "type": "text" },
+      "region_name": { "type": "text" },
       "market": { "type": "keyword" },
       "region": { "type": "keyword" },
       "advertiser_type": { "type": "keyword" },
