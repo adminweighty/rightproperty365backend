@@ -24,8 +24,13 @@ FROM gcr.io/distroless/static-debian12:nonroot AS runtime
 USER nonroot:nonroot
 WORKDIR /app
 
+# The api image is the one the publish workflow builds and the cluster runs.
+# It also carries the worker and the operational tools, so one image tag can
+# serve the API, run the worker (command /app/worker), apply migrations
+# (/app/migrate up), rebuild the search index (/app/reindex) and create an
+# administrator (/app/adminctl) without publishing separate images.
 FROM runtime AS api
-COPY --from=build /out/api /app/api
+COPY --from=build /out/api /out/worker /out/migrate /out/reindex /out/adminctl /out/seed /app/
 EXPOSE 8080
 ENTRYPOINT ["/app/api"]
 
