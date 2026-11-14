@@ -333,7 +333,7 @@ func TestSampleLogos(t *testing.T) {
 func TestLogoAtOnboarding(t *testing.T) {
 	e := newEnv(t)
 	const role = "AGENCY_OWNER"
-	c := e.selfRegister("logo.agency@example.com", "CONSUMER", role)
+	c := e.selfRegister("logo.agency@example.com", role)
 	wantStatus(t, e.put("/v1/me/onboarding/"+role, detailsFor(role, "Jacaranda Homes"), browser(c)), http.StatusOK)
 	for _, doc := range requiredDocuments(role) {
 		wantStatus(t, e.upload(c, role, doc, "scan.pdf", testPDF()), http.StatusCreated)
@@ -350,7 +350,7 @@ func TestLogoAtOnboarding(t *testing.T) {
 		t.Fatalf("an application without a logo cannot be submitted: %+v", app.Missing)
 	}
 	// A role without a public profile cannot attach one.
-	staff := e.selfRegister("logo.staff@example.com", "CONSUMER", "AGENCY_STAFF")
+	staff := e.selfRegister("logo.staff@example.com", "AGENCY_STAFF")
 	wantError(t, e.upload(staff, "AGENCY_STAFF", "LOGO", "me.png", logoPNG(200, 200)), http.StatusBadRequest, httpx.CodeValidationFailed)
 
 	// Refused: everything that is not a still PNG or JPEG of a sensible size.
@@ -499,7 +499,7 @@ func TestLogoAtOnboarding(t *testing.T) {
 func TestAgentPhotoIsPromoted(t *testing.T) {
 	e := newEnv(t)
 	const role = "AGENT"
-	c := e.selfRegister("photo.agent@example.com", "CONSUMER", role)
+	c := e.selfRegister("photo.agent@example.com", role)
 	wantStatus(t, e.put("/v1/me/onboarding/"+role, detailsFor(role, ""), browser(c)), http.StatusOK)
 	for _, doc := range requiredDocuments(role) {
 		wantStatus(t, e.upload(c, role, doc, "scan.pdf", testPDF()), http.StatusCreated)

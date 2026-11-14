@@ -105,7 +105,7 @@ func businessAccounts() []Account {
 		out = append(out, Account{
 			ID: id(fmt.Sprintf("d1%02d", i+1)), Name: b.name + " Owner", Email: BusinessOwnerEmail(b.slug),
 			Organisation: orgs[i], MembershipRole: auth.RoleOwner,
-			AccountRoles: []string{identity.AccountRoleConsumer, businessKinds[b.kind].accountRole},
+			AccountRoles: []string{businessKinds[b.kind].accountRole},
 			Profiles:     []string{b.kind + "/" + b.slug},
 			// The hosts own the short-stay samples.
 			Listings: businessListings[b.slug],

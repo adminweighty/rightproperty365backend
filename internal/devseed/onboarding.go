@@ -144,10 +144,9 @@ func storeSampleDocuments(ctx context.Context, files storage.Storage, docs []sam
 }
 
 func pendingRoles(role string) []identity.AccountRole {
-	return []identity.AccountRole{
-		{Role: identity.AccountRoleConsumer, Status: identity.AccountRoleActive},
-		{Role: role, Status: identity.AccountRolePendingVerification},
-	}
+	// Only the professional role: an account that asks for one is not also a
+	// property seeker.
+	return []identity.AccountRole{{Role: role, Status: identity.AccountRolePendingVerification}}
 }
 
 // SeedMemoryOnboarding creates the two onboarding demo accounts in the
@@ -214,6 +213,11 @@ func seedPostgresOnboarding(ctx context.Context, tx pgx.Tx, files storage.Storag
 			WHERE NOT EXISTS (SELECT 1 FROM user_consents WHERE user_id = $2 AND consent_type = $3)`,
 			uuid.New(), a.ID, identity.ConsentPrivacyNotice, privacyVersion, now); err != nil {
 			return fmt.Errorf("seed consent for %s: %w", a.Email, err)
+		}
+		// A database seeded before property seeker accounts became seeker-only
+		// gave these accounts a seeker role as well: it goes.
+		if _, err := tx.Exec(ctx, `DELETE FROM user_account_roles WHERE user_id = $1 AND role IN ('CONSUMER', 'TENANT')`, a.ID); err != nil {
+			return fmt.Errorf("remove seeker roles of %s: %w", a.Email, err)
 		}
 		// The account roles are only created, never reset: if the demo
 		// application was decided in this database, that decision stands.

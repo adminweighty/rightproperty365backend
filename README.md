@@ -104,11 +104,13 @@ no listings assigned and, as `OWNER`, sees all of Sample Estates' requests and e
 `agent-b` belongs to an agency with no listings and no profile (kept for checking that
 organisations cannot see each other's data).
 
-Account roles of the sample accounts are all `ACTIVE`: `CONSUMER` + `AGENT` for the agents,
-`CONSUMER` + `AGENCY_OWNER` for the agency owners, `CONSUMER` + `PRIVATE_SELLER` for Grace,
-`CONSUMER` + `DEVELOPER` / `LANDLORD` / `HOST` / `SERVICE_PROVIDER` for the business owners
-(matching their organisation's kind), `CONSUMER` for the consumer and the administrator, and
-`AGENT` only for `agent-b`.
+Account roles of the sample accounts are all `ACTIVE` and follow the registration rule (a
+property seeker account is only that): `AGENT` for the agents, `AGENCY_OWNER` for the agency
+owners, `PRIVATE_SELLER` for Grace, the role matching their organisation's kind for the business
+owners (`DEVELOPER`, `PROPERTY_MANAGER`, `HOST`, `SERVICE_PROVIDER`, `SOLICITOR`), `CONSUMER` for
+the consumer, and none for the administrator (like an administrator made by `cmd/adminctl`). The
+two onboarding demo accounts hold only the role they applied for. `cmd/seed` removes the
+`CONSUMER` role that earlier seeds gave the professional sample accounts.
 
 A request for a listing is routed to its assigned agent and appears in that agent's inbox; the
 agency's `OWNER` sees all of the agency's requests; another `AGENT` of the same agency does not see
@@ -238,7 +240,8 @@ All configuration comes from environment variables. For local development you ma
 | POST | `/v1/property-requests` | The single entry point for every customer enquiry (guest or signed-in) |
 | POST | `/v1/business-enquiries` | The only way to contact a directory profile (guest or signed-in) |
 | GET | `/v1/inbox/business-enquiries` | Business enquiries received by the caller's organisation(s) |
-| POST | `/v1/auth/register` | Create an account; always `202 VERIFICATION_SENT` for valid input |
+| GET | `/v1/auth/captcha` | The question a registration must answer (public, never cached) |
+| POST | `/v1/auth/register` | Create an account (needs an answered captcha); always `202 VERIFICATION_SENT` for valid input |
 | POST | `/v1/auth/verify-email` | Consume the emailed token, verify the email and sign in |
 | POST | `/v1/auth/resend-verification` | Always `202 VERIFICATION_SENT` |
 | POST | `/v1/auth/login` | Sign in (`token_delivery`: `cookie` default, or `bearer`) |
@@ -1157,6 +1160,11 @@ four roles were added. All of it is reference data (`GET /v1/reference/account_r
 
 Labels are written as titles, exactly as the specification and the mobile app write them.
 
+**A property seeker account is only that.** A registration chooses Property Seekers roles only
+(`CONSUMER`, `TENANT` or both) **or** roles from the other four groups only; a seeker role
+together with any other role is refused (see "Roles at registration" under "Authentication and
+sessions").
+
 | Organisation kind (`GET /v1/reference/organisation_kinds`) | Label |
 | --- | --- |
 | `AGENCY` | Real Estate Agency |
@@ -1254,7 +1262,8 @@ So that nobody assumes these exist. They are in the updated functional specifica
   be listed in, but none of these is configured for any country);
 - a per-city time zone for countries with several zones;
 - account deletion;
-- CAPTCHA or adaptive bot protection, and duplicate or spam detection;
+- adaptive bot protection (registration has a simple built-in arithmetic captcha, see
+  "Registration captcha"; nothing stronger), and duplicate or spam detection;
 - administrator MFA;
 - account suspension (including the "Suspended" onboarding status) and abuse reporting;
 - push notifications.
@@ -1621,14 +1630,22 @@ fake of the API only.
 - **Registering an email that already exists** – verified account: nothing changes and the owner
   gets a "you already have an account" email. Unverified account: the new registration replaces
   the pending name, password and role selection and earlier verification links stop working.
-- **Roles at registration** – `roles` is required (see "Role model" below): 1–11 values from a
+- **Roles at registration** – `roles` is required (see "Role model" below): 1–13 values from a
   server-side allowlist. Platform administrator roles, unknown values, non-string entries and
   **duplicates are rejected** with `400 VALIDATION_FAILED` and a message under `fields.roles`.
+  **A property seeker account is only that:** the selection is either Property Seekers roles
+  only (`CONSUMER`, `TENANT`, or both) or roles from the other groups only. A mix such as
+  `CONSUMER` + `AGENT` is refused with `fields.roles` = "A property seeker account cannot also
+  have a professional, business or owner role. Choose one or the other." Registration is the
+  only place a person chooses roles (a repeated registration of a still-unverified email goes
+  through the same check); see "Role model" for the paths that were checked.
+- **Captcha at registration** – `captcha` is required; see "Registration captcha" below.
 - **One-time tokens** – email verification (24 h) and password reset (1 h) are single-use and
   stored as SHA-256. A successful reset also marks the email verified, because the link proves
   control of the mailbox.
 - **Rate limit** – all `POST /v1/auth/*` routes share one per-IP bucket (burst 20, refill 20/min),
-  separate from the property-request bucket.
+  separate from the property-request bucket. `GET /v1/auth/captcha` has its own (burst 30,
+  refill 30/min).
 - **Email delivery** – through Resend; see "Email". Verification and reset emails are sent from
   the request with a bounded retry (their link is a credential and is never written to the
   outbox); if the send still fails the person has to ask again. Everything else is durable through
@@ -1636,6 +1653,43 @@ fake of the API only.
   (`http://localhost:3000/verify-email?token=...`, `.../reset-password?token=...`).
 - Logs carry `user_id` on every line of an authenticated request. Passwords, tokens and cookie
   values are never logged (except the development mail link described above).
+
+### Registration captcha
+
+Registration asks a small arithmetic question. It is built in: no third-party service, no
+secret, no environment variable, nothing loaded from another origin.
+
+```
+GET /v1/auth/captcha
+200 {"captcha_id": "<opaque id>", "question": "What is 7 + 5?", "expires_at": "2026-11-14T09:10:00Z"}
+
+POST /v1/auth/register
+{ ...the other fields..., "captcha": {"captcha_id": "<that id>", "answer": "12"} }
+```
+
+- The question is an addition, or a subtraction that never goes below zero, of numbers from 1
+  to 10. It is valid for **10 minutes**. `answer` is a string; spaces around it are ignored and
+  only digits are an answer.
+- Refusals are the usual `400 VALIDATION_FAILED`, under `fields.captcha`: "Answer the question
+  to show you are a person." (missing), "That answer is not right. Try the new question."
+  (wrong) or "That question has expired. Try the new question." (expired, unknown or already
+  presented).
+- **Single use.** The captcha is judged only after every other field is acceptable, so a typo in
+  the email does not use it up. From then on the first registration that presents it uses it up,
+  right or wrong: answers cannot be found by retrying. A client asks for a new question after
+  any refused registration.
+- It is judged before the password is hashed, before the account is looked up and before
+  anything is written or emailed, so the answer is the same whether or not the email already
+  has an account.
+- **Storage.** `registration_captchas` (migration `0017`): the id, a SHA-256 of the id and the
+  answer, the expiry and the time it was used. Neither the question nor the answer is stored.
+  Expired rows are deleted whenever a new question is asked; there is no worker job. In
+  development without a database the questions are kept in memory.
+- **What it is not.** Anything that can read the question can answer it. This stops the
+  simplest scripts and nothing more; the per-IP rate limits remain the real limit. There is no
+  switch that turns it off: tests ask for a question and answer it, like any client.
+- `cmd/seed` and `cmd/adminctl` create accounts directly in the database and do not go through
+  the captcha.
 
 ### Administrator login and session scopes
 
@@ -1722,8 +1776,24 @@ There are three separate things, all returned by `GET /v1/me`, and only two of t
 | `platform_roles` | Platform staff role | Not self-service (database / dev seed today) | Yes — platform administration |
 
 **Account roles** are chosen at registration from this allowlist (exact API codes): `CONSUMER`,
-`TENANT`, `PRIVATE_SELLER`, `LANDLORD`, `HOST`, `DEVELOPER`, `SERVICE_PROVIDER`, `AGENT`,
-`AGENCY_STAFF`, `AGENCY_ADMIN`, `AGENCY_OWNER`. Each has a status: `CONSUMER` and `TENANT` are
+`TENANT`, `AGENT`, `SALES_AGENT`, `LETTINGS_AGENT`, `PROPERTY_MANAGER`, `SOLICITOR`,
+`AGENCY_OWNER`, `AGENCY_ADMIN`, `AGENCY_STAFF`, `LANDLORD`, `PRIVATE_SELLER`, `HOST`, `DEVELOPER`,
+`SERVICE_PROVIDER`. `CONSUMER` and `TENANT` are the Property Seekers roles, and **a property
+seeker account is only that**: they can be chosen alone or together, never with a role from
+another group, and an account with a role from another group cannot have them.
+
+That rule is enforced in the one place roles are chosen, `parseAccountRoles` in
+`internal/modules/identity/service.go`, which both a first registration and a repeated
+registration of a still-unverified email go through. Nothing else gives an account a role:
+there is no "add a role" endpoint, onboarding and the administrator review only change the
+**status** of a role the account already holds, `cmd/adminctl` creates administrators with a
+platform role and no account role, and `cmd/seed` writes the sample accounts, which follow the
+rule. If an endpoint that adds a role is ever built, it must apply `identity.IsSeekerRole` the
+same way. Accounts that already held a seeker role and another role before this rule keep both:
+no migration changes them. The two seeker codes are fixed in the code; moving another role into
+the Property Seekers group in the reference data does not make it a seeker role for this rule.
+
+Each role has a status: `CONSUMER` and `TENANT` are
 `ACTIVE`; every other role starts as `PENDING_VERIFICATION` and becomes `ACTIVE` or `REJECTED` when
 a platform administrator decides its onboarding application (see "Professional onboarding and
 verification"; the database also reserves `REVOKED`, which nothing sets yet). `GET /v1/me` shows
@@ -1942,6 +2012,12 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0017_registration_captchas` adds `registration_captchas` (`id` text primary key,
+  `answer_hash`, `expires_at`, `used_at`, `created_at`) and the index
+  `registration_captchas_expires_at_idx`. One new table; no existing table or row is touched.
+  **The API of this release needs it: without it `GET /v1/auth/captcha` and every registration
+  fail.** Its down migration drops the table (nothing of value is lost). **Not run by me**, and
+  the two Postgres queries that use it are compiled only.
 - `0016_logos_and_trust` adds the logo columns of `directory_profiles` (`logo_object_key`,
   `logo_content_type`, `logo_width`, `logo_height`, `logo_checksum`, `logo_size_bytes`,
   `logo_updated_at`, with CHECK constraints: all or none, PNG or JPEG, 128 to 4096 pixels, at most
@@ -2052,7 +2128,8 @@ logs that it is idle and waits for shutdown (the API then handles the events in-
 ## Operational notes and known limitations
 
 - **Rate limiter is per process.** `POST /v1/property-requests` is limited per client IP (burst 10,
-  refill 10/min), `POST /v1/auth/*` shares a second bucket (burst 20, refill 20/min) and
+  refill 10/min), `POST /v1/auth/*` shares a second bucket (burst 20, refill 20/min),
+  `GET /v1/auth/captcha` has its own (burst 30, refill 30/min) and
   `POST /v1/admin/auth/login` has a third (burst 5, refill 5/min) and `POST /v1/business-enquiries`
   a fourth (burst 10, refill 10/min), all in-memory token buckets. With more than one API instance each has its own
   buckets, so this **must be replaced by a shared limiter (Redis/Valkey or the edge) before

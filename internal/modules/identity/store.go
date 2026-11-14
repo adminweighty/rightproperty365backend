@@ -54,6 +54,15 @@ type Store interface {
 	// RevokeSession revokes one session (idempotent).
 	RevokeSession(ctx context.Context, id uuid.UUID, now time.Time) error
 
+	// CreateCaptcha stores a registration captcha (its id, the hash of its
+	// answer and its expiry) and takes the opportunity to delete captchas that
+	// expired before c.CreatedAt.
+	CreateCaptcha(ctx context.Context, c Captcha) error
+	// ConsumeCaptcha atomically marks an unused captcha used and returns it,
+	// expired or not (the service judges expiry). ErrNotFound when the id is
+	// unknown or the captcha was already used: a captcha is presented once.
+	ConsumeCaptcha(ctx context.Context, id string, now time.Time) (Captcha, error)
+
 	// ApprovedDirectOwners returns the number of ACTIVE accounts whose
 	// PRIVATE_SELLER or LANDLORD role is approved (GET /v1/trust/summary).
 	ApprovedDirectOwners(ctx context.Context) (int, error)

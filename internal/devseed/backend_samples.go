@@ -256,7 +256,7 @@ func backendPeople() []Account {
 	return []Account{{
 		ID: SampleHomesLondonOwnerID, Name: "Sample Homes London Owner", Email: SampleHomesLondonOwnerEmail,
 		Organisation: SampleHomesLondon, MembershipRole: auth.RoleOwner,
-		AccountRoles: []string{identity.AccountRoleConsumer, identity.AccountRoleAgencyOwner},
+		AccountRoles: []string{identity.AccountRoleAgencyOwner},
 		Listings:     []int{19, 20, 21}, Profiles: []string{"agencies/sample-homes-london"},
 	}}
 }

@@ -289,7 +289,7 @@ func TestDirectoryCountryFilterForAnyCountry(t *testing.T) {
 // administrator) and approval creates a profile there.
 func TestOnboardingInAnyCountry(t *testing.T) {
 	e := newEnv(t)
-	c := e.selfRegister("host.mu@example.com", "CONSUMER", "HOST")
+	c := e.selfRegister("host.mu@example.com", "HOST")
 	save := func(body obj) applicationBody {
 		t.Helper()
 		rec := e.put("/v1/me/onboarding/HOST", body, browser(c))

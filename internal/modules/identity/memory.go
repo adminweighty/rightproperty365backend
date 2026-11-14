@@ -28,6 +28,7 @@ type MemoryStore struct {
 	sessions      map[string]*Session // key: hex token hash
 	verifications map[string]*memoryToken
 	resets        map[string]*memoryToken
+	captchas      map[string]*memoryCaptcha // key: captcha id
 	consents      []MemoryConsent
 	outbox        []outbox.Event
 	sink          outbox.Sink
@@ -163,7 +164,46 @@ func NewMemoryStore() *MemoryStore {
 		sessions:      make(map[string]*Session),
 		verifications: make(map[string]*memoryToken),
 		resets:        make(map[string]*memoryToken),
+		captchas:      make(map[string]*memoryCaptcha),
 	}
+}
+
+type memoryCaptcha struct {
+	Captcha
+	UsedAt *time.Time
+}
+
+// CreateCaptcha implements Store.
+func (s *MemoryStore) CreateCaptcha(_ context.Context, c Captcha) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, old := range s.captchas {
+		if old.ExpiresAt.Before(c.CreatedAt) {
+			delete(s.captchas, id)
+		}
+	}
+	c.AnswerHash = slices.Clone(c.AnswerHash)
+	s.captchas[c.ID] = &memoryCaptcha{Captcha: c}
+	return nil
+}
+
+// ConsumeCaptcha implements Store.
+func (s *MemoryStore) ConsumeCaptcha(_ context.Context, id string, now time.Time) (Captcha, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.captchas[id]
+	if !ok || c.UsedAt != nil {
+		return Captcha{}, ErrNotFound
+	}
+	c.UsedAt = &now
+	return c.Captcha, nil
+}
+
+// CaptchaCount returns how many captchas are held, used or not (tests).
+func (s *MemoryStore) CaptchaCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.captchas)
 }
 
 func key(hash []byte) string { return hex.EncodeToString(hash) }

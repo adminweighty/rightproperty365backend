@@ -132,6 +132,13 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 			return fmt.Errorf("seed consent for %s: %w", a.Email, err)
 		}
 
+		// The sample account holds exactly its listed roles: a role an earlier
+		// seed gave it and this one does not (a seeker role next to a
+		// professional one, before seeker accounts became seeker-only) goes.
+		if _, err := tx.Exec(ctx, `DELETE FROM user_account_roles WHERE user_id = $1 AND role <> ALL($2::text[])`,
+			a.ID, append([]string{}, a.AccountRoles...)); err != nil {
+			return fmt.Errorf("remove stale account roles of %s: %w", a.Email, err)
+		}
 		for _, role := range a.AccountRoles {
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO user_account_roles (id, user_id, role, status, created_at, updated_at)

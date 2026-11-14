@@ -123,6 +123,13 @@ var selectableAccountRoles = []string{
 	AccountRoleHost, AccountRoleDeveloper, AccountRoleServiceProvider,
 }
 
+// IsSeekerRole reports whether a role belongs to the Property Seekers group
+// (Prospective Buyer, Prospective Tenant). An account that registers as a
+// property seeker can hold no role from any other group, and the reverse.
+func IsSeekerRole(role string) bool {
+	return role == AccountRoleConsumer || role == AccountRoleTenant
+}
+
 // SelectableAccountRoles returns the registration allowlist in API order.
 func SelectableAccountRoles() []string { return slices.Clone(selectableAccountRoles) }
 

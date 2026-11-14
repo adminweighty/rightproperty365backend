@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.18.0
+  version: 0.19.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -74,6 +74,25 @@ info:
         logo, which is the case for every `Logo.url` the API returns. Use `Logo.url`
         unchanged, query string included: without `v`, or with the `v` of an earlier logo,
         the image is still served but with the short policy (`max-age=300`).
+    - **Changed in 0.19.0: registration. Both changes break existing clients of
+      `POST /v1/auth/register`; the web app and the mobile app must be updated together with
+      this release.**
+      - **A property seeker account is only that.** The Property Seekers roles are `CONSUMER`
+        (Prospective Buyer) and `TENANT` (Prospective Tenant). `roles` may now hold seeker roles
+        only (one or both), **or** roles from the other groups only; never a mix. A mix such as
+        `[CONSUMER, AGENT]`, which was accepted before, is now `400 VALIDATION_FAILED` with
+        `error.fields.roles` set to `A property seeker account cannot also have a professional,
+        business or owner role. Choose one or the other.` Roles are still only chosen at
+        registration: there is no endpoint that adds a role to an existing account. Accounts
+        created before this release keep the roles they have.
+      - **Registration must answer a captcha.** New `GET /v1/auth/captcha` returns a small
+        arithmetic question (`captcha_id`, `question`, `expires_at`). `RegisterRequest` gains
+        the **required** object `captcha` (`captcha_id`, `answer`). A registration without it,
+        with a wrong answer, or with a captcha that has expired, is unknown or was already
+        presented is `400 VALIDATION_FAILED` with a plain-language message in
+        `error.fields.captcha`. A captcha can be presented once: after **any** refused
+        registration, ask for a new question. See the two operations for the details. No
+        third-party service is involved and there is nothing to configure.
 
     Countries and places (changed in 0.15.0)
     - The platform is global: every ISO 3166-1 country can be used (`GET /v1/countries`). Public
@@ -116,7 +135,8 @@ info:
     - Authorisation is decided on the server from the session's organisation memberships and
       platform roles. Nothing in a request body, query string or header can widen it.
     - Every `POST /v1/auth/*` route shares one per-IP rate limit (bursts of 20, refilled at 20 per
-      minute), separate from the property-request limit.
+      minute), separate from the property-request limit. `GET /v1/auth/captcha` has its own
+      per-IP bucket (bursts of 30, refilled at 30 per minute).
 servers:
   - url: http://localhost:8080
     description: Local development
@@ -2315,6 +2335,54 @@ paths:
         "504":
           $ref: "#/components/responses/Timeout"
 
+  /v1/auth/captcha:
+    get:
+      tags: [auth]
+      operationId: getRegistrationCaptcha
+      summary: Ask for the question a registration must answer
+      description: |
+        **New in 0.19.0.** Returns a plain-language arithmetic question with small numbers: an
+        addition (`What is 7 + 5?`) or a subtraction whose result is never negative
+        (`What is 9 - 4?`). Show `question` next to an input and send what the person types as
+        `captcha.answer` of `POST /v1/auth/register`, together with `captcha_id`.
+
+        - Public: no session, no `Origin` needed. Never cached (`Cache-Control: no-store`);
+          every call returns a different question.
+        - A captcha is valid for **10 minutes** (`expires_at`) and can be **presented once**.
+          It is used up by the first registration that presents it and passes the checks on the
+          other fields, whether the answer is right or wrong. After any refused registration,
+          call this again and show the new question.
+        - Built in: no third-party service, nothing loaded from another origin, no cookie. It
+          is a speed bump for scripts, not a strong bot defence; the rate limits stay in place.
+
+        **Rate limit.** Its own per-IP bucket: bursts of 30, refilled at 30 per minute.
+      security: []
+      responses:
+        "200":
+          description: A new question.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            Cache-Control:
+              description: Always `no-store`.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Captcha"
+              example:
+                captcha_id: Qm9iJ3MgeW91ciB1bmNsZS4gVGhpcyBpcyBvcGFxdWU
+                question: What is 7 + 5?
+                expires_at: "2026-11-14T09:10:00Z"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
   /v1/auth/register:
     post:
       tags: [auth]
@@ -2333,7 +2401,27 @@ paths:
 
         The verification link is `{PUBLIC_WEB_URL}/verify-email?token=...` and is valid for 24 hours.
 
-        **Account roles.** `roles` is required: 1 to 11 codes from the active rows of the
+        **Captcha (new in 0.19.0).** `captcha` is required: the `captcha_id` of a question from
+        `GET /v1/auth/captcha` and the person's `answer` as a string. Spaces around the answer
+        are ignored and only digits are an answer (`12`, not `twelve`). Refusals are
+        `400 VALIDATION_FAILED` with `error.fields.captcha` set to:
+        - `Answer the question to show you are a person.` when `captcha`, its `captcha_id` or
+          its `answer` is missing or blank;
+        - `That answer is not right. Try the new question.` when the answer is wrong, or is
+          not made of digits;
+        - `That question has expired. Try the new question.` when the captcha is older than 10
+          minutes, is unknown, or was already presented.
+
+        The captcha is judged **after** the other fields: while another field is refused the
+        captcha is not used up, and its message appears next to the other fields' only when it
+        is missing or not made of digits. Once the other fields are acceptable, the first
+        registration that presents a captcha uses it up, right or wrong, so the same captcha
+        can never be presented twice: **after any refused registration, ask for a new question**
+        and show it. The captcha is judged before the account is looked up, so the answer never
+        depends on whether the email already has an account, and a refused captcha writes
+        nothing and sends no email.
+
+        **Account roles.** `roles` is required: 1 to 13 codes from the active rows of the
         `account_roles` reference set (`GET /v1/reference/account_roles`), enforced on the server.
         A role that has been deactivated there is refused like an unknown one. A missing or empty array, a platform
         administrator role (`SUPER_ADMIN`, `PLATFORM_ADMIN`, `MARKET_ADMIN`, `FINANCE_ADMIN`,
@@ -2343,6 +2431,14 @@ paths:
         as `PENDING_VERIFICATION` (decided by the row's `requires_verification`). Platform roles
         are refused by a fixed deny-list before the reference data is consulted, so they cannot
         be chosen even if such a row existed.
+
+        **A property seeker account is only that (changed in 0.19.0).** The Property Seekers
+        roles are `CONSUMER` (Prospective Buyer) and `TENANT` (Prospective Tenant). A
+        registration chooses seeker roles only (`[CONSUMER]`, `[TENANT]` or both), **or** roles
+        from the other groups only (for example `[AGENT, LANDLORD]`); never a mix. A mix is
+        rejected with `error.fields.roles` set to `A property seeker account cannot also have a
+        professional, business or owner role. Choose one or the other.` Roles are chosen only
+        here: no endpoint adds a role to an existing account.
 
         Selecting a professional role only records a request. It does **not** create an
         organisation or a membership and grants no access to any organisation's data.
@@ -2360,14 +2456,18 @@ paths:
                 privacy_version: "2026-01"
                 accepted: true
               marketing_opt_in: false
-              roles: [CONSUMER, LANDLORD, AGENT]
+              roles: [CONSUMER, TENANT]
+              captcha:
+                captcha_id: Qm9iJ3MgeW91ciB1bmNsZS4gVGhpcyBpcyBvcGFxdWU
+                answer: "12"
       responses:
         "202":
           $ref: "#/components/responses/VerificationSent"
         "400":
           description: |
             `VALIDATION_FAILED` with `error.fields` keyed by `name`, `email`, `password`,
-            `consent.accepted`, `consent.privacy_version` or `roles`; or `INVALID_JSON`.
+            `consent.accepted`, `consent.privacy_version`, `roles` or `captcha`; or `INVALID_JSON`
+            (also when `captcha.answer` is sent as a number instead of a string).
           headers:
             X-Request-Id:
               $ref: "#/components/headers/X-Request-Id"
@@ -2383,6 +2483,7 @@ paths:
                     password: must be at least 10 characters
                     consent.accepted: must be true
                     roles: That role cannot be chosen at sign-up.
+                    captcha: Answer the question to show you are a person.
                 trace_id: 4b0b8f0e-5d0c-4e0e-9a39-0a5a4f1f6c55
         "403":
           $ref: "#/components/responses/CsrfOrigin"
@@ -2717,9 +2818,6 @@ paths:
                       market_code: ZW
                       role: AGENT
                   account_roles:
-                    - role: CONSUMER
-                      status: ACTIVE
-                      onboarding_status: null
                     - role: AGENT
                       status: ACTIVE
                       onboarding_status: APPROVED
@@ -2793,9 +2891,7 @@ paths:
                     - role: SUPER_ADMIN
                       market_code: null
                   memberships: []
-                  account_roles:
-                    - role: CONSUMER
-                      status: ACTIVE
+                  account_roles: []
                 session:
                   scope: admin
                   expires_at: "2026-11-14T21:00:00Z"
@@ -6190,10 +6286,50 @@ components:
           format: email
           maxLength: 254
 
+    Captcha:
+      type: object
+      description: A question from `GET /v1/auth/captcha`. The answer is never returned.
+      additionalProperties: false
+      required: [captcha_id, question, expires_at]
+      properties:
+        captcha_id:
+          type: string
+          description: |
+            Opaque id of the question. Send it back unchanged as `captcha.captcha_id`. Do not
+            parse it; today it is 43 URL-safe characters.
+        question:
+          type: string
+          description: |
+            The question to show, in plain English: `What is A + B?` or `What is A - B?` with
+            numbers from 1 to 10. The answer is a whole number from 0 to 20.
+          examples: ["What is 7 + 5?", "What is 9 - 4?"]
+        expires_at:
+          type: string
+          format: date-time
+          description: When the question stops being accepted, 10 minutes after it was asked.
+
+    CaptchaAnswer:
+      type: object
+      description: The answer to a question from `GET /v1/auth/captcha`.
+      additionalProperties: false
+      required: [captcha_id, answer]
+      properties:
+        captcha_id:
+          type: string
+          minLength: 1
+          description: The `captcha_id` of the question that was shown.
+        answer:
+          type: string
+          minLength: 1
+          description: |
+            What the person typed, as a **string**. Spaces around it are ignored; only digits
+            are an answer.
+          examples: ["12"]
+
     RegisterRequest:
       type: object
       additionalProperties: false
-      required: [name, email, password, consent, roles]
+      required: [name, email, password, consent, roles, captcha]
       properties:
         name:
           type: string
@@ -6223,11 +6359,16 @@ components:
         roles:
           type: array
           minItems: 1
-          maxItems: 11
+          maxItems: 13
           uniqueItems: true
-          description: Account roles chosen by the person. Duplicates are rejected.
+          description: |
+            Account roles chosen by the person. Duplicates are rejected. Either property seeker
+            roles only (`CONSUMER`, `TENANT`, or both) or roles from the other groups only:
+            a seeker role together with any other role is rejected.
           items:
             $ref: "#/components/schemas/SelectableAccountRole"
+        captcha:
+          $ref: "#/components/schemas/CaptchaAnswer"
 
     DirectoryKind:
       type: string

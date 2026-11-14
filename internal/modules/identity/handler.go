@@ -117,6 +117,18 @@ func (h *Handler) writeAuth(w http.ResponseWriter, res AuthResult) {
 	httpx.WriteJSON(w, http.StatusOK, body)
 }
 
+// Captcha handles GET /v1/auth/captcha: a new question for the registration
+// form. Never cached: every call is a different, single-use question.
+func (h *Handler) Captcha(w http.ResponseWriter, r *http.Request) {
+	challenge, err := h.svc.NewCaptcha(r.Context())
+	if err != nil {
+		httpx.WriteInternalError(w, r, h.logger, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	httpx.WriteJSON(w, http.StatusOK, challenge)
+}
+
 // Register handles POST /v1/auth/register. Valid input always yields 202.
 func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	var in RegisterInput

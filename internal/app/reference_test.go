@@ -301,7 +301,7 @@ func TestInactiveReferenceRowsAreHiddenAndRefused(t *testing.T) {
 	t.Run("a deactivated account role cannot be chosen at sign-up", func(t *testing.T) {
 		e := newEnv(t)
 		body := registerBody("landlord@example.com")
-		body["roles"] = []string{"CONSUMER", "LANDLORD"}
+		body["roles"] = []string{"AGENT", "LANDLORD"}
 		e.reference.SetActive(reference.SetAccountRoles, "LANDLORD", false)
 		env := wantError(t, e.post("/v1/auth/register", body), http.StatusBadRequest, httpx.CodeValidationFailed)
 		if env.Error.Fields["roles"] == "" || len(env.Error.Fields) != 1 {

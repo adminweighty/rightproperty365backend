@@ -128,6 +128,8 @@ type env struct {
 	logs      *bytes.Buffer
 	now       time.Time
 	seq       int
+	// captchaSeq numbers the registration questions the tests ask for.
+	captchaSeq int
 }
 
 func newEnv(t *testing.T) *env {
@@ -233,8 +235,77 @@ func browser(c *http.Cookie) reqOpt {
 	}
 }
 
+// captchaBody is the body of GET /v1/auth/captcha.
+type captchaBody struct {
+	CaptchaID string    `json:"captcha_id"`
+	Question  string    `json:"question"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// newCaptcha asks the API for a registration question, the way a client does.
+// Each call comes from its own address so that the helper never runs into the
+// per-IP limit of the endpoint.
+func (e *env) newCaptcha() captchaBody {
+	e.t.Helper()
+	e.captchaSeq++
+	ip := fmt.Sprintf("10.77.%d.%d", e.captchaSeq/250, e.captchaSeq%250+1)
+	rec := e.do(http.MethodGet, "/v1/auth/captcha", nil, withIP(ip))
+	wantStatus(e.t, rec, http.StatusOK)
+	return decode[captchaBody](e.t, rec)
+}
+
+// solveCaptcha works the answer out from the question, as a person would.
+func solveCaptcha(t *testing.T, question string) int {
+	t.Helper()
+	var a, b int
+	var op string
+	if _, err := fmt.Sscanf(question, "What is %d %s %d?", &a, &op, &b); err != nil {
+		t.Fatalf("unexpected captcha question %q: %v", question, err)
+	}
+	switch op {
+	case "+":
+		return a + b
+	case "-":
+		return a - b
+	}
+	t.Fatalf("unexpected captcha question %q", question)
+	return 0
+}
+
+// solvedCaptcha returns the "captcha" object of a registration: a fresh
+// question with its right answer.
+func (e *env) solvedCaptcha() obj {
+	e.t.Helper()
+	c := e.newCaptcha()
+	return obj{"captcha_id": c.CaptchaID, "answer": fmt.Sprint(solveCaptcha(e.t, c.Question))}
+}
+
+// withCaptcha gives a registration body a solved captcha unless the test set
+// the "captcha" key itself (nil stands for a registration without one). The
+// tests that are not about the captcha therefore register exactly as a client
+// does: they ask for a question and answer it. The body is copied, not changed.
+func (e *env) withCaptcha(body any) any {
+	e.t.Helper()
+	in, ok := body.(obj)
+	if !ok {
+		return body
+	}
+	if _, set := in["captcha"]; set {
+		return body
+	}
+	out := make(obj, len(in)+1)
+	for k, v := range in {
+		out[k] = v
+	}
+	out["captcha"] = e.solvedCaptcha()
+	return out
+}
+
 func (e *env) do(method, path string, body any, opts ...reqOpt) *httptest.ResponseRecorder {
 	e.t.Helper()
+	if method == http.MethodPost && path == "/v1/auth/register" {
+		body = e.withCaptcha(body)
+	}
 	var rd io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -694,7 +765,7 @@ func TestSeedUsersAndMeShape(t *testing.T) {
 		wantStatus(t, rec, http.StatusOK)
 		want := `"platform_roles":[],"memberships":[{"organisation_id":"` + propertyrequests.SeedOrganisationID.String() +
 			`","organisation_name":"Sample Estates","organisation_kind":"AGENCY","market_code":"ZW","role":"AGENT","role_label":"Estate Agent"}],` +
-			`"account_roles":[{"role":"CONSUMER","status":"ACTIVE","onboarding_status":null},{"role":"AGENT","status":"ACTIVE","onboarding_status":null}]`
+			`"account_roles":[{"role":"AGENT","status":"ACTIVE","onboarding_status":null}]`
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("body = %s\nwant to contain %s", rec.Body, want)
 		}
@@ -703,7 +774,7 @@ func TestSeedUsersAndMeShape(t *testing.T) {
 	t.Run("admin", func(t *testing.T) {
 		rec := e.get("/v1/me", withCookie(e.adminLogin(identity.SeedAdminEmail, seedPassword)))
 		wantStatus(t, rec, http.StatusOK)
-		if want := `"platform_roles":[{"role":"SUPER_ADMIN","market_code":null}],"memberships":[],"account_roles":[{"role":"CONSUMER","status":"ACTIVE","onboarding_status":null}]`; !strings.Contains(rec.Body.String(), want) {
+		if want := `"platform_roles":[{"role":"SUPER_ADMIN","market_code":null}],"memberships":[],"account_roles":[]`; !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("body = %s\nwant to contain %s", rec.Body, want)
 		}
 	})
@@ -1274,7 +1345,7 @@ func TestRegisterWithAccountRoles(t *testing.T) {
 	e := newEnv(t)
 	body := registerBody("multi@example.com")
 	// Deliberately not in allowlist order: the API returns a stable order.
-	body["roles"] = []string{"AGENT", "CONSUMER", "LANDLORD", "TENANT"}
+	body["roles"] = []string{"LANDLORD", "HOST", "AGENT", "SOLICITOR"}
 
 	rec := e.post("/v1/auth/register", body)
 	wantStatus(t, rec, http.StatusAccepted)
@@ -1285,8 +1356,8 @@ func TestRegisterWithAccountRoles(t *testing.T) {
 	rec = e.post("/v1/auth/verify-email", obj{"token": e.mail.verifyToken(t)})
 	wantStatus(t, rec, http.StatusOK)
 	want := []accountRoleBody{
-		{"CONSUMER", "ACTIVE"}, {"TENANT", "ACTIVE"},
-		{"AGENT", "PENDING_VERIFICATION"}, {"LANDLORD", "PENDING_VERIFICATION"},
+		{"AGENT", "PENDING_VERIFICATION"}, {"SOLICITOR", "PENDING_VERIFICATION"},
+		{"LANDLORD", "PENDING_VERIFICATION"}, {"HOST", "PENDING_VERIFICATION"},
 	}
 	check := func(where string, u userBody) {
 		t.Helper()
@@ -1308,7 +1379,7 @@ func TestRegisterWithAccountRoles(t *testing.T) {
 	cookie := sessionCookie(rec)
 	meUser, raw := e.me(cookie)
 	check("/v1/me", meUser)
-	if !strings.Contains(raw, `"memberships":[],"account_roles":[{"role":"CONSUMER","status":"ACTIVE","onboarding_status":null},`) {
+	if !strings.Contains(raw, `"memberships":[],"account_roles":[{"role":"AGENT","status":"PENDING_VERIFICATION","onboarding_status":"DRAFT"},`) {
 		t.Fatalf("unexpected /v1/me body: %s", raw)
 	}
 
@@ -1323,6 +1394,7 @@ func TestRegisterRolesValidation(t *testing.T) {
 		notAllowed = "That role cannot be chosen at sign-up."
 		unknown    = "Choose roles from the options provided."
 		duplicated = "Each role can only be chosen once."
+		seekerOnly = "A property seeker account cannot also have a professional, business or owner role. Choose one or the other."
 	)
 	tests := []struct {
 		name    string
@@ -1343,6 +1415,14 @@ func TestRegisterRolesValidation(t *testing.T) {
 		{"not an array", "CONSUMER", unknown},
 		{"duplicate", []string{"CONSUMER", "AGENT", "CONSUMER"}, duplicated},
 		{"platform role hidden behind a duplicate", []string{"CONSUMER", "CONSUMER", "SUPER_ADMIN"}, duplicated},
+		// A property seeker account is only that.
+		{"buyer with a professional role", []string{"CONSUMER", "AGENT"}, seekerOnly},
+		{"tenant with an owner role", []string{"LANDLORD", "TENANT"}, seekerOnly},
+		{"tenant with a business role", []string{"TENANT", "AGENCY_OWNER"}, seekerOnly},
+		{"buyer with another property business", []string{"HOST", "CONSUMER"}, seekerOnly},
+		{"both seeker roles with a professional role", []string{"CONSUMER", "TENANT", "SOLICITOR"}, seekerOnly},
+		// The other checks still come first.
+		{"seeker mix with an unknown value", []string{"CONSUMER", "AGENT", "WIZARD"}, unknown},
 	}
 	// Every platform administrator role, alone and mixed with a valid one.
 	for _, role := range []string{
@@ -1386,29 +1466,75 @@ func TestRegisterRolesValidation(t *testing.T) {
 		})
 	}
 
-	t.Run("every allowlisted role at once is accepted", func(t *testing.T) {
+	// The allowlist splits in two: the property seeker roles, and all the
+	// others. Each half can be chosen whole; the two never mix.
+	all := identity.SelectableAccountRoles()
+	if len(all) != 15 {
+		t.Fatalf("allowlist has %d roles, want 15", len(all))
+	}
+	var seekers, others []string
+	for _, role := range all {
+		if identity.IsSeekerRole(role) {
+			seekers = append(seekers, role)
+		} else {
+			others = append(others, role)
+		}
+	}
+	if len(seekers) != 2 || len(others) != 13 {
+		t.Fatalf("seeker roles = %v, other roles = %v", seekers, others)
+	}
+	accepted := []struct {
+		name       string
+		roles      []string
+		wantStatus string
+	}{
+		{"buyer and tenant together are accepted", seekers, "ACTIVE"},
+		{"buyer alone is accepted", []string{"CONSUMER"}, "ACTIVE"},
+		{"tenant alone is accepted", []string{"TENANT"}, "ACTIVE"},
+		{"agent and landlord together are accepted", []string{"AGENT", "LANDLORD"}, "PENDING_VERIFICATION"},
+		{"every role that is not a seeker role at once is accepted", others, "PENDING_VERIFICATION"},
+	}
+	for i, tt := range accepted {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t)
+			body := registerBody(fmt.Sprintf("accepted%d@example.com", i))
+			body["roles"] = tt.roles
+			wantStatus(t, e.post("/v1/auth/register", body), http.StatusAccepted)
+			rec := e.post("/v1/auth/verify-email", obj{"token": e.mail.verifyToken(t)})
+			wantStatus(t, rec, http.StatusOK)
+			got := decode[authBody](t, rec).User.AccountRoles
+			if len(got) != len(tt.roles) {
+				t.Fatalf("account_roles = %+v", got)
+			}
+			for i, r := range got {
+				if r.Role != tt.roles[i] || r.Status != tt.wantStatus {
+					t.Fatalf("account_roles[%d] = %+v, want %s %s", i, r, tt.roles[i], tt.wantStatus)
+				}
+			}
+		})
+	}
+
+	t.Run("every seeker role with every other role is refused, in either order", func(t *testing.T) {
 		e := newEnv(t)
-		all := identity.SelectableAccountRoles()
-		if len(all) != 15 {
-			t.Fatalf("allowlist has %d roles, want 15", len(all))
-		}
-		body := registerBody("everything@example.com")
-		body["roles"] = all
-		wantStatus(t, e.post("/v1/auth/register", body), http.StatusAccepted)
-		rec := e.post("/v1/auth/verify-email", obj{"token": e.mail.verifyToken(t)})
-		wantStatus(t, rec, http.StatusOK)
-		got := decode[authBody](t, rec).User.AccountRoles
-		if len(got) != len(all) {
-			t.Fatalf("account_roles = %+v", got)
-		}
-		for i, r := range got {
-			wantStatusName := "PENDING_VERIFICATION"
-			if r.Role == "CONSUMER" || r.Role == "TENANT" {
-				wantStatusName = "ACTIVE"
+		before := e.identity.UserCount()
+		n := 0
+		for _, seeker := range seekers {
+			for _, other := range others {
+				for _, roles := range [][]string{{seeker, other}, {other, seeker}} {
+					n++
+					body := registerBody("mixed@example.com")
+					body["roles"] = roles
+					// Each from its own address: this is not about the rate limit.
+					rec := e.post("/v1/auth/register", body, withIP(fmt.Sprintf("198.51.100.%d", n)))
+					env := wantError(t, rec, http.StatusBadRequest, httpx.CodeValidationFailed)
+					if got := env.Error.Fields["roles"]; got != seekerOnly || len(env.Error.Fields) != 1 {
+						t.Fatalf("roles %v: fields = %v, want only roles=%q", roles, env.Error.Fields, seekerOnly)
+					}
+				}
 			}
-			if r.Role != all[i] || r.Status != wantStatusName {
-				t.Fatalf("account_roles[%d] = %+v, want %s %s", i, r, all[i], wantStatusName)
-			}
+		}
+		if e.identity.UserCount() != before {
+			t.Fatal("a rejected registration created a user")
 		}
 	})
 }
@@ -1460,7 +1586,7 @@ func TestRegisterExistingEmailWithRoles(t *testing.T) {
 		e := newEnv(t)
 		before := e.identity.UserCount()
 		body := registerBody(identity.SeedConsumerEmail)
-		body["roles"] = []string{"CONSUMER", "AGENCY_OWNER", "LANDLORD"}
+		body["roles"] = []string{"AGENCY_OWNER", "LANDLORD"}
 		rec := e.post("/v1/auth/register", body)
 		wantStatus(t, rec, http.StatusAccepted)
 		if got := strings.TrimSpace(rec.Body.String()); got != `{"status":"VERIFICATION_SENT"}` {
@@ -1478,12 +1604,12 @@ func TestRegisterExistingEmailWithRoles(t *testing.T) {
 	t.Run("unverified account: 202 and the latest selection replaces the pending one", func(t *testing.T) {
 		e := newEnv(t)
 		first := registerBody("pending-roles@example.com")
-		first["roles"] = []string{"CONSUMER", "AGENT"}
+		first["roles"] = []string{"CONSUMER", "TENANT"}
 		wantStatus(t, e.post("/v1/auth/register", first), http.StatusAccepted)
 		count := e.identity.UserCount()
 
 		second := registerBody("pending-roles@example.com")
-		second["roles"] = []string{"TENANT", "HOST"}
+		second["roles"] = []string{"AGENT", "HOST"}
 		wantStatus(t, e.post("/v1/auth/register", second), http.StatusAccepted)
 		if e.identity.UserCount() != count {
 			t.Fatal("a second user was created for an existing email")
@@ -1492,8 +1618,8 @@ func TestRegisterExistingEmailWithRoles(t *testing.T) {
 		rec := e.post("/v1/auth/verify-email", obj{"token": e.mail.verifyToken(t)})
 		wantStatus(t, rec, http.StatusOK)
 		got := decode[authBody](t, rec).User.AccountRoles
-		if len(got) != 2 || got[0] != (accountRoleBody{"TENANT", "ACTIVE"}) || got[1] != (accountRoleBody{"HOST", "PENDING_VERIFICATION"}) {
-			t.Fatalf("account_roles = %+v, want TENANT ACTIVE + HOST PENDING_VERIFICATION", got)
+		if len(got) != 2 || got[0] != (accountRoleBody{"AGENT", "PENDING_VERIFICATION"}) || got[1] != (accountRoleBody{"HOST", "PENDING_VERIFICATION"}) {
+			t.Fatalf("account_roles = %+v, want AGENT + HOST, both PENDING_VERIFICATION", got)
 		}
 	})
 
@@ -1515,6 +1641,18 @@ type meBody struct {
 		Scope     string    `json:"scope"`
 		ExpiresAt time.Time `json:"expires_at"`
 	} `json:"session"`
+}
+
+// nonSeekerRoles is every role that can be chosen at sign-up except the
+// property seeker roles: the most one account can declare.
+func nonSeekerRoles() []string {
+	var out []string
+	for _, role := range identity.SelectableAccountRoles() {
+		if !identity.IsSeekerRole(role) {
+			out = append(out, role)
+		}
+	}
+	return out
 }
 
 // selfRegister creates and verifies an account through the public API.
@@ -1604,7 +1742,7 @@ func TestAdminLoginConfigurableLifetime(t *testing.T) {
 // body, so the endpoint does not reveal who is an administrator.
 func TestAdminLoginRefusalsAreIdentical(t *testing.T) {
 	e := newEnv(t)
-	e.selfRegister("pro@example.com", "CONSUMER", "AGENT", "AGENCY_OWNER")
+	e.selfRegister("pro@example.com", "AGENT", "AGENCY_OWNER")
 	wantStatus(t, e.post("/v1/auth/register", registerBody("unverified@example.com")), http.StatusAccepted)
 
 	const rid = "fixed-request-id"
@@ -1958,8 +2096,8 @@ func TestSeededInboxScoping(t *testing.T) {
 
 	t.Run("Grace's /v1/me", func(t *testing.T) {
 		user, _ := e.me(e.loginCookie(devseed.SellerEmail, seedPassword))
-		if user.Name != "Grace Mhlanga" || len(user.Memberships) != 0 || len(user.AccountRoles) != 2 ||
-			user.AccountRoles[1] != (accountRoleBody{"PRIVATE_SELLER", "ACTIVE"}) {
+		if user.Name != "Grace Mhlanga" || len(user.Memberships) != 0 || len(user.AccountRoles) != 1 ||
+			user.AccountRoles[0] != (accountRoleBody{"PRIVATE_SELLER", "ACTIVE"}) {
 			t.Fatalf("unexpected user: %+v", user)
 		}
 	})
@@ -2130,7 +2268,7 @@ func TestIdentityOutboxEvents(t *testing.T) {
 	}
 
 	// Registration and a customer sign-in write nothing; verification writes the welcome event once.
-	cookie := e.selfRegister("events@example.com", "CONSUMER", "LANDLORD")
+	cookie := e.selfRegister("events@example.com", "LANDLORD")
 	e.loginCookie(identity.SeedConsumerEmail, seedPassword)
 	if got := e.identityEvents(); len(got) != 1 || got[0] != identity.EventUserEmailVerified {
 		t.Fatalf("events after verification = %v, want [USER_EMAIL_VERIFIED]", got)

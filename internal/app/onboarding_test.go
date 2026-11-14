@@ -175,7 +175,7 @@ func requiredDocuments(role string) []string {
 // uploads every required document and submits it.
 func (e *env) apply(email, role, businessName string) (*http.Cookie, applicationBody) {
 	e.t.Helper()
-	c := e.selfRegister(email, "CONSUMER", role)
+	c := e.selfRegister(email, role)
 	wantStatus(e.t, e.put("/v1/me/onboarding/"+role, detailsFor(role, businessName), browser(c)), http.StatusOK)
 	for _, doc := range requiredDocuments(role) {
 		wantStatus(e.t, e.upload(c, role, doc, "scan.pdf", testPDF()), http.StatusCreated)
@@ -453,7 +453,7 @@ func TestOnboardingMigrationSeedsTheBaseline(t *testing.T) {
 
 func TestRegistrationCreatesDraftApplications(t *testing.T) {
 	e := newEnv(t)
-	c := e.selfRegister("pro@example.com", "CONSUMER", "TENANT", "LANDLORD", "AGENT")
+	c := e.selfRegister("pro@example.com", "LANDLORD", "AGENT")
 	apps := e.myOnboarding(c)
 	if len(apps) != 2 || apps[0].Role != "AGENT" || apps[1].Role != "LANDLORD" {
 		t.Fatalf("applications = %+v, want AGENT and LANDLORD only", apps)
@@ -481,10 +481,22 @@ func TestRegistrationCreatesDraftApplications(t *testing.T) {
 	// GET /v1/me shows each role's onboarding status; null for roles without onboarding.
 	user, raw := e.me(c)
 	for role, want := range map[string][2]string{
-		"CONSUMER": {"ACTIVE", ""}, "TENANT": {"ACTIVE", ""}, "LANDLORD": {"PENDING_VERIFICATION", "DRAFT"}, "AGENT": {"PENDING_VERIFICATION", "DRAFT"},
+		"LANDLORD": {"PENDING_VERIFICATION", "DRAFT"}, "AGENT": {"PENDING_VERIFICATION", "DRAFT"},
 	} {
 		if status, ob := accountRole(user, raw, role); status != want[0] || ob != want[1] {
 			t.Fatalf("%s: status %q onboarding %q, want %v (%s)", role, status, ob, want, raw)
+		}
+	}
+	// A property seeker account (which can hold no other role) has no
+	// application at all, and its roles are active straight away.
+	seeker := e.selfRegister("seeker@example.com", "CONSUMER", "TENANT")
+	if apps := e.myOnboarding(seeker); len(apps) != 0 {
+		t.Fatalf("a property seeker has applications: %+v", apps)
+	}
+	user, raw = e.me(seeker)
+	for _, role := range []string{"CONSUMER", "TENANT"} {
+		if status, ob := accountRole(user, raw, role); status != "ACTIVE" || ob != "" {
+			t.Fatalf("%s: status %q onboarding %q, want ACTIVE and none (%s)", role, status, ob, raw)
 		}
 	}
 
@@ -1533,7 +1545,7 @@ func TestSolicitors(t *testing.T) {
 	owner := e.loginCookie(chambers, seedPassword)
 	user, _ := e.me(owner)
 	if len(user.Memberships) != 1 || user.Memberships[0].OrganisationKind != "LAW_FIRM" || user.Memberships[0].Role != "OWNER" ||
-		user.Memberships[0].OrganisationName != "Sample Law Chambers" || len(user.AccountRoles) != 2 || user.AccountRoles[1] != (accountRoleBody{"SOLICITOR", "ACTIVE"}) {
+		user.Memberships[0].OrganisationName != "Sample Law Chambers" || len(user.AccountRoles) != 1 || user.AccountRoles[0] != (accountRoleBody{"SOLICITOR", "ACTIVE"}) {
 		t.Fatalf("solicitor owner = %+v", user)
 	}
 

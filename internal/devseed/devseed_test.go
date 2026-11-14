@@ -22,18 +22,18 @@ func TestSampleDataMapping(t *testing.T) {
 	}
 	want := map[string]row{
 		"consumer@example.test":         {"Casey Consumer", "", "", "CONSUMER", nil},
-		"admin@example.test":            {"Sam Admin", "", "", "CONSUMER", nil},
-		"estates.owner@example.test":    {"Rudo Moyo", "Sample Estates", "OWNER", "CONSUMER,AGENCY_OWNER", nil},
-		"agent@example.test":            {"Tendai Ncube", "Sample Estates", "AGENT", "CONSUMER,AGENT", []int{1, 2, 5}},
-		"estates.agent2@example.test":   {"Chipo Dube", "Sample Estates", "AGENT", "CONSUMER,AGENT", []int{7, 10, 17}},
-		"commercial.agent@example.test": {"Farai Chikwanha", "Sample Commercial", "OWNER", "CONSUMER,AGENCY_OWNER", []int{3, 13}},
-		"land.agent@example.test":       {"Nomsa Sibanda", "Sample Land Agents", "OWNER", "CONSUMER,AGENCY_OWNER", []int{4, 14, 15}},
-		"realty.agent@example.test":     {"Tatenda Mutasa", "Sample Realty", "OWNER", "CONSUMER,AGENCY_OWNER", []int{8, 9, 16, 18}},
-		"bulawayo.agent@example.test":   {"Sipho Nkomo", "Sample Homes Bulawayo", "OWNER", "CONSUMER,AGENCY_OWNER", []int{11, 12}},
-		"seller@example.test":           {"Grace Mhlanga", "", "", "CONSUMER,PRIVATE_SELLER", []int{6}},
+		"admin@example.test":            {"Sam Admin", "", "", "", nil},
+		"estates.owner@example.test":    {"Rudo Moyo", "Sample Estates", "OWNER", "AGENCY_OWNER", nil},
+		"agent@example.test":            {"Tendai Ncube", "Sample Estates", "AGENT", "AGENT", []int{1, 2, 5}},
+		"estates.agent2@example.test":   {"Chipo Dube", "Sample Estates", "AGENT", "AGENT", []int{7, 10, 17}},
+		"commercial.agent@example.test": {"Farai Chikwanha", "Sample Commercial", "OWNER", "AGENCY_OWNER", []int{3, 13}},
+		"land.agent@example.test":       {"Nomsa Sibanda", "Sample Land Agents", "OWNER", "AGENCY_OWNER", []int{4, 14, 15}},
+		"realty.agent@example.test":     {"Tatenda Mutasa", "Sample Realty", "OWNER", "AGENCY_OWNER", []int{8, 9, 16, 18}},
+		"bulawayo.agent@example.test":   {"Sipho Nkomo", "Sample Homes Bulawayo", "OWNER", "AGENCY_OWNER", []int{11, 12}},
+		"seller@example.test":           {"Grace Mhlanga", "", "", "PRIVATE_SELLER", []int{6}},
 		"agent-b@example.test":          {"Blake Agent", "Second Street Realty", "AGENT", "AGENT", nil},
 		// The United Kingdom agency (backend_samples.go).
-		"sample-homes-london@example.test": {"Sample Homes London Owner", "Sample Homes London", "OWNER", "CONSUMER,AGENCY_OWNER", []int{19, 20, 21}},
+		"sample-homes-london@example.test": {"Sample Homes London Owner", "Sample Homes London", "OWNER", "AGENCY_OWNER", []int{19, 20, 21}},
 	}
 
 	accounts := Accounts()
@@ -344,7 +344,7 @@ func TestBusinessProfiles(t *testing.T) {
 			t.Fatalf("%s has no owner account %s@example.test", p.Key(), p.Slug)
 		}
 		if p.Organisation.Kind != w[0] || p.Organisation.Name != p.Name || a.Organisation.ID != p.Organisation.ID ||
-			a.MembershipRole != "OWNER" || strings.Join(a.AccountRoles, ",") != "CONSUMER,"+w[1] ||
+			a.MembershipRole != "OWNER" || strings.Join(a.AccountRoles, ",") != w[1] ||
 			len(a.Profiles) != 1 || a.Profiles[0] != p.Key() || len(a.Listings) != len(businessListings[p.Slug]) {
 			t.Fatalf("%s: organisation %+v, owner %+v", p.Key(), p.Organisation, a)
 		}
@@ -431,5 +431,43 @@ func TestSampleLogosAreDrawn(t *testing.T) {
 		if (r.ReviewedAt != nil) != (r.Status == "PUBLISHED") || (r.ReviewedAt != nil) != (r.ReviewedBy != nil) {
 			t.Fatalf("listing %s: reviewed at %v", r.Slug, r.ReviewedAt)
 		}
+	}
+}
+
+// A property seeker account is only that, and the sample accounts follow the
+// rule registration enforces: seeker roles (buyer, tenant) never share an
+// account with a professional, business or owner role, or with a platform role.
+func TestSampleAccountsFollowTheSeekerRule(t *testing.T) {
+	check := func(email string, roles []string, platformRole string) {
+		t.Helper()
+		seekers := 0
+		for _, r := range roles {
+			if identity.IsSeekerRole(r) {
+				seekers++
+			}
+		}
+		if seekers > 0 && (seekers < len(roles) || platformRole != "") {
+			t.Fatalf("%s mixes a property seeker role with another role: %v %s", email, roles, platformRole)
+		}
+	}
+	seekerAccounts := 0
+	for _, a := range Accounts() {
+		check(a.Email, a.AccountRoles, a.PlatformRole)
+		if len(a.AccountRoles) > 0 && identity.IsSeekerRole(a.AccountRoles[0]) {
+			seekerAccounts++
+			if a.Organisation != nil || len(a.Listings) > 0 || len(a.Profiles) > 0 || a.DirectSeller {
+				t.Fatalf("%s is a property seeker with an organisation, listings or a profile", a.Email)
+			}
+		}
+	}
+	if seekerAccounts == 0 {
+		t.Fatal("the sample data has no property seeker account")
+	}
+	for _, a := range OnboardingAccounts() {
+		var roles []string
+		for _, r := range pendingRoles(a.Role) {
+			roles = append(roles, r.Role)
+		}
+		check(a.Email, roles, "")
 	}
 }

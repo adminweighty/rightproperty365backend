@@ -63,6 +63,12 @@ const (
 	AuthRequestsPerMinute = 20
 	AuthRequestsBurst     = 20
 
+	// Per-IP limit on GET /v1/auth/captcha, its own bucket: bursts of 30,
+	// refilled at 30 per minute (one question per form load and one after
+	// each failed submit).
+	CaptchaRequestsPerMinute = 30
+	CaptchaRequestsBurst     = 30
+
 	// Per-IP limit on POST /v1/admin/auth/login, its own and much stricter
 	// bucket: bursts of 5, refilled at 5 per minute.
 	AdminAuthRequestsPerMinute = 5
@@ -235,6 +241,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 	enquiryLimiter := httpx.NewRateLimiter(businessEnquiriesPerMinute, businessEnquiriesBurst)
 	authLimiter := httpx.NewRateLimiter(AuthRequestsPerMinute, AuthRequestsBurst)
 	adminAuthLimiter := httpx.NewRateLimiter(AdminAuthRequestsPerMinute, AdminAuthRequestsBurst)
+	captchaLimiter := httpx.NewRateLimiter(CaptchaRequestsPerMinute, CaptchaRequestsBurst)
 
 	r := chi.NewRouter()
 	r.Use(
@@ -309,15 +316,20 @@ func NewRouter(d Deps) (http.Handler, error) {
 		// and, for agents and staff, to their own agent profile.
 		r.With(auth.RequireMembership()).Get("/inbox/business-enquiries", enquiriesH.Inbox)
 
+		// The question of the registration form, in its own bucket so that
+		// asking for one does not use up the sign-in allowance.
 		r.Route("/auth", func(r chi.Router) {
-			r.Use(authLimiter.Middleware)
-			r.Post("/register", identityH.Register)
-			r.Post("/verify-email", identityH.VerifyEmail)
-			r.Post("/resend-verification", identityH.ResendVerification)
-			r.Post("/login", identityH.Login)
-			r.Post("/logout", identityH.Logout)
-			r.Post("/password-reset/request", identityH.RequestPasswordReset)
-			r.Post("/password-reset/confirm", identityH.ConfirmPasswordReset)
+			r.With(captchaLimiter.Middleware).Get("/captcha", identityH.Captcha)
+			r.Group(func(r chi.Router) {
+				r.Use(authLimiter.Middleware)
+				r.Post("/register", identityH.Register)
+				r.Post("/verify-email", identityH.VerifyEmail)
+				r.Post("/resend-verification", identityH.ResendVerification)
+				r.Post("/login", identityH.Login)
+				r.Post("/logout", identityH.Logout)
+				r.Post("/password-reset/request", identityH.RequestPasswordReset)
+				r.Post("/password-reset/confirm", identityH.ConfirmPasswordReset)
+			})
 		})
 
 		r.With(auth.RequireAuth).Get("/me", identityH.Me)

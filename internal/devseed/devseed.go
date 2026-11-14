@@ -115,11 +115,15 @@ var (
 	SellerID = propertyrequests.SeedSellerUserID
 )
 
+// The account roles of the sample accounts follow the registration rule: a
+// property seeker account holds seeker roles only, and an account with a
+// professional, business or owner role holds no seeker role. The platform
+// administrator holds no account role at all, like one made by cmd/adminctl.
 var (
 	consumerRoles = []string{identity.AccountRoleConsumer}
-	agentRoles    = []string{identity.AccountRoleConsumer, identity.AccountRoleAgent}
-	ownerRoles    = []string{identity.AccountRoleConsumer, identity.AccountRoleAgencyOwner}
-	sellerRoles   = []string{identity.AccountRoleConsumer, identity.AccountRolePrivateSeller}
+	agentRoles    = []string{identity.AccountRoleAgent}
+	ownerRoles    = []string{identity.AccountRoleAgencyOwner}
+	sellerRoles   = []string{identity.AccountRolePrivateSeller}
 )
 
 // Accounts returns every sample account. All are email-verified.
@@ -138,7 +142,7 @@ func Accounts() []Account {
 func peopleAccounts() []Account {
 	return []Account{
 		{ID: identity.SeedConsumerUserID, Name: "Casey Consumer", Email: identity.SeedConsumerEmail, AccountRoles: consumerRoles},
-		{ID: identity.SeedAdminUserID, Name: "Sam Admin", Email: identity.SeedAdminEmail, PlatformRole: auth.PlatformSuperAdmin, AccountRoles: consumerRoles},
+		{ID: identity.SeedAdminUserID, Name: "Sam Admin", Email: identity.SeedAdminEmail, PlatformRole: auth.PlatformSuperAdmin},
 
 		{ID: EstatesOwnerID, Name: "Rudo Moyo", Email: EstatesOwnerEmail, Organisation: SampleEstates, MembershipRole: auth.RoleOwner, AccountRoles: ownerRoles},
 		{ID: identity.SeedAgentUserID, Name: "Tendai Ncube", Email: identity.SeedAgentEmail, Organisation: SampleEstates, MembershipRole: auth.RoleAgent, AccountRoles: agentRoles, Listings: []int{1, 2, 5}},

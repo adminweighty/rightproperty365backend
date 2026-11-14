@@ -653,7 +653,7 @@ func TestBusinessEnquiryInboxAccess(t *testing.T) {
 			"self-declared provider":   e.selfRegister("wannabe-plumber@example.com", "SERVICE_PROVIDER", "AGENT", "AGENCY_OWNER"),
 			"self-declared private":    e.selfRegister("wannabe-seller@example.com", "PRIVATE_SELLER"),
 			"customer who enquired":    e.selfRegister("customer@example.com", "CONSUMER"),
-			"self-declared everything": e.selfRegister("everything@example.com", identity.SelectableAccountRoles()...),
+			"self-declared everything": e.selfRegister("everything@example.com", nonSeekerRoles()...),
 		}
 		for who, c := range cookies {
 			rec := e.get("/v1/inbox/business-enquiries", withCookie(c))

@@ -41,6 +41,8 @@ type RegisterInput struct {
 	// shape (not an array, a non-string entry) is reported as a validation
 	// error on the "roles" field instead of a generic INVALID_JSON.
 	Roles json.RawMessage `json:"roles"`
+	// Captcha is the answer to a question from GET /v1/auth/captcha. Required.
+	Captcha *CaptchaInput `json:"captcha"`
 }
 
 // Messages for the "roles" field. Plain language: they are shown to people.
@@ -49,7 +51,19 @@ const (
 	msgRoleNotAllowed  = "That role cannot be chosen at sign-up."
 	msgRoleUnknown     = "Choose roles from the options provided."
 	msgRolesDuplicated = "Each role can only be chosen once."
+	msgSeekerExclusive = "A property seeker account cannot also have a professional, business or owner role. Choose one or the other."
 )
+
+// countSeekerRoles counts the property seeker roles in a selection.
+func countSeekerRoles(roles []string) int {
+	n := 0
+	for _, role := range roles {
+		if IsSeekerRole(role) {
+			n++
+		}
+	}
+	return n
+}
 
 // parseAccountRoles validates the role selection against the allowlist and
 // returns it in allowlist order with initial statuses, or a message for the
@@ -86,6 +100,11 @@ func parseAccountRoles(raw json.RawMessage, selectable []SelectableRole) ([]Acco
 			return nil, msgRolesDuplicated
 		}
 		chosen = append(chosen, role)
+	}
+	// A property seeker is only that: a buyer, a tenant or both, never
+	// together with a role from any other group.
+	if seekers := countSeekerRoles(chosen); seekers > 0 && seekers < len(chosen) {
+		return nil, msgSeekerExclusive
 	}
 	roles := make([]AccountRole, 0, len(chosen))
 	for _, role := range chosen {
@@ -243,6 +262,10 @@ func isPrintableASCII(s string) bool {
 // The selected account roles only record what the person says they are: no
 // organisation or membership is created and no access is granted.
 //
+// A registration must answer a captcha (see captcha.go). Code that creates
+// accounts without HTTP (cmd/seed, cmd/adminctl) writes to the store directly
+// and does not come through here.
+//
 // Register never signs the caller in.
 func (s *Service) Register(ctx context.Context, in RegisterInput) error {
 	fields := map[string]string{}
@@ -290,15 +313,31 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) error {
 	if msg != "" {
 		fields["roles"] = msg
 	}
+	captchaID, captchaAnswer, msg := parseCaptchaInput(in.Captcha)
+	if msg != "" {
+		fields["captcha"] = msg
+	}
 	if len(fields) > 0 {
 		return &ValidationError{Fields: fields}
+	}
+
+	// The captcha is judged only once every other field is acceptable (a typo
+	// in the email does not use it up), and before the password is hashed,
+	// the account is looked up or anything is written or emailed: the outcome
+	// is the same whether or not the email already has an account.
+	now := s.clock()
+	msg, err = s.checkCaptcha(ctx, captchaID, captchaAnswer, now)
+	if err != nil {
+		return err
+	}
+	if msg != "" {
+		return &ValidationError{Fields: map[string]string{"captcha": msg}}
 	}
 
 	passwordHash, err := s.hasher.Hash(in.Password)
 	if err != nil {
 		return err
 	}
-	now := s.clock()
 	nu := NewUser{
 		Name: name, Email: email, PasswordHash: passwordHash,
 		MarketingOptIn: in.MarketingOptIn, PrivacyVersion: privacyVersion, AccountRoles: accountRoles, CreatedAt: now,

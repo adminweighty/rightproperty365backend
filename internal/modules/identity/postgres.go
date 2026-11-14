@@ -256,6 +256,40 @@ func (s *PostgresStore) ApprovedDirectOwners(ctx context.Context) (int, error) {
 	return n, err
 }
 
+// CreateCaptcha implements Store (migrations/0017_registration_captchas).
+// Expired captchas are deleted here, so the table stays about as small as the
+// number of questions asked in the last ten minutes.
+//
+// NOTE: compiled but not yet exercised against a real database.
+func (s *PostgresStore) CreateCaptcha(ctx context.Context, c Captcha) error {
+	if _, err := s.pool.Exec(ctx, `DELETE FROM registration_captchas WHERE expires_at < $1`, c.CreatedAt); err != nil {
+		return fmt.Errorf("delete expired captchas: %w", err)
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO registration_captchas (id, answer_hash, expires_at, created_at)
+		VALUES ($1, $2, $3, $4)`, c.ID, c.AnswerHash, c.ExpiresAt, c.CreatedAt)
+	return err
+}
+
+// ConsumeCaptcha implements Store. The single UPDATE ... RETURNING is what
+// makes a captcha single-use under concurrency.
+//
+// NOTE: compiled but not yet exercised against a real database.
+func (s *PostgresStore) ConsumeCaptcha(ctx context.Context, id string, now time.Time) (Captcha, error) {
+	c := Captcha{ID: id}
+	err := s.pool.QueryRow(ctx, `
+		UPDATE registration_captchas SET used_at = $2
+		WHERE id = $1 AND used_at IS NULL
+		RETURNING answer_hash, expires_at, created_at`, id, now).Scan(&c.AnswerHash, &c.ExpiresAt, &c.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Captcha{}, ErrNotFound
+	}
+	if err != nil {
+		return Captcha{}, err
+	}
+	return c, nil
+}
+
 // CreateVerificationToken implements Store.
 func (s *PostgresStore) CreateVerificationToken(ctx context.Context, userID uuid.UUID, tokenHash []byte, expiresAt, now time.Time) error {
 	_, err := s.pool.Exec(ctx, `
