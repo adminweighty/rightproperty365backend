@@ -4,9 +4,13 @@
 // database. It is the database counterpart of what cmd/api seeds into its
 // in-memory stores.
 //
-// It refuses to run unless APP_ENV=development and DEV_SEED_PASSWORD is set,
-// because every sample account shares that published password. It is
-// idempotent: re-running it resets the sample rows and touches nothing else.
+// It runs when APP_ENV=development and DEV_SEED_PASSWORD is set. It also runs
+// against STAGING, but only with SEED_ALLOW_STAGING=yes-create-sample-accounts
+// and a DEV_SEED_PASSWORD of at least 24 characters: staging is on the
+// internet and one sample account is a platform administrator, so generate a
+// private password for it and never use the published development value. It
+// never runs in production. It is idempotent: re-running it resets the sample
+// rows (including the sample accounts' password) and touches nothing else.
 // Run the migrations first (go run ./cmd/migrate up).
 //
 // The database is DATABASE_URL (or the optional DATABASE_DIRECT_URL override).
@@ -44,7 +48,7 @@ func run() error {
 	// the rest of the configuration is incomplete. An unset APP_ENV is treated
 	// as "not development" here, unlike the API's default.
 	env, password := os.Getenv("APP_ENV"), os.Getenv("DEV_SEED_PASSWORD")
-	if err := devseed.CheckEnvironment(env, password); err != nil {
+	if err := devseed.CheckEnvironment(env, password, os.Getenv("SEED_ALLOW_STAGING")); err != nil {
 		return err
 	}
 

@@ -170,20 +170,26 @@ func TestSeedMemory(t *testing.T) {
 
 func TestCheckEnvironment(t *testing.T) {
 	const good = "a-test-seed-password"
+	const long = "a-much-longer-staging-seed-password"
 	tests := []struct {
-		name, env, password, wantText string
+		name, env, password, allow, wantText string
 	}{
-		{"development with a password", "development", good, ""},
-		{"production", "production", good, "APP_ENV"},
-		{"staging", "staging", good, "APP_ENV"},
-		{"unset environment", "", good, "APP_ENV"},
-		{"upper-case is not development", "DEVELOPMENT", good, "APP_ENV"},
-		{"no password", "development", "", "DEV_SEED_PASSWORD is not set"},
-		{"short password", "development", "short", "DEV_SEED_PASSWORD"},
+		{"development with a password", "development", good, "", ""},
+		{"development ignores the staging opt-in", "development", good, StagingSeedOptIn, ""},
+		{"production", "production", good, "", "APP_ENV"},
+		{"production even with the opt-in", "production", long, StagingSeedOptIn, "APP_ENV"},
+		{"staging without the opt-in", "staging", long, "", "SEED_ALLOW_STAGING"},
+		{"staging with a wrong opt-in", "staging", long, "true", "SEED_ALLOW_STAGING"},
+		{"staging with a short password", "staging", good, StagingSeedOptIn, "at least 24 characters"},
+		{"staging with the opt-in and a long password", "staging", long, StagingSeedOptIn, ""},
+		{"unset environment", "", good, "", "APP_ENV"},
+		{"upper-case is not development", "DEVELOPMENT", good, "", "APP_ENV"},
+		{"no password", "development", "", "", "DEV_SEED_PASSWORD is not set"},
+		{"short password", "development", "short", "", "DEV_SEED_PASSWORD"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := CheckEnvironment(tt.env, tt.password)
+			err := CheckEnvironment(tt.env, tt.password, tt.allow)
 			if tt.wantText == "" {
 				if err != nil {
 					t.Fatal(err)

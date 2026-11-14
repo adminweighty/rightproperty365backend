@@ -111,12 +111,21 @@ go run ./cmd/seed          # or: make seed
 ```
 
 `cmd/seed` writes the same organisations, accounts, roles, listings and directory profiles into the database at
-`DATABASE_URL`. It **refuses to run unless `APP_ENV=development` is set
-explicitly and `DEV_SEED_PASSWORD` is set**, runs in one transaction and is idempotent (re-running
-it resets the sample rows, including the shared password, and touches nothing else). Sample
-listings get a placeholder title and price, because this backend does not own listing content yet.
-**It has never been run** — there is no Postgres on the development machine; only its
-environment guard is unit-tested. Treat the first run as a test.
+`DATABASE_URL`. It runs in one transaction and is idempotent (re-running it resets the sample rows,
+including the shared password, and touches nothing else). Where it may run:
+
+- **Development:** `APP_ENV=development` set explicitly and `DEV_SEED_PASSWORD` set.
+- **Staging:** only with `SEED_ALLOW_STAGING=yes-create-sample-accounts` **and** a
+  `DEV_SEED_PASSWORD` of at least 24 characters. Staging is on the internet and one sample account
+  (`admin@example.test`) is a Super Administrator, so generate a private password, keep it in a
+  secret, and never use the published value from `.env.example`. On the staging cluster:
+  `kubectl -n rightproperty-staging exec deploy/worker -- env SEED_ALLOW_STAGING=... DEV_SEED_PASSWORD=... /app/seed`
+  is not possible (the image has no shell or `env`); run it as a one-off Pod that takes the API's
+  environment plus those two variables, the password from a Secret.
+- **Production:** never.
+
+After seeding a database that Elasticsearch searches, rebuild the index (`/app/reindex`): the seed
+writes listings directly and the search index only learns about them from a reindex.
 
 Sign in and read the organisation inbox (PowerShell; `-SessionVariable` keeps the cookie, and the
 `Origin` header is required on cookie-authenticated POSTs):

@@ -186,11 +186,34 @@ func Listings() []propertyrequests.Listing {
 	return out
 }
 
-// CheckEnvironment refuses to seed anywhere but development and without the
-// seed password. It is the guard of cmd/seed.
-func CheckEnvironment(env, password string) error {
-	if env != config.EnvDevelopment {
-		return fmt.Errorf("refusing to seed: APP_ENV is %q, and sample data with a shared, published password may only be created when APP_ENV=development", env)
+// StagingSeedOptIn is the exact value SEED_ALLOW_STAGING must have for sample
+// data to be written to a staging database.
+const StagingSeedOptIn = "yes-create-sample-accounts"
+
+// stagingSeedPasswordMin is the shortest seed password accepted in staging. A
+// staging site is on the internet and the sample accounts include a platform
+// administrator, so the published development password must not be used there.
+const stagingSeedPasswordMin = 24
+
+// CheckEnvironment is the guard of cmd/seed. Sample data is written:
+//
+//   - in development, with DEV_SEED_PASSWORD;
+//   - in staging, only when allowStaging is exactly StagingSeedOptIn and the
+//     seed password has at least stagingSeedPasswordMin characters (generate
+//     one and keep it in a secret; never reuse the value in .env.example);
+//   - never in production or any other environment.
+func CheckEnvironment(env, password, allowStaging string) error {
+	switch env {
+	case config.EnvDevelopment:
+	case config.EnvStaging:
+		if allowStaging != StagingSeedOptIn {
+			return fmt.Errorf("refusing to seed: APP_ENV is %q; sample data is written to staging only when SEED_ALLOW_STAGING=%s", env, StagingSeedOptIn)
+		}
+		if len(password) < stagingSeedPasswordMin {
+			return fmt.Errorf("refusing to seed staging: DEV_SEED_PASSWORD must have at least %d characters there, because the sample accounts (one is a platform administrator) are reachable from the internet", stagingSeedPasswordMin)
+		}
+	default:
+		return fmt.Errorf("refusing to seed: APP_ENV is %q, and sample data with a shared password may only be created in development, or in staging with an explicit opt-in", env)
 	}
 	if password == "" {
 		return errors.New("refusing to seed: DEV_SEED_PASSWORD is not set (see .env.example)")
