@@ -53,8 +53,8 @@ type Sender interface {
 }
 
 // SendError is a failed send. Its text is safe to log and store: it carries a
-// status code and the provider's short error name, never a header, the API
-// key, the recipient or the message body.
+// status code, the provider's short error name and a sanitised explanation,
+// never a header, the API key, the recipient or the message body.
 type SendError struct {
 	// Status is the HTTP status, or 0 for a network failure.
 	Status int
@@ -63,6 +63,11 @@ type SendError struct {
 	Name string
 	// Transient reports whether a later retry may succeed.
 	Transient bool
+	// Detail is the provider's own explanation, sanitised: credentials and
+	// email addresses are removed and the text is cut short. It exists so an
+	// operator can tell "domain is not verified" from "API key is invalid".
+	// It is for logs only and is never shown to a customer.
+	Detail string
 }
 
 func (e *SendError) Error() string {
@@ -70,10 +75,14 @@ func (e *SendError) Error() string {
 	if e.Transient {
 		kind = "transient"
 	}
-	if e.Status == 0 {
-		return fmt.Sprintf("email provider %s failure: %s", kind, e.Name)
+	detail := ""
+	if e.Detail != "" {
+		detail = " (" + e.Detail + ")"
 	}
-	return fmt.Sprintf("email provider %s failure: HTTP %d %s", kind, e.Status, e.Name)
+	if e.Status == 0 {
+		return fmt.Sprintf("email provider %s failure: %s%s", kind, e.Name, detail)
+	}
+	return fmt.Sprintf("email provider %s failure: HTTP %d %s%s", kind, e.Status, e.Name, detail)
 }
 
 // IsTransient reports whether err is a send failure worth retrying later.

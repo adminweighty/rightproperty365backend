@@ -204,7 +204,7 @@ func (s *ResendSender) once(ctx context.Context, idempotencyKey string, body []b
 	}
 
 	name := resendErrorName(raw)
-	se := &SendError{Status: resp.StatusCode, Name: name}
+	se := &SendError{Status: resp.StatusCode, Name: name, Detail: s.errorDetail(raw)}
 	switch {
 	case resp.StatusCode == http.StatusTooManyRequests:
 		se.Transient = true
@@ -221,9 +221,55 @@ func (s *ResendSender) once(ctx context.Context, idempotencyKey string, body []b
 	return "", retryAfter, se
 }
 
+const resendMaxDetailLen = 200
+
+var (
+	detailAuthRe   = regexp.MustCompile(`(?i)authorization\s*:?\s*((bearer|apikey|basic)\s+)?\S*`)
+	detailSchemeRe = regexp.MustCompile(`(?i)\b(bearer|apikey|basic)\s+\S+`)
+	detailKeyRe    = regexp.MustCompile(`re_[A-Za-z0-9_]+`)
+	detailEmailRe  = regexp.MustCompile(`[^\s@<>"'(),;:]+@[^\s@<>"'(),;:]+`)
+	detailSpaceRe  = regexp.MustCompile(`\s+`)
+)
+
+// errorDetail returns the provider's free-text message in a form that is safe
+// to log. The message can echo request content, so the configured API key,
+// anything shaped like a key or an Authorization value, and every email
+// address are replaced before it is kept; what is left is plain printable
+// text of at most resendMaxDetailLen characters. Domain names stay, because
+// "the example.com domain is not verified" is exactly what an operator needs.
+func (s *ResendSender) errorDetail(raw []byte) string {
+	var body struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil || body.Message == "" {
+		return ""
+	}
+	msg := body.Message
+	if s.cfg.APIKey != "" {
+		msg = strings.ReplaceAll(msg, s.cfg.APIKey, "[redacted]")
+	}
+	msg = detailAuthRe.ReplaceAllString(msg, "[redacted]")
+	msg = detailSchemeRe.ReplaceAllString(msg, "[redacted]")
+	msg = detailKeyRe.ReplaceAllString(msg, "[redacted]")
+	msg = detailEmailRe.ReplaceAllString(msg, "[email]")
+	msg = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' {
+			return ' '
+		}
+		if r < 0x20 || r > 0x7e {
+			return -1
+		}
+		return r
+	}, msg)
+	msg = strings.TrimSpace(detailSpaceRe.ReplaceAllString(msg, " "))
+	if len(msg) > resendMaxDetailLen {
+		msg = msg[:resendMaxDetailLen] + "..."
+	}
+	return msg
+}
+
 // resendErrorName extracts the provider's short error name. Only a strictly
-// formatted name is kept; the provider's free-text message is discarded
-// because it can echo request content.
+// formatted name is kept. The free-text message is handled by errorDetail.
 func resendErrorName(raw []byte) string {
 	var body struct {
 		Name string `json:"name"`

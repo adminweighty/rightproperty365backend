@@ -280,10 +280,54 @@ func TestResendTerminalFailures(t *testing.T) {
 			if IsTransient(err) {
 				t.Fatal("IsTransient must be false")
 			}
-			// The provider's free-text message is never surfaced.
+			// The provider's message is kept only after sanitising.
 			assertNoKey(t, "error", err.Error())
-			if strings.Contains(err.Error(), "domain") || strings.Contains(err.Error(), "invalid") && tt.wantName != "invalid_idempotent_request" {
-				t.Fatalf("the provider's message leaked into the error: %v", err)
+			assertNoKey(t, "detail", se.Detail)
+		})
+	}
+}
+
+// The provider's explanation is what tells an operator why a send was
+// refused, so it is kept, but never with a credential or an address in it.
+func TestResendErrorDetailIsSanitised(t *testing.T) {
+	long := strings.Repeat("x", 400)
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"unverified domain", `{"name":"validation_error","message":"The rightproperty365.com domain is not verified. Please, add and verify your domain on https://resend.com/domains"}`,
+			"The rightproperty365.com domain is not verified. Please, add and verify your domain on https://resend.com/domains"},
+		{"bad key", `{"name":"validation_error","message":"API key is invalid"}`, "API key is invalid"},
+		{"echoed credentials", unverifiedFrom.body, "The rightproperty365.com domain is not verified. [redacted]"},
+		{"echoed key alone", `{"name":"x","message":"key ` + testAPIKey + ` rejected"}`, "key [redacted] rejected"},
+		// Built at run time so the source holds nothing shaped like a real key.
+		{"another key-shaped value", `{"name":"x","message":"got ` + "re" + "_" + "AbCd1234" + "_" + strings.Repeat("z", 24) + `"}`, "got [redacted]"},
+		{"recipient address", `{"name":"validation_error","message":"You can only send testing emails to your own email address (owner@example.com)."}`,
+			"You can only send testing emails to your own email address ([email])."},
+		{"control characters and newlines", "{\"name\":\"x\",\"message\":\"line one\\nline\\ttwo \\u0007 caf\\u00e9\"}", "line one line two caf"},
+		{"too long", `{"name":"x","message":"` + long + `"}`, strings.Repeat("x", 200) + "..."},
+		{"no message", `{"name":"x"}`, ""},
+		{"not json", `<html>nope</html>`, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFakeResend(t, fakeResponse{status: 403, body: tt.body})
+			s, _ := f.sender(t, nil)
+			_, err := s.Send(context.Background(), testKey, testMessage)
+			var se *SendError
+			if !errors.As(err, &se) {
+				t.Fatalf("err = %v, want a SendError", err)
+			}
+			if se.Detail != tt.want {
+				t.Fatalf("detail = %q, want %q", se.Detail, tt.want)
+			}
+			assertNoKey(t, "detail", se.Detail)
+			if tt.want != "" && !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("the error text should carry the detail: %v", err)
+			}
+			if strings.Contains(se.Detail, "example.com") {
+				t.Fatalf("an email address survived: %q", se.Detail)
 			}
 		})
 	}
