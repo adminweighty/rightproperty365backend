@@ -40,6 +40,9 @@ const (
 	// SetOrganisationKinds: the kinds of organisation and how they are shown
 	// ("Real Estate Agency", "Law Firm", ...).
 	SetOrganisationKinds = "organisation_kinds"
+	// SetPricePeriods: what a price is charged per ("per month", "per night").
+	// A listing's price_period is one of these codes, or null for a sale price.
+	SetPricePeriods = "price_periods"
 )
 
 // Sets returns every set code in the order the API lists them.
@@ -47,7 +50,7 @@ func Sets() []string {
 	return []string{
 		SetDealTypes, SetPropertyCategories, SetPropertyTypes, SetRequestTypes, SetContactMethods,
 		SetAccountRoles, SetDirectoryKinds, SetServiceTrades, SetRegions, SetCities, SetSuburbs, SetListingFeatures,
-		SetOnboardingDocuments, SetOrganisationKinds,
+		SetOnboardingDocuments, SetOrganisationKinds, SetPricePeriods,
 	}
 }
 
@@ -214,6 +217,22 @@ func (s *Service) Labels(ctx context.Context, set string) (map[string]string, er
 		labels[it.Code] = it.Label
 	}
 	return labels, nil
+}
+
+// Descriptions returns code -> description for the active rows of a set that
+// have one.
+func (s *Service) Descriptions(ctx context.Context, set string) (map[string]string, error) {
+	items, err := s.store.List(ctx, set, Filter{})
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for _, it := range items {
+		if it.Description != nil {
+			out[it.Code] = *it.Description
+		}
+	}
+	return out, nil
 }
 
 // Items returns the active rows of a set without a market filter.

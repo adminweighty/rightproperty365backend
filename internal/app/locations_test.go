@@ -65,6 +65,9 @@ func TestReferenceRegionsAndCityParents(t *testing.T) {
 	// Every city names its region; every suburb still names its city.
 	cities := decode[set](t, e.get("/v1/reference/cities"))
 	for _, c := range cities.Items {
+		if c.MarketCode == nil || *c.MarketCode != "ZW" {
+			continue // the United Kingdom's cities are checked in markets_test.go
+		}
 		if c.ParentCode == nil || *c.ParentCode != devseed.CityRegions[c.Code] {
 			t.Fatalf("city %s parent = %v, want %s", c.Code, c.ParentCode, devseed.CityRegions[c.Code])
 		}
@@ -91,11 +94,12 @@ func TestListingsByCountryAndRegion(t *testing.T) {
 	}
 	sale := func(r listings.Record) bool { return r.Deal == "sale" }
 
-	if got := e.search("?country=ZW&page_size=48"); got.Total != len(all) {
-		t.Fatalf("country=ZW: %d, want all %d", got.Total, len(all))
+	zw := count(all, func(r listings.Record) bool { return r.MarketCode == "ZW" })
+	if got := e.search("?country=ZW&page_size=48"); got.Total != zw || zw == len(all) {
+		t.Fatalf("country=ZW: %d, want the %d Zimbabwean listings of %d", got.Total, zw, len(all))
 	}
-	if got := e.search("?market=zw&page_size=48"); got.Total != len(all) {
-		t.Fatalf("market=zw (alias, any case): %d, want %d", got.Total, len(all))
+	if got := e.search("?market=zw&page_size=48"); got.Total != zw {
+		t.Fatalf("market=zw (alias, any case): %d, want %d", got.Total, zw)
 	}
 	// A planned market exists but has no listings.
 	if got := e.search("?country=ZA"); got.Total != 0 || got.Facets.Price.Currency != "ZAR" {
@@ -308,7 +312,7 @@ func TestDirectoryByCountryAndRegion(t *testing.T) {
 		wantStatus(t, rec, http.StatusOK)
 		return decode[directoryPage](t, rec)
 	}
-	all := page("agencies?page_size=48")
+	all := page("agencies?country=ZW&page_size=48")
 	byRegion := map[string]int{}
 	for _, p := range all.Items {
 		region := devseed.CityRegions[p.City.Code]

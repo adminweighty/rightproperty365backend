@@ -153,12 +153,14 @@ func listedSince(now time.Time, days int) time.Time {
 
 // score returns how well a record matches the search terms; 0 means no
 // match. Every term must match somewhere. Title matches weigh most.
-func score(r Record, words []string, suburb, city, propertyType string) int {
+func score(r Record, words []string, suburb, city, propertyType, keywords string) int {
 	if len(words) == 0 {
 		return 1
 	}
 	title, place := strings.ToLower(r.Title), strings.ToLower(suburb+" "+city)
-	kind, rest := strings.ToLower(propertyType), strings.ToLower(r.Summary+" "+r.Description+" "+r.Reference)
+	// keywords are the category's label and description ("Short stays ...
+	// Airbnb-style stays"), so a category can be found by what people call it.
+	kind, rest := strings.ToLower(propertyType), strings.ToLower(r.Summary+" "+r.Description+" "+r.Reference+" "+keywords)
 	total := 0
 	for _, w := range words {
 		points := 0
@@ -210,6 +212,7 @@ func matches(r Record, q Query, skip string) bool {
 		q.FloorAreaMax != nil && (r.FloorArea == nil || *r.FloorArea > *q.FloorAreaMax),
 		q.LandAreaMin != nil && (r.LandArea == nil || *r.LandArea < *q.LandAreaMin),
 		q.LandAreaMax != nil && (r.LandArea == nil || *r.LandArea > *q.LandAreaMax),
+		q.GuestsMin != nil && (r.MaxGuests == nil || *r.MaxGuests < *q.GuestsMin),
 		q.Reference != "" && !strings.EqualFold(r.Reference, q.Reference),
 		q.HasPhotos && len(r.Photos) == 0,
 		q.AdvertiserType == AdvertiserFilterAgency && r.Advertiser.Type != AdvertiserAgency,
@@ -239,6 +242,10 @@ func (s *MemoryStore) Search(ctx context.Context, q Query, now time.Time) (Hits,
 	if err != nil {
 		return Hits{}, err
 	}
+	keywords, err := categoryKeywords(ctx, s.labels)
+	if err != nil {
+		return Hits{}, err
+	}
 	words := terms(q.Q)
 	type scored struct {
 		Record
@@ -254,7 +261,7 @@ func (s *MemoryStore) Search(ctx context.Context, q Query, now time.Time) (Hits,
 		if q.ListedWithinDays != nil && r.PublishedAt.Before(since) {
 			continue
 		}
-		if sc := score(r, words, suburbs[r.Suburb], cities[r.City], types[r.PropertyType]); sc > 0 {
+		if sc := score(r, words, suburbs[r.Suburb], cities[r.City], types[r.PropertyType], keywords[r.Category]); sc > 0 {
 			candidates = append(candidates, scored{r, sc})
 		}
 	}

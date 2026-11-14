@@ -2064,10 +2064,11 @@ func TestEverySampleListingRoutesToItsOwner(t *testing.T) {
 			want[n] = a.Email
 		}
 	}
-	if len(want) != devseed.ListingCount {
-		t.Fatalf("%d listings are assigned, want %d", len(want), devseed.ListingCount)
+	total := devseed.ListingCount + devseed.BackendListingCount
+	if len(want) != total {
+		t.Fatalf("%d listings are assigned, want %d", len(want), total)
 	}
-	for n := 1; n <= devseed.ListingCount; n++ {
+	for n := 1; n <= total; n++ {
 		// A distinct client IP per request keeps this clear of the rate limit.
 		wantStatus(t, e.post("/v1/property-requests", e.propertyRequest(n), withIP(fmt.Sprintf("198.51.100.%d", n))), http.StatusCreated)
 	}

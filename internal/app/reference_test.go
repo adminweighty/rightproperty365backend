@@ -53,9 +53,9 @@ func codes(items []refItem) string {
 
 // Row counts of the baseline data: a change here is a change to what the web shows.
 var wantSetSizes = map[string]int{
-	"deal_types": 2, "property_categories": 3, "property_types": 7, "request_types": 4, "contact_methods": 3,
-	"account_roles": 15, "directory_kinds": 7, "service_trades": 7, "cities": 4, "suburbs": 18, "listing_features": 59,
-	"onboarding_documents": 9, "organisation_kinds": 6, "regions": 10,
+	"deal_types": 2, "property_categories": 4, "property_types": 12, "request_types": 4, "contact_methods": 3,
+	"account_roles": 15, "directory_kinds": 7, "service_trades": 7, "cities": 14, "suburbs": 24, "listing_features": 59,
+	"onboarding_documents": 9, "organisation_kinds": 6, "regions": 14, "price_periods": 2,
 }
 
 func TestReferenceAllSets(t *testing.T) {
@@ -96,13 +96,13 @@ func TestReferenceAllSets(t *testing.T) {
 	// Exact codes and labels the web relies on (URL values keep the web's spelling).
 	for set, want := range map[string]string{
 		"deal_types":          "sale,rent",
-		"property_categories": "residential,commercial,land",
-		"property_types":      "house,apartment,townhouse,cottage,office,stand,plot",
+		"property_categories": "residential,commercial,land,short-stay",
+		"property_types":      "house,apartment,townhouse,cottage,office,stand,plot,holiday-home,serviced-apartment,guest-house,private-room,lodge",
 		"request_types":       "ENQUIRY,PROPERTY_INFORMATION,VIEWING_REQUEST,CONSULTATION_REQUEST",
 		"contact_methods":     "EMAIL,PHONE,WHATSAPP",
 		"account_roles":       strings.Join(identity.SelectableAccountRoles(), ","),
 		"directory_kinds":     "agencies,agents,developers,property-managers,solicitors,hosts,service-providers",
-		"cities":              "harare,bulawayo,victoria-falls,mutare",
+		"cities":              "harare,bulawayo,victoria-falls,mutare,london,manchester,birmingham,leeds,liverpool,bristol,edinburgh,glasgow,cardiff,belfast",
 	} {
 		if got := codes(all.Sets[set]); got != want {
 			t.Fatalf("%s codes = %s\nwant      %s", set, got, want)
@@ -150,14 +150,20 @@ func TestReferenceAllSets(t *testing.T) {
 			t.Fatalf("groups = %v", groups)
 		}
 		for _, it := range all.Sets["property_types"] {
-			if it.ParentCode == nil || !strings.Contains("residential,commercial,land", *it.ParentCode) {
+			if it.ParentCode == nil || !strings.Contains("residential,commercial,land,short-stay", *it.ParentCode) {
 				t.Fatalf("property type %s has no category", it.Code)
 			}
 		}
-		cities := "," + codes(all.Sets["cities"]) + ","
+		cityMarket := map[string]string{}
+		for _, it := range all.Sets["cities"] {
+			if it.MarketCode == nil || (*it.MarketCode != "ZW" && *it.MarketCode != "GB") {
+				t.Fatalf("city %+v must belong to market ZW or GB", it)
+			}
+			cityMarket[it.Code] = *it.MarketCode
+		}
 		for _, it := range all.Sets["suburbs"] {
-			if it.ParentCode == nil || !strings.Contains(cities, ","+*it.ParentCode+",") || it.MarketCode == nil || *it.MarketCode != "ZW" {
-				t.Fatalf("suburb %+v must belong to a city in market ZW", it)
+			if it.ParentCode == nil || it.MarketCode == nil || cityMarket[*it.ParentCode] != *it.MarketCode {
+				t.Fatalf("suburb %+v must belong to a city of its own market", it)
 			}
 		}
 		for _, it := range all.Sets["directory_kinds"] {
@@ -406,7 +412,7 @@ func TestPlatformRolesAreDeniedEvenIfInTheReferenceTable(t *testing.T) {
 // solicitors directory) are the same rows the memory store and cmd/seed use.
 func TestMigrationSeedsTheSameReferenceRows(t *testing.T) {
 	sql := ""
-	for _, name := range []string{"0007_reference_data.up.sql", "0009_onboarding.up.sql", "0010_real_estate_roles.up.sql", "0012_locations.up.sql"} {
+	for _, name := range []string{"0007_reference_data.up.sql", "0009_onboarding.up.sql", "0010_real_estate_roles.up.sql", "0012_locations.up.sql", "0013_uk_short_stays.up.sql"} {
 		raw, err := os.ReadFile(filepath.Join("..", "..", "migrations", name))
 		if err != nil {
 			t.Fatal(err)
@@ -435,8 +441,10 @@ func TestMigrationSeedsTheSameReferenceRows(t *testing.T) {
 				t.Fatalf("the migrations lack the description of %s/%s", set, it.Code)
 			}
 			// 0012: every city is linked to its region.
+			// (0013 inserts the United Kingdom's cities with their region.)
 			if set == reference.SetCities && (it.ParentCode == nil ||
-				!strings.Contains(sql, fmt.Sprintf("UPDATE reference_items SET parent_code = '%s', updated_at = now() WHERE set_code = 'cities' AND code = '%s';", *it.ParentCode, it.Code))) {
+				(!strings.Contains(sql, fmt.Sprintf("UPDATE reference_items SET parent_code = '%s', updated_at = now() WHERE set_code = 'cities' AND code = '%s';", *it.ParentCode, it.Code)) &&
+					!strings.Contains(sql, fmt.Sprintf("VALUES ('cities', '%s', '%s', NULL, %d, (SELECT id FROM markets WHERE code = 'GB'), '%s')", it.Code, it.Label, it.SortOrder, *it.ParentCode)))) {
 				t.Fatalf("the migrations do not link city %s to its region", it.Code)
 			}
 			if it.Group != nil && !strings.Contains(sql, fmt.Sprintf("'%s', '%s', %d,", it.Group.Code, it.Group.Label, it.Group.SortOrder)) {

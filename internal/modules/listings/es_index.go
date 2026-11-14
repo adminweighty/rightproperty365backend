@@ -53,7 +53,8 @@ type ESTransport interface {
 //
 //	1  the first mapping
 //	2  region, advertiser_type, has_photos (country / region and advanced filters)
-const MappingVersion = 2
+//	3  max_guests, min_nights, keywords (short stays; price_period gains "night")
+const MappingVersion = 3
 
 // IndexMapping is the explicit mapping of a listings index.
 //
@@ -83,22 +84,29 @@ type Document struct {
 	// Region is the region of the city (reference data), "" when it has none.
 	Region string `json:"region,omitempty"`
 	// AdvertiserType is "agency" or "private": the kind of advertiser, never who.
-	AdvertiserType string   `json:"advertiser_type"`
-	HasPhotos      bool     `json:"has_photos"`
-	Currency       string   `json:"currency"`
-	Price          float64  `json:"price"`
-	PricePeriod    string   `json:"price_period,omitempty"`
-	Bedrooms       *int     `json:"bedrooms,omitempty"`
-	Bathrooms      *int     `json:"bathrooms,omitempty"`
-	FloorArea      *int     `json:"floor_area,omitempty"`
-	LandArea       *int     `json:"land_area,omitempty"`
-	Features       []string `json:"features"`
-	Featured       bool     `json:"featured"`
-	Status         string   `json:"status"`
-	PublishedAt    ESTime   `json:"published_at"`
-	ExpiresAt      ESTime   `json:"expires_at"`
-	UpdatedAt      ESTime   `json:"updated_at"`
-	Version        int64    `json:"version"`
+	AdvertiserType string `json:"advertiser_type"`
+	HasPhotos      bool   `json:"has_photos"`
+	// MaxGuests and MinNights are set for short stays only.
+	MaxGuests *int `json:"max_guests,omitempty"`
+	MinNights *int `json:"min_nights,omitempty"`
+	// Keywords are the label and description of the listing's category, so
+	// free text finds a category by what people call it ("airbnb" finds the
+	// short stays). Reference data, not listing data.
+	Keywords    string   `json:"keywords,omitempty"`
+	Currency    string   `json:"currency"`
+	Price       float64  `json:"price"`
+	PricePeriod string   `json:"price_period,omitempty"`
+	Bedrooms    *int     `json:"bedrooms,omitempty"`
+	Bathrooms   *int     `json:"bathrooms,omitempty"`
+	FloorArea   *int     `json:"floor_area,omitempty"`
+	LandArea    *int     `json:"land_area,omitempty"`
+	Features    []string `json:"features"`
+	Featured    bool     `json:"featured"`
+	Status      string   `json:"status"`
+	PublishedAt ESTime   `json:"published_at"`
+	ExpiresAt   ESTime   `json:"expires_at"`
+	UpdatedAt   ESTime   `json:"updated_at"`
+	Version     int64    `json:"version"`
 	// Location is reserved for map search; nothing sets it yet.
 	Location *[2]float64 `json:"location,omitempty"`
 }
@@ -144,6 +152,7 @@ func BuildDocument(r Record, labels map[string]map[string]string) Document {
 	}
 	return Document{
 		Region: labels[keyCityRegion][r.City], AdvertiserType: advertiser, HasPhotos: len(r.Photos) > 0,
+		MaxGuests: r.MaxGuests, MinNights: r.MinNights, Keywords: labels[keyCategoryKeywords][r.Category],
 		ID: r.ID.String(), Slug: r.Slug, Reference: r.Reference, Title: r.Title, Summary: r.Summary, Description: r.Description,
 		Deal: r.Deal, Category: r.Category, PropertyType: r.PropertyType, PropertyTypeLabel: coded(labels[SetPropertyTypes], r.PropertyType).Label,
 		City: r.City, CityLabel: coded(labels[SetCities], r.City).Label, Suburb: r.Suburb, SuburbLabel: coded(labels[SetSuburbs], r.Suburb).Label,

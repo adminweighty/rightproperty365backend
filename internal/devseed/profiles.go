@@ -7,13 +7,12 @@ import (
 
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/identity"
-	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/platform/auth"
 )
 
 // ProfileCount is the number of sample directory profiles. The kind + slug
 // pairs and display names mirror the web app's src/lib/data/directory.ts.
-const ProfileCount = 32
+const ProfileCount = 34
 
 // Profile is a sample directory profile: who it is and who receives its
 // enquiries. It has no contact details — profiles are reached only by enquiry.
@@ -79,12 +78,21 @@ var businessKinds = map[string]struct{ organisationKind, accountRole string }{
 // BusinessOwnerEmail is the sign-in email of a business profile's owner.
 func BusinessOwnerEmail(slug string) string { return slug + "@example.test" }
 
+// allBusinesses are the web's businesses followed by the backend's (appended,
+// so the IDs derived from the position do not move).
+func allBusinesses() []business {
+	return append(append([]business{}, businesses...), backendBusinesses...)
+}
+
+// businessMarkets names the market of the businesses that are not in Zimbabwe.
+var businessMarkets = map[string]string{hostStaysEdinburgh: MarketUK}
+
 func businessOrganisations() []*Organisation {
-	out := make([]*Organisation, 0, len(businesses))
-	for i, b := range businesses {
+	out := make([]*Organisation, 0, len(allBusinesses()))
+	for i, b := range allBusinesses() {
 		out = append(out, &Organisation{
 			ID: id(fmt.Sprintf("b1%02d", i+1)), Name: b.name, Kind: businessKinds[b.kind].organisationKind,
-			EnquiryEmail: "enquiries@" + b.slug + ".example.test",
+			EnquiryEmail: "enquiries@" + b.slug + ".example.test", Market: businessMarkets[b.slug],
 		})
 	}
 	return out
@@ -92,13 +100,15 @@ func businessOrganisations() []*Organisation {
 
 func businessAccounts() []Account {
 	orgs := businessOrganisations()
-	out := make([]Account, 0, len(businesses))
-	for i, b := range businesses {
+	out := make([]Account, 0, len(allBusinesses()))
+	for i, b := range allBusinesses() {
 		out = append(out, Account{
 			ID: id(fmt.Sprintf("d1%02d", i+1)), Name: b.name + " Owner", Email: BusinessOwnerEmail(b.slug),
 			Organisation: orgs[i], MembershipRole: auth.RoleOwner,
 			AccountRoles: []string{identity.AccountRoleConsumer, businessKinds[b.kind].accountRole},
 			Profiles:     []string{b.kind + "/" + b.slug},
+			// The hosts own the short-stay samples.
+			Listings: businessListings[b.slug],
 		})
 	}
 	return out
@@ -146,9 +156,11 @@ func Profiles() []Profile {
 		out = append(out, Profile{ID: next(), Kind: businessenquiries.KindAgents, Slug: a.slug, Name: a.name, Organisation: a.org, AgentUserID: &user})
 	}
 	orgs := businessOrganisations()
-	for i, b := range businesses {
+	for i, b := range allBusinesses() {
 		out = append(out, Profile{ID: next(), Kind: b.kind, Slug: b.slug, Name: b.name, Organisation: orgs[i]})
 	}
+	// The UK agency, after everything else so that no earlier ID moves.
+	out = append(out, Profile{ID: next(), Kind: businessenquiries.KindAgencies, Slug: "sample-homes-london", Name: SampleHomesLondon.Name, Organisation: SampleHomesLondon})
 	return out
 }
 
@@ -178,7 +190,7 @@ func SeedMemoryProfiles(store *businessenquiries.MemoryStore) {
 	for _, p := range Profiles() {
 		store.PutProfile(businessenquiries.Profile{
 			ID: p.ID, Kind: p.Kind, Slug: p.Slug, Name: p.Name,
-			MarketID: markets.ZimbabweID, Status: businessenquiries.ProfileActive,
+			MarketID: MarketID(MarketOf(p.Organisation)), Status: businessenquiries.ProfileActive,
 			OrganisationID: p.Organisation.ID, OrganisationEligible: true,
 			AgentUserID: p.AgentUserID, AgentEligible: p.AgentUserID != nil,
 		})

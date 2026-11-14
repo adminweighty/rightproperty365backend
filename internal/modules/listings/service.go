@@ -74,6 +74,14 @@ func present(r Record, labels map[string]map[string]string) Listing {
 		period := r.PricePeriod
 		l.PricePeriod = &period
 	}
+	// Short-stay details; a short stay without a minimum is one night.
+	if r.Category == CategoryShortStay {
+		l.MaxGuests, l.MinNights = r.MaxGuests, r.MinNights
+		if l.MinNights == nil {
+			one := 1
+			l.MinNights = &one
+		}
+	}
 	// The region is the region of the city; the country is the market.
 	if region := labels[keyCityRegion][r.City]; region != "" {
 		c := coded(labels[SetRegions], region)

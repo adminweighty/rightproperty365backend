@@ -59,7 +59,40 @@ const (
 	keyCityRegion   = "~city_region"
 	keySuburbCity   = "~suburb_city"
 	keyCountryNames = "~country_names"
+	// keyCategoryKeywords: category code -> the words free-text search also
+	// matches for a listing of that category (its label and description).
+	keyCategoryKeywords = "~category_keywords"
 )
+
+// Describer is implemented by a Labels that also knows the descriptions of
+// the reference rows (the reference service does). The description of a
+// property category is searchable: "Short stays ... including Airbnb-style
+// stays" makes q=airbnb find the short stays.
+type Describer interface {
+	Descriptions(ctx context.Context, set string) (map[string]string, error)
+}
+
+// categoryKeywords returns, per category, its label and description.
+func categoryKeywords(ctx context.Context, labels Labels) (map[string]string, error) {
+	out := map[string]string{}
+	names, err := labels.Labels(ctx, SetPropertyCategories)
+	if err != nil {
+		return nil, err
+	}
+	for code, label := range names {
+		out[code] = label
+	}
+	if d, ok := labels.(Describer); ok {
+		descriptions, err := d.Descriptions(ctx, SetPropertyCategories)
+		if err != nil {
+			return nil, err
+		}
+		for code, description := range descriptions {
+			out[code] = strings.TrimSpace(out[code] + " " + description)
+		}
+	}
+	return out, nil
+}
 
 // labelledSets are the reference sets whose labels a listing shows.
 var labelledSets = []string{SetDealTypes, SetPropertyCategories, SetPropertyTypes, SetCities, SetSuburbs, SetListingFeatures, SetRegions}
@@ -76,6 +109,11 @@ func loadLabels(ctx context.Context, labels Labels, places Places) (map[string]m
 		out[set] = l
 	}
 	out[keyCityRegion], out[keySuburbCity], out[keyCountryNames] = map[string]string{}, map[string]string{}, map[string]string{}
+	keywords, err := categoryKeywords(ctx, labels)
+	if err != nil {
+		return nil, fmt.Errorf("load category keywords: %w", err)
+	}
+	out[keyCategoryKeywords] = keywords
 	if places == nil {
 		return out, nil
 	}

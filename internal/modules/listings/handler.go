@@ -124,6 +124,14 @@ func parseQuery(v url.Values) (Query, map[string]string) {
 			fields[pair.name] = "must not be lower than " + strings.TrimSuffix(pair.name, "max") + "min"
 		}
 	}
+	if raw := v.Get("guests_min"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 100 {
+			fields["guests_min"] = "must be a whole number from 1 to 100"
+		} else {
+			q.GuestsMin = &n
+		}
+	}
 	if raw := v.Get("listed_within_days"); raw != "" {
 		n, err := strconv.Atoi(raw)
 		if err != nil || n < 1 || n > 365 {

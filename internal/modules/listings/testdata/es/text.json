@@ -171,7 +171,8 @@
               "property_type_label^2",
               "summary",
               "description",
-              "reference"
+              "reference",
+              "keywords"
             ],
             "fuzziness": "AUTO",
             "operator": "and",
@@ -188,7 +189,8 @@
               "property_type_label^2",
               "summary",
               "description",
-              "reference"
+              "reference",
+              "keywords"
             ],
             "fuzziness": "AUTO",
             "operator": "and",

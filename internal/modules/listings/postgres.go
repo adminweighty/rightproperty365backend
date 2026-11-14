@@ -31,10 +31,10 @@ const publicCondition = `l.status = 'PUBLISHED' AND l.expires_at > $1 AND l.slug
 const recordColumns = `
 	l.id, l.slug, COALESCE(l.reference, ''), l.title, COALESCE(l.deal, ''), COALESCE(l.category, ''), COALESCE(l.property_type, ''),
 	l.price_amount::text, l.currency_code, COALESCE(l.price_period, ''), COALESCE(l.suburb_code, ''), COALESCE(l.city_code, ''), m.code,
-	l.bedrooms, l.bathrooms, l.floor_area_m2, l.land_area_m2, COALESCE(l.summary, ''), COALESCE(l.description, ''), l.featured,
+	l.bedrooms, l.bathrooms, l.floor_area_m2, l.land_area_m2, l.max_guests, l.min_nights, COALESCE(l.summary, ''), COALESCE(l.description, ''), l.featured,
 	l.status::text, l.published_at, l.expires_at, l.updated_at, l.organisation_id, l.agent_user_id, l.seller_user_id,
 	COALESCE(l.private_seller_name, 'Private seller'),
-	ag.slug, ag.name, ag.verified, at.slug, at.name, at.verified,
+	ag.kind, ag.slug, ag.name, ag.verified, at.slug, at.name, at.verified,
 	COALESCE((SELECT array_agg(f.feature_code ORDER BY f.position) FROM listing_features f WHERE f.listing_id = l.id), '{}'),
 	COALESCE((SELECT jsonb_agg(jsonb_build_object('url', p.url, 'alt', p.alt, 'width', p.width, 'height', p.height) ORDER BY p.position)
 	          FROM listing_photos p WHERE p.listing_id = l.id), '[]'::jsonb)::text`
@@ -44,7 +44,14 @@ const recordColumns = `
 const recordFrom = `
 	FROM listings l
 	JOIN markets m ON m.id = l.market_id
-	LEFT JOIN directory_profiles ag ON ag.kind = 'agencies' AND ag.organisation_id = l.organisation_id AND ag.status = 'ACTIVE'
+	LEFT JOIN LATERAL (
+		-- The organisation's own public profile: an agency's, or a host's,
+		-- property manager's, developer's or law firm's (never an agent's).
+		SELECT p.kind, p.slug, p.name, p.verified
+		FROM directory_profiles p
+		WHERE p.kind <> 'agents' AND p.organisation_id = l.organisation_id AND p.status = 'ACTIVE'
+		ORDER BY (p.kind = 'agencies') DESC, p.created_at, p.id
+		LIMIT 1) ag ON true
 	LEFT JOIN directory_profiles at ON at.kind = 'agents' AND at.agent_user_id = l.agent_user_id AND at.status = 'ACTIVE'`
 
 func scanRecord(row pgx.CollectableRow) (Record, error) {
@@ -53,14 +60,15 @@ func scanRecord(row pgx.CollectableRow) (Record, error) {
 		priceText, sellerName        string
 		publishedAt, expiresAt       *time.Time
 		agSlug, agName, atSlug, atNm *string
+		agKind                       *string
 		agVerified, atVerified       *bool
 		photos                       string
 	)
 	if err := row.Scan(&r.ID, &r.Slug, &r.Reference, &r.Title, &r.Deal, &r.Category, &r.PropertyType,
 		&priceText, &r.Price.Currency, &r.PricePeriod, &r.Suburb, &r.City, &r.MarketCode,
-		&r.Bedrooms, &r.Bathrooms, &r.FloorArea, &r.LandArea, &r.Summary, &r.Description, &r.Featured,
+		&r.Bedrooms, &r.Bathrooms, &r.FloorArea, &r.LandArea, &r.MaxGuests, &r.MinNights, &r.Summary, &r.Description, &r.Featured,
 		&r.Status, &publishedAt, &expiresAt, &r.UpdatedAt, &r.OrganisationID, &r.AgentUserID, &r.SellerUserID,
-		&sellerName, &agSlug, &agName, &agVerified, &atSlug, &atNm, &atVerified, &r.Features, &photos); err != nil {
+		&sellerName, &agKind, &agSlug, &agName, &agVerified, &atSlug, &atNm, &atVerified, &r.Features, &photos); err != nil {
 		return Record{}, err
 	}
 	if v, ok := new(big.Rat).SetString(priceText); ok {
@@ -79,6 +87,9 @@ func scanRecord(row pgx.CollectableRow) (Record, error) {
 	case agSlug != nil && agName != nil:
 		r.Advertiser = Advertiser{Type: AdvertiserAgency, Name: *agName, Verified: agVerified != nil && *agVerified,
 			Agency: &ProfileRef{Kind: "agencies", Slug: *agSlug, Name: *agName, Verified: agVerified != nil && *agVerified}}
+		if agKind != nil {
+			r.Advertiser.Agency.Kind = *agKind
+		}
 		if atSlug != nil && atNm != nil {
 			r.Advertiser.Agent = &ProfileRef{Kind: "agents", Slug: *atSlug, Name: *atNm, Verified: atVerified != nil && *atVerified}
 		}
@@ -169,7 +180,8 @@ const searchFrom = `
 	LEFT JOIN reference_items sb ON sb.set_code = 'suburbs' AND sb.code = l.suburb_code
 	LEFT JOIN reference_items ct ON ct.set_code = 'cities' AND ct.code = l.city_code
 	LEFT JOIN reference_items pt ON pt.set_code = 'property_types' AND pt.code = l.property_type
-	LEFT JOIN markets mk ON mk.id = l.market_id`
+	LEFT JOIN markets mk ON mk.id = l.market_id
+	LEFT JOIN reference_items pc ON pc.set_code = 'property_categories' AND pc.code = l.category`
 
 // regionColumn is a listing's region: the parent of its city in the
 // reference data. The hierarchy has one source, so nothing is stored twice.
@@ -199,7 +211,7 @@ func where(q Query, now time.Time, skip string) *builder {
 	for _, w := range terms(q.Q) {
 		p := b.arg(likePattern(w))
 		b.conds = append(b.conds, fmt.Sprintf(
-			`(l.title ILIKE %[1]s OR sb.label ILIKE %[1]s OR ct.label ILIKE %[1]s OR pt.label ILIKE %[1]s OR l.summary ILIKE %[1]s OR l.description ILIKE %[1]s OR l.reference ILIKE %[1]s)`, p))
+			`(l.title ILIKE %[1]s OR sb.label ILIKE %[1]s OR ct.label ILIKE %[1]s OR pt.label ILIKE %[1]s OR l.summary ILIKE %[1]s OR l.description ILIKE %[1]s OR l.reference ILIKE %[1]s OR pc.label ILIKE %[1]s OR pc.description ILIKE %[1]s)`, p))
 	}
 	eq := func(name, column, value string) {
 		if skip != name && value != "" {
@@ -243,6 +255,9 @@ func where(q Query, now time.Time, skip string) *builder {
 	}
 	if q.Reference != "" {
 		b.add(`upper(l.reference) = upper(%s)`, q.Reference)
+	}
+	if q.GuestsMin != nil {
+		b.add(`l.max_guests >= %s`, *q.GuestsMin)
 	}
 	if q.HasPhotos {
 		b.conds = append(b.conds, `EXISTS (SELECT 1 FROM listing_photos lp WHERE lp.listing_id = l.id)`)
@@ -316,7 +331,7 @@ func (s *PostgresStore) Search(ctx context.Context, q Query, now time.Time) (Hit
 		for _, w := range terms(q.Q) {
 			p := page.arg(likePattern(w))
 			parts = append(parts, fmt.Sprintf(
-				`(CASE WHEN l.title ILIKE %[1]s THEN 4 ELSE 0 END + CASE WHEN sb.label ILIKE %[1]s OR ct.label ILIKE %[1]s THEN 3 ELSE 0 END + CASE WHEN pt.label ILIKE %[1]s THEN 2 ELSE 0 END + CASE WHEN l.summary ILIKE %[1]s OR l.description ILIKE %[1]s OR l.reference ILIKE %[1]s THEN 1 ELSE 0 END)`, p))
+				`(CASE WHEN l.title ILIKE %[1]s THEN 4 ELSE 0 END + CASE WHEN sb.label ILIKE %[1]s OR ct.label ILIKE %[1]s THEN 3 ELSE 0 END + CASE WHEN pt.label ILIKE %[1]s THEN 2 ELSE 0 END + CASE WHEN l.summary ILIKE %[1]s OR l.description ILIKE %[1]s OR l.reference ILIKE %[1]s OR pc.label ILIKE %[1]s OR pc.description ILIKE %[1]s THEN 1 ELSE 0 END)`, p))
 		}
 		if len(parts) > 0 {
 			order = `(` + strings.Join(parts, " + ") + `) DESC, l.featured DESC, ` + order

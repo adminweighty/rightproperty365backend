@@ -19,7 +19,7 @@ type J = map[string]any
 
 // Text fields searched by q, with their weights. Title outranks place, which
 // outranks property type, which outranks the long text.
-var esTextFields = []string{"title^4", "suburb_label^3", "city_label^3", "property_type_label^2", "summary", "description", "reference"}
+var esTextFields = []string{"title^4", "suburb_label^3", "city_label^3", "property_type_label^2", "summary", "description", "reference", "keywords"}
 
 // esPublic is the FR-006 rule inside Elasticsearch: only PUBLISHED documents
 // whose publication has not ended. The database re-checks every hit as well.
@@ -125,6 +125,9 @@ func BuildSearchBody(q Query, now time.Time) J {
 	}
 	if q.ListedWithinDays != nil {
 		filter = append(filter, J{"range": J{"published_at": J{"gte": listedSince(now, *q.ListedWithinDays).UTC().Format(esTimeLayout)}}})
+	}
+	if q.GuestsMin != nil {
+		filter = append(filter, J{"range": J{"max_guests": J{"gte": *q.GuestsMin}}})
 	}
 	if q.AdvertiserType != "" {
 		filter = append(filter, J{"term": J{"advertiser_type": q.AdvertiserType}})

@@ -160,6 +160,9 @@ func ReferenceItems() map[string][]reference.Item {
 		add(reference.SetCities, reference.Item{Code: Code(l.City), Label: l.City, MarketCode: zw})
 	}
 	for _, p := range data.Profiles {
+		if p.Market == MarketUK {
+			continue // the UK cities are listed explicitly, with their regions
+		}
 		add(reference.SetCities, reference.Item{Code: Code(p.City), Label: p.City, MarketCode: zw})
 		if p.Category != "" {
 			add(reference.SetServiceTrades, reference.Item{Code: Code(p.Category), Label: p.Category})
@@ -195,6 +198,8 @@ func ReferenceItems() map[string][]reference.Item {
 	for _, set := range []string{reference.SetPropertyTypes, reference.SetCities, reference.SetSuburbs, reference.SetServiceTrades, reference.SetListingFeatures} {
 		sets[set] = list(sets[set]...)
 	}
+	// Short stays, price periods and the United Kingdom, after the baseline.
+	addBackendReference(sets)
 	return sets
 }
 

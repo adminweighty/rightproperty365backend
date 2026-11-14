@@ -17,6 +17,7 @@ package listings
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/big"
 	"time"
 
@@ -65,6 +66,48 @@ const (
 	MaxPageSize     = 48
 	MaxSuggestions  = 8
 )
+
+// CategoryShortStay is the category of listings let by the night (holiday
+// homes, serviced apartments, guest houses, rooms). Such a listing is always
+// deal "rent" priced per night.
+const CategoryShortStay = "short-stay"
+
+// Price periods (the price_periods reference set). "" is a sale price.
+const (
+	PricePeriodMonth = "month"
+	PricePeriodNight = "night"
+)
+
+// DealRent is the deal of everything that is let rather than sold.
+const DealRent = "rent"
+
+// CheckRecord enforces the rules a stored listing must meet whatever wrote
+// it. Today only the sample-data seed writes listings (there are still no
+// create or publish endpoints); the database has the same rules as CHECK
+// constraints (migration 0013).
+func CheckRecord(r Record) error {
+	switch r.PricePeriod {
+	case "", PricePeriodMonth, PricePeriodNight:
+	default:
+		return fmt.Errorf("listing %s: price_period %q is not one of month, night", r.Slug, r.PricePeriod)
+	}
+	if r.Category == CategoryShortStay {
+		if r.Deal != DealRent || r.PricePeriod != PricePeriodNight {
+			return fmt.Errorf("listing %s: a short stay must be deal %q priced per %q (got %q, %q)", r.Slug, DealRent, PricePeriodNight, r.Deal, r.PricePeriod)
+		}
+		if (r.MaxGuests != nil && *r.MaxGuests < 1) || (r.MinNights != nil && *r.MinNights < 1) {
+			return fmt.Errorf("listing %s: max_guests and min_nights must be at least 1", r.Slug)
+		}
+		return nil
+	}
+	if r.PricePeriod == PricePeriodNight {
+		return fmt.Errorf("listing %s: only a short stay is priced per night", r.Slug)
+	}
+	if r.MaxGuests != nil || r.MinNights != nil {
+		return fmt.Errorf("listing %s: max_guests and min_nights are for short stays only", r.Slug)
+	}
+	return nil
+}
 
 // DefaultCurrency is assumed for min_price / max_price when no currency is given.
 const DefaultCurrency = "USD"
@@ -141,12 +184,16 @@ type Listing struct {
 	// Region is the region (province) of the city; null when the city has none.
 	Region *Coded `json:"region"`
 	// Country is the listing's market as a country; MarketCode is its code.
-	Country     Country    `json:"country"`
-	MarketCode  string     `json:"market_code"`
-	Bedrooms    *int       `json:"bedrooms"`
-	Bathrooms   *int       `json:"bathrooms"`
-	FloorArea   *int       `json:"floor_area"`
-	LandArea    *int       `json:"land_area"`
+	Country    Country `json:"country"`
+	MarketCode string  `json:"market_code"`
+	Bedrooms   *int    `json:"bedrooms"`
+	Bathrooms  *int    `json:"bathrooms"`
+	FloorArea  *int    `json:"floor_area"`
+	LandArea   *int    `json:"land_area"`
+	// MaxGuests and MinNights are set for short stays only (null otherwise):
+	// how many guests the place sleeps and the shortest stay, in nights.
+	MaxGuests   *int       `json:"max_guests"`
+	MinNights   *int       `json:"min_nights"`
 	Summary     string     `json:"summary"`
 	Description string     `json:"description"`
 	Features    []Coded    `json:"features"`
@@ -169,20 +216,23 @@ type Record struct {
 	Category     string
 	PropertyType string
 	Price        Money
-	PricePeriod  string // "" or "month"
-	Suburb       string
-	City         string
-	MarketCode   string
-	Bedrooms     *int
-	Bathrooms    *int
-	FloorArea    *int
-	LandArea     *int
-	Summary      string
-	Description  string
-	Features     []string
-	Featured     bool
-	Photos       []Photo
-	Advertiser   Advertiser
+	PricePeriod  string // "", "month" or "night"
+	// Short stays only.
+	MaxGuests   *int
+	MinNights   *int
+	Suburb      string
+	City        string
+	MarketCode  string
+	Bedrooms    *int
+	Bathrooms   *int
+	FloorArea   *int
+	LandArea    *int
+	Summary     string
+	Description string
+	Features    []string
+	Featured    bool
+	Photos      []Photo
+	Advertiser  Advertiser
 
 	Status      string
 	PublishedAt time.Time
@@ -257,6 +307,8 @@ type Query struct {
 	Reference string
 	// HasPhotos keeps listings with at least one photo.
 	HasPhotos bool
+	// GuestsMin keeps short stays that sleep at least this many guests.
+	GuestsMin *int
 	// CityRegion (city code -> region code) is filled by the Service from the
 	// reference data; the memory adapter evaluates regions with it. Clients
 	// cannot set it.

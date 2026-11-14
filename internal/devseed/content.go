@@ -46,13 +46,14 @@ func ListingRecords(now time.Time) []listings.Record {
 		switch {
 		case p.AgentUserID != nil:
 			agents[*p.AgentUserID] = ref
-		case p.Kind == directory.KindAgencies:
+		default:
+			// The organisation's own profile: an agency's, or a host's.
 			agencies[p.Organisation.ID] = ref
 		}
 	}
 
 	var out []listings.Record
-	for _, l := range Sample().Listings {
+	for _, l := range AllListings() {
 		id := uuid.MustParse(l.ID)
 		owner := owners[id]
 		published := now
@@ -64,6 +65,7 @@ func ListingRecords(now time.Time) []listings.Record {
 			PropertyType: Code(l.PropertyType), Price: listings.Money{Amount: l.Price.Amount, Currency: l.Price.Currency},
 			PricePeriod: l.PricePeriod, Suburb: Code(l.Suburb), City: Code(l.City), MarketCode: l.MarketCode,
 			Bedrooms: l.Bedrooms, Bathrooms: l.Bathrooms, FloorArea: l.FloorArea, LandArea: l.LandArea,
+			MaxGuests: l.MaxGuests, MinNights: l.MinNights,
 			Summary: l.Summary, Description: l.Description, Featured: l.Featured,
 			Photos: []listings.Photo{{URL: PhotoPathPrefix + l.Image.File, Alt: l.Image.Alt, Width: l.Image.Width, Height: l.Image.Height}},
 			Status: listings.StatusPublished, PublishedAt: published, ExpiresAt: published.AddDate(0, 0, PublicationDays), UpdatedAt: published,

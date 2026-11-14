@@ -28,6 +28,24 @@ type listingPage struct {
 	Facets     listings.Facets    `json:"facets"`
 }
 
+// newWebEnv is newEnv with only the web app's 18 Zimbabwe sample listings
+// public: the five samples added on the backend (the United Kingdom's and the
+// short stays, covered in markets_test.go) are paused. The tests that use it
+// spell out exact results for the web's data set.
+func newWebEnv(t *testing.T) *env {
+	t.Helper()
+	e := newEnv(t)
+	for _, l := range devseed.BackendListings() {
+		records, err := e.listings.ByIDs(t.Context(), []uuid.UUID{uuid.MustParse(l.ID)})
+		if err != nil || len(records) != 1 {
+			t.Fatalf("backend sample %s: %v", l.Slug, err)
+		}
+		records[0].Status = "PAUSED"
+		e.listings.Put(records[0])
+	}
+	return e
+}
+
 func (e *env) search(query string) listingPage {
 	e.t.Helper()
 	rec := e.get("/v1/listings" + query)
@@ -52,7 +70,7 @@ func facet(counts []listings.FacetCount) string {
 }
 
 func TestListingsDefaultPageAndPaging(t *testing.T) {
-	e := newEnv(t)
+	e := newWebEnv(t)
 	first := e.search("")
 	if first.Total != 18 || first.Page != 1 || first.PageSize != 12 || first.TotalPages != 2 || len(first.Items) != 12 {
 		t.Fatalf("default page: total=%d page=%d size=%d pages=%d items=%d", first.Total, first.Page, first.PageSize, first.TotalPages, len(first.Items))
@@ -95,7 +113,7 @@ func TestListingsDefaultPageAndPaging(t *testing.T) {
 }
 
 func TestListingFilters(t *testing.T) {
-	e := newEnv(t)
+	e := newWebEnv(t)
 	tests := []struct {
 		name, query string
 		want        int
@@ -188,7 +206,7 @@ func TestListingSortOrders(t *testing.T) {
 }
 
 func TestListingFacets(t *testing.T) {
-	e := newEnv(t)
+	e := newWebEnv(t)
 	all := e.search("").Facets
 	if got := facet(all.Deal); got != "sale=11,rent=7" {
 		t.Fatalf("deal facet = %s", got)
@@ -385,8 +403,8 @@ func TestOnlyPublishedUnexpiredListingsAreEverReturned(t *testing.T) {
 			}
 		}
 	}
-	if total := e.search("").Total; total != 18 {
-		t.Fatalf("total = %d, want the 18 public listings only", total)
+	if total := e.search("").Total; total != devseed.ListingCount+devseed.BackendListingCount {
+		t.Fatalf("total = %d, want the public listings only", total)
 	}
 	assertGone()
 
@@ -478,7 +496,7 @@ func TestDirectory(t *testing.T) {
 		for _, k := range kinds {
 			got = append(got, fmt.Sprintf("%s=%d", k.Code, k.Count))
 		}
-		if strings.Join(got, ",") != "agencies=5,agents=7,developers=3,property-managers=2,solicitors=3,hosts=2,service-providers=10" {
+		if strings.Join(got, ",") != "agencies=6,agents=7,developers=3,property-managers=2,solicitors=3,hosts=3,service-providers=10" {
 			t.Fatalf("kinds = %v", got)
 		}
 		if kinds[0].Label != "Real Estate Agencies" || kinds[4].Label != "Solicitors" || kinds[4].SingularLabel != "Solicitor" || kinds[0].SingularLabel != "Real Estate Agency" ||
@@ -489,10 +507,10 @@ func TestDirectory(t *testing.T) {
 
 	t.Run("list: sponsored first, then by name", func(t *testing.T) {
 		page := decode[directoryPage](t, e.get("/v1/directory/agencies"))
-		if page.Total != 5 || page.Kind.Code != "agencies" || page.Page != 1 || page.PageSize != 12 || page.TotalPages != 1 {
+		if page.Total != 6 || page.Kind.Code != "agencies" || page.Page != 1 || page.PageSize != 12 || page.TotalPages != 1 {
 			t.Fatalf("page = %+v", page)
 		}
-		if got := names(page.Items); got != "sample-estates,sample-realty,sample-commercial,sample-homes-bulawayo,sample-land-agents" {
+		if got := names(page.Items); got != "sample-estates,sample-realty,sample-commercial,sample-homes-bulawayo,sample-homes-london,sample-land-agents" {
 			t.Fatalf("order = %s", got)
 		}
 		first := page.Items[0]
@@ -600,7 +618,7 @@ func TestDirectory(t *testing.T) {
 		r.Status = "SUSPENDED"
 		e.directory.Put(r)
 		wantError(t, e.get("/v1/directory/hosts/sample-showrooms"), http.StatusNotFound, directory.CodeProfileNotFound)
-		if got := names(decode[directoryPage](t, e.get("/v1/directory/hosts")).Items); got != "sample-falls-stays" {
+		if got := names(decode[directoryPage](t, e.get("/v1/directory/hosts")).Items); got != "sample-falls-stays,sample-stays-edinburgh" {
 			t.Fatalf("hosts = %s", got)
 		}
 		if strings.Contains(e.get("/v1/sitemap").Body.String(), "sample-showrooms") {
@@ -620,7 +638,7 @@ func TestSitemap(t *testing.T) {
 	rec := e.get("/v1/sitemap")
 	wantStatus(t, rec, http.StatusOK)
 	s := decode[directory.Sitemap](t, rec)
-	if len(s.Listings) != 18 || len(s.Profiles) != 32 {
+	if len(s.Listings) != 23 || len(s.Profiles) != 34 {
 		t.Fatalf("sitemap: %d listings, %d profiles", len(s.Listings), len(s.Profiles))
 	}
 	for _, l := range s.Listings {
@@ -651,9 +669,12 @@ func publicGETs(e *env) []string {
 	for _, set := range reference.Sets() {
 		paths = append(paths, "/v1/reference/"+set)
 	}
-	for _, l := range devseed.Sample().Listings {
+	for _, l := range devseed.AllListings() {
 		paths = append(paths, "/v1/listings/"+l.Slug)
 	}
+	// The United Kingdom and the short stays.
+	paths = append(paths, "/v1/listings?country=GB", "/v1/listings?category=short-stay&guests_min=2", "/v1/listings?q=airbnb",
+		"/v1/reference/regions?market=GB", "/v1/reference/price_periods", "/v1/directory/agencies?country=GB", "/v1/directory/hosts?region=scotland")
 	for _, k := range devseed.Sample().Kinds {
 		paths = append(paths, "/v1/directory/"+k.Code+"?page_size=48", "/v1/directory/"+k.Code+"?q=sample")
 	}

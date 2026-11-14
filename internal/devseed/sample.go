@@ -37,14 +37,17 @@ type SampleListing struct {
 		Amount   string `json:"amount"`
 		Currency string `json:"currency"`
 	} `json:"price"`
-	PricePeriod string   `json:"pricePeriod"`
-	Suburb      string   `json:"suburb"`
-	City        string   `json:"city"`
-	MarketCode  string   `json:"marketCode"`
-	Bedrooms    *int     `json:"bedrooms"`
-	Bathrooms   *int     `json:"bathrooms"`
-	FloorArea   *int     `json:"floorArea"`
-	LandArea    *int     `json:"landArea"`
+	PricePeriod string `json:"pricePeriod"`
+	Suburb      string `json:"suburb"`
+	City        string `json:"city"`
+	MarketCode  string `json:"marketCode"`
+	Bedrooms    *int   `json:"bedrooms"`
+	Bathrooms   *int   `json:"bathrooms"`
+	FloorArea   *int   `json:"floorArea"`
+	LandArea    *int   `json:"landArea"`
+	// MaxGuests and MinNights are set for short stays only (backend samples).
+	MaxGuests   *int     `json:"maxGuests"`
+	MinNights   *int     `json:"minNights"`
 	Summary     string   `json:"summary"`
 	Description string   `json:"description"`
 	Features    []string `json:"features"`
@@ -80,6 +83,8 @@ type SampleProfile struct {
 	Sponsored  bool             `json:"sponsored"`
 	Since      *int             `json:"since"`
 	AgencySlug string           `json:"agencySlug"`
+	// Market is set for the backend UK profiles; empty means Zimbabwe.
+	Market string `json:"-"`
 }
 
 // SampleKind is one directory kind with its headings.
@@ -171,6 +176,8 @@ func withSolicitors(d SampleData) SampleData {
 	}
 	d.Kinds = kinds
 	d.Profiles = append(d.Profiles, solicitorProfiles...)
+	// ...and the profiles of the UK sample organisations (backend_samples.go).
+	d.Profiles = append(d.Profiles, backendProfiles...)
 	return d
 }
 

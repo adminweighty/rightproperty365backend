@@ -386,7 +386,7 @@ func TestMappingVersionAndNewFields(t *testing.T) {
 	if err := json.Unmarshal(IndexMapping, &mapping); err != nil {
 		t.Fatal(err)
 	}
-	if mapping.Mappings.Meta.Version != MappingVersion || MappingVersion != 2 {
+	if mapping.Mappings.Meta.Version != MappingVersion || MappingVersion != 3 {
 		t.Fatalf("mapping _meta version %d, code says %d: raise both together and note the reindex", mapping.Mappings.Meta.Version, MappingVersion)
 	}
 	for field, want := range map[string]string{
@@ -396,5 +396,86 @@ func TestMappingVersionAndNewFields(t *testing.T) {
 		if got := mapping.Mappings.Properties[field].Type; got != want {
 			t.Errorf("mapping of %s = %q, want %q", field, got, want)
 		}
+	}
+}
+
+// describedLabels also knows the description of the short-stay category.
+type describedLabels struct{ placeLabels }
+
+func (describedLabels) Labels(_ context.Context, set string) (map[string]string, error) {
+	if set == SetPropertyCategories {
+		return map[string]string{CategoryShortStay: "Short stays", "residential": "Residential"}, nil
+	}
+	return placeSets[set], nil
+}
+
+func (describedLabels) Descriptions(_ context.Context, set string) (map[string]string, error) {
+	if set == SetPropertyCategories {
+		return map[string]string{CategoryShortStay: "Holiday homes and rooms let by the night, including Airbnb-style stays."}, nil
+	}
+	return nil, nil
+}
+
+// "airbnb" is not a category, a type or a label, but it finds the short
+// stays: on the memory adapter, in the Elasticsearch query and document, and
+// in the database adapter's SQL.
+func TestShortStaySearchAndGuests(t *testing.T) {
+	store := NewMemoryStore(describedLabels{})
+	store.Put(filterRecord(1, func(r *Record) {}))
+	store.Put(filterRecord(2, func(r *Record) {
+		r.Category, r.Deal, r.PricePeriod, r.PropertyType = CategoryShortStay, DealRent, PricePeriodNight, "lodge"
+		r.MaxGuests, r.MinNights = intp(6), intp(2)
+	}))
+	search := func(q Query) []string {
+		q.Sort, q.Page, q.PageSize = SortNewest, 1, 12
+		hits, err := store.Search(context.Background(), q, esNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, id := range hits.IDs {
+			out = append(out, id.String()[34:])
+		}
+		return out
+	}
+	for name, tc := range map[string]struct {
+		q    Query
+		want string
+	}{
+		"airbnb":           {Query{Q: "airbnb"}, "02"},
+		"AirBnB":           {Query{Q: "AirBnB"}, "02"},
+		"short stays":      {Query{Q: "short stays"}, "02"},
+		"category":         {Query{Category: CategoryShortStay}, "02"},
+		"guests_min met":   {Query{GuestsMin: intp(6)}, "02"},
+		"guests_min unmet": {Query{GuestsMin: intp(7)}, ""},
+		"no filter":        {Query{}, "01,02"},
+	} {
+		if got := strings.Join(search(tc.q), ","); got != tc.want {
+			t.Errorf("%s: [%s], want [%s]", name, got, tc.want)
+		}
+	}
+
+	// Elasticsearch: the category keywords are indexed and searched; guests are a range.
+	labels, err := loadLabels(context.Background(), describedLabels{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, _ := store.ByIDs(context.Background(), []uuid.UUID{uuid.MustParse("0195c0de-0000-7000-8000-000000000002")})
+	doc := BuildDocument(records[0], labels)
+	if !strings.Contains(doc.Keywords, "Airbnb-style") || !strings.HasPrefix(doc.Keywords, "Short stays") || *doc.MaxGuests != 6 || *doc.MinNights != 2 || doc.PricePeriod != "night" {
+		t.Fatalf("document = %+v", doc)
+	}
+	raw, _ := json.Marshal(BuildSearchBody(Query{Q: "airbnb", Category: CategoryShortStay, GuestsMin: intp(4), Sort: SortRelevance, Page: 1, PageSize: 12}, esNow))
+	body := string(raw)
+	for _, want := range []string{`"keywords"]`, `"query":"airbnb"`, `{"range":{"max_guests":{"gte":4}}}`, `{"term":{"category":"short-stay"}}`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("search body lacks %s: %s", want, body)
+		}
+	}
+	// The database adapter matches the category's label and description, and filters guests.
+	sql := where(Query{Q: "airbnb", GuestsMin: intp(4)}, esNow, "").sql()
+	if !strings.Contains(sql, "pc.description ILIKE $2") || !strings.Contains(sql, "pc.label ILIKE $2") || !strings.Contains(sql, "l.max_guests >= $3") ||
+		!strings.Contains(searchFrom, "pc.set_code = 'property_categories' AND pc.code = l.category") {
+		t.Fatalf("database search: %s", sql)
 	}
 }

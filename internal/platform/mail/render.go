@@ -127,6 +127,14 @@ type Data struct {
 	Location        string
 }
 
+// zoneAbbreviations name the zones whose name changes with the season: the
+// United Kingdom is on Greenwich Mean Time in winter and British Summer Time
+// in summer. Keyed by IANA zone, then by the abbreviation Go reports for the
+// instant.
+var zoneAbbreviations = map[string]map[string]string{
+	"Europe/London": {"GMT": "Greenwich Mean Time", "BST": "British Summer Time"},
+}
+
 // zoneNames are the names of the time zones of the markets, as people say them.
 var zoneNames = map[string]string{
 	"Africa/Harare":       "Central Africa Time",
@@ -144,11 +152,15 @@ func LocalDateTime(t time.Time, zone string) string {
 	if err != nil || zone == "" {
 		loc, zone = time.UTC, "UTC"
 	}
+	local := t.In(loc)
 	name, ok := zoneNames[zone]
 	if !ok {
 		name = zone
 	}
-	return t.In(loc).Format("Monday 2 January 2006, 15:04") + " (" + name + ")"
+	if abbreviation, _ := local.Zone(); zoneAbbreviations[zone][abbreviation] != "" {
+		name = zoneAbbreviations[zone][abbreviation]
+	}
+	return local.Format("Monday 2 January 2006, 15:04") + " (" + name + ")"
 }
 
 // appointmentTypeNames are the plain-language names of appointment types.

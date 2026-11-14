@@ -41,6 +41,8 @@ type Organisation struct {
 	Name         string
 	Kind         string
 	EnquiryEmail string
+	// Market is the market code; empty means MarketCode (Zimbabwe).
+	Market string
 }
 
 // Account is a sample person.
@@ -84,7 +86,7 @@ var (
 // organisation per business profile (developers, property managers, hosts and
 // service providers).
 func Organisations() []*Organisation {
-	agencies := []*Organisation{SampleEstates, SecondStreetRealty, SampleCommercial, SampleLandAgents, SampleRealty, SampleHomesBulawayo}
+	agencies := []*Organisation{SampleEstates, SecondStreetRealty, SampleCommercial, SampleLandAgents, SampleRealty, SampleHomesBulawayo, SampleHomesLondon}
 	return append(agencies, businessOrganisations()...)
 }
 
@@ -122,7 +124,7 @@ var (
 
 // Accounts returns every sample account. All are email-verified.
 func Accounts() []Account {
-	accounts := append(peopleAccounts(), businessAccounts()...)
+	accounts := append(append(peopleAccounts(), backendPeople()...), businessAccounts()...)
 	for i := range accounts {
 		if accounts[i].Profiles == nil {
 			accounts[i].Profiles = profilesOf(accounts[i].ID, accounts[i].Organisation, accounts[i].MembershipRole)
@@ -161,11 +163,11 @@ var expiredAt = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 // Listings returns the 18 PUBLISHED sample listings (each with its
 // organisation and assigned agent, or its direct seller) plus the EXPIRED one.
 func Listings() []propertyrequests.Listing {
-	out := make([]propertyrequests.Listing, 0, ListingCount+1)
+	out := make([]propertyrequests.Listing, 0, ListingCount+BackendListingCount+1)
 	for _, a := range Accounts() {
 		for _, n := range a.Listings {
 			l := propertyrequests.Listing{
-				ID: propertyrequests.SeedListingID(n), MarketID: markets.ZimbabweID, Status: propertyrequests.ListingStatusPublished,
+				ID: propertyrequests.SeedListingID(n), MarketID: MarketID(MarketOf(a.Organisation)), Status: propertyrequests.ListingStatusPublished,
 			}
 			person := a.ID
 			if a.DirectSeller {
@@ -246,7 +248,7 @@ func SeedMemoryUsers(ctx context.Context, store *identity.MemoryStore, hasher id
 	now = now.UTC().Truncate(time.Microsecond)
 
 	for _, o := range Organisations() {
-		store.PutOrganisation(identity.MemoryOrganisation{ID: o.ID, Name: o.Name, Kind: o.Kind, MarketCode: MarketCode})
+		store.PutOrganisation(identity.MemoryOrganisation{ID: o.ID, Name: o.Name, Kind: o.Kind, MarketCode: MarketOf(o)})
 	}
 	for _, a := range Accounts() {
 		verified := now
@@ -258,7 +260,7 @@ func SeedMemoryUsers(ctx context.Context, store *identity.MemoryStore, hasher id
 			return fmt.Errorf("seed %s: %w", a.Email, err)
 		}
 		if a.Organisation != nil {
-			if err := store.AddMembership(a.ID, a.Organisation.ID, MarketCode, a.MembershipRole); err != nil {
+			if err := store.AddMembership(a.ID, a.Organisation.ID, MarketOf(a.Organisation), a.MembershipRole); err != nil {
 				return err
 			}
 		}

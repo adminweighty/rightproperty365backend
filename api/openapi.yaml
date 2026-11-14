@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.13.0
+  version: 0.14.0
   summary: Multi-country property marketplace API (Zimbabwe first).
   description: |
     Versioned REST API for RightProperty365.
@@ -164,7 +164,14 @@ paths:
       tags: [markets]
       operationId: listMarkets
       summary: List markets
-      description: Returns all markets, active markets first, then by country code.
+      description: |
+        Returns all markets: the active ones first, in their display order (Zimbabwe `ZW`, the
+        launch market, then the United Kingdom `GB`), then the planned ones (`AE`, `BW`, `ZA`)
+        by country code. A market is a country: its `code` is the `country` filter of listings
+        and directories and the `market` filter of the reference data, its `currency_code` is
+        the default currency of price filters when that country is selected (`USD` for ZW,
+        `GBP` for GB), and its `timezone` is the zone appointment times are shown in
+        (`Africa/Harare`, `Europe/London`).
       responses:
         "200":
           description: The markets.
@@ -220,12 +227,20 @@ paths:
         | `account_roles` | `roles` at registration | `group`, `requires_verification` |
         | `directory_kinds` | directory sections and `recipient.kind` | `singular_label`, `description` |
         | `service_trades` | service-provider trades | — |
-        | `regions` | regions (provinces, states) of a market; Zimbabwe has its ten provinces, the planned markets none yet | `market_code` |
+        | `regions` | regions (provinces, states, nations) of a market; Zimbabwe has its ten provinces, the United Kingdom its four nations, the planned markets none yet | `market_code` |
         | `cities` | cities of a market | `market_code`, `parent_code` = its region |
         | `suburbs` | suburbs of a city | `market_code`, `parent_code` = its city |
         | `listing_features` | listing features and amenities | — |
         | `onboarding_documents` | document types for professional onboarding (`description` is set) | — |
         | `organisation_kinds` | organisation kinds and their labels (AGENCY "Real Estate Agency", LAW_FIRM "Law Firm", ...) | — |
+        | `price_periods` | what a listing's price is charged per: `month` "per month", `night` "per night" (a listing's `price_period`; null there means a sale price) | — |
+
+        `property_categories` has `residential`, `commercial`, `land` and `short-stay` ("Short
+        stays", with a `description`); the short-stay `property_types` are `holiday-home`,
+        `serviced-apartment`, `guest-house`, `private-room` and `lodge`. `regions`, `cities` and
+        `suburbs` exist for Zimbabwe (`market_code` `ZW`) and the United Kingdom (`GB`: regions
+        `england`, `scotland`, `wales`, `northern-ireland`; ten cities; a few areas of London and
+        one of Manchester).
 
         Markets are not a set: use `GET /v1/markets`. Platform administrator roles are never in
         `account_roles` and can never be chosen at registration, whatever this endpoint returns.
@@ -418,7 +433,11 @@ paths:
       parameters:
         - name: q
           in: query
-          description: Free text, at most 100 characters. Every word must match the title, suburb, city, property type, summary, description or reference (case-insensitive).
+          description: |
+            Free text, at most 100 characters. Every word must match the title, suburb, city,
+            property type, summary, description or reference, or the label or description of the
+            listing's category (case-insensitive). The category description is what makes
+            `q=airbnb` find the short stays: no category, type or code is named after that brand.
           schema: { type: string, maxLength: 100 }
           example: borrowdale house
         - name: deal
@@ -428,9 +447,16 @@ paths:
           example: sale
         - name: category
           in: query
-          description: A `property_categories` code.
+          description: |
+            A `property_categories` code: `residential`, `commercial`, `land` or `short-stay`
+            (holiday homes, serviced apartments, guest houses and rooms let by the night). A
+            short stay is always deal `rent` with `price_period` `night`.
           schema: { type: string }
           example: residential
+        - name: guests_min
+          in: query
+          description: Short stays that sleep at least this many guests (`max_guests` >= n). Listings without `max_guests` (everything that is not a short stay) never match.
+          schema: { type: integer, minimum: 1, maximum: 100 }
         - name: property_type
           in: query
           description: A `property_types` code.
@@ -567,7 +593,7 @@ paths:
             `bedrooms_min`, `bathrooms_min`, `features`, `featured`, `sort`, `page`, `page_size`,
             `country`, `market`, `region`, `bedrooms_max`, `bathrooms_max`, `floor_area_min`,
             `floor_area_max`, `land_area_min`, `land_area_max`, `listed_within_days`,
-            `advertiser_type`, `reference`, `has_photos`. A maximum lower than its minimum is
+            `advertiser_type`, `reference`, `has_photos`, `guests_min`. A maximum lower than its minimum is
             reported on the `_max` parameter; a location that does not belong to the wider one
             on the narrower parameter (`suburb`, `city` or `region`).
           headers:
@@ -3763,7 +3789,11 @@ components:
           oneOf:
             - $ref: "#/components/schemas/ProfileRef"
             - type: "null"
-          description: The agency's profile. Null for a private seller.
+          description: |
+            The public profile of the organisation that advertises the listing. Usually an
+            agency (`kind` `agencies`); for a listing owned by another kind of organisation it
+            is that organisation's own profile, for example a host's (`kind` `hosts`) for a
+            short stay. `type` is `agency` for every organisation. Null for a private seller.
         agent:
           oneOf:
             - $ref: "#/components/schemas/ProfileRef"
@@ -3774,7 +3804,7 @@ components:
       type: object
       description: A public listing. The same object is used in search results, on the detail endpoint and on profiles.
       required: [id, slug, reference, title, deal, category, property_type, price, price_period, suburb, city, region, country, market_code,
-                 bedrooms, bathrooms, floor_area, land_area, summary, description, features, featured, photos, advertiser,
+                 bedrooms, bathrooms, floor_area, land_area, max_guests, min_nights, summary, description, features, featured, photos, advertiser,
                  published_at, expires_at, updated_at]
       additionalProperties: false
       properties:
@@ -3795,8 +3825,8 @@ components:
           $ref: "#/components/schemas/Money"
         price_period:
           type: [string, "null"]
-          enum: [month, null]
-          description: "`month` for a monthly rent; null for a sale price."
+          enum: [month, night, null]
+          description: "A `price_periods` code: `month` for a monthly rent, `night` for a short stay (always, and only, category `short-stay`); null for a sale price. Labels (`per month`, `per night`) are in `GET /v1/reference/price_periods`."
         suburb:
           allOf: [{ $ref: "#/components/schemas/Coded" }]
           description: "`suburbs` code and label."
@@ -3815,6 +3845,8 @@ components:
         bathrooms: { type: [integer, "null"], minimum: 0 }
         floor_area: { type: [integer, "null"], minimum: 0, description: Square metres. }
         land_area: { type: [integer, "null"], minimum: 0, description: Square metres. }
+        max_guests: { type: [integer, "null"], minimum: 1, description: "Short stays only: how many guests the place sleeps. Null for every other category (and for a short stay that does not say)." }
+        min_nights: { type: [integer, "null"], minimum: 1, description: "Short stays only: the shortest stay, in nights (1 when the listing does not say). Null for every other category." }
         summary: { type: string, description: One sentence for cards. }
         description: { type: string, description: Plain text. }
         features:
@@ -4097,6 +4129,7 @@ components:
         - listing_features
         - onboarding_documents
         - organisation_kinds
+        - price_periods
 
     ReferenceGroup:
       type: object

@@ -32,11 +32,13 @@ func TestSampleDataMapping(t *testing.T) {
 		"bulawayo.agent@example.test":   {"Sipho Nkomo", "Sample Homes Bulawayo", "OWNER", "CONSUMER,AGENCY_OWNER", []int{11, 12}},
 		"seller@example.test":           {"Grace Mhlanga", "", "", "CONSUMER,PRIVATE_SELLER", []int{6}},
 		"agent-b@example.test":          {"Blake Agent", "Second Street Realty", "AGENT", "AGENT", nil},
+		// The United Kingdom agency (backend_samples.go).
+		"sample-homes-london@example.test": {"Sample Homes London Owner", "Sample Homes London", "OWNER", "CONSUMER,AGENCY_OWNER", []int{19, 20, 21}},
 	}
 
 	accounts := Accounts()
-	if len(accounts) != len(want)+len(businesses) {
-		t.Fatalf("%d accounts, want %d people + %d business owners", len(accounts), len(want), len(businesses))
+	if len(accounts) != len(want)+len(allBusinesses()) {
+		t.Fatalf("%d accounts, want %d people + %d business owners", len(accounts), len(want), len(allBusinesses()))
 	}
 	ids := map[string]bool{}
 	for _, a := range accounts {
@@ -84,8 +86,8 @@ func equal(a, b []int) bool {
 
 func TestListings(t *testing.T) {
 	listings := Listings()
-	if len(listings) != ListingCount+1 {
-		t.Fatalf("%d listings, want %d published + 1 expired", len(listings), ListingCount)
+	if len(listings) != ListingCount+BackendListingCount+1 {
+		t.Fatalf("%d listings, want %d published + 1 expired", len(listings), ListingCount+BackendListingCount)
 	}
 	var published []string
 	for _, l := range listings {
@@ -150,7 +152,7 @@ func TestSeedMemory(t *testing.T) {
 		if (len(u.Memberships) == 1) != (a.Organisation != nil) || (len(u.PlatformRoles) == 1) != (a.PlatformRole != "") {
 			t.Fatalf("%s: memberships=%v platform=%v", a.Email, u.Memberships, u.PlatformRoles)
 		}
-		if a.Organisation != nil && (u.Memberships[0].OrganisationName != a.Organisation.Name || u.Memberships[0].Role != a.MembershipRole || u.Memberships[0].MarketCode != "ZW") {
+		if a.Organisation != nil && (u.Memberships[0].OrganisationName != a.Organisation.Name || u.Memberships[0].Role != a.MembershipRole || u.Memberships[0].MarketCode != MarketOf(a.Organisation)) {
 			t.Fatalf("%s: membership %+v", a.Email, u.Memberships[0])
 		}
 	}
@@ -244,6 +246,9 @@ func TestProfilesMatchTheWebDirectory(t *testing.T) {
 		{"solicitors", "sample-law-chambers", "Sample Law Chambers"},
 		{"solicitors", "sample-conveyancing-attorneys", "Sample Conveyancing Attorneys"},
 		{"solicitors", "sample-property-lawyers", "Sample Property Lawyers"},
+		// Not in the web's files: the United Kingdom's host and agency.
+		{"hosts", "sample-stays-edinburgh", "Sample Stays Edinburgh"},
+		{"agencies", "sample-homes-london", "Sample Homes London"},
 	}
 	if len(want) != ProfileCount {
 		t.Fatalf("test table has %d rows, want %d", len(want), ProfileCount)
@@ -340,12 +345,12 @@ func TestBusinessProfiles(t *testing.T) {
 		}
 		if p.Organisation.Kind != w[0] || p.Organisation.Name != p.Name || a.Organisation.ID != p.Organisation.ID ||
 			a.MembershipRole != "OWNER" || strings.Join(a.AccountRoles, ",") != "CONSUMER,"+w[1] ||
-			len(a.Profiles) != 1 || a.Profiles[0] != p.Key() || len(a.Listings) != 0 {
+			len(a.Profiles) != 1 || a.Profiles[0] != p.Key() || len(a.Listings) != len(businessListings[p.Slug]) {
 			t.Fatalf("%s: organisation %+v, owner %+v", p.Key(), p.Organisation, a)
 		}
 	}
-	if n != 20 {
-		t.Fatalf("%d business profiles, want 20", n)
+	if n != 21 {
+		t.Fatalf("%d business profiles, want 21", n)
 	}
 	if got := accounts["sample-plumbers@example.test"].Name; got != "Sample Plumbers Owner" {
 		t.Fatalf("owner name = %q", got)

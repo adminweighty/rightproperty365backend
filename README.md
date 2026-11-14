@@ -40,11 +40,23 @@ Invoke-RestMethod -Method Post -Uri http://localhost:8080/v1/property-requests -
 ### Development sample data
 
 In development without a database the API seeds its in-memory stores with the data below (defined
-once in `internal/devseed`; the web app's sample data uses the same names): 23 organisations, 28
-accounts, 18 listings and 32 directory profiles (the web's 29 and three solicitors). Listing IDs are
-`0195c0de-0000-7000-8000-000000000001` … `…000000000018`: 18 **PUBLISHED** listings in market ZW,
-each with an organisation **and** a named assigned agent, or a direct seller. Listing
+once in `internal/devseed`; the web app's sample data uses the same names): 28 organisations, 33
+accounts, 23 listings and 34 directory profiles (the web's 29, three solicitors, and the United
+Kingdom's agency and host). Listing IDs are
+`0195c0de-0000-7000-8000-000000000001` … `…000000000018`: the web's 18 **PUBLISHED** listings in
+market ZW, each with an organisation **and** a named assigned agent, or a direct seller. Listing
 `…000000000099` is **EXPIRED** (requests get `410`).
+
+Five more PUBLISHED listings exist only on the backend (`internal/devseed/backend_samples.go`;
+the web's sample files do not have them):
+
+| ID | Reference | Slug | What | Owner |
+| --- | --- | --- | --- | --- |
+| `…019` | `RP-GB-10001` | `three-bedroom-terraced-house-kensington` | London (Kensington), for sale, GBP 1,250,000 | Sample Homes London |
+| `…020` | `RP-GB-10002` | `two-bedroom-apartment-northern-quarter` | Manchester, to rent, GBP 1,650 per month | Sample Homes London |
+| `…021` | `RP-GB-10003` | `serviced-apartment-shoreditch` | London (Shoreditch), **short stay**, GBP 185 per night, 2 guests, 2 nights minimum | Sample Homes London |
+| `…022` | `RP-ZW-10019` | `safari-lodge-victoria-falls` | Victoria Falls, **short stay**, USD 320 per night, 8 guests, 2 nights minimum | Sample Falls Stays (host) |
+| `…023` | `RP-ZW-10020` | `garden-guest-house-avondale` | Harare (Avondale), **short stay**, USD 75 per night, 4 guests, 1 night minimum | Sample Showrooms (host) |
 
 All accounts are email-verified and share one password: **`DEV_SEED_PASSWORD` in
 [`.env.example`](.env.example)**. They are created only when `APP_ENV=development` and that
@@ -69,8 +81,10 @@ seeded).
 | `sample-heights@example.test` | Sample Heights Owner | Sample Heights | `DEVELOPER` | `OWNER` | `developers/sample-heights` |
 | `sample-property-management@example.test` | Sample Property Management Owner | Sample Property Management | `LANDLORD` | `OWNER` | `property-managers/sample-property-management` |
 | `sample-rentals-bulawayo@example.test` | Sample Rentals Bulawayo Owner | Sample Rentals Bulawayo | `LANDLORD` | `OWNER` | `property-managers/sample-rentals-bulawayo` |
-| `sample-falls-stays@example.test` | Sample Falls Stays Owner | Sample Falls Stays | `HOST` | `OWNER` | `hosts/sample-falls-stays` |
-| `sample-showrooms@example.test` | Sample Showrooms Owner | Sample Showrooms | `HOST` | `OWNER` | `hosts/sample-showrooms` |
+| `sample-falls-stays@example.test` | Sample Falls Stays Owner | Sample Falls Stays | `HOST` | `OWNER` | listing 22 (short stay); `hosts/sample-falls-stays` |
+| `sample-showrooms@example.test` | Sample Showrooms Owner | Sample Showrooms | `HOST` | `OWNER` | listing 23 (short stay); `hosts/sample-showrooms` |
+| `sample-homes-london@example.test` | Sample Homes London Owner | Sample Homes London (market **GB**) | `AGENCY` | `OWNER` | listings 19, 20, 21; `agencies/sample-homes-london` |
+| `sample-stays-edinburgh@example.test` | Sample Stays Edinburgh Owner | Sample Stays Edinburgh (market **GB**) | `HOST` | `OWNER` | `hosts/sample-stays-edinburgh` |
 | `sample-plumbers@example.test` | Sample Plumbers Owner | Sample Plumbers | `SERVICE_PROVIDER` | `OWNER` | `service-providers/sample-plumbers` |
 | `sample-rapid-plumbing@example.test` | Sample Rapid Plumbing Owner | Sample Rapid Plumbing | `SERVICE_PROVIDER` | `OWNER` | `service-providers/sample-rapid-plumbing` |
 | `sample-electricians@example.test` | Sample Electricians Owner | Sample Electricians | `SERVICE_PROVIDER` | `OWNER` | `service-providers/sample-electricians` |
@@ -208,7 +222,7 @@ All configuration comes from environment variables. For local development you ma
 | --- | --- | --- |
 | GET | `/healthz` | Liveness (always 200) |
 | GET | `/readyz` | Readiness (pings the database when configured; reports the store in use) |
-| GET | `/v1/markets` | Markets: ZW active; BW, ZA, AE planned |
+| GET | `/v1/markets` | Markets: ZW and GB active (Zimbabwe first); AE, BW, ZA planned |
 | GET | `/v1/reference`, `/v1/reference/{set}` | Reference data behind every drop-down, filter and list (public, cacheable) |
 | GET | `/v1/listings`, `/v1/listings/suggest`, `/v1/listings/{slug}` | Public listing search, suggestions and detail |
 | GET | `/v1/directory`, `/v1/directory/{kind}`, `/v1/directory/{kind}/{slug}`, `/v1/sitemap` | Public directories, profiles and sitemap data |
@@ -413,6 +427,67 @@ never answered.
 advisory-lock overlap check and the `cmd/seed` rows have never run against a database. Everything
 above is tested on the in-memory stores.
 
+## Markets: Zimbabwe and the United Kingdom
+
+| Code | Country | Currency | Time zone | Status |
+| --- | --- | --- | --- | --- |
+| `ZW` | Zimbabwe | USD | Africa/Harare | ACTIVE (the launch market, always listed first) |
+| `GB` | United Kingdom | GBP | Europe/London | ACTIVE (migration `0013`) |
+| `AE`, `BW`, `ZA` | United Arab Emirates, Botswana, South Africa | AED, BWP, ZAR | | PLANNED |
+
+A market is a country. Everything market-aware follows the market of the thing itself:
+
+- **Reference data** for the United Kingdom (`?market=GB`): regions `england`, `scotland`,
+  `wales`, `northern-ireland`; cities London, Manchester, Birmingham, Leeds, Liverpool, Bristol
+  (England), Edinburgh, Glasgow (Scotland), Cardiff (Wales), Belfast (Northern Ireland); areas
+  of London (`camden`, `greenwich`, `kensington`, `shoreditch`, `wimbledon`) and one of
+  Manchester (`northern-quarter`, because a sample listing is there). Codes stay unique per set;
+  **none collided** with an existing code, so nothing is prefixed.
+- **Search**: `country=GB` (or `market=GB`), its regions, cities and areas, with the same
+  hierarchy check as Zimbabwe. Directories take `country=GB` and `region=` too.
+- **Money is single-currency per search and is never converted.** With `country=GB` the price
+  filter and the price facet use GBP; with `country=ZW`, USD; an explicit `currency` wins.
+  **Without a country the default is unchanged: USD.** A search without a country returns
+  listings of every market, each item with its own `price.currency`, while `min_price` /
+  `max_price` and the price facet only consider listings priced in USD — a GBP listing is in
+  the results but never in a USD price range. Use `country` (or `currency`) to work in GBP.
+- **Onboarding**: an application's market is the market of its city, so an application in a UK
+  city belongs to GB and a `MARKET_ADMIN` for GB sees it (and not Zimbabwe's). This is the
+  existing rule; it has **no UK-specific test**.
+- **Appointments** for a UK listing or profile are shown in `Europe/London`, and emails name the
+  zone by season: "Greenwich Mean Time" in winter, "British Summer Time" in summer.
+- Phone numbers are E.164 everywhere; nothing is UK-specific.
+
+## Short stays
+
+Holiday homes, serviced apartments, guest houses and rooms let by the night are the property
+category **`short-stay`** ("Short stays"), next to `residential`, `commercial` and `land`. Its
+property types are `holiday-home`, `serviced-apartment`, `guest-house`, `private-room` and
+`lodge`.
+
+> **Naming.** "Airbnb" is another company's trade mark, so no category, code, type or label is
+> named after it. The word appears once, in the category's *description* ("... including
+> Airbnb-style stays"), and free-text search matches a category's label and description. That
+> is how `GET /v1/listings?q=airbnb` finds the short stays in all three search adapters.
+
+- **Rules** (`listings.CheckRecord`, and CHECK constraints in migration `0013`): a short stay is
+  always deal `rent` with `price_period` `night`; nothing else is priced per night. The price
+  periods are reference data (`GET /v1/reference/price_periods`: `month` "per month", `night`
+  "per night"; a sale price has none). Today the only thing that writes listings is the sample
+  seed, which is validated with the same function; **listing create and publish endpoints still
+  do not exist**.
+- **Fields**: `max_guests` and `min_nights` on the listing JSON, null for every other category
+  (`min_nights` is 1 when a short stay does not say).
+- **Search**: `category=short-stay` like any category; `guests_min=n` keeps short stays with
+  `max_guests >= n`; `q=airbnb` (see above). No guests facet.
+- **Who lists them**: unchanged capability rules (`capabilities.go`): agencies, hosts (the
+  `HOST` role and organisation, directory "Hosts and Venues"), property managers, developers,
+  law firms and individual owners can own such listings. A listing's `advertiser.agency` is the
+  owning organisation's own profile, so for a host it has `kind: hosts`.
+- **Not built: booking.** There is no availability calendar, no booking, no payment and no
+  nightly-rate rules. **A short stay today is a listing people enquire about**, through
+  `POST /v1/property-requests`, exactly like any other listing.
+
 ## Listings and directories: the public catalogue
 
 The web app reads listings and directory profiles from the API. Everything here is public,
@@ -540,6 +615,13 @@ The API and the worker each log one line at startup naming the driver:
   fail. Each fallback is logged as a warning (`search engine failed; answering from the database
   instead`) with a running count `search_fallbacks_total`; there is no metrics endpoint yet. The
   client does not retry: the database is the retry.
+
+> **After deploying the short stays (mapping version 3), run `cmd/reindex` once.** Documents now
+> carry `max_guests`, `min_nights` and `keywords` (the category's label and description, which is
+> what `q=airbnb` matches). The mapping is strict: until the index is rebuilt the worker's
+> listing events are refused by the old index (and retried), `guests_min` matches nothing in
+> Elasticsearch and `q=airbnb` finds nothing there. The database driver needs only migration
+> `0013`.
 
 > **After deploying the country / region / advanced filters, run `go run ./cmd/reindex` once.**
 > The mapping changed (mapping version 2, recorded in the mapping's `_meta` and in
@@ -903,16 +985,17 @@ Optional `?market=ZW` keeps that market's rows plus the rows that apply everywhe
 | Set | Baseline rows | Notes |
 | --- | --- | --- |
 | `deal_types` | 2 | `sale`, `rent` (the web's URL values) |
-| `property_categories` | 3 | `residential`, `commercial`, `land` |
-| `property_types` | 7 | `parent_code` is the category |
+| `property_categories` | 4 | `residential`, `commercial`, `land`, `short-stay` (with a description) |
+| `property_types` | 12 | `parent_code` is the category; five are short-stay types |
+| `price_periods` | 2 | `month` "per month", `night` "per night" |
 | `request_types` | 4 | the `request_type` of a property request |
 | `contact_methods` | 3 | `EMAIL`, `PHONE`, `WHATSAPP` |
 | `account_roles` | 11 | with `group` (code, label, sort) and `requires_verification`; **never** a platform role |
 | `directory_kinds` | 6 | with `singular_label` and `description` |
 | `service_trades` | 7 | service-provider trades |
-| `regions` | 10 | market `ZW`: Zimbabwe's ten provinces (codes are slugs, e.g. `matabeleland-north`). Planned markets have none yet |
-| `cities` | 4 | market `ZW`; `parent_code` is the region (Harare -> `harare`, Bulawayo -> `bulawayo`, Mutare -> `manicaland`, Victoria Falls -> `matabeleland-north`) |
-| `suburbs` | 18 | market `ZW`; `parent_code` is the city |
+| `regions` | 14 | `ZW`: Zimbabwe's ten provinces (codes are slugs, e.g. `matabeleland-north`); `GB`: `england`, `scotland`, `wales`, `northern-ireland`. Planned markets have none yet |
+| `cities` | 14 | `ZW`: 4; `GB`: 10. `parent_code` is the region (Harare -> `harare`, Bulawayo -> `bulawayo`, Mutare -> `manicaland`, Victoria Falls -> `matabeleland-north`; London -> `england`, Edinburgh -> `scotland`, ...) |
+| `suburbs` | 24 | `ZW`: 18; `GB`: 6. `parent_code` is the city |
 | `listing_features` | 59 | features and amenities |
 
 Each row has a stable `code` (what clients send and tables store), a `label` (what people read),
@@ -1419,6 +1502,13 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0013_uk_short_stays` adds the United Kingdom market (ACTIVE) and a display order for markets;
+  the short-stay category, its five property types, the `price_periods` set and the United
+  Kingdom's regions, cities and areas (upserts that keep a row's `active` flag); `max_guests` and
+  `min_nights` on listings; `night` as a price period; and CHECK constraints for the short-stay
+  rules. Its down migration is lossy and says how: short-stay listings are closed, not deleted,
+  and the UK market returns to PLANNED instead of being deleted. Written for the staging
+  database that already holds data, but **not run by me**.
 - `0012_locations` adds the `regions` reference set with Zimbabwe's ten provinces, links each city
   to its region (`parent_code`), and adds indexes for the country and floor-area filters. Listings
   and profiles get no new column: a region is always the region of the city. **Never run.**
