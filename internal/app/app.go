@@ -79,7 +79,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 	if d.Hasher != nil {
 		identityOpts = append(identityOpts, identity.WithHasher(*d.Hasher))
 	}
-	identitySvc, err := identity.NewService(d.Identity, d.Mailer, identity.NewLinks(cfg.WebBaseURL), logger, identityOpts...)
+	identitySvc, err := identity.NewService(d.Identity, d.Mailer, logger, identityOpts...)
 	if err != nil {
 		return nil, err
 	}

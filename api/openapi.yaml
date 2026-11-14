@@ -538,7 +538,7 @@ paths:
         - Existing verified account: nothing changes; the owner is told by email that they
           already have an account.
 
-        The verification link is `{WEB_BASE_URL}/verify-email?token=...` and is valid for 24 hours.
+        The verification link is `{PUBLIC_WEB_URL}/verify-email?token=...` and is valid for 24 hours.
 
         **Account roles.** `roles` is required: 1 to 11 values from the allowlist in
         `SelectableAccountRole`, enforced on the server. A missing or empty array, a platform
@@ -793,7 +793,7 @@ paths:
       summary: Ask for a password-reset email
       description: |
         Always `202` for a well-formed email, whether or not an account exists. The link is
-        `{WEB_BASE_URL}/reset-password?token=...`, single-use and valid for 1 hour.
+        `{PUBLIC_WEB_URL}/reset-password?token=...`, single-use and valid for 1 hour.
 
         No email is sent for an account holding a platform role (still `202`): administrator
         passwords are changed with the `adminctl` command, not by email.

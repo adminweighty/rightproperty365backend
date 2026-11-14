@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"rightproperty365.com/backend/internal/platform/outbox"
 )
 
 // MemoryStore is a mutex-guarded in-memory Store for development and tests
@@ -23,6 +25,16 @@ type MemoryStore struct {
 	timeline  []MemoryTimelineEntry
 	activity  []MemoryActivityEntry
 	outbox    []MemoryOutboxEvent
+	sink      outbox.Sink
+}
+
+// SetOutboxSink registers a receiver for events as they are written
+// (development without a database). The sink must not call back into the
+// store synchronously.
+func (s *MemoryStore) SetOutboxSink(sink outbox.Sink) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sink = sink
 }
 
 // MemoryTimelineEntry mirrors a business_enquiry_timeline row.
@@ -123,6 +135,12 @@ func (s *MemoryStore) Create(_ context.Context, enq NewEnquiry) (Record, bool, e
 	s.outbox = append(s.outbox, MemoryOutboxEvent{
 		EventType: EventBusinessEnquiryCreated, AggregateID: enq.ID, Payload: payload, CreatedAt: enq.CreatedAt,
 	})
+	if s.sink != nil {
+		s.sink(outbox.Event{
+			ID: uuid.New(), Type: EventBusinessEnquiryCreated, AggregateType: AggregateBusinessEnquiry, AggregateID: enq.ID,
+			Payload: payload, Attempts: 1, CreatedAt: enq.CreatedAt,
+		})
+	}
 	return rec, true, nil
 }
 

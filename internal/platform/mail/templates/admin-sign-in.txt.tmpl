@@ -1,0 +1,14 @@
+{{define "subject"}}Administrator sign-in to your account{{end}}
+{{define "heading"}}Administrator sign-in{{end}}
+{{define "button"}}Open administrator sign-in{{end}}
+{{define "why"}}You are receiving this security notice because your account holds an administrator role.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+Your administrator account was used to sign in to RightProperty365.
+
+Signed in: {{dateTime .When}}
+
+
+If this was you, there is nothing more to do.
+
+If this was not you, have your password changed immediately and tell the platform owner. Administrator passwords are not reset by email.{{end}}

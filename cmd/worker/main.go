@@ -10,11 +10,11 @@ import (
 	"os/signal"
 	"syscall"
 
-	"rightproperty365.com/backend/internal/modules/businessenquiries"
-	"rightproperty365.com/backend/internal/modules/propertyrequests"
+	"rightproperty365.com/backend/internal/modules/notifications"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/database"
 	"rightproperty365.com/backend/internal/platform/logging"
+	"rightproperty365.com/backend/internal/platform/mail"
 	"rightproperty365.com/backend/internal/platform/outbox"
 )
 
@@ -57,40 +57,25 @@ func run() error {
 	}
 	defer pool.Close()
 
+	// Notification emails: one per recipient per event, sent once (see
+	// mail.Service). The line naming the mailer is logged before any event is
+	// processed.
+	sender, err := notifications.NewSender(cfg, logger)
+	if err != nil {
+		return err
+	}
+	renderer, err := mail.NewRenderer(cfg.PublicWebURL)
+	if err != nil {
+		return err
+	}
+	handlers := notifications.NewHandlers(
+		mail.NewService(sender, mail.NewPostgresDeliveryLog(pool), logger),
+		renderer, notifications.NewPostgresSource(pool), logger)
+
 	dispatcher := outbox.NewDispatcher(outbox.NewPostgresQueue(pool), logger, outbox.Config{})
-	dispatcher.Register(propertyrequests.EventPropertyRequestCreated, propertyRequestCreated(logger))
-	dispatcher.Register(businessenquiries.EventBusinessEnquiryCreated, businessEnquiryCreated(logger))
+	handlers.Register(dispatcher)
 
 	err = dispatcher.Run(ctx)
 	logger.Info("worker stopped")
 	return err
-}
-
-// propertyRequestCreated is the placeholder consumer for new property
-// requests. It only logs. When real notifications (email/WhatsApp/in-app) are
-// added here they MUST be idempotent: delivery is at-least-once, so key every
-// side effect on ev.ID.
-func propertyRequestCreated(logger *slog.Logger) outbox.Handler {
-	return outbox.HandlerFunc(func(ctx context.Context, ev outbox.Event) error {
-		logger.InfoContext(ctx, "PROPERTY_REQUEST_CREATED",
-			slog.String("event_id", ev.ID.String()),
-			slog.String("property_request_id", ev.AggregateID.String()),
-			slog.Int("attempt", ev.Attempts),
-		)
-		return nil
-	})
-}
-
-// businessEnquiryCreated is the placeholder consumer for new business
-// enquiries. It only logs identifiers; the payload carries no personal data.
-// The same idempotency rule applies when real notifications are added.
-func businessEnquiryCreated(logger *slog.Logger) outbox.Handler {
-	return outbox.HandlerFunc(func(ctx context.Context, ev outbox.Event) error {
-		logger.InfoContext(ctx, "BUSINESS_ENQUIRY_CREATED",
-			slog.String("event_id", ev.ID.String()),
-			slog.String("business_enquiry_id", ev.AggregateID.String()),
-			slog.Int("attempt", ev.Attempts),
-		)
-		return nil
-	})
 }

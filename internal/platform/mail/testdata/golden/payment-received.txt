@@ -1,0 +1,19 @@
+Subject: Payment received: USD 25.00
+
+Payment received
+
+Hello Rudo Moyo,
+
+We have received your payment.
+
+Amount: USD 25.00
+Invoice: INV-2026-00042
+Received: 14 November 2026
+
+View receipt:
+https://rightproperty365.com/account
+
+--
+You are receiving this because a payment was made for your RightProperty365 account.
+Sent by RightProperty365.
+https://rightproperty365.com

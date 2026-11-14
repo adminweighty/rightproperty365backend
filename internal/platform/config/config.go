@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/mail"
 	"net/url"
 	"os"
 	"strconv"
@@ -26,11 +27,18 @@ const (
 	PoolModeSession     = "session"
 	PoolModeTransaction = "transaction"
 
-	defaultHTTPAddr    = ":8080"
-	defaultDBMaxConns  = 8
-	maxDBMaxConns      = 100
-	defaultCORSOrigins = "http://localhost:3000"
-	defaultWebBaseURL  = "http://localhost:3000"
+	defaultHTTPAddr     = ":8080"
+	defaultDBMaxConns   = 8
+	maxDBMaxConns       = 100
+	defaultCORSOrigins  = "http://localhost:3000"
+	defaultPublicWebURL = "http://localhost:3000"
+	// DefaultEmailFrom is the confirmed sender. Its domain must be verified
+	// in the Resend account before Resend will send from it.
+	DefaultEmailFrom = "RightProperty365 <no-reply@rightproperty365.com>"
+
+	// Mail drivers (MAIL_DRIVER).
+	MailDriverLog    = "log"
+	MailDriverResend = "resend"
 
 	defaultAdminSessionTTL     = 12 * time.Hour
 	defaultAdminSessionIdleTTL = 30 * time.Minute
@@ -55,9 +63,19 @@ type Config struct {
 	DBMaxConns         int32
 	CORSAllowedOrigins []string
 	LogLevel           slog.Level
-	// WebBaseURL is the frontend origin used to build links placed in emails
-	// (verify-email, reset-password). No trailing slash.
-	WebBaseURL string
+	// PublicWebURL is the public origin of the web app (PUBLIC_WEB_URL; the
+	// older WEB_BASE_URL is still read as a deprecated alias). Every link and
+	// image URL in an email is built from it. No trailing slash.
+	PublicWebURL string
+	// MailDriver is MailDriverResend or MailDriverLog, already resolved from
+	// MAIL_DRIVER, RESEND_API_KEY and the environment.
+	MailDriver string
+	// ResendAPIKey is the Resend API key. It formats as "[redacted]"; call
+	// Reveal only where the Authorization header is built.
+	ResendAPIKey Secret
+	// EmailFrom is the sender of every email; EmailReplyTo is optional.
+	EmailFrom    string
+	EmailReplyTo string
 	// DevSeedPassword is the shared password of the development seed users.
 	// It is only ever populated when Env is development and must never be logged.
 	DevSeedPassword string
@@ -117,6 +135,64 @@ func DatabaseTLSWarning(databaseURL string) string {
 	default:
 		return "the database is on another host and its connection string uses sslmode=" + mode + ", which allows an UNENCRYPTED connection; use sslmode=require (or verify-full)"
 	}
+}
+
+// Secret is a configuration value that must never be printed. Every
+// formatting path (%s, %v, %+v, %#v, slog) yields "[redacted]".
+type Secret string
+
+// Reveal returns the secret. Use it only at the point of use.
+func (s Secret) Reveal() string { return string(s) }
+
+// IsSet reports whether a value is present.
+func (s Secret) IsSet() bool { return s != "" }
+
+func (s Secret) String() string {
+	if s == "" {
+		return ""
+	}
+	return "[redacted]"
+}
+
+// GoString implements fmt.GoStringer (%#v).
+func (s Secret) GoString() string { return s.String() }
+
+// LogValue implements slog.LogValuer.
+func (s Secret) LogValue() slog.Value { return slog.StringValue(s.String()) }
+
+// MarshalText keeps the value out of JSON and other encoders.
+func (s Secret) MarshalText() ([]byte, error) { return []byte(s.String()), nil }
+
+// resolveMailDriver decides which mailer runs.
+//
+//	MAIL_DRIVER=resend  Resend; RESEND_API_KEY is required.
+//	MAIL_DRIVER=log     the development log mailer, even when a key is set.
+//	                    Refused outside development: it prints links that
+//	                    are credentials and delivers nothing.
+//	MAIL_DRIVER unset   resend when RESEND_API_KEY is set; otherwise log in
+//	(or empty)          development and an error elsewhere.
+func resolveMailDriver(raw, env string, keySet bool) (string, error) {
+	switch strings.ToLower(raw) {
+	case MailDriverResend:
+		if !keySet {
+			return "", errors.New("MAIL_DRIVER=resend requires RESEND_API_KEY")
+		}
+		return MailDriverResend, nil
+	case MailDriverLog:
+		if env != EnvDevelopment {
+			return "", fmt.Errorf("MAIL_DRIVER=log is only allowed when APP_ENV=development (got %s): it sends nothing and logs sign-in links", env)
+		}
+		return MailDriverLog, nil
+	case "":
+		if keySet {
+			return MailDriverResend, nil
+		}
+		if env == EnvDevelopment {
+			return MailDriverLog, nil
+		}
+		return "", fmt.Errorf("RESEND_API_KEY is required when APP_ENV=%s: without it no email (verification, password reset) can be sent", env)
+	}
+	return "", fmt.Errorf("MAIL_DRIVER must be %q or %q", MailDriverLog, MailDriverResend)
 }
 
 // UseMemoryStore reports whether the process should run on the in-memory
@@ -184,9 +260,29 @@ func FromLookup(get func(string) string) (Config, error) {
 	}
 	cfg.CORSAllowedOrigins = origins
 
-	cfg.WebBaseURL = strings.TrimRight(val("WEB_BASE_URL", defaultWebBaseURL), "/")
-	if u, err := url.Parse(cfg.WebBaseURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
-		errs = append(errs, errors.New("WEB_BASE_URL must be an http(s) URL such as https://app.example.com"))
+	// PUBLIC_WEB_URL is the setting; WEB_BASE_URL is its deprecated alias and
+	// is only read when PUBLIC_WEB_URL is not set.
+	cfg.PublicWebURL = strings.TrimRight(val("PUBLIC_WEB_URL", val("WEB_BASE_URL", defaultPublicWebURL)), "/")
+	if u, err := url.Parse(cfg.PublicWebURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+		errs = append(errs, errors.New("PUBLIC_WEB_URL must be an http(s) URL such as https://app.example.com"))
+	}
+
+	// Email. The API key is never echoed, not even in an error.
+	cfg.ResendAPIKey = Secret(val("RESEND_API_KEY", ""))
+	driver, err := resolveMailDriver(val("MAIL_DRIVER", ""), cfg.Env, cfg.ResendAPIKey.IsSet())
+	if err != nil {
+		errs = append(errs, err)
+	}
+	cfg.MailDriver = driver
+	cfg.EmailFrom = val("EMAIL_FROM", DefaultEmailFrom)
+	if _, err := mail.ParseAddress(cfg.EmailFrom); err != nil {
+		errs = append(errs, errors.New("EMAIL_FROM must be an address such as \"RightProperty365 <no-reply@rightproperty365.com>\""))
+	}
+	cfg.EmailReplyTo = val("EMAIL_REPLY_TO", "")
+	if cfg.EmailReplyTo != "" {
+		if _, err := mail.ParseAddress(cfg.EmailReplyTo); err != nil {
+			errs = append(errs, errors.New("EMAIL_REPLY_TO must be an email address"))
+		}
 	}
 
 	// Seed users exist only in development; elsewhere the variable is ignored
@@ -267,8 +363,13 @@ func parseLevel(raw string) (slog.Level, error) {
 }
 
 // LoadDotEnv sets variables from a KEY=VALUE file for local development.
-// Variables already present in the environment always win and a missing file
-// is not an error. Deployed environments should inject real env vars instead.
+// A missing file is not an error. Deployed environments should inject real
+// env vars instead.
+//
+// Precedence: a variable that is PRESENT in the process environment always
+// wins, even when its value is empty. So `RESEND_API_KEY= go run ./cmd/api`
+// runs without a key although .env has one, and `MAIL_DRIVER=log` in the
+// environment overrides whatever .env says.
 func LoadDotEnv(path string) error {
 	f, err := os.Open(path)
 	if err != nil {

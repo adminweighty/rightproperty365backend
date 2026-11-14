@@ -1,0 +1,12 @@
+{{define "subject"}}Payment received: {{.Amount}}{{end}}
+{{define "heading"}}Payment received{{end}}
+{{define "button"}}View receipt{{end}}
+{{define "why"}}You are receiving this because a payment was made for your RightProperty365 account.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+We have received your payment.
+
+Amount: {{.Amount}}
+{{if .InvoiceNumber}}Invoice: {{.InvoiceNumber}}
+{{end}}Received: {{date .When}}
+{{end}}

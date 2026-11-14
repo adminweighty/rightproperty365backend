@@ -1,0 +1,14 @@
+{{define "subject"}}Your listing has expired{{end}}
+{{define "heading"}}Your listing has expired{{end}}
+{{define "button"}}Manage your listings{{end}}
+{{define "why"}}You are receiving this because you manage this listing on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+One of your listings has expired and is no longer shown to customers.
+
+Listing: {{.ListingTitle}}
+{{if .ListingRef}}Reference: {{.ListingRef}}
+{{end}}Expired: {{date .ExpiresOn}}
+
+
+You can relist it from your listings.{{end}}

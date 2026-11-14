@@ -1,0 +1,21 @@
+Subject: Invoice INV-2026-00042 issued
+
+Invoice issued
+
+Hello Rudo Moyo,
+
+A renewal invoice has been issued for your account.
+
+Invoice: INV-2026-00042
+Amount: USD 25.00
+Due: 28 November 2026
+
+This invoice has not been paid yet.
+
+View invoice:
+https://rightproperty365.com/account
+
+--
+You are receiving this because your RightProperty365 account has a paid plan.
+Sent by RightProperty365.
+https://rightproperty365.com

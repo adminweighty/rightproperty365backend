@@ -1,0 +1,10 @@
+{{define "preheader"}}Someone tried to create an account with this address. Nothing has changed.{{end}}
+{{define "heading"}}You already have an account{{end}}
+{{define "button"}}Sign in{{end}}
+{{define "why"}}You are receiving this because this address was entered on the RightProperty365 sign-up form.{{end}}
+{{define "body"}}
+<p class="ink" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;color:#131722;">{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}</p>
+<p class="ink" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;color:#131722;">Someone tried to create a RightProperty365 account with this email address, which already has one. Nothing has changed.</p>
+<p class="ink" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;color:#131722;">If it was you, sign in instead. If you have forgotten your password, you can reset it from the sign-in page.</p>
+<p class="muted" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:14px;line-height:21px;color:#4f586a;">If it was not you, there is nothing you need to do.</p>
+{{end}}

@@ -46,17 +46,19 @@ type captureMailer struct {
 	accountExists []string
 }
 
-func (m *captureMailer) SendVerification(_ context.Context, _, _, link string) error {
+// The mailer receives the raw token and builds the link itself; this fake
+// builds the same link shape so the tests can follow it.
+func (m *captureMailer) SendVerification(_ context.Context, _, _, token string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.verifications = append(m.verifications, link)
+	m.verifications = append(m.verifications, testOrigin+"/verify-email?token="+url.QueryEscape(token))
 	return nil
 }
 
-func (m *captureMailer) SendPasswordReset(_ context.Context, _, _, link string) error {
+func (m *captureMailer) SendPasswordReset(_ context.Context, _, _, token string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.resets = append(m.resets, link)
+	m.resets = append(m.resets, testOrigin+"/reset-password?token="+url.QueryEscape(token))
 	return nil
 }
 
@@ -2021,4 +2023,76 @@ func TestEverySampleListingRoutesToItsOwner(t *testing.T) {
 	body := e.propertyRequest(1)
 	body["listing_id"] = devseed.ExpiredListingID.String()
 	wantError(t, e.post("/v1/property-requests", body, withIP("198.51.100.99")), http.StatusGone, propertyrequests.CodeListingUnavailable)
+}
+
+// ---------------------------------------------------------------------------
+// Outbox events behind the account notification emails
+// ---------------------------------------------------------------------------
+
+func (e *env) identityEvents() []string {
+	var types []string
+	for _, ev := range e.identity.Outbox() {
+		types = append(types, ev.Type)
+	}
+	return types
+}
+
+func TestIdentityOutboxEvents(t *testing.T) {
+	e := newEnv(t)
+	if n := len(e.identity.Outbox()); n != 0 {
+		t.Fatalf("seeding wrote %d outbox events", n)
+	}
+
+	// Registration and a customer sign-in write nothing; verification writes the welcome event once.
+	cookie := e.selfRegister("events@example.com", "CONSUMER", "LANDLORD")
+	e.loginCookie(identity.SeedConsumerEmail, seedPassword)
+	if got := e.identityEvents(); len(got) != 1 || got[0] != identity.EventUserEmailVerified {
+		t.Fatalf("events after verification = %v, want [USER_EMAIL_VERIFIED]", got)
+	}
+	user, _ := e.me(cookie)
+	first := e.identity.Outbox()[0]
+	if first.AggregateID.String() != user.ID || first.AggregateType != identity.AggregateUser {
+		t.Fatalf("unexpected event: %+v", first)
+	}
+
+	// A password reset writes PASSWORD_CHANGED, and verifies nothing new.
+	wantStatus(t, e.post("/v1/auth/password-reset/request", obj{"email": "events@example.com"}), http.StatusAccepted)
+	wantStatus(t, e.post("/v1/auth/password-reset/confirm", obj{"token": e.mail.resetToken(t), "password": newPassword}), http.StatusNoContent)
+	// An administrator sign-in writes ADMIN_SIGNED_IN; a refused one does not.
+	wantError(t, e.post("/v1/admin/auth/login", obj{"email": identity.SeedAdminEmail, "password": "definitely-wrong-pw"}), http.StatusUnauthorized, identity.CodeInvalidCredentials)
+	e.adminLogin(identity.SeedAdminEmail, seedPassword)
+
+	got := e.identityEvents()
+	want := []string{identity.EventUserEmailVerified, identity.EventPasswordChanged, identity.EventAdminSignedIn}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+	if admin := e.identity.Outbox()[2]; admin.AggregateID != identity.SeedAdminUserID {
+		t.Fatalf("admin event: %+v", admin)
+	}
+
+	// Payloads carry an id and a time: no address, name, token or password.
+	for _, ev := range e.identity.Outbox() {
+		payload := string(ev.Payload)
+		for _, private := range []string{"@", "events", "Rudo", newPassword, seedPassword, "token"} {
+			if strings.Contains(payload, private) {
+				t.Fatalf("%s payload contains %q: %s", ev.Type, private, payload)
+			}
+		}
+		if !strings.Contains(payload, `"user_id":"`+ev.AggregateID.String()+`"`) || !strings.Contains(payload, `"occurred_at":"`) {
+			t.Fatalf("%s payload = %s", ev.Type, payload)
+		}
+	}
+	// The verification and reset tokens never reach any outbox.
+	for _, link := range append(append([]string{}, e.mail.verifications...), e.mail.resets...) {
+		token := link[strings.Index(link, "token=")+len("token="):]
+		for _, ev := range e.identity.Outbox() {
+			if strings.Contains(string(ev.Payload), token) {
+				t.Fatal("a secret token was written to the outbox")
+			}
+		}
+		if strings.Contains(e.logs.String(), token) {
+			t.Fatal("a secret token was logged")
+		}
+	}
 }

@@ -83,6 +83,17 @@ func replaceAccountRoles(ctx context.Context, q querier, u NewUser) error {
 	return nil
 }
 
+// insertOutbox writes an identity event into the transactional outbox.
+func insertOutbox(ctx context.Context, q querier, e OutboxEvent) error {
+	if _, err := q.Exec(ctx, `
+		INSERT INTO outbox_events (id, event_type, aggregate_type, aggregate_id, payload, created_at, available_at)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $6)`,
+		uuid.New(), e.Type, AggregateUser, e.UserID, string(e.Payload()), e.OccurredAt); err != nil {
+		return fmt.Errorf("insert outbox event %s: %w", e.Type, err)
+	}
+	return nil
+}
+
 // CreateUser implements Store.
 func (s *PostgresStore) CreateUser(ctx context.Context, u NewUser) error {
 	return s.inTx(ctx, func(tx pgx.Tx) error {
@@ -237,10 +248,16 @@ func (s *PostgresStore) ConsumeVerificationToken(ctx context.Context, tokenHash 
 		if err != nil {
 			return fmt.Errorf("consume verification token: %w", err)
 		}
-		if _, err := tx.Exec(ctx, `
-			UPDATE users SET email_verified_at = COALESCE(email_verified_at, $2), updated_at = $2
-			WHERE id = $1`, userID, now); err != nil {
+		// Only a row that was not verified before is updated, which tells us
+		// whether this is the first verification (and so whether to welcome).
+		tag, err := tx.Exec(ctx, `
+			UPDATE users SET email_verified_at = $2, updated_at = $2
+			WHERE id = $1 AND email_verified_at IS NULL`, userID, now)
+		if err != nil {
 			return fmt.Errorf("mark email verified: %w", err)
+		}
+		if tag.RowsAffected() == 1 {
+			return insertOutbox(ctx, tx, OutboxEvent{Type: EventUserEmailVerified, UserID: userID, OccurredAt: now})
 		}
 		return nil
 	})
@@ -290,7 +307,7 @@ func (s *PostgresStore) ResetPassword(ctx context.Context, tokenHash []byte, pas
 			WHERE user_id = $1 AND revoked_at IS NULL`, userID, now); err != nil {
 			return fmt.Errorf("revoke sessions: %w", err)
 		}
-		return nil
+		return insertOutbox(ctx, tx, OutboxEvent{Type: EventPasswordChanged, UserID: userID, OccurredAt: now})
 	})
 	if err != nil {
 		return uuid.Nil, err
@@ -299,12 +316,21 @@ func (s *PostgresStore) ResetPassword(ctx context.Context, tokenHash []byte, pas
 }
 
 // CreateSession implements Store.
-func (s *PostgresStore) CreateSession(ctx context.Context, sess Session) error {
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO sessions (id, user_id, token_hash, delivery, created_at, last_seen_at, expires_at, scope)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		sess.ID, sess.UserID, sess.TokenHash, sess.Delivery, sess.CreatedAt, sess.LastSeenAt, sess.ExpiresAt, sess.Scope)
-	return err
+func (s *PostgresStore) CreateSession(ctx context.Context, sess Session, events ...OutboxEvent) error {
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO sessions (id, user_id, token_hash, delivery, created_at, last_seen_at, expires_at, scope)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			sess.ID, sess.UserID, sess.TokenHash, sess.Delivery, sess.CreatedAt, sess.LastSeenAt, sess.ExpiresAt, sess.Scope); err != nil {
+			return fmt.Errorf("insert session: %w", err)
+		}
+		for _, e := range events {
+			if err := insertOutbox(ctx, tx, e); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // SessionByTokenHash implements Store.
@@ -415,6 +441,6 @@ func (s *PostgresStore) SetPlatformAdminPassword(ctx context.Context, email, pas
 		if _, err := tx.Exec(ctx, `UPDATE sessions SET revoked_at = $2 WHERE user_id = $1 AND revoked_at IS NULL`, userID, now); err != nil {
 			return fmt.Errorf("revoke sessions: %w", err)
 		}
-		return nil
+		return insertOutbox(ctx, tx, OutboxEvent{Type: EventPasswordChanged, UserID: userID, OccurredAt: now})
 	})
 }

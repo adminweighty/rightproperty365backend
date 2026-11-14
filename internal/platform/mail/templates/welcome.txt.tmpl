@@ -1,0 +1,12 @@
+{{define "subject"}}Your RightProperty365 account is ready{{end}}
+{{define "heading"}}Your account is ready{{end}}
+{{define "button"}}Go to your account{{end}}
+{{define "why"}}You are receiving this because you confirmed this address for a RightProperty365 account.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+Your email address is confirmed and your account is ready to use.
+
+{{if .Roles}}You told us you are joining as:
+{{range .Roles}}  - {{.Name}}: {{if .Pending}}waiting for verification{{else}}active{{end}}
+{{end}}{{end}}{{- if .HasPendingRoles}}
+A role that is waiting for verification is a request. It does not give access to agency or business tools until it has been verified.{{end}}{{end}}

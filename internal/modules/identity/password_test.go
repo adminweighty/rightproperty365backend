@@ -1,8 +1,6 @@
 package identity
 
 import (
-	"context"
-	"log/slog"
 	"regexp"
 	"strings"
 	"testing"
@@ -99,38 +97,5 @@ func TestTokens(t *testing.T) {
 		if !plausibleToken(token) || plausibleToken(token+"a") || plausibleToken("") {
 			t.Fatal("plausibleToken misjudged a token")
 		}
-	}
-}
-
-func TestLinks(t *testing.T) {
-	l := NewLinks("http://localhost:3000/")
-	if got := l.VerifyEmail("abc_DEF-1"); got != "http://localhost:3000/verify-email?token=abc_DEF-1" {
-		t.Fatalf("verify link = %s", got)
-	}
-	if got := l.ResetPassword("abc_DEF-1"); got != "http://localhost:3000/reset-password?token=abc_DEF-1" {
-		t.Fatalf("reset link = %s", got)
-	}
-}
-
-func TestMailersLogging(t *testing.T) {
-	ctx := context.Background()
-	const link = "http://localhost:3000/verify-email?token=SECRET-TOKEN"
-
-	var dev strings.Builder
-	_ = NewDevMailer(slog.New(slog.NewJSONHandler(&dev, nil))).SendVerification(ctx, "a@example.com", "A", link)
-	if strings.Count(dev.String(), "\n") != 1 || !strings.Contains(dev.String(), link) {
-		t.Fatalf("development mailer must log exactly one line containing the link, got %q", dev.String())
-	}
-
-	var prod strings.Builder
-	m := NewUnconfiguredMailer(slog.New(slog.NewJSONHandler(&prod, nil)))
-	_ = m.SendVerification(ctx, "a@example.com", "A", link)
-	_ = m.SendPasswordReset(ctx, "a@example.com", "A", link)
-	out := prod.String()
-	if strings.Contains(out, "SECRET-TOKEN") || strings.Contains(out, "a@example.com") {
-		t.Fatalf("placeholder mailer leaked the token or recipient: %s", out)
-	}
-	if strings.Count(out, `"level":"WARN"`) != 2 {
-		t.Fatalf("placeholder mailer must warn for every unsent email: %s", out)
 	}
 }

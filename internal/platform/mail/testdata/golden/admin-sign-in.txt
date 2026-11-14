@@ -1,0 +1,21 @@
+Subject: Administrator sign-in to your account
+
+Administrator sign-in
+
+Hello Sam Admin,
+
+Your administrator account was used to sign in to RightProperty365.
+
+Signed in: 14 November 2026, 09:05 UTC
+
+If this was you, there is nothing more to do.
+
+If this was not you, have your password changed immediately and tell the platform owner. Administrator passwords are not reset by email.
+
+Open administrator sign-in:
+https://rightproperty365.com/admin/sign-in
+
+--
+You are receiving this security notice because your account holds an administrator role.
+Sent by RightProperty365.
+https://rightproperty365.com

@@ -1,0 +1,12 @@
+{{define "subject"}}Update on your request {{.Reference}}{{end}}
+{{define "heading"}}Update on your request{{end}}
+{{define "button"}}View your requests{{end}}
+{{define "why"}}You are receiving this because you sent this request on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+There is an update on your request.
+
+Reference: {{.Reference}}
+Status: {{.StatusText}}
+Updated: {{date .When}}
+{{end}}

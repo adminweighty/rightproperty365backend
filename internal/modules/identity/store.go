@@ -30,7 +30,8 @@ type Store interface {
 	// CreateVerificationToken stores a single-use email verification token.
 	CreateVerificationToken(ctx context.Context, userID uuid.UUID, tokenHash []byte, expiresAt, now time.Time) error
 	// ConsumeVerificationToken atomically marks the token used and the user's
-	// email verified, returning the user ID. ErrInvalidToken when the token is
+	// email verified, returning the user ID. When the address was not verified
+	// before, it also writes the USER_EMAIL_VERIFIED outbox event. ErrInvalidToken when the token is
 	// unknown, expired or already used.
 	ConsumeVerificationToken(ctx context.Context, tokenHash []byte, now time.Time) (uuid.UUID, error)
 
@@ -38,12 +39,13 @@ type Store interface {
 	CreatePasswordResetToken(ctx context.Context, userID uuid.UUID, tokenHash []byte, expiresAt, now time.Time) error
 	// ResetPassword atomically consumes the token, sets the new password hash,
 	// marks the email verified (the token proves control of the mailbox),
-	// invalidates the user's other reset tokens and revokes ALL the user's
-	// sessions. ErrInvalidToken when the token is unknown, expired or used.
+	// invalidates the user's other reset tokens, revokes ALL the user's
+	// sessions and writes the PASSWORD_CHANGED outbox event. ErrInvalidToken when the token is unknown, expired or used.
 	ResetPassword(ctx context.Context, tokenHash []byte, passwordHash string, now time.Time) (uuid.UUID, error)
 
-	// CreateSession stores a new session.
-	CreateSession(ctx context.Context, s Session) error
+	// CreateSession stores a new session and, atomically with it, any outbox
+	// events (the administrator sign-in notice).
+	CreateSession(ctx context.Context, s Session, events ...OutboxEvent) error
 	// SessionByTokenHash returns the session, or ErrNotFound. Expiry and
 	// revocation are judged by the service.
 	SessionByTokenHash(ctx context.Context, tokenHash []byte) (Session, error)

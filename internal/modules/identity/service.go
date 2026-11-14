@@ -100,7 +100,6 @@ type ConsentInput struct {
 type Service struct {
 	store  Store
 	mailer Mailer
-	links  Links
 	hasher Hasher
 	logger *slog.Logger
 	now    func() time.Time
@@ -135,9 +134,9 @@ func WithAdminSessionTTLs(absolute, idle time.Duration) Option {
 }
 
 // NewService builds a Service.
-func NewService(store Store, mailer Mailer, links Links, logger *slog.Logger, opts ...Option) (*Service, error) {
+func NewService(store Store, mailer Mailer, logger *slog.Logger, opts ...Option) (*Service, error) {
 	s := &Service{
-		store: store, mailer: mailer, links: links, hasher: DefaultHasher(), logger: logger, now: time.Now,
+		store: store, mailer: mailer, hasher: DefaultHasher(), logger: logger, now: time.Now,
 		adminTTL: DefaultAdminSessionTTL, adminIdleTTL: DefaultAdminSessionIdleTTL,
 	}
 	for _, opt := range opts {
@@ -323,7 +322,7 @@ func (s *Service) sendVerification(ctx context.Context, userID uuid.UUID, email,
 	if err := s.store.CreateVerificationToken(ctx, userID, hash, now.Add(VerificationTokenTTL), now); err != nil {
 		return fmt.Errorf("store verification token: %w", err)
 	}
-	if err := s.mailer.SendVerification(ctx, email, name, s.links.VerifyEmail(token)); err != nil {
+	if err := s.mailer.SendVerification(ctx, email, name, token); err != nil {
 		s.logger.ErrorContext(ctx, "verification email failed", slog.String("error", err.Error()))
 	}
 	return nil
@@ -569,7 +568,12 @@ func (s *Service) startSession(ctx context.Context, user User, delivery, scope s
 		ID: id, UserID: user.ID, TokenHash: hash, Scope: scope, Delivery: delivery,
 		CreatedAt: now, LastSeenAt: now, ExpiresAt: now.Add(ttl),
 	}
-	if err := s.store.CreateSession(ctx, sess); err != nil {
+	var events []OutboxEvent
+	if scope == auth.ScopeAdmin {
+		// The administrator gets a sign-in notice by email (sent by the worker).
+		events = append(events, OutboxEvent{Type: EventAdminSignedIn, UserID: user.ID, OccurredAt: now})
+	}
+	if err := s.store.CreateSession(ctx, sess, events...); err != nil {
 		return AuthResult{}, fmt.Errorf("create session: %w", err)
 	}
 	s.logger.InfoContext(ctx, "session started",
@@ -613,7 +617,7 @@ func (s *Service) RequestPasswordReset(ctx context.Context, email string) error 
 	if err := s.store.CreatePasswordResetToken(ctx, user.ID, hash, now.Add(ResetTokenTTL), now); err != nil {
 		return fmt.Errorf("store reset token: %w", err)
 	}
-	if err := s.mailer.SendPasswordReset(ctx, user.Email, user.Name, s.links.ResetPassword(token)); err != nil {
+	if err := s.mailer.SendPasswordReset(ctx, user.Email, user.Name, token); err != nil {
 		s.logger.ErrorContext(ctx, "password reset email failed", slog.String("error", err.Error()))
 	}
 	return nil

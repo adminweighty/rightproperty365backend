@@ -1,0 +1,9 @@
+{{define "preheader"}}Your email address is confirmed and your account is ready to use.{{end}}
+{{define "heading"}}Your account is ready{{end}}
+{{define "button"}}Go to your account{{end}}
+{{define "why"}}You are receiving this because you confirmed this address for a RightProperty365 account.{{end}}
+{{define "body"}}
+<p class="ink" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;color:#131722;">{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}</p>
+<p class="ink" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;color:#131722;">Your email address is confirmed and your account is ready to use.</p>
+{{if .Roles}}<p class="ink" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;color:#131722;">You told us you are joining as:</p><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 20px;">{{range .Roles}}<tr><td class="ink" valign="top" style="padding:4px 0;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:22px;color:#131722;">&bull;&nbsp; <strong>{{.Name}}</strong> &ndash; {{if .Pending}}waiting for verification{{else}}active{{end}}</td></tr>{{end}}</table>{{end}}{{if .HasPendingRoles}}<p class="muted" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:14px;line-height:21px;color:#4f586a;">A role that is waiting for verification is a request. It does not give access to agency or business tools until it has been verified.</p>{{end}}
+{{end}}

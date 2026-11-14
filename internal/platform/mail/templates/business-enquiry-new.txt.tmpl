@@ -1,0 +1,18 @@
+{{define "subject"}}New enquiry: {{.Reference}}{{end}}
+{{define "heading"}}New enquiry{{end}}
+{{define "button"}}Open your inbox{{end}}
+{{define "why"}}You are receiving this because an enquiry was routed to you on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+A customer has sent an enquiry to {{.ProfileName}}.
+
+Reference: {{.Reference}}
+Profile: {{.ProfileName}}
+{{if .Service}}Service: {{.Service}}
+{{end}}Received: {{date .When}}
+
+
+{{if .Preview}}Message preview:
+  {{.Preview}}{{end}}
+
+The full message and the customer's contact details are in your inbox. They are not included in this email.{{end}}

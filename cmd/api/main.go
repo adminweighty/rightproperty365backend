@@ -18,10 +18,13 @@ import (
 	"rightproperty365.com/backend/internal/modules/health"
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/markets"
+	"rightproperty365.com/backend/internal/modules/notifications"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/database"
 	"rightproperty365.com/backend/internal/platform/logging"
+	"rightproperty365.com/backend/internal/platform/mail"
+	"rightproperty365.com/backend/internal/platform/outbox"
 )
 
 const shutdownTimeout = 20 * time.Second
@@ -47,6 +50,19 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Email transport. This logs which mailer is in use before anything can
+	// trigger an email. MAIL_DRIVER=log forces the development log mailer
+	// even when RESEND_API_KEY is set.
+	sender, err := notifications.NewSender(cfg, logger)
+	if err != nil {
+		return err
+	}
+	renderer, err := mail.NewRenderer(cfg.PublicWebURL)
+	if err != nil {
+		return err
+	}
+	var deliveryLog mail.DeliveryLog
+
 	var (
 		marketStore   markets.Store
 		requestStore  propertyrequests.Store
@@ -71,6 +87,27 @@ func run() error {
 
 		memIdentity := identity.NewMemoryStore()
 		identityStore = memIdentity
+
+		// Without a database there is no outbox table for the worker to poll,
+		// so notification emails are handled in this process, straight from
+		// the in-memory stores. Development only: no retries, nothing durable.
+		memDeliveries := mail.NewMemoryDeliveryLog()
+		deliveryLog = memDeliveries
+		handlers := notifications.NewHandlers(mail.NewService(sender, memDeliveries, logger), renderer,
+			notifications.NewMemorySource(memIdentity, memRequests, memEnquiries), logger)
+		sink := func(ev outbox.Event) {
+			go func() {
+				hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+				defer cancel()
+				if err := handlers.Handle(hctx, ev); err != nil {
+					logger.Error("in-process notification failed (development; not retried)",
+						slog.String("event_type", ev.Type), slog.String("error", err.Error()))
+				}
+			}()
+		}
+		memIdentity.SetOutboxSink(sink)
+		memRequests.SetOutboxSink(sink)
+		memEnquiries.SetOutboxSink(sink)
 		if cfg.DevSeedPassword == "" {
 			logger.Warn("DEV_SEED_PASSWORD is not set: development seed users were NOT created (copy .env.example to .env to get them)")
 		} else {
@@ -94,17 +131,12 @@ func run() error {
 		identityStore = identity.NewPostgresStore(pool)
 		enquiryStore = businessenquiries.NewPostgresStore(pool)
 		healthH = health.NewHandler(health.StorePostgres, pool.Ping, logger)
+		deliveryLog = mail.NewPostgresDeliveryLog(pool)
 	}
 
-	// Email: development logs the links; elsewhere nothing is sent until a
-	// provider is chosen (the mailer then warns without logging any token).
-	var mailer identity.Mailer
-	if cfg.Env == config.EnvDevelopment {
-		mailer = identity.NewDevMailer(logger)
-	} else {
-		logger.Warn("no email provider is configured: verification and password-reset emails will NOT be sent")
-		mailer = identity.NewUnconfiguredMailer(logger)
-	}
+	// Verification and password-reset emails are sent from the request path
+	// (their links are credentials and never go through the outbox).
+	mailer := notifications.NewAccountMailer(mail.NewService(sender, deliveryLog, logger), renderer)
 
 	handler, err := app.NewRouter(app.Deps{
 		Config:    cfg,

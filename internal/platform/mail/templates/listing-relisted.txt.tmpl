@@ -1,0 +1,12 @@
+{{define "subject"}}Your listing is shown to customers again{{end}}
+{{define "heading"}}Your listing is live again{{end}}
+{{define "button"}}Manage your listings{{end}}
+{{define "why"}}You are receiving this because you manage this listing on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+Your listing has been relisted and is shown to customers again.
+
+Listing: {{.ListingTitle}}
+{{if .ListingRef}}Reference: {{.ListingRef}}
+{{end}}Shown until: {{date .ExpiresOn}}
+{{end}}

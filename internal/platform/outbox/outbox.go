@@ -42,6 +42,33 @@ type HandlerFunc func(ctx context.Context, ev Event) error
 // Handle implements Handler.
 func (f HandlerFunc) Handle(ctx context.Context, ev Event) error { return f(ctx, ev) }
 
+// permanentError marks a failure that retrying cannot fix.
+type permanentError struct{ err error }
+
+func (e *permanentError) Error() string { return e.err.Error() }
+func (e *permanentError) Unwrap() error { return e.err }
+
+// Permanent wraps err so the dispatcher dead-letters the event immediately
+// instead of retrying it. Use it when the outcome cannot change, for example
+// an email the provider rejected as invalid.
+func Permanent(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &permanentError{err: err}
+}
+
+// IsPermanent reports whether err was wrapped with Permanent.
+func IsPermanent(err error) bool {
+	var p *permanentError
+	return errors.As(err, &p)
+}
+
+// Sink receives events as they are written by an in-memory store. It exists
+// for development without a database, where there is no outbox table for the
+// worker to poll; see cmd/api.
+type Sink func(Event)
+
 // Queue is the storage behind the dispatcher (Postgres in production).
 type Queue interface {
 	// Lease claims up to limit due events for leaseFor and increments their attempts.
@@ -168,8 +195,8 @@ func (d *Dispatcher) process(ctx context.Context, ev Event) {
 		return
 	}
 
-	if ev.Attempts >= d.cfg.MaxAttempts {
-		log.Error("outbox event dead-lettered", slog.String("error", err.Error()))
+	if ev.Attempts >= d.cfg.MaxAttempts || IsPermanent(err) {
+		log.Error("outbox event dead-lettered", slog.String("error", err.Error()), slog.Bool("permanent", IsPermanent(err)))
 		if mErr := d.queue.MarkDeadLetter(bookkeeping, ev.ID, d.cfg.WorkerID, truncate(err.Error())); mErr != nil {
 			log.Error("mark outbox event dead-lettered failed", slog.String("error", mErr.Error()))
 		}

@@ -163,7 +163,8 @@ All configuration comes from environment variables. For local development you ma
 | `DB_MAX_CONNS` | `8` | Per-process pool cap (1–100). Each API replica and the worker have their own pool; see "Database" for sizing against `max_connections` |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated exact origins; wildcards are rejected |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
-| `WEB_BASE_URL` | `http://localhost:3000` | Frontend base URL used to build the links in verification / password-reset emails |
+| `PUBLIC_WEB_URL` | `http://localhost:3000` | Public origin of the web app; every link and image in an email is built from it (`WEB_BASE_URL` is a deprecated alias) |
+| `RESEND_API_KEY`, `MAIL_DRIVER`, `EMAIL_FROM`, `EMAIL_REPLY_TO` | | Email settings: see "Email". **A key in `.env` makes local runs send real email unless `MAIL_DRIVER=log`** |
 | `DEV_SEED_PASSWORD` | _(empty)_ | Development only: shared password of the seed users. Ignored outside `APP_ENV=development`; never logged |
 | `ADMIN_SESSION_TTL` | `12h` | Absolute lifetime of an administrator session (Go duration, 1m–24h) |
 | `ADMIN_SESSION_IDLE_TTL` | `30m` | Administrator inactivity timeout (Go duration; must not exceed `ADMIN_SESSION_TTL`) |
@@ -263,9 +264,135 @@ delivery.
 - **Where the customer's contact details go** – they are stored on the enquiry and returned
   **only** by that inbox, to the authorised recipient. They are never returned by any other
   endpoint, never put in the outbox payload and never logged.
-- **Nothing is sent to the recipient.** There are no notifications yet: an enquiry is visible in
-  the recipient's inbox and nowhere else. The worker's handler for `BUSINESS_ENQUIRY_CREATED` only
-  logs identifiers.
+- **Notifications.** The customer gets an "enquiry received" email and the recipient a "new
+  enquiry" email with a reference, a preview with contact details removed and a button to the
+  inbox (see "Email"). The customer's contact details are never put in an email.
+
+## Email
+
+All email goes through [Resend](https://resend.com) (`POST https://api.resend.com/emails`, plain
+`net/http`, no SDK), rendered from Go templates in `internal/platform/mail/templates`.
+
+> **A local run can send real email.** The binaries read `.env`. If `RESEND_API_KEY` is set there,
+> the API and the worker select Resend and every trigger (register, password reset, a property
+> request, an enquiry, an administrator sign-in) sends a real message through that account. To be
+> safe, force the log mailer: `MAIL_DRIVER=log go run ./cmd/api`. The first lines of the log say
+> which mailer is in use — `mailer selected: log ...` or `mailer selected: resend ...` — check
+> that line before triggering anything.
+
+### Prerequisites (your steps, not done by this repository)
+
+1. **Verify the sending domain in Resend.** Resend only sends from a domain whose DNS records
+   (SPF, DKIM, and ideally DMARC) are verified in the Resend account. The default sender is
+   `RightProperty365 <no-reply@rightproperty365.com>`, so `rightproperty365.com` must be verified
+   there. Until it is, Resend rejects every send with `403 validation_error`.
+2. **Create a Resend API key** (a "sending access" key is enough) and put it in `RESEND_API_KEY`:
+   in your local `.env` (git-ignored) for development, in a **Kubernetes Secret** in production.
+   It must never be committed, logged or pasted anywhere.
+3. **Turn off open and click tracking for the domain** in the Resend dashboard if you do not want
+   it. The Resend API has no per-message switch for it, so this code cannot do it for you. Nothing
+   in the templates adds a tracking pixel or rewrites links.
+4. **Serve the logo images** from the web app at `{PUBLIC_WEB_URL}/email/logo-on-indigo.png` (they
+   are in the web repository under `public/email/`). Emails read correctly without them.
+
+### Configuration
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `RESEND_API_KEY` | _(empty)_ | Resend API key. Secret. Required in staging and production: startup **fails** without it |
+| `MAIL_DRIVER` | _(automatic)_ | `resend` or `log`. Unset: `resend` when a key is set, otherwise `log` in development and a startup error elsewhere. `log` forces the log mailer even when a key is set, and is **refused** in staging/production |
+| `EMAIL_FROM` | `RightProperty365 <no-reply@rightproperty365.com>` | Sender. Its domain must be verified in Resend |
+| `EMAIL_REPLY_TO` | _(empty)_ | Optional Reply-To address |
+| `PUBLIC_WEB_URL` | `http://localhost:3000` | Public origin of the web app. **Every** link and image URL in an email is built from it, never from request input. `WEB_BASE_URL` is still read as a deprecated alias when `PUBLIC_WEB_URL` is unset |
+
+Precedence: a variable present in the process environment always wins over `.env`, **even when it
+is set to an empty string**. So `RESEND_API_KEY= go run ./cmd/api` runs without a key although
+`.env` has one. An empty `MAIL_DRIVER` means "automatic". Both are covered by tests.
+
+The log mailer (development only) sends nothing and writes one line per email, including the link:
+`"msg":"DEV MAIL (not sent): verify-email link", ..., "link":"http://localhost:3000/verify-email?token=..."`.
+
+### How an email is sent
+
+- **One email per logical notification.** Each notification has a key such as
+  `property-request-received/<outbox event id>/customer`. It is recorded in `email_messages`
+  (migration `0006`; a memory log in development) and sent to Resend as the `Idempotency-Key`
+  header. A notification that the provider already accepted is never sent again, and a retry after
+  an ambiguous failure cannot produce a second email (Resend keeps idempotency keys for 24 hours;
+  the `email_messages` row covers the time after that).
+- **Statuses**: `ATTEMPTED`, `PROVIDER_ACCEPTED` (with Resend's message ID) and `FAILED` (with a
+  short reason and whether it is terminal). **`PROVIDER_ACCEPTED` is not "delivered"**: Resend
+  accepting a message says nothing about whether it reached an inbox, and nothing here claims it.
+  There is no webhook handling for bounces or complaints yet.
+- **Retries.** One send makes up to 3 attempts with backoff for transient failures (network
+  errors, `429 rate_limit_exceeded`, `5xx`, a concurrent request with the same key), honouring
+  `Retry-After`. Anything else is terminal.
+- **Notification emails go through the transactional outbox and the worker**: the change and its
+  event are committed together; the worker sends the emails; a transient failure is retried with
+  the outbox backoff (30 s doubling, up to 8 attempts) and a terminal one dead-letters the event
+  immediately.
+- **Emails with a secret link are sent from the request path**, not the outbox: the verification
+  or reset token must never be stored in an outbox payload. They get the bounded retry above. The
+  token is in the email only — not in the notification key, the `email_messages` row or the logs.
+  If the send still fails the API answers `202` as before and the person can ask again.
+- **Not stored, not logged**: the recipient address (only its SHA-256), subject, body, links,
+  request headers and the API key. Provider error text is reduced to a status code and Resend's
+  short error name.
+- **Without a database** (development) there is no outbox table, so the API handles notification
+  events itself, in-process, from the in-memory stores: no retries, nothing durable. The worker is
+  idle in that mode.
+
+### What is sent today
+
+| Email | Trigger | Path |
+| --- | --- | --- |
+| Confirm your email address | Register, resend verification | request |
+| Reset your password | Password-reset request (never for administrators) | request |
+| You already have an account | Register with an address that is already verified | request |
+| Your account is ready (welcome; lists the roles chosen and which are waiting for verification) | Email verified for the first time | outbox `USER_EMAIL_VERIFIED` |
+| Your password was changed | Password reset confirmed; `adminctl set-password` | outbox `PASSWORD_CHANGED` |
+| Administrator sign-in | Successful `POST /v1/admin/auth/login` | outbox `ADMIN_SIGNED_IN` |
+| Request received (to the customer, with the reference) | Property request created | outbox `PROPERTY_REQUEST_CREATED` |
+| New property request (to the assigned agent or direct seller, otherwise the organisation's owners and managers) | Property request created | same event |
+| Enquiry received (to the customer) | Business enquiry created | outbox `BUSINESS_ENQUIRY_CREATED` |
+| New enquiry (to the named agent, otherwise the owning organisation's owners and managers) | Business enquiry created | same event |
+
+**Designed, written and tested, but NOT triggered by anything** (the features do not exist yet):
+reply or status update to the customer, listing expiring in 14 / 7 / 1 days, listing expired, relist
+confirmed, renewal invoice issued, payment received, account deletion requested, account deletion
+completed. Their wording about payments, invoices and deletion is a draft: the house rules say
+legal and payment wording needs sign-off per market before release.
+
+Privacy: an email to an agent, seller or owner carries the reference, a short preview with phone
+numbers, email addresses and links removed, and a button to the inbox
+(`{PUBLIC_WEB_URL}/agent/requests`). **It never contains the customer's phone number or email
+address.** An email to a customer never contains the business's contact details. A routing
+exception notifies the customer only.
+
+### Templates and preview
+
+One shared layout plus one HTML and one plain-text template per email, rendered with
+`html/template` (auto-escaping on; nothing a person typed is ever treated as markup) and
+`text/template`. The look follows the brand kit: indigo `#1900AC` header band with the reverse
+logo, a 3px indigo-to-turquoise rule (solid turquoise where gradients are not supported), a white
+card on a light slate page, one button per email (48px tall), a short footer saying why the email
+was sent. Table layout, inline styles, 600px maximum width, a hidden preheader, `lang="en"`, and a
+dark-mode treatment (`color-scheme` plus `prefers-color-scheme`). No JavaScript, no external CSS,
+no web fonts (Inter with a system fallback), no tracking pixel, and one image (the logo, with
+width, height and alt text).
+
+```powershell
+go run ./cmd/mailpreview        # or: make mail-preview
+```
+
+writes every template with sample data to `tmp/mail-preview/` (git-ignored) as `<name>.html` and
+`<name>.txt`, plus an `index.html` linking them all. It sends nothing and needs no key. The exact
+output of every template is pinned by golden files in `internal/platform/mail/testdata/golden`
+(regenerate deliberately with `go test ./internal/platform/mail -update`).
+
+**Not verified:** the templates have not been opened in real mail clients (Outlook, Gmail, Apple
+Mail), and no email has ever been sent through Resend from this code — it is tested against a local
+fake of the API only.
 
 ## Authentication and sessions
 
@@ -303,12 +430,11 @@ delivery.
   control of the mailbox.
 - **Rate limit** – all `POST /v1/auth/*` routes share one per-IP bucket (burst 20, refill 20/min),
   separate from the property-request bucket.
-- **Email delivery** – behind a `Mailer` interface. Development logs one line with the link
-  (`http://localhost:3000/verify-email?token=...`, `.../reset-password?token=...`, base from
-  `WEB_BASE_URL`). In staging/production **no provider is wired in yet**: nothing is sent and a
-  warning is logged without the recipient or token. Delivery is **synchronous and not durable** —
-  if a send fails the email is lost and the customer must ask again. **Which email provider to use
-  is an open decision**; once chosen, delivery should move behind the outbox.
+- **Email delivery** – through Resend; see "Email". Verification and reset emails are sent from
+  the request with a bounded retry (their link is a credential and is never written to the
+  outbox); if the send still fails the person has to ask again. Everything else is durable through
+  the outbox. In development without a key the log mailer writes one line with the link
+  (`http://localhost:3000/verify-email?token=...`, `.../reset-password?token=...`).
 - Logs carry `user_id` on every line of an authenticated request. Passwords, tokens and cookie
   values are never logged (except the development mail link described above).
 
@@ -456,8 +582,12 @@ their data with `Principal.OrganisationIDs(...)` (and `PlatformRole.MarketCode` 
   built**; platform administrators sign in with a password only, so the administrator login must
   not be treated as production-ready.
 - **Durable audit trail** – administrator sign-ins are only written to the process log.
-- **Notifying recipients** of property requests and business enquiries (email / WhatsApp /
-  in-app). Today they only appear in the inbox.
+- **WhatsApp and in-app notifications.** Recipients and customers are notified by email only.
+- **Bounce and complaint handling** – there is no Resend webhook endpoint, so a message that
+  Resend accepted and later failed to deliver is never noticed; no suppression list.
+- **The emails for features that do not exist yet** (status updates, listing expiry and relisting,
+  invoices, payments, account deletion) are written and tested but nothing sends them.
+- **Unsubscribe / notification preferences** – every email today is transactional.
 - **Directory profile management and public profile endpoints** – profiles exist only as seeded
   rows (kind, slug, name, owner); there is no API to create, edit, verify, suspend or list them,
   and the web app still serves profile content from its own sample data.
@@ -469,7 +599,9 @@ their data with `Principal.OrganisationIDs(...)` (and `PlatformRole.MarketCode` 
 - **Account deletion** and data export.
 - **Consent preference centre** – registration consent is recorded, but there is no way to review
   or change consents (including `marketing_opt_in`) afterwards.
-- **Durable email delivery** and a real email provider (see above).
+- **Durable delivery of verification and reset emails** – notification emails are durable through
+  the outbox, but these two are sent from the request (so their token is never stored) with a
+  short retry only.
 - **Login lockout** beyond the per-IP rate limit (no per-account throttling or lockout).
 - Session management for users (list / revoke other devices), password change while signed in,
   and email change.
@@ -483,6 +615,7 @@ cmd/worker     background worker (outbox dispatcher)
 cmd/migrate    migration runner: up | down | status
 cmd/adminctl   create platform administrators / set their password (Postgres only)
 cmd/seed       development sample data into Postgres (refuses outside APP_ENV=development)
+cmd/mailpreview  render every email template to tmp/mail-preview/ (sends nothing)
 internal/platform/config     env configuration + validation
 internal/platform/logging    slog JSON logger, request-ID propagation
 internal/platform/httpx      middleware, error envelope, JSON decoding, rate limiter
@@ -492,11 +625,13 @@ internal/adminctl            logic of cmd/adminctl (argument and password valida
 internal/devseed             the development sample data (organisations, people, 18 listings, 29 directory profiles)
 internal/platform/database   pgxpool setup (session or transaction pool mode)
 internal/platform/outbox     outbox dispatcher (lease, retry, dead-letter)
+internal/platform/mail       email templates, renderer, Resend client, log mailer, delivery log
 internal/platform/migrate    embedded-SQL migration runner
 internal/modules/health            /healthz, /readyz
 internal/modules/markets           GET /v1/markets
 internal/modules/propertyrequests  POST /v1/property-requests, GET /v1/agent/property-requests (handler, service, store: postgres + memory)
 internal/modules/businessenquiries POST /v1/business-enquiries, GET /v1/inbox/business-enquiries (handler, service, store: postgres + memory)
+internal/modules/notifications     outbox events -> emails; verification/reset mailer; data lookups (postgres + memory)
 internal/modules/identity          /v1/auth/*, /v1/me: accounts, sessions, tokens, roles, Mailer (store: postgres + memory)
 migrations/    embedded SQL (NNNN_name.up.sql / .down.sql)
 api/openapi.yaml             OpenAPI 3.1 contract
@@ -516,7 +651,7 @@ Deliberately no empty stubs. These will be added under `internal/modules/` as th
 - `listings` – listing CRUD, search, publication cycles, expiry/relisting
 - `media` – image/document upload to object storage (MinIO locally)
 - `billing` – plans, payments, invoices (exact decimal money + ISO 4217)
-- `notifications` – email / WhatsApp / in-app delivery driven by the outbox
+- `notifications` (exists for email) – WhatsApp and in-app delivery
 - `backoffice` – moderation and routing-exception handling
 
 ## Database
@@ -562,8 +697,8 @@ Deliberately no empty stubs. These will be added under `internal/modules/` as th
   change the connection. The PostgreSQL server must have TLS enabled for `require` to work — that
   is server configuration and is not done by this repository.
 - **Deployment.** The GitOps manifests live in the user's separate `adminweighty/weightygitops`
-  repository (not touched from here). They need to provide `DATABASE_URL` to the API and worker
-  from a **Kubernetes Secret** (and `DB_POOL_MODE` / `DATABASE_DIRECT_URL` only if a pooler is
+  repository (not touched from here). They need to provide `DATABASE_URL` and `RESEND_API_KEY` to
+  the API and worker from a **Kubernetes Secret** (and `DB_POOL_MODE` / `DATABASE_DIRECT_URL` only if a pooler is
   used). No connection string belongs in this repository, in an image or in a ConfigMap.
 - **Local development** keeps using the docker-compose Postgres (`docker compose up -d`) or no
   database at all (in-memory stores).
@@ -602,6 +737,8 @@ Until these have owners, a disk failure or a bad migration on the server means d
 - `0005_business_enquiries` adds `directory_profiles` (no contact columns), `business_enquiries`,
   `business_enquiry_timeline` and `customer_activity.business_enquiry_id`. Also **never run**,
   like its store queries.
+- `0006_email_messages` adds the per-email delivery record (`ATTEMPTED` / `PROVIDER_ACCEPTED` /
+  `FAILED`, provider message ID; no address, subject or body). Also **never run**.
 - `0001_init` seeds the four markets. It does **not** seed listings or profiles: against a real
   database `POST /v1/property-requests` and `POST /v1/business-enquiries` return 404 until they
   exist (in development, `cmd/seed` creates the sample ones).
@@ -620,8 +757,12 @@ event type, then marks events processed. Failures back off exponentially (30 s d
 1 h) and are dead-lettered (`dead_letter_at`) after 8 attempts.
 
 Delivery is **at-least-once**, so handlers must be idempotent — key side effects on the event ID.
-The two handlers today only log `PROPERTY_REQUEST_CREATED` and `BUSINESS_ENQUIRY_CREATED`. Without `DATABASE_URL` in development the
-worker logs that it is idle and waits for shutdown.
+The worker handles `PROPERTY_REQUEST_CREATED`, `BUSINESS_ENQUIRY_CREATED`, `USER_EMAIL_VERIFIED`,
+`PASSWORD_CHANGED` and `ADMIN_SIGNED_IN` by sending the notification emails described under
+"Email"; each email is keyed on the event ID and recipient, so a redelivered event sends nothing
+twice. A handler can mark a failure permanent, which dead-letters the event at once. **The worker
+sends real email when `RESEND_API_KEY` is set.** Without `DATABASE_URL` in development the worker
+logs that it is idle and waits for shutdown (the API then handles the events in-process).
 
 ## Operational notes and known limitations
 

@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"rightproperty365.com/backend/internal/modules/markets"
+	"rightproperty365.com/backend/internal/platform/outbox"
 )
 
 // Fixed IDs used by the development seed. Listing IDs match the frontend's
@@ -38,6 +39,16 @@ type MemoryStore struct {
 	timeline []MemoryTimelineEntry
 	activity []MemoryActivityEntry
 	outbox   []MemoryOutboxEvent
+	sink     outbox.Sink
+}
+
+// SetOutboxSink registers a receiver for events as they are written
+// (development without a database). The sink must not call back into the
+// store synchronously.
+func (s *MemoryStore) SetOutboxSink(sink outbox.Sink) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sink = sink
 }
 
 // MemoryTimelineEntry mirrors a request_timeline row.
@@ -162,6 +173,12 @@ func (s *MemoryStore) Create(_ context.Context, req NewRequest) (Record, bool, e
 	s.outbox = append(s.outbox, MemoryOutboxEvent{
 		EventType: EventPropertyRequestCreated, AggregateID: req.ID, Payload: payload, CreatedAt: req.CreatedAt,
 	})
+	if s.sink != nil {
+		s.sink(outbox.Event{
+			ID: uuid.New(), Type: EventPropertyRequestCreated, AggregateType: AggregatePropertyRequest, AggregateID: req.ID,
+			Payload: payload, Attempts: 1, CreatedAt: req.CreatedAt,
+		})
+	}
 	return rec, true, nil
 }
 

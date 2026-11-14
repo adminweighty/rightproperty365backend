@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"rightproperty365.com/backend/internal/platform/auth"
+	"rightproperty365.com/backend/internal/platform/outbox"
 )
 
 // MemoryStore is a mutex-guarded in-memory Store for development and tests
@@ -27,6 +28,8 @@ type MemoryStore struct {
 	verifications map[string]*memoryToken
 	resets        map[string]*memoryToken
 	consents      []MemoryConsent
+	outbox        []outbox.Event
+	sink          outbox.Sink
 }
 
 type memoryUser struct {
@@ -191,8 +194,37 @@ func (s *MemoryStore) ConsumeVerificationToken(_ context.Context, tokenHash []by
 	t.UsedAt = &now
 	if user.EmailVerifiedAt == nil {
 		user.EmailVerifiedAt = &now
+		s.emit(OutboxEvent{Type: EventUserEmailVerified, UserID: user.ID, OccurredAt: now})
 	}
 	return t.UserID, nil
+}
+
+// emit appends an outbox event and hands it to the sink. Caller holds the lock.
+func (s *MemoryStore) emit(e OutboxEvent) {
+	ev := outbox.Event{
+		ID: uuid.New(), Type: e.Type, AggregateType: AggregateUser, AggregateID: e.UserID,
+		Payload: e.Payload(), Attempts: 1, CreatedAt: e.OccurredAt,
+	}
+	s.outbox = append(s.outbox, ev)
+	if s.sink != nil {
+		s.sink(ev)
+	}
+}
+
+// SetOutboxSink registers a receiver for events as they are written
+// (development without a database). The sink must not call back into the
+// store synchronously.
+func (s *MemoryStore) SetOutboxSink(sink outbox.Sink) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sink = sink
+}
+
+// Outbox returns a copy of the outbox events (test helper).
+func (s *MemoryStore) Outbox() []outbox.Event {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]outbox.Event(nil), s.outbox...)
 }
 
 // CreatePasswordResetToken implements Store.
@@ -230,15 +262,19 @@ func (s *MemoryStore) ResetPassword(_ context.Context, tokenHash []byte, passwor
 			sess.RevokedAt = &now
 		}
 	}
+	s.emit(OutboxEvent{Type: EventPasswordChanged, UserID: t.UserID, OccurredAt: now})
 	return t.UserID, nil
 }
 
 // CreateSession implements Store.
-func (s *MemoryStore) CreateSession(_ context.Context, sess Session) error {
+func (s *MemoryStore) CreateSession(_ context.Context, sess Session, events ...OutboxEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cp := sess
 	s.sessions[key(sess.TokenHash)] = &cp
+	for _, e := range events {
+		s.emit(e)
+	}
 	return nil
 }
 
@@ -354,7 +390,26 @@ func (s *MemoryStore) SetPlatformAdminPassword(_ context.Context, email, passwor
 			sess.RevokedAt = &now
 		}
 	}
+	s.emit(OutboxEvent{Type: EventPasswordChanged, UserID: id, OccurredAt: now})
 	return nil
+}
+
+// OrganisationManagers returns the active OWNER and MANAGER members of an
+// organisation (the people who read its inbox).
+func (s *MemoryStore) OrganisationManagers(organisationID uuid.UUID) []User {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []User
+	for _, m := range s.memberships {
+		if m.OrganisationID != organisationID || (m.Role != auth.RoleOwner && m.Role != auth.RoleManager) {
+			continue
+		}
+		if u, ok := s.users[m.UserID]; ok && u.Status == StatusActive {
+			out = append(out, s.view(u))
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Email < out[j].Email })
+	return out
 }
 
 // UserCount returns the number of accounts (test helper).

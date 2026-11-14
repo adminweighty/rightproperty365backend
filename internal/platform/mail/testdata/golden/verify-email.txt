@@ -1,0 +1,19 @@
+Subject: Confirm your email address
+
+Confirm your email address
+
+Hello Tariro Moyo,
+
+Confirm this email address to finish creating your RightProperty365 account.
+
+The link works once and expires 24 hours after this email was sent.
+
+If you did not create an account, ignore this email. The account stays inactive until the address is confirmed.
+
+Confirm email address:
+https://rightproperty365.com/verify-email?token=SAMPLE-TOKEN-not-a-real-credential
+
+--
+You are receiving this because this address was used to create a RightProperty365 account.
+Sent by RightProperty365.
+https://rightproperty365.com

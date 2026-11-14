@@ -10,6 +10,7 @@ package identity
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"sort"
 	"time"
@@ -112,6 +113,39 @@ func sortAccountRoles(roles []AccountRole) {
 		return len(selectableAccountRoles)
 	}
 	sort.SliceStable(roles, func(i, j int) bool { return rank(roles[i].Role) < rank(roles[j].Role) })
+}
+
+// Outbox events written by this module, in the same transaction as the change
+// they describe. The worker turns them into notification emails. Payloads
+// carry identifiers and a timestamp only.
+const (
+	// EventUserEmailVerified: an email address was verified for the first time.
+	EventUserEmailVerified = "USER_EMAIL_VERIFIED"
+	// EventPasswordChanged: an account's password was replaced.
+	EventPasswordChanged = "PASSWORD_CHANGED"
+	// EventAdminSignedIn: an administrator session was started.
+	EventAdminSignedIn = "ADMIN_SIGNED_IN"
+
+	AggregateUser = "user"
+)
+
+// OutboxEvent is an event to store atomically with a change.
+type OutboxEvent struct {
+	Type       string
+	UserID     uuid.UUID
+	OccurredAt time.Time
+}
+
+// Payload is the JSON stored in the outbox: identifiers and a time, nothing personal.
+func (e OutboxEvent) Payload() []byte {
+	return fmt.Appendf(nil, `{"user_id":%q,"occurred_at":%q}`, e.UserID, e.OccurredAt.UTC().Format(time.RFC3339Nano))
+}
+
+// SortedAccountRoles returns roles in allowlist order.
+func SortedAccountRoles(roles []AccountRole) []AccountRole {
+	out := slices.Clone(roles)
+	sortAccountRoles(out)
+	return out
 }
 
 // Consent types recorded in user_consents.

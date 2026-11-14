@@ -101,3 +101,22 @@ func TestBackoff(t *testing.T) {
 		}
 	}
 }
+
+// A permanent failure is dead-lettered on its first attempt, not retried.
+func TestPermanentFailureIsDeadLetteredImmediately(t *testing.T) {
+	id := uuid.New()
+	q := &fakeQueue{events: []Event{{ID: id, Type: "X", Attempts: 1}}}
+	d := NewDispatcher(q, slog.New(slog.NewJSONHandler(io.Discard, nil)), Config{})
+	d.Register("X", HandlerFunc(func(context.Context, Event) error {
+		return Permanent(errors.New("rejected by the provider"))
+	}))
+	if _, err := d.ProcessBatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(q.deadLetter) != 1 || q.deadLetter[0] != id || len(q.retried) != 0 || len(q.processed) != 0 {
+		t.Fatalf("deadLetter=%v retried=%v processed=%v", q.deadLetter, q.retried, q.processed)
+	}
+	if IsPermanent(errors.New("plain")) || !IsPermanent(Permanent(errors.New("x"))) || Permanent(nil) != nil {
+		t.Fatal("Permanent/IsPermanent misbehave")
+	}
+}
