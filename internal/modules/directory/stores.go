@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -75,7 +76,8 @@ func matchesText(r Record, q string) bool {
 func (s *MemoryStore) List(_ context.Context, kind string, f Filter, limit, offset int) ([]Record, int, error) {
 	var found []Record
 	for _, r := range s.active() {
-		if r.Kind == kind && (f.City == "" || r.CityCode == f.City) && (f.Trade == "" || r.TradeCode == f.Trade) && matchesText(r, f.Q) {
+		if r.Kind == kind && (f.City == "" || r.CityCode == f.City) && (f.Cities == nil || slices.Contains(f.Cities, r.CityCode)) &&
+			(f.Trade == "" || r.TradeCode == f.Trade) && matchesText(r, f.Q) {
 			found = append(found, r)
 		}
 	}
@@ -198,6 +200,9 @@ func (s *PostgresStore) List(ctx context.Context, kind string, f Filter, limit, 
 	}
 	if f.City != "" {
 		add(`p.city_code = $%d`, f.City)
+	}
+	if f.Cities != nil { // the cities of the country and/or region asked for
+		add(`p.city_code = ANY($%d::text[])`, f.Cities)
 	}
 	if f.Trade != "" {
 		add(`p.trade_code = $%d`, f.Trade)

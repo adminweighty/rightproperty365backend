@@ -239,7 +239,7 @@ func TestListingFacets(t *testing.T) {
 	}
 	// Nothing matches: empty arrays and null prices, never missing keys.
 	none := e.get("/v1/listings?q=zzzz")
-	if body := none.Body.String(); !strings.Contains(body, `"facets":{"deal":[],"category":[],"property_type":[],"city":[],"suburb":[],"bedrooms":[],"features":[],"price":{"currency":"USD","min":null,"max":null}}`) {
+	if body := none.Body.String(); !strings.Contains(body, `"facets":{"deal":[],"category":[],"property_type":[],"city":[],"suburb":[],"bedrooms":[],"features":[],"price":{"currency":"USD","min":null,"max":null},"country":[],"region":[]}`) {
 		t.Fatalf("empty facets = %s", body)
 	}
 }
@@ -643,6 +643,10 @@ func publicGETs(e *env) []string {
 	paths := []string{
 		"/v1/reference", "/v1/markets", "/v1/listings?page_size=48", "/v1/listings?q=house&sort=relevance", "/v1/listings/suggest?q=sample",
 		"/v1/listings/suggest?q=harare", "/v1/directory", "/v1/sitemap",
+		// Country, region and the advanced filters.
+		"/v1/listings?country=ZW&region=harare&page_size=48", "/v1/listings?advertiser_type=private", "/v1/listings?has_photos=true&sort=area_desc&page_size=48",
+		"/v1/listings/suggest?q=mata", "/v1/listings/suggest?q=zimb", "/v1/reference/regions?market=ZW",
+		"/v1/directory/agencies?country=ZW&region=harare", "/v1/directory/solicitors?region=bulawayo",
 	}
 	for _, set := range reference.Sets() {
 		paths = append(paths, "/v1/reference/"+set)

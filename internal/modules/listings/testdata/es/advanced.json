@@ -1,0 +1,493 @@
+{
+  "_source": false,
+  "aggs": {
+    "bedrooms": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "bedrooms",
+            "size": 60
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "sale"
+              }
+            },
+            {
+              "term": {
+                "market": "ZW"
+              }
+            },
+            {
+              "term": {
+                "region": "harare"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "category": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "category",
+            "size": 50
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "sale"
+              }
+            },
+            {
+              "term": {
+                "market": "ZW"
+              }
+            },
+            {
+              "term": {
+                "region": "harare"
+              }
+            },
+            {
+              "range": {
+                "bedrooms": {
+                  "gte": 2,
+                  "lte": 5
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "city": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "city",
+            "size": 500
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "sale"
+              }
+            },
+            {
+              "term": {
+                "market": "ZW"
+              }
+            },
+            {
+              "term": {
+                "region": "harare"
+              }
+            },
+            {
+              "range": {
+                "bedrooms": {
+                  "gte": 2,
+                  "lte": 5
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "country": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "market",
+            "size": 300
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "sale"
+              }
+            },
+            {
+              "term": {
+                "region": "harare"
+              }
+            },
+            {
+              "range": {
+                "bedrooms": {
+                  "gte": 2,
+                  "lte": 5
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "deal": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "deal",
+            "size": 50
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "market": "ZW"
+              }
+            },
+            {
+              "term": {
+                "region": "harare"
+              }
+            },
+            {
+              "range": {
+                "bedrooms": {
+                  "gte": 2,
+                  "lte": 5
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "features": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "features",
+            "size": 1000
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "sale"
+              }
+            },
+            {
+              "term": {
+                "market": "ZW"
+              }
+            },
+            {
+              "term": {
+                "region": "harare"
+              }
+            },
+            {
+              "range": {
+                "bedrooms": {
+                  "gte": 2,
+                  "lte": 5
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "price": {
+      "aggs": {
+        "max": {
+          "max": {
+            "field": "price"
+          }
+        },
+        "min": {
+          "min": {
+            "field": "price"
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "sale"
+              }
+            },
+            {
+              "term": {
+                "market": "ZW"
+              }
+            },
+            {
+              "term": {
+                "region": "harare"
+              }
+            },
+            {
+              "range": {
+                "bedrooms": {
+                  "gte": 2,
+                  "lte": 5
+                }
+              }
+            },
+            {
+              "term": {
+                "currency": "USD"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "property_type": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "property_type",
+            "size": 200
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "sale"
+              }
+            },
+            {
+              "term": {
+                "market": "ZW"
+              }
+            },
+            {
+              "term": {
+                "region": "harare"
+              }
+            },
+            {
+              "range": {
+                "bedrooms": {
+                  "gte": 2,
+                  "lte": 5
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "region": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "region",
+            "size": 500
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "sale"
+              }
+            },
+            {
+              "term": {
+                "market": "ZW"
+              }
+            },
+            {
+              "range": {
+                "bedrooms": {
+                  "gte": 2,
+                  "lte": 5
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "suburb": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "suburb",
+            "size": 1000
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "sale"
+              }
+            },
+            {
+              "term": {
+                "market": "ZW"
+              }
+            },
+            {
+              "term": {
+                "region": "harare"
+              }
+            },
+            {
+              "range": {
+                "bedrooms": {
+                  "gte": 2,
+                  "lte": 5
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "from": 0,
+  "post_filter": {
+    "bool": {
+      "filter": [
+        {
+          "term": {
+            "deal": "sale"
+          }
+        },
+        {
+          "term": {
+            "market": "ZW"
+          }
+        },
+        {
+          "term": {
+            "region": "harare"
+          }
+        },
+        {
+          "range": {
+            "bedrooms": {
+              "gte": 2,
+              "lte": 5
+            }
+          }
+        }
+      ]
+    }
+  },
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "term": {
+            "status": "PUBLISHED"
+          }
+        },
+        {
+          "range": {
+            "expires_at": {
+              "gt": "2026-11-14T09:00:00.000Z"
+            }
+          }
+        },
+        {
+          "range": {
+            "bathrooms": {
+              "lte": 4
+            }
+          }
+        },
+        {
+          "range": {
+            "floor_area": {
+              "gte": 120,
+              "lte": 600
+            }
+          }
+        },
+        {
+          "range": {
+            "land_area": {
+              "gte": 400,
+              "lte": 5000
+            }
+          }
+        },
+        {
+          "range": {
+            "published_at": {
+              "gte": "2026-10-15T09:00:00.000Z"
+            }
+          }
+        },
+        {
+          "term": {
+            "advertiser_type": "agency"
+          }
+        },
+        {
+          "term": {
+            "reference.keyword": {
+              "case_insensitive": true,
+              "value": "rp-zw-10001"
+            }
+          }
+        },
+        {
+          "term": {
+            "has_photos": true
+          }
+        }
+      ]
+    }
+  },
+  "size": 12,
+  "sort": [
+    {
+      "floor_area": {
+        "missing": "_last",
+        "order": "desc"
+      }
+    },
+    {
+      "published_at": "desc"
+    },
+    {
+      "id": "asc"
+    }
+  ],
+  "track_total_hits": true
+}

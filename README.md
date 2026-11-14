@@ -413,7 +413,7 @@ stale-while-revalidate=120`, a strong `ETag`, `304` on `If-None-Match`).
 | Method | Path | Returns |
 | --- | --- | --- |
 | GET | `/v1/listings` | Search: `{items, page, page_size, total, total_pages, facets}` |
-| GET | `/v1/listings/suggest?q=` | Up to 8 `{type: suburb\|city\|listing, label, value}` |
+| GET | `/v1/listings/suggest?q=` | Up to 8 `{type: suburb\|city\|region\|country\|listing, label, value}` |
 | GET | `/v1/listings/{slug}` | `{listing}`; `410 LISTING_UNAVAILABLE` or `404 LISTING_NOT_FOUND` |
 | GET | `/v1/directory` | `{kinds: [{code, label, singular_label, description, count}]}` |
 | GET | `/v1/directory/{kind}` | One page of profiles, sponsored first |
@@ -428,20 +428,41 @@ later. An adapter only proposes IDs; the service re-reads every hit from the dat
 re-checks status and expiry, so an index that is behind cannot bring back an expired listing.
 
 - **Filters** (all optional, combined with AND): `q`, `deal`, `category`, `property_type`, `city`,
-  `suburb`, `min_price`, `max_price` (compared only against listings priced in `currency`,
-  default `USD`; nothing is converted), `bedrooms_min`, `bathrooms_min`, `features` (repeatable or
+  `suburb`, `min_price`, `max_price` (compared only against listings priced in `currency`;
+  nothing is converted), `bedrooms_min`, `bathrooms_min`, `features` (repeatable or
   comma-separated; all must be present), `featured`. Codes are reference-data codes; an unknown
   or inactive code is `400 VALIDATION_FAILED` on that parameter.
-- **Sort**: `newest` (default), `relevance` (default when `q` is given), `price_asc`, `price_desc`.
+- **Location: country, region, city, suburb.** One hierarchy, all reference data: a country is a
+  market (`GET /v1/markets`), a region is a row of the `regions` set (Zimbabwe's ten provinces),
+  a city's `parent_code` is its region and a suburb's `parent_code` is its city. `country=ZW`
+  (any case; `market` is an alias) and `region=matabeleland-north` filter listings; a listing's
+  region is the region of its city, so nothing is stored twice. The levels must agree — a suburb
+  with its city, a city with its region, a region with its country, also when a level in between
+  is left out — and a mismatch is `400 VALIDATION_FAILED` on the **narrower** parameter
+  (`?region=bulawayo&city=harare` -> `city`). When `country` selects a market and no `currency` is
+  given, the price filter and facet use that market's currency (otherwise `USD`).
+- **Advanced filters**: `bedrooms_max`, `bathrooms_max`, `floor_area_min`, `floor_area_max`,
+  `land_area_min`, `land_area_max` (square metres; a listing without the value never matches),
+  `listed_within_days` (1–365), `advertiser_type` (`agency` or `private`), `reference` (exact,
+  case-insensitive) and `has_photos=true`. A maximum below its minimum is `400` on the `_max`
+  parameter.
+- **Sort**: `newest` (default), `relevance` (default when `q` is given), `price_asc`, `price_desc`,
+  `oldest`, `area_desc` (largest floor area first, listings without one last).
   **Paging**: `page` from 1, `page_size` 1–48 (default 12).
-- **Facets**: `deal`, `category`, `property_type`, `city`, `suburb`, `bedrooms`, `features` as
-  `[{code, label, count}]`, and `price: {currency, min, max}`. Each facet counts the listings that
-  match every *other* filter, so choosing a value does not hide its alternatives.
+- **Facets**: `deal`, `category`, `property_type`, `city`, `suburb`, `bedrooms`, `features`,
+  `country`, `region` as `[{code, label, count}]`, and `price: {currency, min, max}`. Each facet
+  counts the listings that match every *other* filter, so choosing a value does not hide its
+  alternatives. Each `suburb` value also carries `city` (its city's code), so a client can group
+  suburbs by city.
+- **Suggestions** also offer regions (`Matabeleland North, Zimbabwe`) and countries that have at
+  least one public listing, after the suburbs and cities and before the listing titles.
 - **By slug**: an expired, sold, let, paused or closed listing is `410` (the page can say "no
   longer available"); an unknown slug **and a draft that was never public** are both `404`, so
   drafts are not revealed.
 - **A listing** carries id, slug, reference, title, `deal` / `category` / `property_type` /
-  `suburb` / `city` as `{code, label}`, `price {amount, currency}` (a decimal string, never a
+  `suburb` / `city` as `{code, label}`, `region: {code, label} | null` and
+  `country: {code, name}` (derived from the city and the market; `market_code` is kept),
+  `price {amount, currency}` (a decimal string, never a
   float), `price_period`, market, bedrooms, bathrooms, floor and land area (m²), summary,
   description, features, featured, photos `{url, alt, width, height}`, the three dates, and
   `advertiser`.
@@ -451,7 +472,9 @@ re-checks status and expiry, so an index that is behind cannot bring back an exp
   walks every public GET (reference, listings, each listing, directories, each profile, sitemap)
   and fails on any key named like contact data or any value that looks like an email address or a
   phone number.
-- **Profiles** carry name, role, tagline, description, city, areas, services, offerings, trade,
+- **Directories** take `country` (or `market`) and `region` as well as `city`, with the same
+  hierarchy check; a profile's `region` and `country` are derived from its city.
+- **Profiles** carry name, role, tagline, description, city, region, country, areas, services, offerings, trade,
   verified, sponsored, since, `agency` (for agents), `listing_count`; the detail adds an agency's
   `agents` and the profile's public `listings`. `logo` is always null (there are none).
 - **Photos are not uploaded anywhere.** `photos[].url` is a site-relative path
@@ -509,14 +532,26 @@ The API and the worker each log one line at startup naming the driver:
   instead`) with a running count `search_fallbacks_total`; there is no metrics endpoint yet. The
   client does not retry: the database is the retry.
 
+> **After deploying the country / region / advanced filters, run `go run ./cmd/reindex` once.**
+> The mapping changed (mapping version 2, recorded in the mapping's `_meta` and in
+> `listings.MappingVersion`): documents now carry `region`, `advertiser_type` and `has_photos`.
+> The mapping is strict, so the old index refuses the new documents (the worker's listing events
+> fail and are retried) and knows nothing of the new fields (a search that uses them finds
+> nothing in Elasticsearch) until the index has been rebuilt. Searches keep working during the
+> rebuild. With the database driver nothing needs doing beyond migration `0012`.
+
 **The index.** One index per environment behind an alias, with an explicit, strict mapping
 (`internal/modules/listings/es_mapping.json`): `keyword` for codes (deal, category, property type,
-city, suburb, features, market, currency), `text` with a `keyword` and a `search_as_you_type`
+city, suburb, region, features, market — the country —, currency, advertiser type), a `boolean`
+`has_photos`, `text` with a `keyword` and a `search_as_you_type`
 sub-field for title, suburb and city labels, `scaled_float` for the price with the currency kept
 separately, integers for bedrooms and bathrooms, dates, a `version`, and a `geo_point` `location`
 that is mapped but unused. **A document holds public listing data only** — no customer, no contact
-detail, no owner account, not even the advertiser; a test checks every field name and that every
-field is in the mapping.
+detail, no owner account, and nothing that says who the advertiser is (only `advertiser_type`:
+`agency` or `private`); a test checks every field name and that every field is in the mapping.
+A document's `region` is read from the reference data when it is built, so **moving a city to
+another region needs a reindex** for Elasticsearch to follow (the database adapter follows at
+once).
 
 **Keeping it in step.** Listing changes write an outbox event (`LISTING_PUBLISHED`,
 `LISTING_UPDATED`, `LISTING_EXPIRED`, `LISTING_UNPUBLISHED`) carrying only the listing ID. The
@@ -560,6 +595,8 @@ with `post_filter`, so each facet ignores its own filter exactly as the database
 | Suggestions | Substring anywhere in the name; prefix matches first | Word-prefix matches from `search_as_you_type`; order by document count |
 | Price facet and price filter | Exact decimals | `scaled_float` with two decimals (rounded to the cent) |
 | Facet lists | Every value | Top N values per facet (50–1000 by facet) |
+| `region` after a city is moved to another region | Immediate (joined at query time) | After the next reindex (stored on the document) |
+| `reference` filter | `upper(reference) = upper(?)` | `term` on `reference.keyword` with `case_insensitive` |
 | Freshness | Immediate | Behind by the outbox delay, plus Elasticsearch's refresh interval (1 s by default) |
 
 **Target and what is not measured.** The specification's target is a p95 of one second for
@@ -574,6 +611,10 @@ on. The Elasticsearch adapter, the indexing handler and `cmd/reindex` are tested
 fake transport**; they have never run against a real cluster. The official Go client
 (`github.com/elastic/go-elasticsearch/v9`, the current stable major, used for its transport only)
 is likewise only exercised against a fake.
+The country, region and advanced filters are in the same position: they run and are tested on
+the memory adapter; the database adapter's SQL (the joins to `markets` and to the city's region,
+the new conditions and sort orders) and the Elasticsearch query, aggregations and documents are
+checked by query-builder and golden-file tests only. Migration `0012` has never run.
 
 **Operations: not set up, no owner.** Snapshots and restore testing, upgrades (the client major
 must match the cluster major), monitoring (cluster health, disk watermarks, slow queries), index
@@ -860,7 +901,8 @@ Optional `?market=ZW` keeps that market's rows plus the rows that apply everywhe
 | `account_roles` | 11 | with `group` (code, label, sort) and `requires_verification`; **never** a platform role |
 | `directory_kinds` | 6 | with `singular_label` and `description` |
 | `service_trades` | 7 | service-provider trades |
-| `cities` | 4 | market `ZW` |
+| `regions` | 10 | market `ZW`: Zimbabwe's ten provinces (codes are slugs, e.g. `matabeleland-north`). Planned markets have none yet |
+| `cities` | 4 | market `ZW`; `parent_code` is the region (Harare -> `harare`, Bulawayo -> `bulawayo`, Mutare -> `manicaland`, Victoria Falls -> `matabeleland-north`) |
 | `suburbs` | 18 | market `ZW`; `parent_code` is the city |
 | `listing_features` | 59 | features and amenities |
 
@@ -1368,6 +1410,9 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0012_locations` adds the `regions` reference set with Zimbabwe's ten provinces, links each city
+  to its region (`parent_code`), and adds indexes for the country and floor-area filters. Listings
+  and profiles get no new column: a region is always the region of the city. **Never run.**
 - `0011_appointments` adds `appointments` (type, status, the listing or profile with a snapshot of
   their public names, the link to the property request, the customer's private contact snapshot,
   the routed organisation and assigned user, `start_at` / `duration_minutes` / `end_at`, the

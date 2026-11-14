@@ -1,0 +1,261 @@
+{
+  "_source": false,
+  "aggs": {
+    "bedrooms": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "bedrooms",
+            "size": 60
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "region": "matabeleland-north"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "category": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "category",
+            "size": 50
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "region": "matabeleland-north"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "city": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "city",
+            "size": 500
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "region": "matabeleland-north"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "country": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "market",
+            "size": 300
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "region": "matabeleland-north"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "deal": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "deal",
+            "size": 50
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "region": "matabeleland-north"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "features": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "features",
+            "size": 1000
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "region": "matabeleland-north"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "price": {
+      "aggs": {
+        "max": {
+          "max": {
+            "field": "price"
+          }
+        },
+        "min": {
+          "min": {
+            "field": "price"
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "region": "matabeleland-north"
+              }
+            },
+            {
+              "term": {
+                "currency": "USD"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "property_type": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "property_type",
+            "size": 200
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "region": "matabeleland-north"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "region": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "region",
+            "size": 500
+          }
+        }
+      },
+      "filter": {
+        "match_all": {}
+      }
+    },
+    "suburb": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "suburb",
+            "size": 1000
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "region": "matabeleland-north"
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "from": 0,
+  "post_filter": {
+    "bool": {
+      "filter": [
+        {
+          "term": {
+            "region": "matabeleland-north"
+          }
+        }
+      ]
+    }
+  },
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "term": {
+            "status": "PUBLISHED"
+          }
+        },
+        {
+          "range": {
+            "expires_at": {
+              "gt": "2026-11-14T09:00:00.000Z"
+            }
+          }
+        },
+        {
+          "term": {
+            "advertiser_type": "private"
+          }
+        }
+      ]
+    }
+  },
+  "size": 12,
+  "sort": [
+    {
+      "published_at": "asc"
+    },
+    {
+      "id": "asc"
+    }
+  ],
+  "track_total_hits": true
+}

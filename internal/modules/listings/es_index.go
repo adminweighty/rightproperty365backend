@@ -46,6 +46,15 @@ type ESTransport interface {
 	Perform(*http.Request) (*http.Response, error)
 }
 
+// MappingVersion counts the changes of the index mapping. It is recorded in
+// the mapping's _meta. The mapping is strict, so after a release that raises
+// it the index must be rebuilt with cmd/reindex: until then a document with
+// the new fields is refused by the old index.
+//
+//	1  the first mapping
+//	2  region, advertiser_type, has_photos (country / region and advanced filters)
+const MappingVersion = 2
+
 // IndexMapping is the explicit mapping of a listings index.
 //
 //go:embed es_mapping.json
@@ -56,35 +65,40 @@ var IndexMapping []byte
 // no owner account, not even the advertiser. Hits are identified by ID and
 // the listing itself is always re-read from the database.
 type Document struct {
-	ID                string   `json:"id"`
-	Slug              string   `json:"slug"`
-	Reference         string   `json:"reference"`
-	Title             string   `json:"title"`
-	Summary           string   `json:"summary"`
-	Description       string   `json:"description"`
-	Deal              string   `json:"deal"`
-	Category          string   `json:"category"`
-	PropertyType      string   `json:"property_type"`
-	PropertyTypeLabel string   `json:"property_type_label"`
-	City              string   `json:"city"`
-	CityLabel         string   `json:"city_label"`
-	Suburb            string   `json:"suburb"`
-	SuburbLabel       string   `json:"suburb_label"`
-	Market            string   `json:"market"`
-	Currency          string   `json:"currency"`
-	Price             float64  `json:"price"`
-	PricePeriod       string   `json:"price_period,omitempty"`
-	Bedrooms          *int     `json:"bedrooms,omitempty"`
-	Bathrooms         *int     `json:"bathrooms,omitempty"`
-	FloorArea         *int     `json:"floor_area,omitempty"`
-	LandArea          *int     `json:"land_area,omitempty"`
-	Features          []string `json:"features"`
-	Featured          bool     `json:"featured"`
-	Status            string   `json:"status"`
-	PublishedAt       ESTime   `json:"published_at"`
-	ExpiresAt         ESTime   `json:"expires_at"`
-	UpdatedAt         ESTime   `json:"updated_at"`
-	Version           int64    `json:"version"`
+	ID                string `json:"id"`
+	Slug              string `json:"slug"`
+	Reference         string `json:"reference"`
+	Title             string `json:"title"`
+	Summary           string `json:"summary"`
+	Description       string `json:"description"`
+	Deal              string `json:"deal"`
+	Category          string `json:"category"`
+	PropertyType      string `json:"property_type"`
+	PropertyTypeLabel string `json:"property_type_label"`
+	City              string `json:"city"`
+	CityLabel         string `json:"city_label"`
+	Suburb            string `json:"suburb"`
+	SuburbLabel       string `json:"suburb_label"`
+	Market            string `json:"market"`
+	// Region is the region of the city (reference data), "" when it has none.
+	Region string `json:"region,omitempty"`
+	// AdvertiserType is "agency" or "private": the kind of advertiser, never who.
+	AdvertiserType string   `json:"advertiser_type"`
+	HasPhotos      bool     `json:"has_photos"`
+	Currency       string   `json:"currency"`
+	Price          float64  `json:"price"`
+	PricePeriod    string   `json:"price_period,omitempty"`
+	Bedrooms       *int     `json:"bedrooms,omitempty"`
+	Bathrooms      *int     `json:"bathrooms,omitempty"`
+	FloorArea      *int     `json:"floor_area,omitempty"`
+	LandArea       *int     `json:"land_area,omitempty"`
+	Features       []string `json:"features"`
+	Featured       bool     `json:"featured"`
+	Status         string   `json:"status"`
+	PublishedAt    ESTime   `json:"published_at"`
+	ExpiresAt      ESTime   `json:"expires_at"`
+	UpdatedAt      ESTime   `json:"updated_at"`
+	Version        int64    `json:"version"`
 	// Location is reserved for map search; nothing sets it yet.
 	Location *[2]float64 `json:"location,omitempty"`
 }
@@ -124,7 +138,12 @@ func BuildDocument(r Record, labels map[string]map[string]string) Document {
 	if features == nil {
 		features = []string{}
 	}
+	advertiser := AdvertiserFilterAgency
+	if r.Advertiser.Type == AdvertiserPrivateSeller {
+		advertiser = AdvertiserFilterPrivate
+	}
 	return Document{
+		Region: labels[keyCityRegion][r.City], AdvertiserType: advertiser, HasPhotos: len(r.Photos) > 0,
 		ID: r.ID.String(), Slug: r.Slug, Reference: r.Reference, Title: r.Title, Summary: r.Summary, Description: r.Description,
 		Deal: r.Deal, Category: r.Category, PropertyType: r.PropertyType, PropertyTypeLabel: coded(labels[SetPropertyTypes], r.PropertyType).Label,
 		City: r.City, CityLabel: coded(labels[SetCities], r.City).Label, Suburb: r.Suburb, SuburbLabel: coded(labels[SetSuburbs], r.Suburb).Label,
@@ -205,6 +224,7 @@ type Indexer struct {
 	prefix string
 	store  Store
 	labels Labels
+	places Places
 	logger *slog.Logger
 	now    func() time.Time
 }
@@ -217,16 +237,12 @@ func NewIndexer(es ESTransport, prefix string, store Store, labels Labels, logge
 // SetClock overrides the time source (tests).
 func (ix *Indexer) SetClock(now func() time.Time) { ix.now = now }
 
+// SetPlaces gives the Indexer the location hierarchy, from which a document
+// gets its region. Without it documents have no region.
+func (ix *Indexer) SetPlaces(p Places) { ix.places = p }
+
 func (ix *Indexer) labelSets(ctx context.Context) (map[string]map[string]string, error) {
-	out := map[string]map[string]string{}
-	for _, set := range []string{SetPropertyTypes, SetCities, SetSuburbs} {
-		labels, err := ix.labels.Labels(ctx, set)
-		if err != nil {
-			return nil, err
-		}
-		out[set] = labels
-	}
-	return out, nil
+	return loadLabels(ctx, ix.labels, ix.places)
 }
 
 // Sync makes the index reflect the current state of one listing: its

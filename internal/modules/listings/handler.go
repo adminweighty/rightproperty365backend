@@ -29,9 +29,14 @@ const (
 
 const maxQueryLength = 100
 
+// maxArea bounds the area filters (square metres).
+const maxArea = 100000000
+
 var (
-	slugRe     = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
-	currencyRe = regexp.MustCompile(`^[A-Z]{3}$`)
+	slugRe      = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+	currencyRe  = regexp.MustCompile(`^[A-Z]{3}$`)
+	countryRe   = regexp.MustCompile(`^[A-Z]{2}$`)
+	referenceRe = regexp.MustCompile(`^[A-Za-z0-9-]{1,40}$`)
 )
 
 // Handler serves GET /v1/listings, /v1/listings/suggest and /v1/listings/{slug}.
@@ -83,8 +88,9 @@ func parseQuery(v url.Values) (Query, map[string]string) {
 		fields["q"] = "must be at most 100 characters"
 	}
 	q.Page, q.PageSize = ParsePaging(v, fields)
-
-	for name, dst := range map[string]**int{"bedrooms_min": &q.BedroomsMin, "bathrooms_min": &q.BathroomsMin} {
+	for name, dst := range map[string]**int{
+		"bedrooms_min": &q.BedroomsMin, "bathrooms_min": &q.BathroomsMin, "bedrooms_max": &q.BedroomsMax, "bathrooms_max": &q.BathroomsMax,
+	} {
 		if raw := v.Get(name); raw != "" {
 			n, err := strconv.Atoi(raw)
 			if err != nil || n < 0 || n > 50 {
@@ -93,6 +99,69 @@ func parseQuery(v url.Values) (Query, map[string]string) {
 			}
 			*dst = &n
 		}
+	}
+	// Areas, in square metres.
+	for name, dst := range map[string]**int{
+		"floor_area_min": &q.FloorAreaMin, "floor_area_max": &q.FloorAreaMax, "land_area_min": &q.LandAreaMin, "land_area_max": &q.LandAreaMax,
+	} {
+		if raw := v.Get(name); raw != "" {
+			n, err := strconv.Atoi(raw)
+			if err != nil || n < 0 || n > maxArea {
+				fields[name] = "must be a whole number of square metres from 0 to " + strconv.Itoa(maxArea)
+				continue
+			}
+			*dst = &n
+		}
+	}
+	for _, pair := range []struct {
+		name     string
+		min, max *int
+	}{
+		{"bedrooms_max", q.BedroomsMin, q.BedroomsMax}, {"bathrooms_max", q.BathroomsMin, q.BathroomsMax},
+		{"floor_area_max", q.FloorAreaMin, q.FloorAreaMax}, {"land_area_max", q.LandAreaMin, q.LandAreaMax},
+	} {
+		if _, bad := fields[pair.name]; !bad && pair.min != nil && pair.max != nil && *pair.min > *pair.max {
+			fields[pair.name] = "must not be lower than " + strings.TrimSuffix(pair.name, "max") + "min"
+		}
+	}
+	if raw := v.Get("listed_within_days"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 365 {
+			fields["listed_within_days"] = "must be a whole number from 1 to 365"
+		} else {
+			q.ListedWithinDays = &n
+		}
+	}
+	// Country: a market code, in any case. `market` is an alias.
+	country, market := strings.ToUpper(strings.TrimSpace(v.Get("country"))), strings.ToUpper(strings.TrimSpace(v.Get("market")))
+	switch {
+	case country != "" && market != "" && country != market:
+		fields["market"] = "is an alias of country; send one of them, or the same value in both"
+	case country == "":
+		country = market
+	}
+	if country != "" && !countryRe.MatchString(country) {
+		fields["country"] = "must be a two-letter country code such as ZW"
+	}
+	q.Country, q.Region = country, strings.TrimSpace(v.Get("region"))
+	switch raw := v.Get("advertiser_type"); raw {
+	case "", AdvertiserFilterAgency, AdvertiserFilterPrivate:
+		q.AdvertiserType = raw
+	default:
+		fields["advertiser_type"] = "must be agency or private"
+	}
+	if raw := strings.TrimSpace(v.Get("reference")); raw != "" {
+		if !referenceRe.MatchString(raw) {
+			fields["reference"] = "must be a listing reference such as RP-ZW-10001"
+		}
+		q.Reference = raw
+	}
+	switch raw := v.Get("has_photos"); raw {
+	case "", "false":
+	case "true":
+		q.HasPhotos = true
+	default:
+		fields["has_photos"] = "must be true or false"
 	}
 	if raw := v.Get("min_price"); raw != "" {
 		amount, err := ParseAmount(raw)
@@ -140,9 +209,9 @@ func parseQuery(v url.Values) (Query, map[string]string) {
 		if q.Q != "" {
 			q.Sort = SortRelevance
 		}
-	case SortNewest, SortPriceAsc, SortPriceDesc, SortRelevance:
+	case SortNewest, SortOldest, SortPriceAsc, SortPriceDesc, SortAreaDesc, SortRelevance:
 	default:
-		fields["sort"] = "must be one of newest, price_asc, price_desc, relevance"
+		fields["sort"] = "must be one of " + strings.Join(Sorts(), ", ")
 	}
 	return q, fields
 }
@@ -160,12 +229,12 @@ func containsString(list []string, s string) bool {
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	q, fields := parseQuery(r.URL.Query())
 	if len(fields) == 0 {
-		codeFields, err := h.svc.CheckCodes(r.Context(), q)
+		resolved, codeFields, err := h.svc.Resolve(r.Context(), q)
 		if err != nil {
 			httpx.WriteInternalError(w, r, h.logger, err)
 			return
 		}
-		fields = codeFields
+		q, fields = resolved, codeFields
 	}
 	if len(fields) > 0 {
 		badRequest(w, r, fields)

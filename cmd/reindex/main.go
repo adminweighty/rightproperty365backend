@@ -21,7 +21,9 @@ import (
 	"syscall"
 	"time"
 
+	"rightproperty365.com/backend/internal/app"
 	"rightproperty365.com/backend/internal/modules/listings"
+	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/modules/reference"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/database"
@@ -73,6 +75,8 @@ func run() error {
 	}
 	indexer := listings.NewIndexer(es, cfg.SearchIndexPrefix, listings.NewPostgresStore(pool),
 		reference.NewService(reference.NewPostgresStore(pool), nil), logger)
+	// A document's region is the region of its city (reference data).
+	indexer.SetPlaces(app.Places(reference.NewPostgresStore(pool), markets.NewPostgresStore(pool)))
 	name, count, err := indexer.Reindex(ctx)
 	if err != nil {
 		return err

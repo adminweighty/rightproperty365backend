@@ -146,6 +146,11 @@ func (s *MemoryStore) searchLabels(ctx context.Context) (suburbs, cities, types 
 
 func terms(q string) []string { return strings.Fields(strings.ToLower(q)) }
 
+// listedSince is the earliest publication time "listed within N days" keeps.
+func listedSince(now time.Time, days int) time.Time {
+	return now.Add(-time.Duration(days) * 24 * time.Hour)
+}
+
 // score returns how well a record matches the search terms; 0 means no
 // match. Every term must match somewhere. Title matches weigh most.
 func score(r Record, words []string, suburb, city, propertyType string) int {
@@ -196,7 +201,19 @@ func matches(r Record, q Query, skip string) bool {
 		skip != "suburb" && q.Suburb != "" && r.Suburb != q.Suburb,
 		q.Featured != nil && r.Featured != *q.Featured,
 		q.BathroomsMin != nil && (r.Bathrooms == nil || *r.Bathrooms < *q.BathroomsMin),
-		skip != "bedrooms" && q.BedroomsMin != nil && (r.Bedrooms == nil || *r.Bedrooms < *q.BedroomsMin):
+		skip != "bedrooms" && q.BedroomsMin != nil && (r.Bedrooms == nil || *r.Bedrooms < *q.BedroomsMin),
+		skip != "country" && q.Country != "" && r.MarketCode != q.Country,
+		skip != "region" && q.Region != "" && q.CityRegion[r.City] != q.Region,
+		skip != "bedrooms" && q.BedroomsMax != nil && (r.Bedrooms == nil || *r.Bedrooms > *q.BedroomsMax),
+		q.BathroomsMax != nil && (r.Bathrooms == nil || *r.Bathrooms > *q.BathroomsMax),
+		q.FloorAreaMin != nil && (r.FloorArea == nil || *r.FloorArea < *q.FloorAreaMin),
+		q.FloorAreaMax != nil && (r.FloorArea == nil || *r.FloorArea > *q.FloorAreaMax),
+		q.LandAreaMin != nil && (r.LandArea == nil || *r.LandArea < *q.LandAreaMin),
+		q.LandAreaMax != nil && (r.LandArea == nil || *r.LandArea > *q.LandAreaMax),
+		q.Reference != "" && !strings.EqualFold(r.Reference, q.Reference),
+		q.HasPhotos && len(r.Photos) == 0,
+		q.AdvertiserType == AdvertiserFilterAgency && r.Advertiser.Type != AdvertiserAgency,
+		q.AdvertiserType == AdvertiserFilterPrivate && r.Advertiser.Type != AdvertiserPrivateSeller:
 		return false
 	}
 	for _, f := range q.Features {
@@ -228,15 +245,23 @@ func (s *MemoryStore) Search(ctx context.Context, q Query, now time.Time) (Hits,
 		score int
 	}
 	var candidates []scored // public and matching the text
+	// "Listed within N days" is not a facet: it narrows everything.
+	var since time.Time
+	if q.ListedWithinDays != nil {
+		since = listedSince(now, *q.ListedWithinDays)
+	}
 	for _, r := range s.public(now) {
+		if q.ListedWithinDays != nil && r.PublishedAt.Before(since) {
+			continue
+		}
 		if sc := score(r, words, suburbs[r.Suburb], cities[r.City], types[r.PropertyType]); sc > 0 {
 			candidates = append(candidates, scored{r, sc})
 		}
 	}
-
 	facets := RawFacets{
 		Deal: map[string]int{}, Category: map[string]int{}, PropertyType: map[string]int{}, City: map[string]int{},
 		Suburb: map[string]int{}, Features: map[string]int{}, Bedrooms: map[int]int{},
+		Country: map[string]int{}, Region: map[string]int{},
 	}
 	var matched []scored
 	for _, c := range candidates {
@@ -254,6 +279,12 @@ func (s *MemoryStore) Search(ctx context.Context, q Query, now time.Time) (Hits,
 		}
 		if matches(c.Record, q, "suburb") {
 			facets.Suburb[c.Suburb]++
+		}
+		if matches(c.Record, q, "country") && c.MarketCode != "" {
+			facets.Country[c.MarketCode]++
+		}
+		if region := q.CityRegion[c.City]; region != "" && matches(c.Record, q, "region") {
+			facets.Region[region]++
 		}
 		if matches(c.Record, q, "bedrooms") && c.Bedrooms != nil {
 			facets.Bedrooms[*c.Bedrooms]++
@@ -288,6 +319,20 @@ func (s *MemoryStore) Search(ctx context.Context, q Query, now time.Time) (Hits,
 			}
 			if a.Featured != b.Featured {
 				return a.Featured
+			}
+		case SortOldest:
+			if !a.PublishedAt.Equal(b.PublishedAt) {
+				return a.PublishedAt.Before(b.PublishedAt)
+			}
+		case SortAreaDesc: // largest floor area first; listings without one last
+			switch {
+			case a.FloorArea == nil && b.FloorArea == nil:
+			case a.FloorArea == nil:
+				return false
+			case b.FloorArea == nil:
+				return true
+			case *a.FloorArea != *b.FloorArea:
+				return *a.FloorArea > *b.FloorArea
 			}
 		}
 		if !a.PublishedAt.Equal(b.PublishedAt) {

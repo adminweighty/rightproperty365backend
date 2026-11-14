@@ -42,6 +42,21 @@ const (
 	SortPriceAsc  = "price_asc"
 	SortPriceDesc = "price_desc"
 	SortRelevance = "relevance"
+	// SortOldest is the reverse of newest; SortAreaDesc puts the largest
+	// floor area first (listings without one last).
+	SortOldest   = "oldest"
+	SortAreaDesc = "area_desc"
+)
+
+// Sorts returns every sort order.
+func Sorts() []string {
+	return []string{SortNewest, SortOldest, SortPriceAsc, SortPriceDesc, SortAreaDesc, SortRelevance}
+}
+
+// Values of the advertiser_type filter.
+const (
+	AdvertiserFilterAgency  = "agency"
+	AdvertiserFilterPrivate = "private"
 )
 
 // Paging limits.
@@ -112,31 +127,35 @@ type Advertiser struct {
 
 // Listing is the public representation of a listing.
 type Listing struct {
-	ID           uuid.UUID  `json:"id"`
-	Slug         string     `json:"slug"`
-	Reference    string     `json:"reference"`
-	Title        string     `json:"title"`
-	Deal         Coded      `json:"deal"`
-	Category     Coded      `json:"category"`
-	PropertyType Coded      `json:"property_type"`
-	Price        Money      `json:"price"`
-	PricePeriod  *string    `json:"price_period"`
-	Suburb       Coded      `json:"suburb"`
-	City         Coded      `json:"city"`
-	MarketCode   string     `json:"market_code"`
-	Bedrooms     *int       `json:"bedrooms"`
-	Bathrooms    *int       `json:"bathrooms"`
-	FloorArea    *int       `json:"floor_area"`
-	LandArea     *int       `json:"land_area"`
-	Summary      string     `json:"summary"`
-	Description  string     `json:"description"`
-	Features     []Coded    `json:"features"`
-	Featured     bool       `json:"featured"`
-	Photos       []Photo    `json:"photos"`
-	Advertiser   Advertiser `json:"advertiser"`
-	PublishedAt  time.Time  `json:"published_at"`
-	ExpiresAt    time.Time  `json:"expires_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
+	ID           uuid.UUID `json:"id"`
+	Slug         string    `json:"slug"`
+	Reference    string    `json:"reference"`
+	Title        string    `json:"title"`
+	Deal         Coded     `json:"deal"`
+	Category     Coded     `json:"category"`
+	PropertyType Coded     `json:"property_type"`
+	Price        Money     `json:"price"`
+	PricePeriod  *string   `json:"price_period"`
+	Suburb       Coded     `json:"suburb"`
+	City         Coded     `json:"city"`
+	// Region is the region (province) of the city; null when the city has none.
+	Region *Coded `json:"region"`
+	// Country is the listing's market as a country; MarketCode is its code.
+	Country     Country    `json:"country"`
+	MarketCode  string     `json:"market_code"`
+	Bedrooms    *int       `json:"bedrooms"`
+	Bathrooms   *int       `json:"bathrooms"`
+	FloorArea   *int       `json:"floor_area"`
+	LandArea    *int       `json:"land_area"`
+	Summary     string     `json:"summary"`
+	Description string     `json:"description"`
+	Features    []Coded    `json:"features"`
+	Featured    bool       `json:"featured"`
+	Photos      []Photo    `json:"photos"`
+	Advertiser  Advertiser `json:"advertiser"`
+	PublishedAt time.Time  `json:"published_at"`
+	ExpiresAt   time.Time  `json:"expires_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
 // Record is a listing as stored: codes instead of labels, plus the fields
@@ -218,6 +237,30 @@ type Query struct {
 	Currency     string
 	BedroomsMin  *int
 	BathroomsMin *int
+
+	// Location above the city. Country is a market code (upper case); Region
+	// a regions code. A listing's region is the region of its city.
+	Country string
+	Region  string
+	// Advanced filters. Areas are square metres.
+	BedroomsMax  *int
+	BathroomsMax *int
+	FloorAreaMin *int
+	FloorAreaMax *int
+	LandAreaMin  *int
+	LandAreaMax  *int
+	// ListedWithinDays keeps listings published in the last N days.
+	ListedWithinDays *int
+	// AdvertiserType is "agency" or "private" ("" for any).
+	AdvertiserType string
+	// Reference is an exact listing reference, compared without case.
+	Reference string
+	// HasPhotos keeps listings with at least one photo.
+	HasPhotos bool
+	// CityRegion (city code -> region code) is filled by the Service from the
+	// reference data; the memory adapter evaluates regions with it. Clients
+	// cannot set it.
+	CityRegion map[string]string
 	// Features must ALL be present.
 	Features []string
 	Featured *bool
@@ -234,6 +277,9 @@ type FacetCount struct {
 	Code  string `json:"code"`
 	Label string `json:"label"`
 	Count int    `json:"count"`
+	// City is the code of the city a suburb belongs to. It is set on the
+	// values of the suburb facet only, so a client can group them.
+	City *string `json:"city,omitempty"`
 }
 
 // PriceRange is the lowest and highest price among the matching listings in
@@ -256,6 +302,9 @@ type Facets struct {
 	Bedrooms     []FacetCount `json:"bedrooms"`
 	Features     []FacetCount `json:"features"`
 	Price        PriceRange   `json:"price"`
+	// Country and Region count by market and by the region of the city.
+	Country []FacetCount `json:"country"`
+	Region  []FacetCount `json:"region"`
 }
 
 // RawFacets are facet counts by code, before labels and ordering are applied.
@@ -263,6 +312,8 @@ type RawFacets struct {
 	Deal, Category, PropertyType, City, Suburb, Features map[string]int
 	Bedrooms                                             map[int]int
 	PriceMin, PriceMax                                   *big.Rat
+	// Country is keyed by market code, Region by region code.
+	Country, Region map[string]int
 }
 
 // Hits is what a Search adapter returns: the IDs of one page in order, the
@@ -275,11 +326,11 @@ type Hits struct {
 
 // Suggestion is one search suggestion.
 type Suggestion struct {
-	// Type is "suburb", "city" or "listing".
+	// Type is "suburb", "city", "region", "country" or "listing".
 	Type  string `json:"type"`
 	Label string `json:"label"`
-	// Value is the suburb or city code (use it as the `suburb` / `city`
-	// filter), or the listing's slug.
+	// Value is the suburb, city, region or country code (use it as the filter
+	// of the same name), or the listing's slug.
 	Value string `json:"value"`
 }
 

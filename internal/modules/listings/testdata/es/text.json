@@ -40,6 +40,19 @@
         "match_all": {}
       }
     },
+    "country": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "market",
+            "size": 300
+          }
+        }
+      },
+      "filter": {
+        "match_all": {}
+      }
+    },
     "deal": {
       "aggs": {
         "values": {
@@ -97,6 +110,19 @@
           "terms": {
             "field": "property_type",
             "size": 200
+          }
+        }
+      },
+      "filter": {
+        "match_all": {}
+      }
+    },
+    "region": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "region",
+            "size": 500
           }
         }
       },

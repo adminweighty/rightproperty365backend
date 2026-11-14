@@ -87,6 +87,14 @@ func TestSearchBodyGoldenFiles(t *testing.T) {
 			MinPrice: rat("100000"), MaxPrice: rat("400000.50"), Currency: "USD", BedroomsMin: intp(3), BathroomsMin: intp(2),
 			Features: []string{"borehole", "solar-backup"}, Featured: &featured, Sort: SortPriceAsc, Page: 3, PageSize: 24,
 		}, esNow),
+		// Country, region and every advanced filter, largest floor area first.
+		"advanced": BuildSearchBody(Query{
+			Country: "ZW", Region: "harare", Deal: "sale", BedroomsMin: intp(2), BedroomsMax: intp(5), BathroomsMax: intp(4),
+			FloorAreaMin: intp(120), FloorAreaMax: intp(600), LandAreaMin: intp(400), LandAreaMax: intp(5000),
+			ListedWithinDays: intp(30), AdvertiserType: AdvertiserFilterAgency, Reference: "rp-zw-10001", HasPhotos: true,
+			Sort: SortAreaDesc, Page: 1, PageSize: 12,
+		}, esNow),
+		"oldest":  BuildSearchBody(Query{Region: "matabeleland-north", AdvertiserType: AdvertiserFilterPrivate, Sort: SortOldest, Page: 1, PageSize: 12}, esNow),
 		"suggest": BuildSuggestBody("bor", 8, esNow),
 	}
 	for name, body := range cases {
@@ -208,6 +216,7 @@ func sampleRecord() Record {
 
 var testLabels = map[string]map[string]string{
 	SetPropertyTypes: {"house": "House"}, SetCities: {"harare": "Harare"}, SetSuburbs: {"borrowdale": "Borrowdale"},
+	keyCityRegion: {"harare": "harare"},
 }
 
 // The index holds public listing data only: nothing about customers,
@@ -224,9 +233,19 @@ func TestDocumentHoldsOnlyPublicListingData(t *testing.T) {
 	}
 	private := regexp.MustCompile(`(?i)phone|e-?mail|address|contact|customer|guest|owner|user|organisation|agent|seller|advertiser|password|token`)
 	for key := range fields {
-		if private.MatchString(key) {
+		// advertiser_type is the KIND of advertiser ("agency" or "private"),
+		// which the public listing shows anyway; it never says who.
+		if private.MatchString(key) && key != "advertiser_type" {
 			t.Fatalf("document field %q looks like private or account data", key)
 		}
+	}
+	if fields["advertiser_type"] != "agency" || fields["has_photos"] != true || fields["region"] != "harare" || fields["market"] != "ZW" {
+		t.Fatalf("advertiser_type, has_photos, region, market = %v, %v, %v, %v", fields["advertiser_type"], fields["has_photos"], fields["region"], fields["market"])
+	}
+	seller := sampleRecord()
+	seller.Advertiser, seller.Photos, seller.City = Advertiser{Type: AdvertiserPrivateSeller, Name: "Grace Mhlanga"}, nil, "nowhere"
+	if doc := BuildDocument(seller, testLabels); doc.AdvertiserType != "private" || doc.HasPhotos || doc.Region != "" {
+		t.Fatalf("private seller document: %+v", doc)
 	}
 	for _, private := range []string{"Sample Estates", "Tendai", "tendai-ncube", sampleRecord().OrganisationID.String() + `"}`} {
 		if strings.Contains(string(raw), private) && private != sampleRecord().OrganisationID.String()+`"}` {

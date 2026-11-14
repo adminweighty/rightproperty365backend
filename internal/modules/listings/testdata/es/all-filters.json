@@ -167,6 +167,67 @@
         }
       }
     },
+    "country": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "market",
+            "size": 300
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "sale"
+              }
+            },
+            {
+              "term": {
+                "category": "residential"
+              }
+            },
+            {
+              "term": {
+                "property_type": "house"
+              }
+            },
+            {
+              "term": {
+                "city": "harare"
+              }
+            },
+            {
+              "term": {
+                "suburb": "borrowdale"
+              }
+            },
+            {
+              "range": {
+                "bedrooms": {
+                  "gte": 3
+                }
+              }
+            },
+            {
+              "term": {
+                "currency": "USD"
+              }
+            },
+            {
+              "range": {
+                "price": {
+                  "gte": 100000,
+                  "lte": 400000.5
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
     "deal": {
       "aggs": {
         "values": {
@@ -361,6 +422,67 @@
             {
               "term": {
                 "category": "residential"
+              }
+            },
+            {
+              "term": {
+                "city": "harare"
+              }
+            },
+            {
+              "term": {
+                "suburb": "borrowdale"
+              }
+            },
+            {
+              "range": {
+                "bedrooms": {
+                  "gte": 3
+                }
+              }
+            },
+            {
+              "term": {
+                "currency": "USD"
+              }
+            },
+            {
+              "range": {
+                "price": {
+                  "gte": 100000,
+                  "lte": 400000.5
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "region": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "region",
+            "size": 500
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "sale"
+              }
+            },
+            {
+              "term": {
+                "category": "residential"
+              }
+            },
+            {
+              "term": {
+                "property_type": "house"
               }
             },
             {

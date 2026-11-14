@@ -81,6 +81,64 @@ func (v vocabulary) Labels(ctx context.Context, set string) (map[string]string, 
 	return v.ref.Labels(ctx, set)
 }
 
+// places adapts the reference data and the markets to listings.Places: the
+// hierarchy country (market) > region > city > suburb. Every call reads the
+// stores, so an administrator's change applies at once.
+type places struct {
+	ref     *reference.Service
+	markets markets.Store
+}
+
+// Geography implements listings.Places.
+func (p places) Geography(ctx context.Context) (listings.Geography, error) {
+	g := listings.Geography{
+		Countries: map[string]listings.CountryInfo{}, RegionCountry: map[string]string{},
+		CityRegion: map[string]string{}, CityCountry: map[string]string{}, SuburbCity: map[string]string{},
+	}
+	all, err := p.markets.List(ctx)
+	if err != nil {
+		return g, err
+	}
+	for _, m := range all {
+		g.Countries[m.Code] = listings.CountryInfo{Name: m.Name, Currency: m.CurrencyCode}
+	}
+	for set, fill := range map[string]func(reference.Item){
+		reference.SetRegions: func(it reference.Item) {
+			if it.MarketCode != nil {
+				g.RegionCountry[it.Code] = *it.MarketCode
+			}
+		},
+		reference.SetCities: func(it reference.Item) {
+			if it.ParentCode != nil {
+				g.CityRegion[it.Code] = *it.ParentCode
+			}
+			if it.MarketCode != nil {
+				g.CityCountry[it.Code] = *it.MarketCode
+			}
+		},
+		reference.SetSuburbs: func(it reference.Item) {
+			if it.ParentCode != nil {
+				g.SuburbCity[it.Code] = *it.ParentCode
+			}
+		},
+	} {
+		items, err := p.ref.Items(ctx, set)
+		if err != nil {
+			return g, err
+		}
+		for _, it := range items {
+			fill(it)
+		}
+	}
+	return g, nil
+}
+
+// Places returns the location hierarchy read from the given stores, for the
+// binaries that build search documents (the worker and cmd/reindex).
+func Places(ref reference.Store, marketStore markets.Store) listings.Places {
+	return places{ref: reference.NewService(ref, nil), markets: marketStore}
+}
+
 // listingNames adapts the listings service to propertyrequests.ListingNames.
 type listingNames struct{ svc *listings.Service }
 

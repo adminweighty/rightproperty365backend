@@ -55,7 +55,7 @@ func codes(items []refItem) string {
 var wantSetSizes = map[string]int{
 	"deal_types": 2, "property_categories": 3, "property_types": 7, "request_types": 4, "contact_methods": 3,
 	"account_roles": 15, "directory_kinds": 7, "service_trades": 7, "cities": 4, "suburbs": 18, "listing_features": 59,
-	"onboarding_documents": 9, "organisation_kinds": 6,
+	"onboarding_documents": 9, "organisation_kinds": 6, "regions": 10,
 }
 
 func TestReferenceAllSets(t *testing.T) {
@@ -406,7 +406,7 @@ func TestPlatformRolesAreDeniedEvenIfInTheReferenceTable(t *testing.T) {
 // solicitors directory) are the same rows the memory store and cmd/seed use.
 func TestMigrationSeedsTheSameReferenceRows(t *testing.T) {
 	sql := ""
-	for _, name := range []string{"0007_reference_data.up.sql", "0009_onboarding.up.sql", "0010_real_estate_roles.up.sql"} {
+	for _, name := range []string{"0007_reference_data.up.sql", "0009_onboarding.up.sql", "0010_real_estate_roles.up.sql", "0012_locations.up.sql"} {
 		raw, err := os.ReadFile(filepath.Join("..", "..", "migrations", name))
 		if err != nil {
 			t.Fatal(err)
@@ -433,6 +433,11 @@ func TestMigrationSeedsTheSameReferenceRows(t *testing.T) {
 			if (set == reference.SetOnboardingDocuments || set == reference.SetAccountRoles) &&
 				(it.Description == nil || !strings.Contains(sql, "'"+strings.ReplaceAll(*it.Description, "'", "''")+"'")) {
 				t.Fatalf("the migrations lack the description of %s/%s", set, it.Code)
+			}
+			// 0012: every city is linked to its region.
+			if set == reference.SetCities && (it.ParentCode == nil ||
+				!strings.Contains(sql, fmt.Sprintf("UPDATE reference_items SET parent_code = '%s', updated_at = now() WHERE set_code = 'cities' AND code = '%s';", *it.ParentCode, it.Code))) {
+				t.Fatalf("the migrations do not link city %s to its region", it.Code)
 			}
 			if it.Group != nil && !strings.Contains(sql, fmt.Sprintf("'%s', '%s', %d,", it.Group.Code, it.Group.Label, it.Group.SortOrder)) {
 				t.Fatalf("the migrations lack the group of %s/%s: %+v", set, it.Code, *it.Group)

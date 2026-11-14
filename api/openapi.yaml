@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.12.0
+  version: 0.13.0
   summary: Multi-country property marketplace API (Zimbabwe first).
   description: |
     Versioned REST API for RightProperty365.
@@ -220,7 +220,8 @@ paths:
         | `account_roles` | `roles` at registration | `group`, `requires_verification` |
         | `directory_kinds` | directory sections and `recipient.kind` | `singular_label`, `description` |
         | `service_trades` | service-provider trades | — |
-        | `cities` | cities of a market | `market_code` |
+        | `regions` | regions (provinces, states) of a market; Zimbabwe has its ten provinces, the planned markets none yet | `market_code` |
+        | `cities` | cities of a market | `market_code`, `parent_code` = its region |
         | `suburbs` | suburbs of a city | `market_code`, `parent_code` = its city |
         | `listing_features` | listing features and amenities | — |
         | `onboarding_documents` | document types for professional onboarding (`description` is set) | — |
@@ -276,8 +277,10 @@ paths:
                   directory_kinds:
                     - { code: agencies, label: Estate agencies, singular_label: Estate agency, description: Registered agencies selling and letting property across Zimbabwe., sort_order: 10, market_code: null, parent_code: null, group: null, requires_verification: null }
                   service_trades: []
+                  regions:
+                    - { code: matabeleland-north, label: Matabeleland North, singular_label: null, description: null, sort_order: 80, market_code: ZW, parent_code: null, group: null, requires_verification: null }
                   cities:
-                    - { code: harare, label: Harare, singular_label: null, description: null, sort_order: 10, market_code: ZW, parent_code: null, group: null, requires_verification: null }
+                    - { code: harare, label: Harare, singular_label: null, description: null, sort_order: 10, market_code: ZW, parent_code: harare, group: null, requires_verification: null }
                   suburbs:
                     - { code: borrowdale, label: Borrowdale, singular_label: null, description: null, sort_order: 10, market_code: ZW, parent_code: harare, group: null, requires_verification: null }
                   listing_features: []
@@ -375,16 +378,31 @@ paths:
         reference data; a code that is unknown or inactive is `400 VALIDATION_FAILED` on that
         parameter.
 
+        **Location.** Listings can be narrowed at four levels, which form one hierarchy in the
+        reference data: `country` (a market: `GET /v1/markets`) > `region` (the `regions` set,
+        for example Zimbabwe's provinces) > `city` (`cities`; `parent_code` is its region) >
+        `suburb` (`suburbs`; `parent_code` is its city). A listing stores its market, city and
+        suburb; its region is the region of its city. The levels combine, and they must agree:
+        a suburb must belong to the city, a city to the region, a region to the country (also
+        when a level in between is left out). A mismatch is `400 VALIDATION_FAILED` on the
+        **narrower** parameter (`region=bulawayo&city=harare` -> field `city`).
+
+        **Price and currency.** Prices are never converted. `min_price` / `max_price` and the
+        price facet use one currency: `currency` when given, otherwise the currency of the
+        selected `country`, otherwise `USD`.
+
         **Sorting.** `newest` (default without `q`), `relevance` (default with `q`; title matches
         rank above suburb/city, then property type, then the rest; without `q` featured listings
-        come first), `price_asc`, `price_desc`. Ties are broken by newest, then id.
+        come first), `price_asc`, `price_desc`, `oldest`, `area_desc` (largest floor area first;
+        listings without a floor area last). Ties are broken by newest, then id.
 
         **Paging.** `page` starts at 1; `page_size` is 1–48, default 12. A page past the end is
         `200` with an empty `items` array.
 
         **Facets.** Each facet counts the listings that match every *other* filter (and `q`),
-        so selecting a value does not hide its alternatives. `features` and `bedrooms` count
-        within the full result. Only values with at least one listing appear.
+        so selecting a value does not hide its alternatives (`bedrooms` leaves out both
+        `bedrooms_min` and `bedrooms_max`). `features` counts within the full result. `country`
+        and `region` are facets too, and each `suburb` value names its `city`. Only values with at least one listing appear.
 
         **Sitemaps** should use `GET /v1/sitemap`, not this endpoint.
 
@@ -425,9 +443,64 @@ paths:
           example: harare
         - name: suburb
           in: query
-          description: A `suburbs` code.
+          description: A `suburbs` code. Must belong to `city`, `region` and `country` when those are given.
           schema: { type: string }
           example: borrowdale
+        - name: country
+          in: query
+          description: A market code from `GET /v1/markets` (ISO 3166-1 alpha-2), in any case. Also sets the default `currency`. A market without listings is valid and returns nothing.
+          schema: { type: string, pattern: "^[A-Za-z]{2}$" }
+          example: ZW
+        - name: market
+          in: query
+          description: Alias of `country`. If both are sent they must be equal (`400` on `market` otherwise).
+          schema: { type: string, pattern: "^[A-Za-z]{2}$" }
+        - name: region
+          in: query
+          description: A `regions` code (`GET /v1/reference/regions`). Matches listings whose city is in that region. Must belong to `country` when given.
+          schema: { type: string }
+          example: matabeleland-north
+        - name: bedrooms_max
+          in: query
+          description: At most this many bedrooms (0–50). Must not be lower than `bedrooms_min`. Listings without a bedroom count never match.
+          schema: { type: integer, minimum: 0, maximum: 50 }
+        - name: bathrooms_max
+          in: query
+          description: At most this many bathrooms (0–50). Must not be lower than `bathrooms_min`.
+          schema: { type: integer, minimum: 0, maximum: 50 }
+        - name: floor_area_min
+          in: query
+          description: Floor area of at least this many square metres. Listings without a floor area never match a floor-area filter.
+          schema: { type: integer, minimum: 0, maximum: 100000000 }
+        - name: floor_area_max
+          in: query
+          description: Floor area of at most this many square metres. Must not be lower than `floor_area_min`.
+          schema: { type: integer, minimum: 0, maximum: 100000000 }
+        - name: land_area_min
+          in: query
+          description: Land area of at least this many square metres. Listings without a land area never match a land-area filter.
+          schema: { type: integer, minimum: 0, maximum: 100000000 }
+        - name: land_area_max
+          in: query
+          description: Land area of at most this many square metres. Must not be lower than `land_area_min`.
+          schema: { type: integer, minimum: 0, maximum: 100000000 }
+        - name: listed_within_days
+          in: query
+          description: Only listings published in the last N days (`published_at` not older than N x 24 hours).
+          schema: { type: integer, minimum: 1, maximum: 365 }
+        - name: advertiser_type
+          in: query
+          description: "`agency`: advertised by an organisation (`advertiser.type` `agency`). `private`: advertised by its owner (`advertiser.type` `private_seller`)."
+          schema: { type: string, enum: [agency, private] }
+        - name: reference
+          in: query
+          description: An exact listing reference, compared without regard to case. Letters, digits and hyphens, at most 40.
+          schema: { type: string, pattern: "^[A-Za-z0-9-]{1,40}$" }
+          example: RP-ZW-10001
+        - name: has_photos
+          in: query
+          description: "`true`: only listings with at least one photo. `false` is accepted and filters nothing."
+          schema: { type: boolean }
         - name: min_price
           in: query
           description: Lowest price, as a decimal amount. With a price filter only listings priced in `currency` match.
@@ -440,7 +513,7 @@ paths:
           example: "300000"
         - name: currency
           in: query
-          description: ISO 4217 code for `min_price` / `max_price` and for the price facet. Defaults to `USD`. Prices in other currencies are never converted.
+          description: ISO 4217 code for `min_price` / `max_price` and for the price facet. Defaults to the currency of the selected `country`, else `USD`. Prices in other currencies are never converted.
           schema: { type: string, pattern: "^[A-Za-z]{3}$", default: USD }
         - name: bedrooms_min
           in: query
@@ -463,7 +536,7 @@ paths:
           schema: { type: boolean }
         - name: sort
           in: query
-          schema: { type: string, enum: [newest, price_asc, price_desc, relevance] }
+          schema: { type: string, enum: [newest, oldest, price_asc, price_desc, area_desc, relevance] }
         - name: page
           in: query
           schema: { type: integer, minimum: 1, default: 1 }
@@ -491,7 +564,12 @@ paths:
           description: |
             `VALIDATION_FAILED`. `error.fields` is keyed by the parameter: `q`, `deal`,
             `category`, `property_type`, `city`, `suburb`, `min_price`, `max_price`, `currency`,
-            `bedrooms_min`, `bathrooms_min`, `features`, `featured`, `sort`, `page`, `page_size`.
+            `bedrooms_min`, `bathrooms_min`, `features`, `featured`, `sort`, `page`, `page_size`,
+            `country`, `market`, `region`, `bedrooms_max`, `bathrooms_max`, `floor_area_min`,
+            `floor_area_max`, `land_area_min`, `land_area_max`, `listed_within_days`,
+            `advertiser_type`, `reference`, `has_photos`. A maximum lower than its minimum is
+            reported on the `_max` parameter; a location that does not belong to the wider one
+            on the narrower parameter (`suburb`, `city` or `region`).
           headers:
             X-Request-Id:
               $ref: "#/components/headers/X-Request-Id"
@@ -510,10 +588,11 @@ paths:
       operationId: suggestListings
       summary: Search suggestions
       description: |
-        Up to 8 suggestions for a search box: suburbs first, then cities, then listing titles;
-        within each, names that start with the term come first. Only suburbs and cities that
-        have at least one public listing, and only public listings, are suggested. A term
-        shorter than 2 characters returns an empty list.
+        Up to 8 suggestions for a search box: suburbs first, then cities, then regions, then
+        countries, then listing titles; within each, names that start with the term come first.
+        Only suburbs, cities, regions and countries that have at least one public listing, and
+        only public listings, are suggested. A term shorter than 2 characters returns an empty
+        list.
       parameters:
         - name: q
           in: query
@@ -687,6 +766,23 @@ paths:
         - name: city
           in: query
           description: A `cities` code.
+          schema: { type: string }
+          example: harare
+        - name: country
+          in: query
+          description: A market code from `GET /v1/markets`, in any case (`market` is an alias). Keeps profiles whose city is in that country. `400` on `country` when unknown.
+          schema: { type: string, pattern: "^[A-Za-z]{2}$" }
+          example: ZW
+        - name: market
+          in: query
+          description: Alias of `country`. If both are sent they must be equal (`400` on `market` otherwise).
+          schema: { type: string, pattern: "^[A-Za-z]{2}$" }
+        - name: region
+          in: query
+          description: |
+            A `regions` code. Keeps profiles whose city is in that region. `400` on `region` when
+            unknown or not a region of `country`; `400` on `city` when `city` is not in the
+            region or country asked for.
           schema: { type: string }
           example: harare
         - name: trade
@@ -3677,7 +3773,7 @@ components:
     Listing:
       type: object
       description: A public listing. The same object is used in search results, on the detail endpoint and on profiles.
-      required: [id, slug, reference, title, deal, category, property_type, price, price_period, suburb, city, market_code,
+      required: [id, slug, reference, title, deal, category, property_type, price, price_period, suburb, city, region, country, market_code,
                  bedrooms, bathrooms, floor_area, land_area, summary, description, features, featured, photos, advertiser,
                  published_at, expires_at, updated_at]
       additionalProperties: false
@@ -3707,7 +3803,14 @@ components:
         city:
           allOf: [{ $ref: "#/components/schemas/Coded" }]
           description: "`cities` code and label."
-        market_code: { type: string, pattern: "^[A-Z]{2}$" }
+        region:
+          oneOf:
+            - $ref: "#/components/schemas/Coded"
+            - type: "null"
+          description: "`regions` code and label of the city's region (province); null when the city has none."
+        country:
+          $ref: "#/components/schemas/Country"
+        market_code: { type: string, pattern: "^[A-Z]{2}$", description: "The same code as `country.code`." }
         bedrooms: { type: [integer, "null"], minimum: 0 }
         bathrooms: { type: [integer, "null"], minimum: 0 }
         floor_area: { type: [integer, "null"], minimum: 0, description: Square metres. }
@@ -3765,6 +3868,15 @@ components:
         expires_at: "2027-02-08T08:00:00Z"
         updated_at: "2026-11-10T08:00:00Z"
 
+    Country:
+      type: object
+      description: A market shown as a country.
+      required: [code, name]
+      additionalProperties: false
+      properties:
+        code: { type: string, pattern: "^[A-Z]{2}$", description: "Market code; use it as the `country` filter." }
+        name: { type: string, examples: [Zimbabwe] }
+
     FacetCount:
       type: object
       required: [code, label, count]
@@ -3773,18 +3885,29 @@ components:
         code: { type: string }
         label: { type: string }
         count: { type: integer, minimum: 1 }
+        city:
+          type: string
+          description: "Present on the values of the `suburb` facet only: the `cities` code of the suburb's city, so a client can group suburbs by city. Absent everywhere else."
 
     ListingFacets:
       type: object
       description: All keys are always present; a facet with no values is an empty array.
-      required: [deal, category, property_type, city, suburb, bedrooms, features, price]
+      required: [deal, category, property_type, city, suburb, bedrooms, features, price, country, region]
       additionalProperties: false
       properties:
+        country:
+          type: array
+          description: "By market: `code` is the market code, `label` the country name. Ignores the `country` filter, like every facet ignores its own. Ordered by label."
+          items: { $ref: "#/components/schemas/FacetCount" }
+        region:
+          type: array
+          description: "By the region of the listing's city: `code` is a `regions` code. Ignores the `region` filter. Listings whose city has no region are not counted. Ordered by label."
+          items: { $ref: "#/components/schemas/FacetCount" }
         deal: { type: array, items: { $ref: "#/components/schemas/FacetCount" }, description: Ordered by label. }
         category: { type: array, items: { $ref: "#/components/schemas/FacetCount" } }
         property_type: { type: array, items: { $ref: "#/components/schemas/FacetCount" } }
         city: { type: array, items: { $ref: "#/components/schemas/FacetCount" } }
-        suburb: { type: array, items: { $ref: "#/components/schemas/FacetCount" } }
+        suburb: { type: array, items: { $ref: "#/components/schemas/FacetCount" }, description: "Each value carries `city`, the code of its city." }
         bedrooms:
           type: array
           description: "Exact bedroom counts in ascending order; `code` is the number as a string (`\"3\"`), `label` is e.g. `3 bedrooms`."
@@ -3824,11 +3947,11 @@ components:
       required: [type, label, value]
       additionalProperties: false
       properties:
-        type: { type: string, enum: [suburb, city, listing] }
-        label: { type: string, description: "Text to show. For a suburb it includes the city: `Borrowdale, Harare`." }
+        type: { type: string, enum: [suburb, city, region, country, listing] }
+        label: { type: string, description: "Text to show. For a suburb it includes the city (`Borrowdale, Harare`), for a region the country (`Matabeleland North, Zimbabwe`)." }
         value:
           type: string
-          description: "For `suburb` and `city`: the reference code, to use as the `suburb` / `city` filter. For `listing`: the listing's slug."
+          description: "For `suburb`, `city`, `region` and `country`: the code, to use as the filter of the same name. For `listing`: the listing's slug."
 
     DirectoryKindInfo:
       type: object
@@ -3858,7 +3981,7 @@ components:
       description: |
         A public profile. It has no phone number, email address or street address, and never
         will: use `POST /v1/business-enquiries` with its `kind` and `slug` to contact it.
-      required: [kind, slug, name, role, tagline, description, city, areas, services, offerings, trade, specialism, verified, sponsored,
+      required: [kind, slug, name, role, tagline, description, city, region, country, areas, services, offerings, trade, specialism, verified, sponsored,
                  since, logo, agency, listing_count, updated_at]
       additionalProperties: false
       properties:
@@ -3872,6 +3995,16 @@ components:
         city:
           allOf: [{ $ref: "#/components/schemas/Coded" }]
           description: "`cities` code and label."
+        region:
+          oneOf:
+            - $ref: "#/components/schemas/Coded"
+            - type: "null"
+          description: "`regions` code and label of the city's region; null when the profile has no city or the city has no region."
+        country:
+          oneOf:
+            - $ref: "#/components/schemas/Country"
+            - type: "null"
+          description: The country (market) of the profile's city; null when the profile has no city.
         areas: { type: array, items: { type: string }, description: Free-text names of the areas served. Not reference codes. }
         services: { type: array, items: { type: string }, description: "Names of the services offered; any of them can be sent as `service` in a business enquiry." }
         offerings:
@@ -3958,6 +4091,7 @@ components:
         - account_roles
         - directory_kinds
         - service_trades
+        - regions
         - cities
         - suburbs
         - listing_features
@@ -4010,7 +4144,7 @@ components:
           description: The market the row belongs to (`cities`, `suburbs`), or null when it applies to every market.
         parent_code:
           type: [string, "null"]
-          description: "`property_types`: the `property_categories` code. `suburbs`: the `cities` code. Null elsewhere."
+          description: "`property_types`: the `property_categories` code. `cities`: the `regions` code. `suburbs`: the `cities` code. Null elsewhere."
         group:
           oneOf:
             - $ref: "#/components/schemas/ReferenceGroup"

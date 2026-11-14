@@ -19,8 +19,14 @@ type Service struct {
 	store  Store
 	search Search
 	labels Labels
+	// places supplies the location hierarchy; nil means none (no regions).
+	places Places
 	now    func() time.Time
 }
+
+// SetPlaces gives the Service the location hierarchy behind the country and
+// region filters, facets, suggestions and the region / country of a listing.
+func (s *Service) SetPlaces(p Places) { s.places = p }
 
 // NewService builds a Service.
 func NewService(store Store, search Search, labels Labels) *Service {
@@ -42,15 +48,7 @@ type Page struct {
 
 // labelSets loads the labels of every set a listing uses.
 func (s *Service) labelSets(ctx context.Context) (map[string]map[string]string, error) {
-	out := map[string]map[string]string{}
-	for _, set := range []string{SetDealTypes, SetPropertyCategories, SetPropertyTypes, SetCities, SetSuburbs, SetListingFeatures} {
-		labels, err := s.labels.Labels(ctx, set)
-		if err != nil {
-			return nil, fmt.Errorf("load %s labels: %w", set, err)
-		}
-		out[set] = labels
-	}
-	return out, nil
+	return loadLabels(ctx, s.labels, s.places)
 }
 
 func coded(labels map[string]string, code string) Coded {
@@ -75,6 +73,15 @@ func present(r Record, labels map[string]map[string]string) Listing {
 	if r.PricePeriod != "" {
 		period := r.PricePeriod
 		l.PricePeriod = &period
+	}
+	// The region is the region of the city; the country is the market.
+	if region := labels[keyCityRegion][r.City]; region != "" {
+		c := coded(labels[SetRegions], region)
+		l.Region = &c
+	}
+	l.Country = Country{Code: r.MarketCode, Name: r.MarketCode}
+	if name := labels[keyCountryNames][r.MarketCode]; name != "" {
+		l.Country.Name = name
 	}
 	for _, f := range r.Features {
 		l.Features = append(l.Features, coded(labels[SetListingFeatures], f))
@@ -155,6 +162,13 @@ func (s *Service) facets(raw RawFacets, q Query, labels map[string]map[string]st
 		PropertyType: build(raw.PropertyType, SetPropertyTypes, false), City: build(raw.City, SetCities, false),
 		Suburb: build(raw.Suburb, SetSuburbs, false), Features: build(raw.Features, SetListingFeatures, true),
 		Bedrooms: []FacetCount{}, Price: PriceRange{Currency: currencyOf(q)},
+		Country: build(raw.Country, keyCountryNames, false), Region: build(raw.Region, SetRegions, false),
+	}
+	// Each suburb names its city, so a client can group them.
+	for i := range f.Suburb {
+		if city := labels[keySuburbCity][f.Suburb[i].Code]; city != "" {
+			f.Suburb[i].City = &city
+		}
 	}
 	beds := make([]int, 0, len(raw.Bedrooms))
 	for n := range raw.Bedrooms {
@@ -209,12 +223,27 @@ func (s *Service) Suggest(ctx context.Context, term string) ([]Suggestion, error
 	if len([]rune(term)) < 2 {
 		return []Suggestion{}, nil
 	}
-	out, err := s.search.Suggest(ctx, term, MaxSuggestions, s.now().UTC())
+	found, err := s.search.Suggest(ctx, term, MaxSuggestions, s.now().UTC())
 	if err != nil {
 		return nil, fmt.Errorf("suggest: %w", err)
 	}
-	if out == nil {
-		out = []Suggestion{}
+	// Regions and countries come from the reference data, after the suburbs
+	// and cities and before the listings.
+	places, err := s.placeSuggestions(ctx, term)
+	if err != nil {
+		return nil, fmt.Errorf("suggest places: %w", err)
+	}
+	out := []Suggestion{}
+	for _, sg := range found {
+		if sg.Type != "listing" {
+			out = append(out, sg)
+		}
+	}
+	out = append(out, places...)
+	for _, sg := range found {
+		if sg.Type == "listing" {
+			out = append(out, sg)
+		}
 	}
 	if len(out) > MaxSuggestions {
 		out = out[:MaxSuggestions]
@@ -260,6 +289,22 @@ func (s *Service) Slugs(ctx context.Context) ([]SlugEntry, error) {
 		out = []SlugEntry{}
 	}
 	return out, nil
+}
+
+// Resolve validates a query against the reference data — the codes, then the
+// location hierarchy (a suburb must belong to the city, a city to the region,
+// a region to the country) — and returns it completed with what the search
+// adapters need: the city -> region map and, when a country is selected and
+// no currency was asked for, that country's currency.
+func (s *Service) Resolve(ctx context.Context, q Query) (Query, map[string]string, error) {
+	fields, err := s.CheckCodes(ctx, q)
+	if err != nil {
+		return q, nil, err
+	}
+	if err := s.checkPlaces(ctx, &q, fields); err != nil {
+		return q, nil, err
+	}
+	return q, fields, nil
 }
 
 // CheckCodes validates the reference codes of a query against the active

@@ -168,7 +168,12 @@ const searchFrom = `
 	FROM listings l
 	LEFT JOIN reference_items sb ON sb.set_code = 'suburbs' AND sb.code = l.suburb_code
 	LEFT JOIN reference_items ct ON ct.set_code = 'cities' AND ct.code = l.city_code
-	LEFT JOIN reference_items pt ON pt.set_code = 'property_types' AND pt.code = l.property_type`
+	LEFT JOIN reference_items pt ON pt.set_code = 'property_types' AND pt.code = l.property_type
+	LEFT JOIN markets mk ON mk.id = l.market_id`
+
+// regionColumn is a listing's region: the parent of its city in the
+// reference data. The hierarchy has one source, so nothing is stored twice.
+const regionColumn = `ct.parent_code`
 
 // builder accumulates a WHERE clause and its arguments.
 type builder struct {
@@ -206,6 +211,42 @@ func where(q Query, now time.Time, skip string) *builder {
 	eq("property_type", "l.property_type", q.PropertyType)
 	eq("city", "l.city_code", q.City)
 	eq("suburb", "l.suburb_code", q.Suburb)
+	eq("country", "mk.code", q.Country)
+	eq("region", regionColumn, q.Region)
+	if skip != "bedrooms" && q.BedroomsMax != nil {
+		b.add(`l.bedrooms <= %s`, *q.BedroomsMax)
+	}
+	for _, r := range []struct {
+		column string
+		min    *int
+		max    *int
+	}{
+		{"l.bathrooms", nil, q.BathroomsMax},
+		{"l.floor_area_m2", q.FloorAreaMin, q.FloorAreaMax},
+		{"l.land_area_m2", q.LandAreaMin, q.LandAreaMax},
+	} {
+		if r.min != nil {
+			b.add(r.column+` >= %s`, *r.min)
+		}
+		if r.max != nil {
+			b.add(r.column+` <= %s`, *r.max)
+		}
+	}
+	if q.ListedWithinDays != nil {
+		b.add(`l.published_at >= %s`, listedSince(now, *q.ListedWithinDays))
+	}
+	switch q.AdvertiserType {
+	case AdvertiserFilterAgency:
+		b.conds = append(b.conds, `l.organisation_id IS NOT NULL`)
+	case AdvertiserFilterPrivate:
+		b.conds = append(b.conds, `l.organisation_id IS NULL`)
+	}
+	if q.Reference != "" {
+		b.add(`upper(l.reference) = upper(%s)`, q.Reference)
+	}
+	if q.HasPhotos {
+		b.conds = append(b.conds, `EXISTS (SELECT 1 FROM listing_photos lp WHERE lp.listing_id = l.id)`)
+	}
 	if q.Featured != nil {
 		b.add(`l.featured = %s`, *q.Featured)
 	}
@@ -266,6 +307,10 @@ func (s *PostgresStore) Search(ctx context.Context, q Query, now time.Time) (Hit
 		order = `l.price_amount ASC, ` + order
 	case SortPriceDesc:
 		order = `l.price_amount DESC, ` + order
+	case SortOldest:
+		order = `l.published_at ASC, l.id`
+	case SortAreaDesc:
+		order = `l.floor_area_m2 DESC NULLS LAST, ` + order
 	case SortRelevance:
 		var parts []string
 		for _, w := range terms(q.Q) {
@@ -299,6 +344,7 @@ func (s *PostgresStore) Search(ctx context.Context, q Query, now time.Time) (Hit
 		{"deal", "l.deal", &hits.Facets.Deal}, {"category", "l.category", &hits.Facets.Category},
 		{"property_type", "l.property_type", &hits.Facets.PropertyType},
 		{"city", "l.city_code", &hits.Facets.City}, {"suburb", "l.suburb_code", &hits.Facets.Suburb},
+		{"country", "mk.code", &hits.Facets.Country}, {"region", regionColumn, &hits.Facets.Region},
 	} {
 		if *f.dst, err = s.countBy(ctx, f.column, where(q, now, f.name)); err != nil {
 			return Hits{}, fmt.Errorf("facet %s: %w", f.name, err)

@@ -16,6 +16,7 @@ import (
 	"rightproperty365.com/backend/internal/app"
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/listings"
+	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/modules/notifications"
 	"rightproperty365.com/backend/internal/modules/onboarding"
 	"rightproperty365.com/backend/internal/modules/reference"
@@ -111,7 +112,10 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		listings.NewIndexer(es, cfg.SearchIndexPrefix, listingStore, reference.NewService(reference.NewPostgresStore(pool), nil), logger).Register(dispatcher)
+		indexer := listings.NewIndexer(es, cfg.SearchIndexPrefix, listingStore, reference.NewService(reference.NewPostgresStore(pool), nil), logger)
+		// A document's region is the region of its city (reference data).
+		indexer.SetPlaces(app.Places(reference.NewPostgresStore(pool), markets.NewPostgresStore(pool)))
+		indexer.Register(dispatcher)
 		logger.Info("search driver selected: elasticsearch (listing events update the search index)",
 			slog.String("search_driver", config.SearchDriverElasticsearch), slog.String("search_alias", listings.IndexAlias(cfg.SearchIndexPrefix)))
 	} else {

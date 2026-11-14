@@ -131,8 +131,14 @@ func NewRouter(d Deps) (http.Handler, error) {
 	if d.Now != nil {
 		listingsSvc.SetClock(d.Now)
 	}
+	// The location hierarchy (country > region > city > suburb) behind the
+	// country and region filters, facets and suggestions.
+	geography := places{ref: referenceSvc, markets: d.Markets}
+	listingsSvc.SetPlaces(geography)
 	listingsH := listings.NewHandler(listingsSvc, logger)
-	directoryH := directory.NewHandler(directory.NewService(d.Directory, vocab, listingsSvc), logger)
+	directorySvc := directory.NewService(d.Directory, vocab, listingsSvc)
+	directorySvc.SetPlaces(geography)
+	directoryH := directory.NewHandler(directorySvc, logger)
 
 	identityOpts := []identity.Option{
 		identity.WithAdminSessionTTLs(cfg.AdminSessionTTL, cfg.AdminSessionIdleTTL),

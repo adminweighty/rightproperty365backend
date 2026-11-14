@@ -45,8 +45,10 @@ func esFacetFilters(q Query) map[string][]any {
 	term("property_type", "property_type", q.PropertyType)
 	term("city", "city", q.City)
 	term("suburb", "suburb", q.Suburb)
-	if q.BedroomsMin != nil {
-		out["bedrooms"] = []any{J{"range": J{"bedrooms": J{"gte": *q.BedroomsMin}}}}
+	term("country", "market", q.Country)
+	term("region", "region", q.Region)
+	if bounds := esRange(q.BedroomsMin, q.BedroomsMax); bounds != nil {
+		out["bedrooms"] = []any{J{"range": J{"bedrooms": bounds}}}
 	}
 	if q.priced() {
 		bounds := J{}
@@ -62,7 +64,22 @@ func esFacetFilters(q Query) map[string][]any {
 	return out
 }
 
-var esFacetOrder = []string{"deal", "category", "property_type", "city", "suburb", "bedrooms", "price"}
+var esFacetOrder = []string{"deal", "category", "property_type", "city", "suburb", "country", "region", "bedrooms", "price"}
+
+// esRange builds the bounds of a range filter, or nil when there are none.
+func esRange(min, max *int) J {
+	if min == nil && max == nil {
+		return nil
+	}
+	bounds := J{}
+	if min != nil {
+		bounds["gte"] = *min
+	}
+	if max != nil {
+		bounds["lte"] = *max
+	}
+	return bounds
+}
 
 // esAll is the query matching documents that satisfy every filter. With no
 // filters it is match_all rather than a bool query with an empty clause list.
@@ -96,6 +113,28 @@ func BuildSearchBody(q Query, now time.Time) J {
 	if q.BathroomsMin != nil {
 		filter = append(filter, J{"range": J{"bathrooms": J{"gte": *q.BathroomsMin}}})
 	}
+	for _, r := range []struct {
+		field    string
+		min, max *int
+	}{
+		{"bathrooms", nil, q.BathroomsMax}, {"floor_area", q.FloorAreaMin, q.FloorAreaMax}, {"land_area", q.LandAreaMin, q.LandAreaMax},
+	} {
+		if bounds := esRange(r.min, r.max); bounds != nil {
+			filter = append(filter, J{"range": J{r.field: bounds}})
+		}
+	}
+	if q.ListedWithinDays != nil {
+		filter = append(filter, J{"range": J{"published_at": J{"gte": listedSince(now, *q.ListedWithinDays).UTC().Format(esTimeLayout)}}})
+	}
+	if q.AdvertiserType != "" {
+		filter = append(filter, J{"term": J{"advertiser_type": q.AdvertiserType}})
+	}
+	if q.Reference != "" { // exact, whatever the case
+		filter = append(filter, J{"term": J{"reference.keyword": J{"value": q.Reference, "case_insensitive": true}}})
+	}
+	if q.HasPhotos {
+		filter = append(filter, J{"term": J{"has_photos": true}})
+	}
 	for _, f := range q.Features { // every feature must be present
 		filter = append(filter, J{"term": J{"features": f}})
 	}
@@ -126,6 +165,8 @@ func BuildSearchBody(q Query, now time.Time) J {
 		"property_type": facetAgg("property_type", "property_type", 200),
 		"city":          facetAgg("city", "city", 500),
 		"suburb":        facetAgg("suburb", "suburb", 1000),
+		"country":       facetAgg("country", "market", 300),
+		"region":        facetAgg("region", "region", 500),
 		"bedrooms":      facetAgg("bedrooms", "bedrooms", 60),
 		// Features are counted within the full result (they have no "other choice").
 		"features": J{"filter": esAll(allExcept(facets, "")), "aggs": J{"values": J{"terms": J{"field": "features", "size": 1000}}}},
@@ -141,6 +182,10 @@ func BuildSearchBody(q Query, now time.Time) J {
 		order = append([]any{J{"price": "asc"}}, newest...)
 	case SortPriceDesc:
 		order = append([]any{J{"price": "desc"}}, newest...)
+	case SortOldest:
+		order = []any{J{"published_at": "asc"}, J{"id": "asc"}}
+	case SortAreaDesc:
+		order = append([]any{J{"floor_area": J{"order": "desc", "missing": "_last"}}}, newest...)
 	case SortRelevance:
 		if len(words) > 0 {
 			order = append(order, "_score")
@@ -289,6 +334,7 @@ func (e *ElasticSearch) Search(ctx context.Context, q Query, now time.Time) (Hit
 		} `json:"hits"`
 		Aggregations struct {
 			Deal, Category, City, Suburb, Bedrooms, Features esBuckets
+			Country, Region                                  esBuckets
 			PropertyType                                     esBuckets `json:"property_type"`
 			Price                                            struct {
 				Min struct {
@@ -315,6 +361,7 @@ func (e *ElasticSearch) Search(ctx context.Context, q Query, now time.Time) (Hit
 	hits.Facets = RawFacets{
 		Deal: bucketCounts(a.Deal), Category: bucketCounts(a.Category), PropertyType: bucketCounts(a.PropertyType),
 		City: bucketCounts(a.City), Suburb: bucketCounts(a.Suburb), Features: bucketCounts(a.Features), Bedrooms: map[int]int{},
+		Country: bucketCounts(a.Country), Region: bucketCounts(a.Region),
 	}
 	for key, n := range bucketCounts(a.Bedrooms) {
 		if bedrooms, err := strconv.Atoi(key); err == nil {

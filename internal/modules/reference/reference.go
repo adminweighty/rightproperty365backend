@@ -28,9 +28,12 @@ const (
 	SetAccountRoles       = "account_roles"
 	SetDirectoryKinds     = "directory_kinds"
 	SetServiceTrades      = "service_trades"
-	SetCities             = "cities"
-	SetSuburbs            = "suburbs"
-	SetListingFeatures    = "listing_features"
+	// SetRegions: the regions (provinces, states) of a market. A city's
+	// parent_code is its region; a suburb's parent_code is its city.
+	SetRegions         = "regions"
+	SetCities          = "cities"
+	SetSuburbs         = "suburbs"
+	SetListingFeatures = "listing_features"
 	// SetOnboardingDocuments: the kinds of document a professional may have
 	// to attach to an onboarding application (code, label, description).
 	SetOnboardingDocuments = "onboarding_documents"
@@ -43,7 +46,7 @@ const (
 func Sets() []string {
 	return []string{
 		SetDealTypes, SetPropertyCategories, SetPropertyTypes, SetRequestTypes, SetContactMethods,
-		SetAccountRoles, SetDirectoryKinds, SetServiceTrades, SetCities, SetSuburbs, SetListingFeatures,
+		SetAccountRoles, SetDirectoryKinds, SetServiceTrades, SetRegions, SetCities, SetSuburbs, SetListingFeatures,
 		SetOnboardingDocuments, SetOrganisationKinds,
 	}
 }
@@ -82,7 +85,8 @@ type Item struct {
 	SortOrder   int     `json:"sort_order"`
 	// MarketCode is null for a row that applies to every market.
 	MarketCode *string `json:"market_code"`
-	// ParentCode links a property type to its category and a suburb to its city.
+	// ParentCode links a property type to its category, a city to its region
+	// and a suburb to its city.
 	ParentCode *string `json:"parent_code"`
 	// Group is set for account roles.
 	Group *Group `json:"group"`

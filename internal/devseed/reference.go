@@ -6,6 +6,18 @@ import (
 	"rightproperty365.com/backend/internal/modules/reference"
 )
 
+// ZimbabweProvinces are the ten provinces of Zimbabwe, the `regions` of
+// market ZW. Their codes are the slugs of the names ("matabeleland-north").
+var ZimbabweProvinces = []string{
+	"Harare", "Bulawayo", "Manicaland", "Mashonaland Central", "Mashonaland East", "Mashonaland West",
+	"Masvingo", "Matabeleland North", "Matabeleland South", "Midlands",
+}
+
+// CityRegions is the region (province) of each sample city.
+var CityRegions = map[string]string{
+	"harare": "harare", "bulawayo": "bulawayo", "mutare": "manicaland", "victoria-falls": "matabeleland-north",
+}
+
 func str(s string) *string { return &s }
 func flag(b bool) *bool    { return &b }
 
@@ -151,6 +163,17 @@ func ReferenceItems() map[string][]reference.Item {
 		add(reference.SetCities, reference.Item{Code: Code(p.City), Label: p.City, MarketCode: zw})
 		if p.Category != "" {
 			add(reference.SetServiceTrades, reference.Item{Code: Code(p.Category), Label: p.Category})
+		}
+	}
+	// Regions: Zimbabwe's ten provinces. Planned markets have none yet. Each
+	// city belongs to one (its parent_code).
+	for _, name := range ZimbabweProvinces {
+		add(reference.SetRegions, reference.Item{Code: Code(name), Label: name, MarketCode: zw})
+	}
+	sets[reference.SetRegions] = list(sets[reference.SetRegions]...)
+	for i, city := range sets[reference.SetCities] {
+		if region, ok := CityRegions[city.Code]; ok {
+			sets[reference.SetCities][i].ParentCode = str(region)
 		}
 	}
 	for _, city := range sets[reference.SetCities] {
