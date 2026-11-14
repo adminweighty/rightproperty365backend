@@ -23,7 +23,7 @@ func SampleData(name string) Data {
 		d.Path = "/sign-in"
 	case "welcome":
 		d.Path = "/account"
-		d.Roles = []Role{{Name: "Buyer or renter"}, {Name: "Landlord or property manager", Pending: true}, {Name: "Estate agent", Pending: true}}
+		d.Roles = []Role{{Name: "Prospective Buyer"}, {Name: "Landlord", Pending: true}, {Name: "Estate Agent", Pending: true}}
 	case "admin-sign-in":
 		d.Name, d.Path = "Sam Admin", "/admin/sign-in"
 	case "property-request-received":
@@ -38,14 +38,18 @@ func SampleData(name string) Data {
 		d.Name, d.Path, d.Reference, d.ProfileName, d.Service = "Sample Plumbers Owner", "/agent/requests", "BE-4H8N2RXT", "Sample Plumbers", "Burst pipes and leaks"
 		d.Preview = SafePreview("The geyser is leaking into the ceiling. Can someone come this week? Call me on +263 77 123 4567 or write to tariro@example.com.", 140)
 	case "onboarding-submitted":
-		d.Name, d.Path, d.RoleName = "Sample Plumbers Owner", "/onboarding", "Service provider"
+		d.StatusText = "Under Review"
+		d.Name, d.Path, d.RoleName = "Sample Plumbers Owner", "/onboarding", "Property Service Provider"
 	case "onboarding-approved":
-		d.Name, d.Path, d.RoleName, d.ProfileName = "Sample Plumbers Owner", "/directory/service-providers/sample-plumbers", "Service provider", "Sample Plumbers"
+		d.StatusText = "Approved"
+		d.Name, d.Path, d.RoleName, d.ProfileName = "Sample Plumbers Owner", "/directory/service-providers/sample-plumbers", "Property Service Provider", "Sample Plumbers"
 	case "onboarding-changes-requested":
-		d.Name, d.Path, d.RoleName = "Sample Plumbers Owner", "/onboarding", "Service provider"
+		d.StatusText = "Changes Requested"
+		d.Name, d.Path, d.RoleName = "Sample Plumbers Owner", "/onboarding", "Property Service Provider"
 		d.Reason = "The proof of address is older than three months. Please upload a recent one."
 	case "onboarding-rejected":
-		d.Name, d.Path, d.RoleName = "Sample Plumbers Owner", "/account", "Service provider"
+		d.StatusText = "Rejected"
+		d.Name, d.Path, d.RoleName = "Sample Plumbers Owner", "/account", "Property Service Provider"
 		d.Reason = "We could not confirm the business registration with the documents provided."
 	case "request-update":
 		d.Path, d.Reference, d.StatusText = "/account", "RP-7K2M9Q4D", "The agent has replied"

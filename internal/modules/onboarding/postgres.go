@@ -48,7 +48,8 @@ func (s *PostgresStore) inTx(ctx context.Context, fn func(tx pgx.Tx) error) erro
 // Outcomes implements Store.
 func (s *PostgresStore) Outcomes(ctx context.Context) ([]RoleOutcome, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT o.role, o.outcome, COALESCE(o.organisation_kind, ''), COALESCE(o.directory_kind, ''), COALESCE(o.membership_role, '')
+		SELECT o.role, o.outcome, COALESCE(o.organisation_kind, ''), COALESCE(o.directory_kind, ''), COALESCE(o.membership_role, ''),
+		       COALESCE(o.specialism, '')
 		FROM onboarding_role_outcomes o
 		LEFT JOIN reference_items r ON r.set_code = 'account_roles' AND r.code = o.role
 		ORDER BY COALESCE(r.group_sort_order, 0), COALESCE(r.sort_order, 0), o.role`)
@@ -57,7 +58,7 @@ func (s *PostgresStore) Outcomes(ctx context.Context) ([]RoleOutcome, error) {
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (RoleOutcome, error) {
 		var o RoleOutcome
-		err := row.Scan(&o.Role, &o.Outcome, &o.OrganisationKind, &o.DirectoryKind, &o.MembershipRole)
+		err := row.Scan(&o.Role, &o.Outcome, &o.OrganisationKind, &o.DirectoryKind, &o.MembershipRole, &o.Specialism)
 		return o, err
 	})
 }
@@ -463,12 +464,12 @@ func (s *PostgresStore) Approve(ctx context.Context, p Approval) (Created, error
 			}
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO directory_profiles (id, market_id, kind, slug, name, organisation_id, agent_user_id, status,
-					role_title, tagline, about, city_code, trade_code, verified, sponsored, areas, services, created_at, updated_at)
+					role_title, tagline, about, city_code, trade_code, verified, sponsored, areas, services, created_at, updated_at, specialism)
 				VALUES ($1, $2, $3, $4, $5, $6, $7, 'ACTIVE', NULLIF($8, ''), NULLIF($9, ''), NULLIF($10, ''), NULLIF($11, ''), NULLIF($12, ''),
-					true, false, $13, $14, $15, $15)`,
+					true, false, $13, $14, $15, $15, NULLIF($16, ''))`,
 				p.Profile.ID, market, p.Profile.Kind, slug, p.Profile.Name, p.Profile.OrganisationID, p.Profile.AgentUserID,
 				p.Profile.RoleTitle, p.Profile.Tagline, p.Profile.Description, p.Profile.CityCode, p.Profile.TradeCode,
-				areas, services, p.At); err != nil {
+				areas, services, p.At, p.Profile.Specialism); err != nil {
 				return fmt.Errorf("insert profile: %w", err)
 			}
 			created.Profile = &ProfileRef{Kind: p.Profile.Kind, Slug: slug}

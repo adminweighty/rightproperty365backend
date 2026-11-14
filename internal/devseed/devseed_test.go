@@ -234,6 +234,10 @@ func TestProfilesMatchTheWebDirectory(t *testing.T) {
 		{"service-providers", "sample-conveyancers", "Sample Conveyancers"},
 		{"service-providers", "sample-valuers", "Sample Valuers"},
 		{"service-providers", "sample-movers", "Sample Movers"},
+		// Not in the web's files yet: the solicitors directory.
+		{"solicitors", "sample-law-chambers", "Sample Law Chambers"},
+		{"solicitors", "sample-conveyancing-attorneys", "Sample Conveyancing Attorneys"},
+		{"solicitors", "sample-property-lawyers", "Sample Property Lawyers"},
 	}
 	if len(want) != ProfileCount {
 		t.Fatalf("test table has %d rows, want %d", len(want), ProfileCount)
@@ -303,7 +307,8 @@ func TestAgencyAndAgentProfileMapping(t *testing.T) {
 func TestBusinessProfiles(t *testing.T) {
 	wantKinds := map[string][2]string{
 		businessenquiries.KindDevelopers:       {"DEVELOPER", "DEVELOPER"},
-		businessenquiries.KindPropertyManagers: {"LANDLORD", "LANDLORD"},
+		businessenquiries.KindPropertyManagers: {"PROPERTY_MANAGER", "PROPERTY_MANAGER"},
+		businessenquiries.KindSolicitors:       {"LAW_FIRM", "SOLICITOR"},
 		businessenquiries.KindHosts:            {"HOST", "HOST"},
 		businessenquiries.KindServiceProviders: {"SERVICE_PROVIDER", "SERVICE_PROVIDER"},
 	}
@@ -333,8 +338,8 @@ func TestBusinessProfiles(t *testing.T) {
 			t.Fatalf("%s: organisation %+v, owner %+v", p.Key(), p.Organisation, a)
 		}
 	}
-	if n != 17 {
-		t.Fatalf("%d business profiles, want 17", n)
+	if n != 20 {
+		t.Fatalf("%d business profiles, want 20", n)
 	}
 	if got := accounts["sample-plumbers@example.test"].Name; got != "Sample Plumbers Owner" {
 		t.Fatalf("owner name = %q", got)

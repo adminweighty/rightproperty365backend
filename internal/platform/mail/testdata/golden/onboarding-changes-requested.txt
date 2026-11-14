@@ -4,9 +4,10 @@ Please update your application
 
 Hello Sample Plumbers Owner,
 
-Our verification team has looked at your application to join RightProperty365 as Service provider and needs something changed before it can be approved.
+Our verification team has looked at your application to join RightProperty365 as Property Service Provider and needs something changed before it can be approved.
 
-Role: Service provider
+Role: Property Service Provider
+Status: Changes Requested
 What to change: The proof of address is older than three months. Please upload a recent one.
 
 Please update your application and submit it again. Your details and documents are saved, so you only need to change what is asked for.

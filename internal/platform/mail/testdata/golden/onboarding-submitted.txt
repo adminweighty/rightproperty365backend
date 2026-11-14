@@ -4,9 +4,10 @@ Application received
 
 Hello Sample Plumbers Owner,
 
-We have received your application to join RightProperty365 as Service provider.
+We have received your application to join RightProperty365 as Property Service Provider.
 
-Role: Service provider
+Role: Property Service Provider
+Status: Under Review
 Submitted: 14 November 2026, 09:05 UTC
 
 Our verification team will review your details and documents. We will email you when there is a decision. There is nothing more you need to do for now.

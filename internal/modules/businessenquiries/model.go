@@ -26,6 +26,7 @@ const (
 	KindAgents           = "agents"
 	KindDevelopers       = "developers"
 	KindPropertyManagers = "property-managers"
+	KindSolicitors       = "solicitors"
 	KindHosts            = "hosts"
 	KindServiceProviders = "service-providers"
 )

@@ -60,7 +60,11 @@ const (
 	AccountRoleConsumer        = "CONSUMER"
 	AccountRoleTenant          = "TENANT"
 	AccountRolePrivateSeller   = auth.AccountRolePrivateSeller
-	AccountRoleLandlord        = "LANDLORD"
+	AccountRoleLandlord        = auth.AccountRoleLandlord
+	AccountRoleSalesAgent      = "SALES_AGENT"
+	AccountRoleLettingsAgent   = "LETTINGS_AGENT"
+	AccountRolePropertyManager = "PROPERTY_MANAGER"
+	AccountRoleSolicitor       = "SOLICITOR"
 	AccountRoleHost            = "HOST"
 	AccountRoleDeveloper       = "DEVELOPER"
 	AccountRoleServiceProvider = "SERVICE_PROVIDER"
@@ -107,10 +111,16 @@ func DefaultSelectableRoles() []SelectableRole {
 
 // selectableAccountRoles is the built-in allowlist and the order in which the
 // API returns account roles.
+//
+// The order follows the groups of the sign-up form: property seekers, real
+// estate professionals, real estate businesses, property owners, other
+// property businesses.
 var selectableAccountRoles = []string{
-	AccountRoleConsumer, AccountRoleTenant, AccountRolePrivateSeller, AccountRoleLandlord,
-	AccountRoleHost, AccountRoleDeveloper, AccountRoleServiceProvider, AccountRoleAgent,
-	AccountRoleAgencyStaff, AccountRoleAgencyAdmin, AccountRoleAgencyOwner,
+	AccountRoleConsumer, AccountRoleTenant,
+	AccountRoleAgent, AccountRoleSalesAgent, AccountRoleLettingsAgent, AccountRolePropertyManager, AccountRoleSolicitor,
+	AccountRoleAgencyOwner, AccountRoleAgencyAdmin, AccountRoleAgencyStaff,
+	AccountRoleLandlord, AccountRolePrivateSeller,
+	AccountRoleHost, AccountRoleDeveloper, AccountRoleServiceProvider,
 }
 
 // SelectableAccountRoles returns the registration allowlist in API order.
@@ -304,6 +314,8 @@ type MembershipView struct {
 	OrganisationKind string    `json:"organisation_kind"`
 	MarketCode       string    `json:"market_code"`
 	Role             string    `json:"role"`
+	// RoleLabel is how Role is shown: "Agency Principal", "Estate Agent", ...
+	RoleLabel string `json:"role_label"`
 }
 
 // View builds the API representation. Arrays are always present (never null).
@@ -336,6 +348,7 @@ func (u User) View() UserView {
 		v.Memberships = append(v.Memberships, MembershipView{
 			OrganisationID: m.OrganisationID, OrganisationName: m.OrganisationName,
 			OrganisationKind: m.OrganisationKind, MarketCode: m.MarketCode, Role: m.Role,
+			RoleLabel: auth.MembershipRoleLabel(m.OrganisationKind, m.Role),
 		})
 	}
 	return v

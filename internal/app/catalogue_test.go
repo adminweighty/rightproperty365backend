@@ -478,10 +478,11 @@ func TestDirectory(t *testing.T) {
 		for _, k := range kinds {
 			got = append(got, fmt.Sprintf("%s=%d", k.Code, k.Count))
 		}
-		if strings.Join(got, ",") != "agencies=5,agents=7,developers=3,property-managers=2,hosts=2,service-providers=10" {
+		if strings.Join(got, ",") != "agencies=5,agents=7,developers=3,property-managers=2,solicitors=3,hosts=2,service-providers=10" {
 			t.Fatalf("kinds = %v", got)
 		}
-		if kinds[0].Label != "Estate agencies" || kinds[0].SingularLabel != "Estate agency" || kinds[0].Description == "" {
+		if kinds[0].Label != "Real Estate Agencies" || kinds[4].Label != "Solicitors" || kinds[4].SingularLabel != "Solicitor" || kinds[0].SingularLabel != "Real Estate Agency" ||
+			kinds[5].Label != "Hosts and Venues" || kinds[6].Label != "Property Services" || kinds[6].SingularLabel != "Property Service Provider" || kinds[0].Description == "" {
 			t.Fatalf("kind = %+v", kinds[0])
 		}
 	})
@@ -619,7 +620,7 @@ func TestSitemap(t *testing.T) {
 	rec := e.get("/v1/sitemap")
 	wantStatus(t, rec, http.StatusOK)
 	s := decode[directory.Sitemap](t, rec)
-	if len(s.Listings) != 18 || len(s.Profiles) != 29 {
+	if len(s.Listings) != 18 || len(s.Profiles) != 32 {
 		t.Fatalf("sitemap: %d listings, %d profiles", len(s.Listings), len(s.Profiles))
 	}
 	for _, l := range s.Listings {

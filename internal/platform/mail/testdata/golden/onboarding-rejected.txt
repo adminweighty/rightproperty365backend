@@ -4,9 +4,10 @@ Application not approved
 
 Hello Sample Plumbers Owner,
 
-We are sorry: your application to join RightProperty365 as Service provider was not approved.
+We are sorry: your application to join RightProperty365 as Property Service Provider was not approved.
 
-Role: Service provider
+Role: Property Service Provider
+Status: Rejected
 Reason: We could not confirm the business registration with the documents provided.
 
 The role has not been added to your account. You can still use RightProperty365 to search and to send requests, and you may apply again from your account if your situation changes.

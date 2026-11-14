@@ -237,15 +237,17 @@ type Decision struct {
 
 // ApplicationView is an application as its owner sees it.
 type ApplicationView struct {
-	ID        uuid.UUID      `json:"id"`
-	Role      string         `json:"role"`
-	RoleLabel string         `json:"role_label"`
-	Status    string         `json:"status"`
-	Details   Details        `json:"details"`
-	Documents []DocumentView `json:"documents"`
-	Missing   Missing        `json:"missing"`
-	CanSubmit bool           `json:"can_submit"`
-	CanEdit   bool           `json:"can_edit"`
+	ID        uuid.UUID `json:"id"`
+	Role      string    `json:"role"`
+	RoleLabel string    `json:"role_label"`
+	Status    string    `json:"status"`
+	// StatusLabel is the wording to show for Status (see StatusLabel).
+	StatusLabel string         `json:"status_label"`
+	Details     Details        `json:"details"`
+	Documents   []DocumentView `json:"documents"`
+	Missing     Missing        `json:"missing"`
+	CanSubmit   bool           `json:"can_submit"`
+	CanEdit     bool           `json:"can_edit"`
 	// CanReapply is true after a rejection: saving details again starts a new application.
 	CanReapply  bool        `json:"can_reapply"`
 	Decision    Decision    `json:"decision"`
@@ -303,8 +305,8 @@ func utcPtr(t *time.Time) *time.Time {
 func (c *catalogue) view(a Application) ApplicationView {
 	m := c.missing(a)
 	return ApplicationView{
-		ID: a.ID, Role: a.Role, RoleLabel: c.roleLabel(a.Role), Status: a.Status, Details: normalised(a.Details),
-		Documents: c.documentViews(a.Documents), Missing: m,
+		ID: a.ID, Role: a.Role, RoleLabel: c.roleLabel(a.Role), Status: a.Status, StatusLabel: StatusLabel(a.Status),
+		Details: normalised(a.Details), Documents: c.documentViews(a.Documents), Missing: m,
 		CanSubmit:  a.Editable() && len(m.Fields) == 0 && len(m.Documents) == 0,
 		CanEdit:    a.Editable(),
 		CanReapply: a.Status == StatusRejected,
@@ -798,6 +800,7 @@ type AdminItem struct {
 	Role          string           `json:"role"`
 	RoleLabel     string           `json:"role_label"`
 	Status        string           `json:"status"`
+	StatusLabel   string           `json:"status_label"`
 	Applicant     ApplicantSummary `json:"applicant"`
 	BusinessName  *string          `json:"business_name"`
 	Agency        *AgencyRef       `json:"agency"`
@@ -863,7 +866,7 @@ func (s *Service) List(ctx context.Context, p *auth.Principal, status, role, q s
 	}
 	for _, a := range apps {
 		out.Items = append(out.Items, AdminItem{
-			ID: a.ID, Role: a.Role, RoleLabel: c.roleLabel(a.Role), Status: a.Status,
+			ID: a.ID, Role: a.Role, RoleLabel: c.roleLabel(a.Role), Status: a.Status, StatusLabel: StatusLabel(a.Status),
 			Applicant:    ApplicantSummary{Name: a.Applicant.Name, Email: a.Applicant.Email},
 			BusinessName: a.BusinessName, Agency: agencyRef(a), SubmittedAt: utcPtr(a.SubmittedAt), UpdatedAt: a.UpdatedAt.UTC(),
 			DocumentCount: len(a.Documents),
@@ -902,7 +905,9 @@ type Checklist struct {
 // HistoryView is one transition as the admin detail shows it.
 type HistoryView struct {
 	From      string    `json:"from"`
+	FromLabel string    `json:"from_label"`
 	To        string    `json:"to"`
+	ToLabel   string    `json:"to_label"`
 	ActorName string    `json:"actor_name"`
 	Reason    *string   `json:"reason"`
 	At        time.Time `json:"at"`
@@ -915,6 +920,7 @@ type AdminApplication struct {
 	Role         string         `json:"role"`
 	RoleLabel    string         `json:"role_label"`
 	Status       string         `json:"status"`
+	StatusLabel  string         `json:"status_label"`
 	Outcome      string         `json:"outcome"`
 	MarketCode   *string        `json:"market_code"`
 	Applicant    ApplicantView  `json:"applicant"`
@@ -936,7 +942,7 @@ func (s *Service) adminView(ctx context.Context, c *catalogue, a Application) (A
 		return AdminApplication{}, err
 	}
 	out := AdminApplication{
-		ID: a.ID, Role: a.Role, RoleLabel: c.roleLabel(a.Role), Status: a.Status, Outcome: c.outcomes[a.Role].Outcome,
+		ID: a.ID, Role: a.Role, RoleLabel: c.roleLabel(a.Role), Status: a.Status, StatusLabel: StatusLabel(a.Status), Outcome: c.outcomes[a.Role].Outcome,
 		MarketCode: nullable(a.MarketCode),
 		Applicant: ApplicantView{ID: a.Applicant.ID, Name: a.Applicant.Name, Email: a.Applicant.Email,
 			EmailVerified: a.Applicant.EmailVerified, CreatedAt: a.Applicant.CreatedAt.UTC()},
@@ -960,7 +966,7 @@ func (s *Service) adminView(ctx context.Context, c *catalogue, a Application) (A
 			Provided: slices.ContainsFunc(a.Documents, func(doc Document) bool { return doc.Type == d.Code })})
 	}
 	for _, h := range history {
-		out.History = append(out.History, HistoryView{From: h.From, To: h.To, ActorName: h.ActorName, Reason: nullable(h.Reason), At: h.At.UTC()})
+		out.History = append(out.History, HistoryView{From: h.From, FromLabel: StatusLabel(h.From), To: h.To, ToLabel: StatusLabel(h.To), ActorName: h.ActorName, Reason: nullable(h.Reason), At: h.At.UTC()})
 	}
 	return out, nil
 }
@@ -1138,6 +1144,7 @@ func (s *Service) Approve(ctx context.Context, p *auth.Principal, id uuid.UUID, 
 				ID: profileID, Kind: outcome.DirectoryKind, Slug: Slugify(app.Applicant.Name), Name: app.Applicant.Name,
 				RoleTitle: title, Description: deref(app.Bio), CityCode: agency.CityCode, Areas: app.Areas,
 				OrganisationID: agency.OrganisationID, AgentUserID: &user, MarketCode: agency.MarketCode,
+				Specialism: outcome.Specialism,
 			}
 		}
 	}

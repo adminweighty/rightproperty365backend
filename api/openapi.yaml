@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.10.0
+  version: 0.11.0
   summary: Multi-country property marketplace API (Zimbabwe first).
   description: |
     Versioned REST API for RightProperty365.
@@ -205,6 +205,7 @@ paths:
         | `suburbs` | suburbs of a city | `market_code`, `parent_code` = its city |
         | `listing_features` | listing features and amenities | — |
         | `onboarding_documents` | document types for professional onboarding (`description` is set) | — |
+        | `organisation_kinds` | organisation kinds and their labels (AGENCY "Real Estate Agency", LAW_FIRM "Law Firm", ...) | — |
 
         Markets are not a set: use `GET /v1/markets`. Platform administrator roles are never in
         `account_roles` and can never be chosen at registration, whatever this endpoint returns.
@@ -245,7 +246,7 @@ paths:
                   contact_methods: []
                   account_roles:
                     - code: PRIVATE_SELLER
-                      label: Private seller
+                      label: Property Seller (Vendor)
                       singular_label: null
                       description: null
                       sort_order: 30
@@ -262,6 +263,7 @@ paths:
                     - { code: borrowdale, label: Borrowdale, singular_label: null, description: null, sort_order: 10, market_code: ZW, parent_code: harare, group: null, requires_verification: null }
                   listing_features: []
                   onboarding_documents: []
+                  organisation_kinds: []
         "304":
           $ref: "#/components/responses/NotModified"
         "400":
@@ -2336,10 +2338,10 @@ paths:
 
         | Role | Created |
         | --- | --- |
-        | AGENCY_OWNER, LANDLORD, HOST, DEVELOPER, SERVICE_PROVIDER | a new organisation, an OWNER membership, and a public profile (`agencies`, `property-managers`, `hosts`, `developers`, `service-providers`) |
-        | AGENT | an AGENT membership in the chosen agency and a public `agents` profile linked to it |
+        | AGENCY_OWNER, PROPERTY_MANAGER, SOLICITOR, HOST, DEVELOPER, SERVICE_PROVIDER | a new organisation (kind AGENCY, PROPERTY_MANAGER, LAW_FIRM, HOST, DEVELOPER, SERVICE_PROVIDER), an OWNER membership, and a public profile (`agencies`, `property-managers`, `solicitors`, `hosts`, `developers`, `service-providers`) |
+        | AGENT, SALES_AGENT, LETTINGS_AGENT | an AGENT membership in the chosen agency and a public `agents` profile linked to it, with `specialism` null, SALES or LETTINGS |
         | AGENCY_STAFF / AGENCY_ADMIN | a STAFF / MANAGER membership in the chosen agency; no profile |
-        | PRIVATE_SELLER | nothing; the role becomes ACTIVE |
+        | LANDLORD, PRIVATE_SELLER | nothing (individual owners); the role becomes ACTIVE |
 
         A created profile is published and **verified**; its slug is derived from the name,
         with `-2`, `-3`, ... on a collision. It carries public content only: never the phone,
@@ -3101,7 +3103,7 @@ components:
       description: |
         A public profile. It has no phone number, email address or street address, and never
         will: use `POST /v1/business-enquiries` with its `kind` and `slug` to contact it.
-      required: [kind, slug, name, role, tagline, description, city, areas, services, offerings, trade, verified, sponsored,
+      required: [kind, slug, name, role, tagline, description, city, areas, services, offerings, trade, specialism, verified, sponsored,
                  since, logo, agency, listing_count, updated_at]
       additionalProperties: false
       properties:
@@ -3132,6 +3134,14 @@ components:
             - $ref: "#/components/schemas/Coded"
             - type: "null"
           description: "`service_trades` code and label. Service providers only; null otherwise."
+        specialism:
+          oneOf:
+            - $ref: "#/components/schemas/Coded"
+            - type: "null"
+          description: |
+            Agent profiles only: `{code: SALES, label: "Sales Agent"}` or
+            `{code: LETTINGS, label: "Lettings Agent"}` for an agent who specialises; null for a
+            general estate agent and for every other kind.
         verified: { type: boolean }
         sponsored: { type: boolean, description: Paid placement. Must be labelled "Sponsored" wherever it is shown. }
         since: { type: [integer, "null"], description: Year the business started, when known. }
@@ -3197,6 +3207,7 @@ components:
         - suburbs
         - listing_features
         - onboarding_documents
+        - organisation_kinds
 
     ReferenceGroup:
       type: object
@@ -3266,9 +3277,9 @@ components:
           description: The `market` filter that was applied, upper-cased, or null.
         sets:
           type: object
-          description: Every set, keyed by its code. All twelve keys are always present.
+          description: Every set, keyed by its code. All thirteen keys are always present.
           additionalProperties: false
-          required: [deal_types, property_categories, property_types, request_types, contact_methods, account_roles, directory_kinds, service_trades, cities, suburbs, listing_features, onboarding_documents]
+          required: [deal_types, property_categories, property_types, request_types, contact_methods, account_roles, directory_kinds, service_trades, cities, suburbs, listing_features, onboarding_documents, organisation_kinds]
           properties:
             deal_types: { type: array, items: { $ref: "#/components/schemas/ReferenceItem" } }
             property_categories: { type: array, items: { $ref: "#/components/schemas/ReferenceItem" } }
@@ -3282,6 +3293,7 @@ components:
             suburbs: { type: array, items: { $ref: "#/components/schemas/ReferenceItem" } }
             listing_features: { type: array, items: { $ref: "#/components/schemas/ReferenceItem" } }
             onboarding_documents: { type: array, items: { $ref: "#/components/schemas/ReferenceItem" } }
+            organisation_kinds: { type: array, items: { $ref: "#/components/schemas/ReferenceItem" } }
 
     ReferenceSet:
       type: object
@@ -3342,15 +3354,35 @@ components:
       enum:
         - CONSUMER
         - TENANT
-        - PRIVATE_SELLER
+        - AGENT
+        - SALES_AGENT
+        - LETTINGS_AGENT
+        - PROPERTY_MANAGER
+        - SOLICITOR
+        - AGENCY_OWNER
+        - AGENCY_ADMIN
+        - AGENCY_STAFF
         - LANDLORD
+        - PRIVATE_SELLER
         - HOST
         - DEVELOPER
         - SERVICE_PROVIDER
-        - AGENT
-        - AGENCY_STAFF
-        - AGENCY_ADMIN
-        - AGENCY_OWNER
+      x-labels:
+        CONSUMER: Prospective Buyer
+        TENANT: Prospective Tenant
+        AGENT: Estate Agent
+        SALES_AGENT: Sales Agent
+        LETTINGS_AGENT: Lettings Agent
+        PROPERTY_MANAGER: Property Manager
+        SOLICITOR: Solicitor
+        AGENCY_OWNER: Agency Principal
+        AGENCY_ADMIN: Agency Administrator
+        AGENCY_STAFF: Agency Staff
+        LANDLORD: Landlord
+        PRIVATE_SELLER: Property Seller (Vendor)
+        HOST: Host
+        DEVELOPER: Property Developer
+        SERVICE_PROVIDER: Property Service Provider
 
     AccountRole:
       type: object
@@ -3407,7 +3439,7 @@ components:
             just becomes ACTIVE.
         organisation_kind:
           type: [string, "null"]
-          enum: [AGENCY, LANDLORD, HOST, DEVELOPER, SERVICE_PROVIDER, null]
+          enum: [AGENCY, LAW_FIRM, PROPERTY_MANAGER, HOST, DEVELOPER, SERVICE_PROVIDER, null]
           description: Set for `ORGANISATION`.
         directory_kind:
           type: [string, "null"]
@@ -3506,13 +3538,14 @@ components:
     OnboardingApplication:
       type: object
       description: An application as its owner sees it.
-      required: [id, role, role_label, status, details, documents, missing, can_submit, can_edit, can_reapply, decision, profile, submitted_at, updated_at]
+      required: [id, role, role_label, status, status_label, details, documents, missing, can_submit, can_edit, can_reapply, decision, profile, submitted_at, updated_at]
       additionalProperties: false
       properties:
         id: { type: string, format: uuid }
         role: { type: string, examples: [SERVICE_PROVIDER] }
         role_label: { type: string, examples: [Service provider] }
         status: { $ref: "#/components/schemas/OnboardingStatus" }
+        status_label: { type: string, enum: [Pending Verification, Under Review, Changes Requested, Approved, Rejected], description: "The wording to show for `status`: DRAFT = Pending Verification (not yet submitted), SUBMITTED = Under Review, CHANGES_REQUESTED = Changes Requested, APPROVED = Approved, REJECTED = Rejected." }
         details: { $ref: "#/components/schemas/OnboardingDetails" }
         documents:
           type: array
@@ -3562,13 +3595,14 @@ components:
 
     OnboardingAdminItem:
       type: object
-      required: [id, role, role_label, status, applicant, business_name, agency, submitted_at, updated_at, document_count]
+      required: [id, role, role_label, status, status_label, applicant, business_name, agency, submitted_at, updated_at, document_count]
       additionalProperties: false
       properties:
         id: { type: string, format: uuid }
         role: { type: string }
         role_label: { type: string }
         status: { $ref: "#/components/schemas/OnboardingStatus" }
+        status_label: { type: string, enum: [Pending Verification, Under Review, Changes Requested, Approved, Rejected], description: "The wording to show for `status`: DRAFT = Pending Verification (not yet submitted), SUBMITTED = Under Review, CHANGES_REQUESTED = Changes Requested, APPROVED = Approved, REJECTED = Rejected." }
         applicant:
           type: object
           required: [name, email]
@@ -3611,13 +3645,14 @@ components:
     OnboardingAdminApplication:
       type: object
       description: The full application for an administrator, including the private details.
-      required: [id, role, role_label, status, outcome, market_code, applicant, details, agency, documents, requirements, history, decision, profile, submitted_at, created_at, updated_at]
+      required: [id, role, role_label, status, status_label, outcome, market_code, applicant, details, agency, documents, requirements, history, decision, profile, submitted_at, created_at, updated_at]
       additionalProperties: false
       properties:
         id: { type: string, format: uuid }
         role: { type: string }
         role_label: { type: string }
         status: { $ref: "#/components/schemas/OnboardingStatus" }
+        status_label: { type: string, enum: [Pending Verification, Under Review, Changes Requested, Approved, Rejected], description: "The wording to show for `status`: DRAFT = Pending Verification (not yet submitted), SUBMITTED = Under Review, CHANGES_REQUESTED = Changes Requested, APPROVED = Approved, REJECTED = Rejected." }
         outcome: { type: string, enum: [ORGANISATION, AGENCY_MEMBER, NONE] }
         market_code: { type: [string, "null"], description: "The market the application belongs to; null when it has none (yet)." }
         applicant:
@@ -3669,11 +3704,13 @@ components:
           description: Every transition, oldest first. Rows are never changed.
           items:
             type: object
-            required: [from, to, actor_name, reason, at]
+            required: [from, from_label, to, to_label, actor_name, reason, at]
             additionalProperties: false
             properties:
               from: { $ref: "#/components/schemas/OnboardingStatus" }
               to: { $ref: "#/components/schemas/OnboardingStatus" }
+              from_label: { type: string, description: "Display wording of `from`." }
+              to_label: { type: string, description: "Display wording of `to`." }
               actor_name: { type: string, description: "Who did it: the applicant (submit) or the administrator. Empty if that account no longer exists." }
               reason: { type: [string, "null"] }
               at: { type: string, format: date-time }
@@ -3709,7 +3746,7 @@ components:
     Membership:
       type: object
       description: The user's role in one organisation and market.
-      required: [organisation_id, organisation_name, organisation_kind, market_code, role]
+      required: [organisation_id, organisation_name, organisation_kind, market_code, role, role_label]
       additionalProperties: false
       properties:
         organisation_id:
@@ -3719,13 +3756,21 @@ components:
           type: string
         organisation_kind:
           type: string
-          enum: [AGENCY, LANDLORD, HOST, DEVELOPER, SERVICE_PROVIDER]
+          enum: [AGENCY, LAW_FIRM, PROPERTY_MANAGER, HOST, DEVELOPER, SERVICE_PROVIDER, LANDLORD]
+          description: "A code of the `organisation_kinds` reference set, which has the labels (Real Estate Agency, Law Firm, Property Manager, Host, Property Developer, Property Service Provider). A solicitor's firm is `LAW_FIRM`. `LANDLORD` is a legacy value that nothing creates any more."
         market_code:
           type: string
           pattern: "^[A-Z]{2}$"
         role:
           type: string
           enum: [OWNER, MANAGER, AGENT, STAFF]
+        role_label:
+          type: string
+          description: |
+            How `role` is shown. In an agency: OWNER "Agency Principal", MANAGER "Agency
+            Administrator", AGENT "Estate Agent", STAFF "Agency Staff". In any other
+            organisation: OWNER "Principal", MANAGER "Manager", AGENT "Estate Agent", STAFF "Staff".
+          examples: [Agency Principal]
 
     Session:
       type: object
@@ -3837,7 +3882,9 @@ components:
       description: |
         The directory a profile is listed in; the first segment of its public address. A code
         from the `directory_kinds` reference set (active rows only). Baseline values: agencies,
-        agents, developers, property-managers, hosts, service-providers.
+        agents, developers, property-managers, solicitors, hosts, service-providers (labels: Real
+        Estate Agencies, Estate Agents, Property Developers, Property Managers, Solicitors, Hosts
+        and Venues, Property Services).
       examples: [service-providers]
 
     BusinessEnquiryCreate:

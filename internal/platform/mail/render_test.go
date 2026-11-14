@@ -217,7 +217,7 @@ func TestWelcomeListsRolesAndWhichArePending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"  - Buyer or renter: active", "  - Landlord or property manager: waiting for verification", "  - Estate agent: waiting for verification", "does not give access"} {
+	for _, want := range []string{"  - Prospective Buyer: active", "  - Landlord: waiting for verification", "  - Estate Agent: waiting for verification", "does not give access"} {
 		if !strings.Contains(msg.Text, want) {
 			t.Fatalf("text lacks %q:\n%s", want, msg.Text)
 		}
@@ -275,7 +275,8 @@ func TestSafePreview(t *testing.T) {
 }
 
 func TestRoleAndRequestTypeNames(t *testing.T) {
-	if RoleName("AGENCY_OWNER") != "Agency owner" || RoleName("SOMETHING_NEW") != "something new" {
+	if RoleName("AGENCY_OWNER") != "Agency Principal" || RoleName("PRIVATE_SELLER") != "Property Seller (Vendor)" || RoleName("SOLICITOR") != "Solicitor" ||
+		RoleName("PLATFORM_ADMIN") != "Platform Administrator" || RoleName("SUPER_ADMIN") != "Super Administrator" || RoleName("SOMETHING_NEW") != "something new" {
 		t.Fatal("role names")
 	}
 	if RequestTypeName("VIEWING_REQUEST") != "Viewing request" || RequestTypeName("OTHER_KIND") != "other kind" {

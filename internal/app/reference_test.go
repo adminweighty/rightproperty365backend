@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -53,8 +54,8 @@ func codes(items []refItem) string {
 // Row counts of the baseline data: a change here is a change to what the web shows.
 var wantSetSizes = map[string]int{
 	"deal_types": 2, "property_categories": 3, "property_types": 7, "request_types": 4, "contact_methods": 3,
-	"account_roles": 11, "directory_kinds": 6, "service_trades": 7, "cities": 4, "suburbs": 18, "listing_features": 59,
-	"onboarding_documents": 8,
+	"account_roles": 15, "directory_kinds": 7, "service_trades": 7, "cities": 4, "suburbs": 18, "listing_features": 59,
+	"onboarding_documents": 9, "organisation_kinds": 6,
 }
 
 func TestReferenceAllSets(t *testing.T) {
@@ -100,7 +101,7 @@ func TestReferenceAllSets(t *testing.T) {
 		"request_types":       "ENQUIRY,PROPERTY_INFORMATION,VIEWING_REQUEST,CONSULTATION_REQUEST",
 		"contact_methods":     "EMAIL,PHONE,WHATSAPP",
 		"account_roles":       strings.Join(identity.SelectableAccountRoles(), ","),
-		"directory_kinds":     "agencies,agents,developers,property-managers,hosts,service-providers",
+		"directory_kinds":     "agencies,agents,developers,property-managers,solicitors,hosts,service-providers",
 		"cities":              "harare,bulawayo,victoria-falls,mutare",
 	} {
 		if got := codes(all.Sets[set]); got != want {
@@ -116,9 +117,11 @@ func TestReferenceAllSets(t *testing.T) {
 	for key, want := range map[string]string{
 		"deal_types/sale": "For sale", "deal_types/rent": "To rent", "property_categories/land": "Land",
 		"request_types/VIEWING_REQUEST": "Book a viewing", "request_types/CONSULTATION_REQUEST": "Speak to the agent",
-		"contact_methods/PHONE": "Phone call", "account_roles/LANDLORD": "Landlord or property manager",
-		"account_roles/HOST": "Host: short stays and venues", "account_roles/CONSUMER": "Buyer or renter",
-		"directory_kinds/property-managers": "Landlords and property managers", "service_trades/solar-power": "Solar power",
+		"contact_methods/PHONE": "Phone call", "account_roles/LANDLORD": "Landlord",
+		"account_roles/HOST": "Host", "account_roles/CONSUMER": "Prospective Buyer",
+		"account_roles/PRIVATE_SELLER": "Property Seller (Vendor)", "account_roles/SERVICE_PROVIDER": "Property Service Provider",
+		"organisation_kinds/AGENCY": "Real Estate Agency", "organisation_kinds/LAW_FIRM": "Law Firm", "directory_kinds/hosts": "Hosts and Venues",
+		"directory_kinds/property-managers": "Property Managers", "service_trades/solar-power": "Solar power",
 		"suburbs/mount-pleasant": "Mount Pleasant", "listing_features/8-parking-bays": "8 parking bays",
 	} {
 		if labels[key] != want {
@@ -143,7 +146,7 @@ func TestReferenceAllSets(t *testing.T) {
 		for _, it := range all.Sets["account_roles"] {
 			groups[it.Code] = it.Group.Code + "|" + it.Group.Label
 		}
-		if groups["TENANT"] != "looking|Looking for property" || groups["HOST"] != "listing|Listing or managing property" || groups["AGENT"] != "agency|Working at an agency" {
+		if groups["TENANT"] != "PROPERTY_SEEKERS|Property Seekers" || groups["HOST"] != "OTHER_PROPERTY_BUSINESSES|Other property businesses" || groups["AGENT"] != "REAL_ESTATE_PROFESSIONALS|Real Estate Professionals" {
 			t.Fatalf("groups = %v", groups)
 		}
 		for _, it := range all.Sets["property_types"] {
@@ -398,36 +401,50 @@ func TestPlatformRolesAreDeniedEvenIfInTheReferenceTable(t *testing.T) {
 	}
 }
 
-// The baseline rows in the migrations (0007, and 0009 for the onboarding
-// documents) are the same rows the memory store and cmd/seed use.
+// The reference rows the migrations leave behind (0007, 0009 for the
+// onboarding documents, 0010 for the real estate role names and the
+// solicitors directory) are the same rows the memory store and cmd/seed use.
 func TestMigrationSeedsTheSameReferenceRows(t *testing.T) {
 	sql := ""
-	for _, name := range []string{"0007_reference_data.up.sql", "0009_onboarding.up.sql"} {
+	for _, name := range []string{"0007_reference_data.up.sql", "0009_onboarding.up.sql", "0010_real_estate_roles.up.sql"} {
 		raw, err := os.ReadFile(filepath.Join("..", "..", "migrations", name))
 		if err != nil {
 			t.Fatal(err)
 		}
 		sql += string(raw)
 	}
+	// Replay inserts (and upserts) and label updates in order.
+	statement := regexp.MustCompile(`(?m)^(?:INSERT INTO reference_items \([^)]*\) VALUES \('([a-z_]+)', '([^']+)', '((?:[^']|'')*)'|UPDATE reference_items SET label = '((?:[^']|'')*)'.* WHERE set_code = '([a-z_]+)' AND code = '([^']+)';)`)
+	labels := map[string]string{}
+	for _, m := range statement.FindAllStringSubmatch(sql, -1) {
+		if m[1] != "" {
+			labels[m[1]+"/"+m[2]] = strings.ReplaceAll(m[3], "''", "'")
+		} else {
+			labels[m[5]+"/"+m[6]] = strings.ReplaceAll(m[4], "''", "'")
+		}
+	}
 	total := 0
 	for set, items := range devseed.ReferenceItems() {
 		for _, it := range items {
 			total++
-			want := fmt.Sprintf("VALUES ('%s', '%s', '%s',", set, strings.ReplaceAll(it.Code, "'", "''"), strings.ReplaceAll(it.Label, "'", "''"))
-			if !strings.Contains(sql, want) {
-				t.Fatalf("the migrations lack the row %s/%s (%s)", set, it.Code, it.Label)
+			if got, ok := labels[set+"/"+it.Code]; !ok || got != it.Label {
+				t.Fatalf("the migrations leave %s/%s labelled %q, the baseline says %q", set, it.Code, got, it.Label)
 			}
-			if set == reference.SetOnboardingDocuments && (it.Description == nil || !strings.Contains(sql, "'"+strings.ReplaceAll(*it.Description, "'", "''")+"'")) {
+			if (set == reference.SetOnboardingDocuments || set == reference.SetAccountRoles) &&
+				(it.Description == nil || !strings.Contains(sql, "'"+strings.ReplaceAll(*it.Description, "'", "''")+"'")) {
 				t.Fatalf("the migrations lack the description of %s/%s", set, it.Code)
+			}
+			if it.Group != nil && !strings.Contains(sql, fmt.Sprintf("'%s', '%s', %d,", it.Group.Code, it.Group.Label, it.Group.SortOrder)) {
+				t.Fatalf("the migrations lack the group of %s/%s: %+v", set, it.Code, *it.Group)
 			}
 		}
 	}
-	if got := strings.Count(sql, "INSERT INTO reference_items"); got != total {
-		t.Fatalf("the migrations insert %d rows, the baseline has %d", got, total)
+	if len(labels) != total {
+		t.Fatalf("the migrations leave %d rows, the baseline has %d", len(labels), total)
 	}
 	for _, role := range auth.AllPlatformRoles() {
 		if strings.Contains(sql, "VALUES ('account_roles', '"+role+"'") {
-			t.Fatalf("migration 0007 seeds platform role %s as selectable", role)
+			t.Fatalf("a migration seeds platform role %s as selectable", role)
 		}
 	}
 }

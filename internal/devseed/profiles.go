@@ -13,7 +13,7 @@ import (
 
 // ProfileCount is the number of sample directory profiles. The kind + slug
 // pairs and display names mirror the web app's src/lib/data/directory.ts.
-const ProfileCount = 29
+const ProfileCount = 32
 
 // Profile is a sample directory profile: who it is and who receives its
 // enquiries. It has no contact details — profiles are reached only by enquiry.
@@ -59,15 +59,21 @@ var businesses = []business{
 	{businessenquiries.KindServiceProviders, "sample-conveyancers", "Sample Conveyancers"},
 	{businessenquiries.KindServiceProviders, "sample-valuers", "Sample Valuers"},
 	{businessenquiries.KindServiceProviders, "sample-movers", "Sample Movers"},
+
+	// Solicitors: added after the others so the IDs above do not move.
+	{businessenquiries.KindSolicitors, "sample-law-chambers", "Sample Law Chambers"},
+	{businessenquiries.KindSolicitors, "sample-conveyancing-attorneys", "Sample Conveyancing Attorneys"},
+	{businessenquiries.KindSolicitors, "sample-property-lawyers", "Sample Property Lawyers"},
 }
 
 // businessKinds maps a directory kind to the organisation kind and the
 // matching self-declared account role of its owner.
 var businessKinds = map[string]struct{ organisationKind, accountRole string }{
 	businessenquiries.KindDevelopers:       {auth.KindDeveloper, identity.AccountRoleDeveloper},
-	businessenquiries.KindPropertyManagers: {auth.KindLandlord, identity.AccountRoleLandlord},
+	businessenquiries.KindPropertyManagers: {auth.KindPropertyManager, identity.AccountRolePropertyManager},
 	businessenquiries.KindHosts:            {auth.KindHost, identity.AccountRoleHost},
 	businessenquiries.KindServiceProviders: {auth.KindServiceProvider, identity.AccountRoleServiceProvider},
+	businessenquiries.KindSolicitors:       {auth.KindLawFirm, identity.AccountRoleSolicitor},
 }
 
 // BusinessOwnerEmail is the sign-in email of a business profile's owner.

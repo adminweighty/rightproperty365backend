@@ -22,7 +22,9 @@ import (
 	"rightproperty365.com/backend/internal/devseed"
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/identity"
+	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/modules/onboarding"
+	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/httpx"
@@ -83,13 +85,14 @@ type docBody struct {
 }
 
 type applicationBody struct {
-	ID        string         `json:"id"`
-	Role      string         `json:"role"`
-	RoleLabel string         `json:"role_label"`
-	Status    string         `json:"status"`
-	Details   map[string]any `json:"details"`
-	Documents []docBody      `json:"documents"`
-	Missing   struct {
+	ID          string         `json:"id"`
+	Role        string         `json:"role"`
+	RoleLabel   string         `json:"role_label"`
+	Status      string         `json:"status"`
+	StatusLabel string         `json:"status_label"`
+	Details     map[string]any `json:"details"`
+	Documents   []docBody      `json:"documents"`
+	Missing     struct {
 		Fields    []string `json:"fields"`
 		Documents []string `json:"documents"`
 	} `json:"missing"`
@@ -140,9 +143,9 @@ func (e *env) myOnboarding(c *http.Cookie) []applicationBody {
 // detailsFor returns valid details for a role.
 func detailsFor(role, name string) obj {
 	switch role {
-	case "PRIVATE_SELLER":
+	case "PRIVATE_SELLER", "LANDLORD":
 		return obj{"contact_phone": "+263770000002"}
-	case "AGENT":
+	case "AGENT", "SALES_AGENT", "LETTINGS_AGENT":
 		return obj{"agency_slug": "sample-estates", "job_title": "Sales agent", "bio": "Ten years in Borrowdale.", "areas": []string{"Borrowdale"}, "contact_phone": "+263770000002"}
 	case "AGENCY_STAFF", "AGENCY_ADMIN":
 		return obj{"agency_slug": "sample-estates", "job_title": "Office", "contact_phone": "+263770000002"}
@@ -215,11 +218,12 @@ type approvedBody struct {
 }
 
 type adminApplicationBody struct {
-	ID        string `json:"id"`
-	Role      string `json:"role"`
-	Status    string `json:"status"`
-	Outcome   string `json:"outcome"`
-	Applicant struct {
+	ID          string `json:"id"`
+	Role        string `json:"role"`
+	Status      string `json:"status"`
+	StatusLabel string `json:"status_label"`
+	Outcome     string `json:"outcome"`
+	Applicant   struct {
 		ID            string `json:"id"`
 		Name          string `json:"name"`
 		Email         string `json:"email"`
@@ -330,8 +334,15 @@ func TestOnboardingRequirements(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if len(body.Roles) != 9 {
-		t.Fatalf("%d onboarding roles, want 9", len(body.Roles))
+	if len(body.Roles) != 13 {
+		t.Fatalf("%d onboarding roles, want 13", len(body.Roles))
+	}
+	var order []string
+	for _, r := range body.Roles {
+		order = append(order, r.Role)
+	}
+	if got := strings.Join(order, ","); got != "AGENT,SALES_AGENT,LETTINGS_AGENT,PROPERTY_MANAGER,SOLICITOR,AGENCY_OWNER,AGENCY_ADMIN,AGENCY_STAFF,LANDLORD,PRIVATE_SELLER,HOST,DEVELOPER,SERVICE_PROVIDER" {
+		t.Fatalf("role order = %s", got)
 	}
 	seen := map[string]string{}
 	for _, r := range body.Roles {
@@ -363,7 +374,11 @@ func TestOnboardingRequirements(t *testing.T) {
 	const orgFields = "business_name=true,tagline=false,description=true,city=true,areas=false,services=false,"
 	want := map[string]string{
 		"PRIVATE_SELLER":   "NONE - - | contact_phone=true | PROOF_OF_IDENTITY=true,PROOF_OF_OWNERSHIP=true",
-		"LANDLORD":         "ORGANISATION LANDLORD property-managers | " + orgFields + "registration_number=false,contact_phone=true | PROOF_OF_IDENTITY=true,BUSINESS_REGISTRATION=true,PROOF_OF_ADDRESS=true,TAX_CLEARANCE=false",
+		"LANDLORD":         "NONE - - | contact_phone=true | PROOF_OF_IDENTITY=true,PROOF_OF_OWNERSHIP=true",
+		"PROPERTY_MANAGER": "ORGANISATION PROPERTY_MANAGER property-managers | " + orgFields + "registration_number=false,contact_phone=true | PROOF_OF_IDENTITY=true,BUSINESS_REGISTRATION=true,PROOF_OF_ADDRESS=true,TAX_CLEARANCE=false",
+		"SOLICITOR":        "ORGANISATION LAW_FIRM solicitors | " + orgFields + "registration_number=false,contact_phone=true | PROOF_OF_IDENTITY=true,BUSINESS_REGISTRATION=true,PROOF_OF_ADDRESS=true,TAX_CLEARANCE=false,PRACTISING_CERTIFICATE=true",
+		"SALES_AGENT":      "AGENCY_MEMBER - agents | agency_slug=true,job_title=false,bio=false,areas=false,contact_phone=true | PROOF_OF_IDENTITY=true,ESTATE_AGENTS_COUNCIL_CERTIFICATE=true",
+		"LETTINGS_AGENT":   "AGENCY_MEMBER - agents | agency_slug=true,job_title=false,bio=false,areas=false,contact_phone=true | PROOF_OF_IDENTITY=true,ESTATE_AGENTS_COUNCIL_CERTIFICATE=true",
 		"SERVICE_PROVIDER": "ORGANISATION SERVICE_PROVIDER service-providers | " + orgFields + "trade=true,registration_number=false,contact_phone=true | PROOF_OF_IDENTITY=true,BUSINESS_REGISTRATION=true,PROOF_OF_ADDRESS=true,TAX_CLEARANCE=false,TRADE_LICENCE=false",
 		"AGENCY_OWNER":     "ORGANISATION AGENCY agencies | " + orgFields + "registration_number=false,contact_phone=true | PROOF_OF_IDENTITY=true,BUSINESS_REGISTRATION=true,PROOF_OF_ADDRESS=true,TAX_CLEARANCE=false,ESTATE_AGENTS_COUNCIL_CERTIFICATE=true",
 		"AGENT":            "AGENCY_MEMBER - agents | agency_slug=true,job_title=false,bio=false,areas=false,contact_phone=true | PROOF_OF_IDENTITY=true,ESTATE_AGENTS_COUNCIL_CERTIFICATE=true",
@@ -381,14 +396,15 @@ func TestOnboardingRequirements(t *testing.T) {
 	e.reference.SetActive(reference.SetOnboardingDocuments, "TAX_CLEARANCE", false)
 	e.onboard.SetRequirement(onboarding.Requirement{Role: "PRIVATE_SELLER", Document: "PROOF_OF_ADDRESS", Required: true})
 	after := e.get("/v1/onboarding/requirements").Body.String()
-	if strings.Contains(after, "TAX_CLEARANCE") || strings.Count(after, `"code":"PROOF_OF_ADDRESS"`) != 6 {
+	if strings.Contains(after, "TAX_CLEARANCE") || strings.Count(after, `"code":"PROOF_OF_ADDRESS"`) != 7 {
 		t.Fatalf("requirements are not read from the tables: %s", after)
 	}
 }
 
 // The migration seeds the same outcome and requirement rows as the memory store.
 func TestOnboardingMigrationSeedsTheBaseline(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "..", "migrations", "0009_onboarding.up.sql"))
+	// 0010 upserts every outcome row and resets the requirement rows.
+	raw, err := os.ReadFile(filepath.Join("..", "..", "migrations", "0010_real_estate_roles.up.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,15 +416,15 @@ func TestOnboardingMigrationSeedsTheBaseline(t *testing.T) {
 		return "'" + s + "'"
 	}
 	for _, o := range onboarding.DefaultOutcomes() {
-		want := fmt.Sprintf("VALUES ('%s', '%s', %s, %s, %s);", o.Role, o.Outcome, q(o.OrganisationKind), q(o.DirectoryKind), q(o.MembershipRole))
+		want := fmt.Sprintf("VALUES ('%s', '%s', %s, %s, %s, %s)", o.Role, o.Outcome, q(o.OrganisationKind), q(o.DirectoryKind), q(o.MembershipRole), q(o.Specialism))
 		if !strings.Contains(sql, want) {
-			t.Fatalf("migration 0009 lacks the outcome row %s", want)
+			t.Fatalf("migration 0010 lacks the outcome row %s", want)
 		}
 	}
 	for _, r := range onboarding.DefaultRequirements() {
 		want := fmt.Sprintf("VALUES ('%s', '%s', %v);", r.Role, r.Document, r.Required)
 		if !strings.Contains(sql, want) {
-			t.Fatalf("migration 0009 lacks the requirement row %s", want)
+			t.Fatalf("migration 0010 lacks the requirement row %s", want)
 		}
 	}
 	if got, want := strings.Count(sql, "INSERT INTO onboarding_role_outcomes"), len(onboarding.DefaultOutcomes()); got != want {
@@ -419,7 +435,7 @@ func TestOnboardingMigrationSeedsTheBaseline(t *testing.T) {
 	}
 	for _, role := range append(auth.AllPlatformRoles(), "CONSUMER", "TENANT") {
 		if strings.Contains(sql, "VALUES ('"+role+"'") {
-			t.Fatalf("migration 0009 gives %s an onboarding outcome", role)
+			t.Fatalf("migration 0010 gives %s an onboarding outcome", role)
 		}
 	}
 }
@@ -432,8 +448,12 @@ func TestRegistrationCreatesDraftApplications(t *testing.T) {
 	e := newEnv(t)
 	c := e.selfRegister("pro@example.com", "CONSUMER", "TENANT", "LANDLORD", "AGENT")
 	apps := e.myOnboarding(c)
-	if len(apps) != 2 || apps[0].Role != "LANDLORD" || apps[1].Role != "AGENT" {
-		t.Fatalf("applications = %+v, want LANDLORD and AGENT only", apps)
+	if len(apps) != 2 || apps[0].Role != "AGENT" || apps[1].Role != "LANDLORD" {
+		t.Fatalf("applications = %+v, want AGENT and LANDLORD only", apps)
+	}
+	apps[0], apps[1] = apps[1], apps[0] // the landlord first, for the checks below
+	if apps[0].StatusLabel != "Pending Verification" {
+		t.Fatalf("a draft is shown as %q", apps[0].StatusLabel)
 	}
 	for _, a := range apps {
 		if a.Status != "DRAFT" || !a.CanEdit || a.CanSubmit || a.CanReapply || a.SubmittedAt != nil || a.Decision.Reason != nil || len(a.Documents) != 0 || a.RoleLabel == "" {
@@ -444,10 +464,10 @@ func TestRegistrationCreatesDraftApplications(t *testing.T) {
 			t.Fatalf("details = %+v", a.Details)
 		}
 	}
-	if got := strings.Join(apps[0].Missing.Fields, ","); got != "business_name,description,city,contact_phone" {
+	if got := strings.Join(apps[0].Missing.Fields, ","); got != "contact_phone" {
 		t.Fatalf("landlord missing fields = %s", got)
 	}
-	if got := strings.Join(apps[0].Missing.Documents, ","); got != "PROOF_OF_IDENTITY,BUSINESS_REGISTRATION,PROOF_OF_ADDRESS" {
+	if got := strings.Join(apps[0].Missing.Documents, ","); got != "PROOF_OF_IDENTITY,PROOF_OF_OWNERSHIP" {
 		t.Fatalf("landlord missing documents = %s", got)
 	}
 
@@ -881,11 +901,12 @@ func TestOnboardingSubmitAndStateRules(t *testing.T) {
 
 type adminListBody struct {
 	Items []struct {
-		ID        string `json:"id"`
-		Role      string `json:"role"`
-		RoleLabel string `json:"role_label"`
-		Status    string `json:"status"`
-		Applicant struct {
+		ID          string `json:"id"`
+		Role        string `json:"role"`
+		RoleLabel   string `json:"role_label"`
+		Status      string `json:"status"`
+		StatusLabel string `json:"status_label"`
+		Applicant   struct {
 			Name  string `json:"name"`
 			Email string `json:"email"`
 		} `json:"applicant"`
@@ -969,7 +990,7 @@ func TestOnboardingAdminAccess(t *testing.T) {
 			t.Fatalf("list = %+v", list)
 		}
 		it := list.Items[0]
-		if it.Role != "SERVICE_PROVIDER" || it.RoleLabel != "Service provider" || it.Status != "SUBMITTED" || it.Applicant.Email != devseed.PendingProviderEmail ||
+		if it.Role != "SERVICE_PROVIDER" || it.RoleLabel != "Property Service Provider" || it.StatusLabel != "Under Review" || it.Status != "SUBMITTED" || it.Applicant.Email != devseed.PendingProviderEmail ||
 			it.Applicant.Name != "Pamela Provider" || it.BusinessName == nil || *it.BusinessName != "Sample Roofing Repairs" || it.Agency != nil ||
 			it.SubmittedAt == nil || it.DocumentCount != 3 {
 			t.Fatalf("item = %+v", it)
@@ -983,7 +1004,7 @@ func TestOnboardingAdminAccess(t *testing.T) {
 	}
 
 	// Filters and paging.
-	_, first := e.apply("a@example.com", "LANDLORD", "Alpha Lettings")
+	_, first := e.apply("a@example.com", "PROPERTY_MANAGER", "Alpha Lettings")
 	_, second := e.apply("b@example.com", "AGENT", "")
 	e.selfRegister("c@example.com", "HOST")
 	list := decode[adminListBody](t, e.get("/v1/admin/onboarding", withCookie(super)))
@@ -997,7 +1018,7 @@ func TestOnboardingAdminAccess(t *testing.T) {
 		t.Fatalf("counts = %v", list.Counts)
 	}
 	for query, want := range map[string]int{
-		"status=DRAFT": 2, "role=LANDLORD": 1, "role=HOST": 0, "status=DRAFT&role=HOST": 1, "q=alpha": 1, "q=B%40EXAMPLE.com": 1, "q=pamela": 1,
+		"status=DRAFT": 2, "role=PROPERTY_MANAGER": 1, "role=HOST": 0, "status=DRAFT&role=HOST": 1, "q=alpha": 1, "q=B%40EXAMPLE.com": 1, "q=pamela": 1,
 		"q=nobody": 0, "status=APPROVED": 0, "page_size=2": 3, "page=2&page_size=2": 3,
 	} {
 		got := decode[adminListBody](t, e.get("/v1/admin/onboarding?"+query, withCookie(super)))
@@ -1216,7 +1237,11 @@ func TestOnboardingApprovalPerOutcome(t *testing.T) {
 		role, orgKind, profileKind, membership, orgName string
 	}{
 		{"AGENCY_OWNER", "AGENCY", "agencies", "OWNER", "Kopje Realty"},
-		{"LANDLORD", "LANDLORD", "property-managers", "OWNER", "Kopje Lettings"},
+		{"PROPERTY_MANAGER", "PROPERTY_MANAGER", "property-managers", "OWNER", "Kopje Lettings"},
+		{"SOLICITOR", "LAW_FIRM", "solicitors", "OWNER", "Kopje Legal Practitioners"},
+		{"SALES_AGENT", "", "agents", "AGENT", "Sample Estates"},
+		{"LETTINGS_AGENT", "", "agents", "AGENT", "Sample Estates"},
+		{"LANDLORD", "", "", "", ""},
 		{"HOST", "HOST", "hosts", "OWNER", "Kopje Stays"},
 		{"DEVELOPER", "DEVELOPER", "developers", "OWNER", "Kopje Developments"},
 		{"SERVICE_PROVIDER", "SERVICE_PROVIDER", "service-providers", "OWNER", "Kopje Plumbing"},
@@ -1267,6 +1292,29 @@ func TestOnboardingApprovalPerOutcome(t *testing.T) {
 				}
 				wantStatus(t, e.post("/v1/business-enquiries", e.enquiry(created.Profile.Kind, created.Profile.Slug)), http.StatusCreated)
 			}
+			if out.Application.StatusLabel != "Approved" {
+				t.Fatalf("status label = %q", out.Application.StatusLabel)
+			}
+			if tc.profileKind == "agents" {
+				// Public agent profiles carry the specialism, or null.
+				want := map[string]string{"AGENT": `"specialism":null`, "SALES_AGENT": `"specialism":{"code":"SALES","label":"Sales Agent"}`,
+					"LETTINGS_AGENT": `"specialism":{"code":"LETTINGS","label":"Lettings Agent"}`}[tc.role]
+				if body := e.get("/v1/directory/agents/" + created.Profile.Slug).Body.String(); !strings.Contains(body, want) {
+					t.Fatalf("agent profile lacks %s: %s", want, body)
+				}
+			}
+			if tc.role == "PROPERTY_MANAGER" || tc.role == "SOLICITOR" {
+				list := e.get("/v1/directory/" + tc.profileKind + "?q=kopje").Body.String()
+				if !strings.Contains(list, `"slug":"`+created.Profile.Slug+`"`) || !strings.Contains(list, `"verified":true`) {
+					t.Fatalf("%s is not in its directory: %s", tc.role, list)
+				}
+			}
+			if tc.role == "LANDLORD" || tc.role == "PRIVATE_SELLER" {
+				// An individual owner: nothing created, and an empty inbox.
+				if got := strings.TrimSpace(e.get("/v1/agent/property-requests", withCookie(c)).Body.String()); got != `{"items":[]}` {
+					t.Fatalf("%s inbox = %s", tc.role, got)
+				}
+			}
 			if tc.role == "AGENT" {
 				// The agent profile is linked to the agency and shows on it.
 				agent := e.get("/v1/directory/agents/" + created.Profile.Slug).Body.String()
@@ -1282,8 +1330,8 @@ func TestOnboardingApprovalPerOutcome(t *testing.T) {
 	after := decode[struct {
 		Profiles []any `json:"profiles"`
 	}](t, e.get("/v1/sitemap")).Profiles
-	if len(after) != len(profiles)+6 {
-		t.Fatalf("%d profiles were created, want 6 (five businesses and one agent)", len(after)-len(profiles))
+	if len(after) != len(profiles)+9 {
+		t.Fatalf("%d profiles were created, want 9 (six businesses and three agents)", len(after)-len(profiles))
 	}
 	if ev := e.onboardingEvents(); ev[onboarding.EventApproved] != len(cases) || ev[onboarding.EventSubmitted] != len(cases) {
 		t.Fatalf("events = %v", ev)
@@ -1427,5 +1475,163 @@ func TestOnlyVerifiedPublishedProfilesArePublic(t *testing.T) {
 		if rec := e.get("/v1/directory/" + p.Kind + "/" + p.Slug); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"verified":true`) {
 			t.Fatalf("%s/%s = %d", p.Kind, p.Slug, rec.Code)
 		}
+	}
+}
+
+// The sample solicitors: a public directory, enquiries that reach the firm's
+// owner only, and a firm that can own listings like an agency.
+func TestSolicitors(t *testing.T) {
+	e := newEnv(t)
+	const chambers, attorneys = "sample-law-chambers@example.test", "sample-conveyancing-attorneys@example.test"
+
+	rec := e.get("/v1/directory/solicitors")
+	wantStatus(t, rec, http.StatusOK)
+	page := decode[struct {
+		Kind  struct{ Code, Label string }
+		Total int `json:"total"`
+		Items []struct {
+			Slug, Name string
+			Verified   bool
+			City       struct{ Code string }
+			Services   []string
+		} `json:"items"`
+	}](t, rec)
+	if page.Total != 3 || page.Kind.Label != "Solicitors" || page.Items[0].Slug != "sample-conveyancing-attorneys" || page.Items[1].Slug != "sample-law-chambers" ||
+		page.Items[2].Slug != "sample-property-lawyers" || !page.Items[0].Verified || !page.Items[1].Verified || !page.Items[2].Verified ||
+		page.Items[0].City.Code != "bulawayo" || page.Items[1].City.Code != "harare" || page.Items[2].City.Code != "mutare" || len(page.Items[1].Services) != 3 {
+		t.Fatalf("solicitors = %+v", page)
+	}
+	wantStatus(t, e.get("/v1/directory/solicitors/sample-law-chambers"), http.StatusOK)
+	if s := e.get("/v1/sitemap").Body.String(); strings.Count(s, `"kind":"solicitors"`) != 3 {
+		t.Fatalf("sitemap lacks the solicitors: %s", s)
+	}
+	// The conveyancers service provider stays where it is.
+	wantStatus(t, e.get("/v1/directory/service-providers/sample-conveyancers"), http.StatusOK)
+
+	// Organisation kinds are reference data with labels.
+	if kinds := e.get("/v1/reference/organisation_kinds").Body.String(); !strings.Contains(kinds, `"code":"LAW_FIRM","label":"Law Firm"`) ||
+		!strings.Contains(kinds, `"code":"AGENCY","label":"Real Estate Agency"`) || strings.Contains(kinds, `"code":"SOLICITOR"`) {
+		t.Fatalf("organisation kinds = %s", kinds)
+	}
+	// Membership roles carry a display label: "Principal" in a law firm,
+	// the agency titles in an agency.
+	if _, raw := e.me(e.loginCookie(chambers, seedPassword)); !strings.Contains(raw, `"organisation_kind":"LAW_FIRM","market_code":"ZW","role":"OWNER","role_label":"Principal"`) {
+		t.Fatalf("law firm membership: %s", raw)
+	}
+	if _, raw := e.me(e.loginCookie(devseed.EstatesOwnerEmail, seedPassword)); !strings.Contains(raw, `"role":"OWNER","role_label":"Agency Principal"`) {
+		t.Fatalf("agency membership: %s", raw)
+	}
+
+	// The owner: an OWNER membership of a LAW_FIRM organisation, role ACTIVE.
+	owner := e.loginCookie(chambers, seedPassword)
+	user, _ := e.me(owner)
+	if len(user.Memberships) != 1 || user.Memberships[0].OrganisationKind != "LAW_FIRM" || user.Memberships[0].Role != "OWNER" ||
+		user.Memberships[0].OrganisationName != "Sample Law Chambers" || len(user.AccountRoles) != 2 || user.AccountRoles[1] != (accountRoleBody{"SOLICITOR", "ACTIVE"}) {
+		t.Fatalf("solicitor owner = %+v", user)
+	}
+
+	// An enquiry to the firm reaches its owner, and nobody else.
+	wantStatus(t, e.post("/v1/business-enquiries", e.enquiry("solicitors", "sample-law-chambers")), http.StatusCreated)
+	if got := e.enquiryInbox(chambers); len(got) != 1 {
+		t.Fatalf("the firm's inbox = %v", got)
+	}
+	for _, email := range []string{attorneys, "sample-property-lawyers@example.test", plumbersEmail, devseed.EstatesOwnerEmail} {
+		if got := e.enquiryInbox(email); len(got) != 0 {
+			t.Fatalf("%s received the solicitor's enquiry: %v", email, got)
+		}
+	}
+
+	// "Listing rights": a listing owned by the firm routes its property
+	// requests to the firm, exactly as for an agency. (There is no endpoint
+	// to create a listing yet, for any role, so the listing is put in the store.)
+	firm := uuid.MustParse(user.Memberships[0].OrganisationID)
+	listing := uuid.New()
+	e.requests.PutListing(propertyrequests.Listing{ID: listing, MarketID: markets.ZimbabweID, Status: propertyrequests.ListingStatusPublished,
+		OrganisationID: &firm, OrganisationEligible: true})
+	body := e.propertyRequest(1)
+	body["listing_id"] = listing.String()
+	wantStatus(t, e.post("/v1/property-requests", body), http.StatusCreated)
+	inbox := e.get("/v1/agent/property-requests", withCookie(owner))
+	wantStatus(t, inbox, http.StatusOK)
+	if !strings.Contains(inbox.Body.String(), listing.String()) {
+		t.Fatalf("the firm did not receive the request for its listing: %s", inbox.Body)
+	}
+	other := e.get("/v1/agent/property-requests", withCookie(e.loginCookie(attorneys, seedPassword)))
+	if got := strings.TrimSpace(other.Body.String()); got != `{"items":[]}` {
+		t.Fatalf("another firm sees it: %s", got)
+	}
+	if got := e.inboxListings(devseed.EstatesOwnerEmail); len(got) != 0 {
+		t.Fatalf("an agency sees it: %v", got)
+	}
+}
+
+// The sign-up form's roles: five groups in order, with real estate names.
+func TestAccountRoleGroupsAndLabels(t *testing.T) {
+	e := newEnv(t)
+	rec := e.get("/v1/reference/account_roles")
+	wantStatus(t, rec, http.StatusOK)
+	var body struct {
+		Items []struct {
+			Code                 string  `json:"code"`
+			Label                string  `json:"label"`
+			Description          *string `json:"description"`
+			RequiresVerification *bool   `json:"requires_verification"`
+			Group                *struct {
+				Code, Label string
+				SortOrder   int `json:"sort_order"`
+			} `json:"group"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, it := range body.Items {
+		if it.Group == nil || it.Description == nil || *it.Description == "" || it.RequiresVerification == nil {
+			t.Fatalf("%s lacks a group, a description or the verification flag", it.Code)
+		}
+		if *it.RequiresVerification == (it.Code == "CONSUMER" || it.Code == "TENANT") {
+			t.Fatalf("%s requires_verification = %v", it.Code, *it.RequiresVerification)
+		}
+		if auth.IsPlatformRole(it.Code) {
+			t.Fatalf("platform role %s is selectable", it.Code)
+		}
+		got = append(got, fmt.Sprintf("%d %s/%s: %s=%s", it.Group.SortOrder, it.Group.Code, it.Group.Label, it.Code, it.Label))
+	}
+	want := []string{
+		"1 PROPERTY_SEEKERS/Property Seekers: CONSUMER=Prospective Buyer",
+		"1 PROPERTY_SEEKERS/Property Seekers: TENANT=Prospective Tenant",
+		"2 REAL_ESTATE_PROFESSIONALS/Real Estate Professionals: AGENT=Estate Agent",
+		"2 REAL_ESTATE_PROFESSIONALS/Real Estate Professionals: SALES_AGENT=Sales Agent",
+		"2 REAL_ESTATE_PROFESSIONALS/Real Estate Professionals: LETTINGS_AGENT=Lettings Agent",
+		"2 REAL_ESTATE_PROFESSIONALS/Real Estate Professionals: PROPERTY_MANAGER=Property Manager",
+		"2 REAL_ESTATE_PROFESSIONALS/Real Estate Professionals: SOLICITOR=Solicitor",
+		"3 REAL_ESTATE_BUSINESSES/Real Estate Businesses: AGENCY_OWNER=Agency Principal",
+		"3 REAL_ESTATE_BUSINESSES/Real Estate Businesses: AGENCY_ADMIN=Agency Administrator",
+		"3 REAL_ESTATE_BUSINESSES/Real Estate Businesses: AGENCY_STAFF=Agency Staff",
+		"4 PROPERTY_OWNERS/Property Owners: LANDLORD=Landlord",
+		"4 PROPERTY_OWNERS/Property Owners: PRIVATE_SELLER=Property Seller (Vendor)",
+		"5 OTHER_PROPERTY_BUSINESSES/Other property businesses: HOST=Host",
+		"5 OTHER_PROPERTY_BUSINESSES/Other property businesses: DEVELOPER=Property Developer",
+		"5 OTHER_PROPERTY_BUSINESSES/Other property businesses: SERVICE_PROVIDER=Property Service Provider",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("account roles:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	// The new roles create DRAFT applications; platform roles are still refused.
+	c := e.selfRegister("new-roles@example.com", "SALES_AGENT", "LETTINGS_AGENT", "PROPERTY_MANAGER", "SOLICITOR")
+	apps := e.myOnboarding(c)
+	if len(apps) != 4 {
+		t.Fatalf("applications = %+v", apps)
+	}
+	for _, a := range apps {
+		if a.Status != "DRAFT" || a.StatusLabel != "Pending Verification" || a.RoleLabel == a.Role {
+			t.Fatalf("application = %+v", a)
+		}
+	}
+	for _, role := range auth.AllPlatformRoles() {
+		body := registerBody("sneaky-" + strings.ToLower(role) + "@example.com")
+		body["roles"] = []string{"CONSUMER", role}
+		wantError(t, e.post("/v1/auth/register", body, withIP("192.0.2.250")), http.StatusBadRequest, httpx.CodeValidationFailed)
 	}
 }

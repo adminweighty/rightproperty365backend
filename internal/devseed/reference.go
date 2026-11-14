@@ -10,11 +10,29 @@ func str(s string) *string { return &s }
 func flag(b bool) *bool    { return &b }
 
 // Account-role groups, as the sign-up form shows them.
+// The groups of the sign-up form, in order (real estate terminology from the
+// functional specification).
 var (
-	groupLooking = &reference.Group{Code: "looking", Label: "Looking for property", SortOrder: 1}
-	groupListing = &reference.Group{Code: "listing", Label: "Listing or managing property", SortOrder: 2}
-	groupAgency  = &reference.Group{Code: "agency", Label: "Working at an agency", SortOrder: 3}
+	groupSeekers       = &reference.Group{Code: "PROPERTY_SEEKERS", Label: "Property Seekers", SortOrder: 1}
+	groupProfessionals = &reference.Group{Code: "REAL_ESTATE_PROFESSIONALS", Label: "Real Estate Professionals", SortOrder: 2}
+	groupBusinesses    = &reference.Group{Code: "REAL_ESTATE_BUSINESSES", Label: "Real Estate Businesses", SortOrder: 3}
+	groupOwners        = &reference.Group{Code: "PROPERTY_OWNERS", Label: "Property Owners", SortOrder: 4}
+	// Not in the functional specification; kept until the project owner decides.
+	groupOther = &reference.Group{Code: "OTHER_PROPERTY_BUSINESSES", Label: "Other property businesses", SortOrder: 5}
 )
+
+// directoryKindLabels are the directory headings (plural, singular) in real
+// estate terms. The
+// kind codes (URL slugs) are unchanged.
+var directoryKindLabels = map[string][2]string{
+	"agencies":          {"Real Estate Agencies", "Real Estate Agency"},
+	"agents":            {"Estate Agents", "Estate Agent"},
+	"developers":        {"Property Developers", "Property Developer"},
+	"property-managers": {"Property Managers", "Property Manager"},
+	"solicitors":        {"Solicitors", "Solicitor"},
+	"hosts":             {"Hosts and Venues", "Host"},
+	"service-providers": {"Property Services", "Property Service Provider"},
+}
 
 // ReferenceItems returns the baseline reference data: exactly the values the
 // web app used to hard-code, with the same codes and labels. Codes that
@@ -34,14 +52,14 @@ func ReferenceItems() map[string][]reference.Item {
 		}
 		return rows
 	}
-	role := func(code, label string, group *reference.Group) reference.Item {
+	role := func(code, label, description string, group *reference.Group) reference.Item {
 		verify := false
 		for _, r := range identity.DefaultSelectableRoles() {
 			if r.Code == code {
 				verify = r.RequiresVerification
 			}
 		}
-		return reference.Item{Code: code, Label: label, Group: group, RequiresVerification: flag(verify)}
+		return reference.Item{Code: code, Label: label, Description: str(description), Group: group, RequiresVerification: flag(verify)}
 	}
 
 	sets := map[string][]reference.Item{
@@ -66,25 +84,47 @@ func ReferenceItems() map[string][]reference.Item {
 			reference.Item{Code: "WHATSAPP", Label: "WhatsApp"},
 		),
 		reference.SetAccountRoles: list(
-			role(identity.AccountRoleConsumer, "Buyer or renter", groupLooking),
-			role(identity.AccountRoleTenant, "Tenant", groupLooking),
-			role(identity.AccountRolePrivateSeller, "Private seller", groupListing),
-			role(identity.AccountRoleLandlord, "Landlord or property manager", groupListing),
-			role(identity.AccountRoleHost, "Host: short stays and venues", groupListing),
-			role(identity.AccountRoleDeveloper, "Property developer", groupListing),
-			role(identity.AccountRoleServiceProvider, "Service provider", groupListing),
-			role(identity.AccountRoleAgent, "Estate agent", groupAgency),
-			role(identity.AccountRoleAgencyStaff, "Agency staff", groupAgency),
-			role(identity.AccountRoleAgencyAdmin, "Agency administrator", groupAgency),
-			role(identity.AccountRoleAgencyOwner, "Agency owner", groupAgency),
+			role(identity.AccountRoleConsumer, "Prospective Buyer", "Looking for a property to buy.", groupSeekers),
+			role(identity.AccountRoleTenant, "Prospective Tenant", "Looking for a property to rent or lease.", groupSeekers),
+
+			role(identity.AccountRoleAgent, "Estate Agent", "Markets properties, manages enquiries, arranges viewings and handles sales or lettings.", groupProfessionals),
+			role(identity.AccountRoleSalesAgent, "Sales Agent", "An estate agent who specialises in properties for sale.", groupProfessionals),
+			role(identity.AccountRoleLettingsAgent, "Lettings Agent", "An estate agent who specialises in rentals and leases.", groupProfessionals),
+			role(identity.AccountRolePropertyManager, "Property Manager", "Manages rental properties, tenants and viewings on behalf of owners.", groupProfessionals),
+			role(identity.AccountRoleSolicitor, "Solicitor", "A property lawyer or conveyancer who handles transfers, leases and other legal work for buyers, sellers, landlords and tenants.", groupProfessionals),
+
+			role(identity.AccountRoleAgencyOwner, "Agency Principal", "Registers a real estate agency or brokerage and is responsible for its account.", groupBusinesses),
+			role(identity.AccountRoleAgencyAdmin, "Agency Administrator", "Manages an agency's agents, listings and enquiries on the principal's behalf.", groupBusinesses),
+			role(identity.AccountRoleAgencyStaff, "Agency Staff", "Works at an agency in a support role.", groupBusinesses),
+
+			role(identity.AccountRoleLandlord, "Landlord", "Owns residential or commercial property offered for rent or lease.", groupOwners),
+			role(identity.AccountRolePrivateSeller, "Property Seller (Vendor)", "Owns a property offered for sale. Also called a vendor.", groupOwners),
+
+			role(identity.AccountRoleHost, "Host", "Offers short stays or venues for hire.", groupOther),
+			role(identity.AccountRoleDeveloper, "Property Developer", "Builds and sells new developments.", groupOther),
+			role(identity.AccountRoleServiceProvider, "Property Service Provider", "Offers a property-related trade or professional service.", groupOther),
 		),
 	}
+
+	// Organisation kinds and how they are shown, so clients do not hard-code them.
+	sets[reference.SetOrganisationKinds] = list(
+		reference.Item{Code: "AGENCY", Label: "Real Estate Agency"},
+		reference.Item{Code: "LAW_FIRM", Label: "Law Firm"},
+		reference.Item{Code: "PROPERTY_MANAGER", Label: "Property Manager"},
+		reference.Item{Code: "HOST", Label: "Host"},
+		reference.Item{Code: "DEVELOPER", Label: "Property Developer"},
+		reference.Item{Code: "SERVICE_PROVIDER", Label: "Property Service Provider"},
+	)
 
 	data := Sample()
 
 	var kinds []reference.Item
 	for _, k := range data.Kinds {
-		kinds = append(kinds, reference.Item{Code: k.Code, Label: k.Title, SingularLabel: str(k.Singular), Description: str(k.Description)})
+		label, singular := k.Title, k.Singular
+		if l, ok := directoryKindLabels[k.Code]; ok {
+			label, singular = l[0], l[1]
+		}
+		kinds = append(kinds, reference.Item{Code: k.Code, Label: label, SingularLabel: str(singular), Description: str(k.Description)})
 	}
 	sets[reference.SetDirectoryKinds] = list(kinds...)
 

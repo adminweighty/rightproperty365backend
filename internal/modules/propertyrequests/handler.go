@@ -107,7 +107,7 @@ func (h *Handler) Inbox(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, http.StatusUnauthorized, httpx.CodeUnauthenticated, "You need to sign in to do this.", nil)
 		return
 	}
-	if !p.HasMembership() && !p.HasAccountRole(auth.AccountRolePrivateSeller) {
+	if !p.HasMembership() && !p.DeclaresDirectOwner() {
 		seller, err := h.svc.IsDirectSeller(r.Context(), p.UserID)
 		if err != nil {
 			httpx.WriteInternalError(w, r, h.logger, err)

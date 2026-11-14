@@ -135,20 +135,52 @@ type RoleOutcome struct {
 	DirectoryKind string
 	// MembershipRole is the membership created ("" = none).
 	MembershipRole string
+	// Specialism is recorded on the agent profile created: SpecialismSales,
+	// SpecialismLettings or "".
+	Specialism string
+}
+
+// Agent specialisms.
+const (
+	SpecialismSales    = "SALES"
+	SpecialismLettings = "LETTINGS"
+)
+
+// StatusLabel is the wording shown to people for a stored status. DRAFT is
+// "Pending verification": the role waits, and nothing has been submitted yet.
+func StatusLabel(status string) string {
+	switch status {
+	case StatusDraft:
+		return "Pending Verification"
+	case StatusSubmitted:
+		return "Under Review"
+	case StatusChangesRequested:
+		return "Changes Requested"
+	case StatusApproved:
+		return "Approved"
+	case StatusRejected:
+		return "Rejected"
+	}
+	return status
 }
 
 // DefaultOutcomes is the baseline role -> outcome table.
 func DefaultOutcomes() []RoleOutcome {
 	return []RoleOutcome{
-		{"PRIVATE_SELLER", OutcomeNone, "", "", ""},
-		{"LANDLORD", OutcomeOrganisation, auth.KindLandlord, "property-managers", auth.RoleOwner},
-		{"HOST", OutcomeOrganisation, auth.KindHost, "hosts", auth.RoleOwner},
-		{"DEVELOPER", OutcomeOrganisation, auth.KindDeveloper, "developers", auth.RoleOwner},
-		{"SERVICE_PROVIDER", OutcomeOrganisation, auth.KindServiceProvider, KindServiceProviders, auth.RoleOwner},
-		{"AGENT", OutcomeAgencyMember, "", KindAgents, auth.RoleAgent},
-		{"AGENCY_STAFF", OutcomeAgencyMember, "", "", auth.RoleStaff},
-		{"AGENCY_ADMIN", OutcomeAgencyMember, "", "", auth.RoleManager},
-		{"AGENCY_OWNER", OutcomeOrganisation, auth.KindAgency, KindAgencies, auth.RoleOwner},
+		{"AGENT", OutcomeAgencyMember, "", KindAgents, auth.RoleAgent, ""},
+		{"SALES_AGENT", OutcomeAgencyMember, "", KindAgents, auth.RoleAgent, SpecialismSales},
+		{"LETTINGS_AGENT", OutcomeAgencyMember, "", KindAgents, auth.RoleAgent, SpecialismLettings},
+		{"PROPERTY_MANAGER", OutcomeOrganisation, auth.KindPropertyManager, "property-managers", auth.RoleOwner, ""},
+		{"SOLICITOR", OutcomeOrganisation, auth.KindLawFirm, "solicitors", auth.RoleOwner, ""},
+		{"AGENCY_OWNER", OutcomeOrganisation, auth.KindAgency, KindAgencies, auth.RoleOwner, ""},
+		{"AGENCY_ADMIN", OutcomeAgencyMember, "", "", auth.RoleManager, ""},
+		{"AGENCY_STAFF", OutcomeAgencyMember, "", "", auth.RoleStaff, ""},
+		// Individual owners: nothing is created, the role becomes ACTIVE.
+		{"LANDLORD", OutcomeNone, "", "", "", ""},
+		{"PRIVATE_SELLER", OutcomeNone, "", "", "", ""},
+		{"HOST", OutcomeOrganisation, auth.KindHost, "hosts", auth.RoleOwner, ""},
+		{"DEVELOPER", OutcomeOrganisation, auth.KindDeveloper, "developers", auth.RoleOwner, ""},
+		{"SERVICE_PROVIDER", OutcomeOrganisation, auth.KindServiceProvider, KindServiceProviders, auth.RoleOwner, ""},
 	}
 }
 
@@ -171,7 +203,8 @@ func DefaultDocumentTypes() []DocumentType {
 		{"ESTATE_AGENTS_COUNCIL_CERTIFICATE", "Estate Agents Council certificate", "Current registration or compliance certificate from the Estate Agents Council."},
 		{"PROOF_OF_EMPLOYMENT", "Proof of employment", "A letter from the agency confirming that you work there."},
 		{"TRADE_LICENCE", "Trade licence", "Licence or certification for your trade, if your trade has one."},
-		{"PROOF_OF_OWNERSHIP", "Proof of ownership", "Title deed or other proof that you own the property you intend to sell."},
+		{"PROOF_OF_OWNERSHIP", "Proof of ownership", "Title deed or other proof that you own the property you intend to sell or let."},
+		{"PRACTISING_CERTIFICATE", "Practising certificate", "Current practising certificate from the Law Society."},
 	}
 }
 
@@ -196,13 +229,15 @@ func DefaultRequirements() []Requirement {
 				Requirement{o.Role, "TAX_CLEARANCE", false})
 		}
 		switch o.Role {
-		case "AGENCY_OWNER", "AGENT":
+		case "AGENCY_OWNER", "AGENT", "SALES_AGENT", "LETTINGS_AGENT":
 			out = append(out, Requirement{o.Role, "ESTATE_AGENTS_COUNCIL_CERTIFICATE", true})
 		case "AGENCY_STAFF", "AGENCY_ADMIN":
 			out = append(out, Requirement{o.Role, "PROOF_OF_EMPLOYMENT", true})
 		case "SERVICE_PROVIDER":
 			out = append(out, Requirement{o.Role, "TRADE_LICENCE", false})
-		case "PRIVATE_SELLER":
+		case "SOLICITOR":
+			out = append(out, Requirement{o.Role, "PRACTISING_CERTIFICATE", true})
+		case "PRIVATE_SELLER", "LANDLORD":
 			out = append(out, Requirement{o.Role, "PROOF_OF_OWNERSHIP", true})
 		}
 	}
@@ -417,6 +452,8 @@ type NewProfile struct {
 	OrganisationID uuid.UUID
 	AgentUserID    *uuid.UUID
 	MarketCode     string
+	// Specialism is set for a sales or lettings agent's profile.
+	Specialism string
 }
 
 // Approval is everything an approval does, applied by the store in ONE

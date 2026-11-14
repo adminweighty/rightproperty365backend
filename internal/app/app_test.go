@@ -670,7 +670,7 @@ func TestSeedUsersAndMeShape(t *testing.T) {
 		rec := e.get("/v1/me", withCookie(e.loginCookie(identity.SeedAgentEmail, seedPassword)))
 		wantStatus(t, rec, http.StatusOK)
 		want := `"platform_roles":[],"memberships":[{"organisation_id":"` + propertyrequests.SeedOrganisationID.String() +
-			`","organisation_name":"Sample Estates","organisation_kind":"AGENCY","market_code":"ZW","role":"AGENT"}],` +
+			`","organisation_name":"Sample Estates","organisation_kind":"AGENCY","market_code":"ZW","role":"AGENT","role_label":"Estate Agent"}],` +
 			`"account_roles":[{"role":"CONSUMER","status":"ACTIVE","onboarding_status":null},{"role":"AGENT","status":"ACTIVE","onboarding_status":null}]`
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("body = %s\nwant to contain %s", rec.Body, want)
@@ -1263,7 +1263,7 @@ func TestRegisterWithAccountRoles(t *testing.T) {
 	wantStatus(t, rec, http.StatusOK)
 	want := []accountRoleBody{
 		{"CONSUMER", "ACTIVE"}, {"TENANT", "ACTIVE"},
-		{"LANDLORD", "PENDING_VERIFICATION"}, {"AGENT", "PENDING_VERIFICATION"},
+		{"AGENT", "PENDING_VERIFICATION"}, {"LANDLORD", "PENDING_VERIFICATION"},
 	}
 	check := func(where string, u userBody) {
 		t.Helper()
@@ -1366,8 +1366,8 @@ func TestRegisterRolesValidation(t *testing.T) {
 	t.Run("every allowlisted role at once is accepted", func(t *testing.T) {
 		e := newEnv(t)
 		all := identity.SelectableAccountRoles()
-		if len(all) != 11 {
-			t.Fatalf("allowlist has %d roles, want 11", len(all))
+		if len(all) != 15 {
+			t.Fatalf("allowlist has %d roles, want 15", len(all))
 		}
 		body := registerBody("everything@example.com")
 		body["roles"] = all
@@ -1965,7 +1965,7 @@ func TestSellerInboxAccess(t *testing.T) {
 
 	t.Run("every other self-declared role is still 403", func(t *testing.T) {
 		for i, role := range identity.SelectableAccountRoles() {
-			if role == "PRIVATE_SELLER" {
+			if role == "PRIVATE_SELLER" || role == "LANDLORD" { // the two direct-owner roles
 				continue
 			}
 			c := e.selfRegister(fmt.Sprintf("declared%d@example.com", i), role)
@@ -1973,9 +1973,33 @@ func TestSellerInboxAccess(t *testing.T) {
 		}
 	})
 
-	t.Run("all professional roles together, without PRIVATE_SELLER, are 403", func(t *testing.T) {
-		c := e.selfRegister("allpro@example.com", "AGENT", "AGENCY_OWNER", "AGENCY_ADMIN", "AGENCY_STAFF", "LANDLORD", "HOST", "DEVELOPER", "SERVICE_PROVIDER")
+	t.Run("all professional roles together, without a direct-owner role, are 403", func(t *testing.T) {
+		c := e.selfRegister("allpro@example.com", "AGENT", "SALES_AGENT", "LETTINGS_AGENT", "PROPERTY_MANAGER", "SOLICITOR", "AGENCY_OWNER", "AGENCY_ADMIN", "AGENCY_STAFF", "HOST", "DEVELOPER", "SERVICE_PROVIDER")
 		wantError(t, e.get("/v1/agent/property-requests", withCookie(c)), http.StatusForbidden, httpx.CodeForbidden)
+	})
+
+	// A landlord is an individual owner, like the property seller: the inbox
+	// opens (empty), and one person may hold both roles.
+	t.Run("a landlord, and a landlord who is also a property seller, may open an empty inbox", func(t *testing.T) {
+		for i, roles := range [][]string{{"LANDLORD"}, {"LANDLORD", "PRIVATE_SELLER"}} {
+			c := e.selfRegister(fmt.Sprintf("owner%d@example.com", i), roles...)
+			rec := e.get("/v1/agent/property-requests", withCookie(c))
+			wantStatus(t, rec, http.StatusOK)
+			if got := strings.TrimSpace(rec.Body.String()); got != `{"items":[]}` {
+				t.Fatalf("%v: body = %s, want an empty items array", roles, got)
+			}
+			user, _ := e.me(c)
+			if len(user.AccountRoles) != len(roles) || len(user.Memberships) != 0 {
+				t.Fatalf("%v: roles %+v memberships %+v", roles, user.AccountRoles, user.Memberships)
+			}
+			for _, r := range user.AccountRoles {
+				if r.Status != "PENDING_VERIFICATION" {
+					t.Fatalf("%v: %+v", roles, r)
+				}
+			}
+			// The other inbox stays closed: it needs a membership.
+			wantError(t, e.get("/v1/inbox/business-enquiries", withCookie(c)), http.StatusForbidden, httpx.CodeForbidden)
+		}
 	})
 
 	t.Run("a direct seller without the account role sees their own listing only", func(t *testing.T) {

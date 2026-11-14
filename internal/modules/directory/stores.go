@@ -163,13 +163,13 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore { return &PostgresStore
 
 const profileColumns = `p.id, p.kind, p.slug, p.name, COALESCE(p.role_title, ''), COALESCE(p.tagline, ''), COALESCE(p.about, ''),
 	COALESCE(p.city_code, ''), p.areas, p.services, p.offerings::text, COALESCE(p.trade_code, ''), p.verified, p.sponsored,
-	p.since_year, p.status, p.updated_at, p.organisation_id, p.agent_user_id`
+	p.since_year, p.status, p.updated_at, p.organisation_id, p.agent_user_id, COALESCE(p.specialism, '')`
 
 func scanProfile(row pgx.CollectableRow) (Record, error) {
 	var r Record
 	var offerings string
 	if err := row.Scan(&r.ID, &r.Kind, &r.Slug, &r.Name, &r.Role, &r.Tagline, &r.Description, &r.CityCode, &r.Areas, &r.Services,
-		&offerings, &r.TradeCode, &r.Verified, &r.Sponsored, &r.Since, &r.Status, &r.UpdatedAt, &r.OrganisationID, &r.AgentUserID); err != nil {
+		&offerings, &r.TradeCode, &r.Verified, &r.Sponsored, &r.Since, &r.Status, &r.UpdatedAt, &r.OrganisationID, &r.AgentUserID, &r.Specialism); err != nil {
 		return Record{}, err
 	}
 	if err := json.Unmarshal([]byte(offerings), &r.Offerings); err != nil {

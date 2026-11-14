@@ -250,11 +250,11 @@ func (h *Handlers) SetOnboardingSource(source func(ctx context.Context, applicat
 
 // onboardingTemplates maps an onboarding event to its template and the page
 // its button opens.
-var onboardingTemplates = map[string]struct{ template, path string }{
-	onboarding.EventSubmitted:        {"onboarding-submitted", PathOnboarding},
-	onboarding.EventApproved:         {"onboarding-approved", PathAccount},
-	onboarding.EventChangesRequested: {"onboarding-changes-requested", PathOnboarding},
-	onboarding.EventRejected:         {"onboarding-rejected", PathAccount},
+var onboardingTemplates = map[string]struct{ template, path, status string }{
+	onboarding.EventSubmitted:        {"onboarding-submitted", PathOnboarding, onboarding.StatusSubmitted},
+	onboarding.EventApproved:         {"onboarding-approved", PathAccount, onboarding.StatusApproved},
+	onboarding.EventChangesRequested: {"onboarding-changes-requested", PathOnboarding, onboarding.StatusChangesRequested},
+	onboarding.EventRejected:         {"onboarding-rejected", PathAccount, onboarding.StatusRejected},
 }
 
 // Register attaches the handlers to a dispatcher.
@@ -425,7 +425,7 @@ func (h *Handlers) build(ctx context.Context, ev outbox.Event) ([]mail.Notificat
 		// The applicant only: no document names, no private details, and the
 		// reason only in the two emails that exist to pass it on.
 		t := onboardingTemplates[ev.Type]
-		d := mail.Data{Name: info.Name, Path: t.path, RoleName: info.RoleLabel, When: occurredAt(ev)}
+		d := mail.Data{Name: info.Name, Path: t.path, RoleName: info.RoleLabel, StatusText: onboarding.StatusLabel(t.status), When: occurredAt(ev)}
 		switch ev.Type {
 		case onboarding.EventChangesRequested, onboarding.EventRejected:
 			d.Reason = info.Reason

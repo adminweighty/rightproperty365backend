@@ -7,9 +7,9 @@ Hello Tariro Moyo,
 Your email address is confirmed and your account is ready to use.
 
 You told us you are joining as:
-  - Buyer or renter: active
-  - Landlord or property manager: waiting for verification
-  - Estate agent: waiting for verification
+  - Prospective Buyer: active
+  - Landlord: waiting for verification
+  - Estate Agent: waiting for verification
 
 A role that is waiting for verification is a request. It does not give access to agency or business tools until it has been verified.
 

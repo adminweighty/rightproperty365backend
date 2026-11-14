@@ -41,7 +41,7 @@ Invoke-RestMethod -Method Post -Uri http://localhost:8080/v1/property-requests -
 
 In development without a database the API seeds its in-memory stores with the data below (defined
 once in `internal/devseed`; the web app's sample data uses the same names): 23 organisations, 28
-accounts, 18 listings and 29 directory profiles. Listing IDs are
+accounts, 18 listings and 32 directory profiles (the web's 29 and three solicitors). Listing IDs are
 `0195c0de-0000-7000-8000-000000000001` … `…000000000018`: 18 **PUBLISHED** listings in market ZW,
 each with an organisation **and** a named assigned agent, or a direct seller. Listing
 `…000000000099` is **EXPIRED** (requests get `410`).
@@ -128,6 +128,18 @@ Invoke-RestMethod -Method Post -Uri http://localhost:8080/v1/auth/login -Content
 Invoke-RestMethod -Uri http://localhost:8080/v1/me -WebSession $s
 Invoke-RestMethod -Uri http://localhost:8080/v1/agent/property-requests -WebSession $s
 ```
+
+**Solicitors** (verified sample profiles in the `solicitors` directory; each firm is an
+organisation of kind `LAW_FIRM` whose owner signs in with `DEV_SEED_PASSWORD`):
+
+| Email | Firm | City | Profile |
+| --- | --- | --- | --- |
+| `sample-law-chambers@example.test` | Sample Law Chambers | Harare | `solicitors/sample-law-chambers` |
+| `sample-conveyancing-attorneys@example.test` | Sample Conveyancing Attorneys | Bulawayo | `solicitors/sample-conveyancing-attorneys` |
+| `sample-property-lawyers@example.test` | Sample Property Lawyers | Mutare | `solicitors/sample-property-lawyers` |
+
+The two "property-managers" sample businesses are organisations of kind `PROPERTY_MANAGER`, and
+their owners hold the `PROPERTY_MANAGER` account role (it used to be LANDLORD).
 
 **Onboarding demo accounts** (same `DEV_SEED_PASSWORD`; created in memory by the API and in
 Postgres by `cmd/seed`). Their professional role is **not** active: it waits for an administrator.
@@ -464,6 +476,121 @@ is likewise only exercised against a fake.
 must match the cluster major), monitoring (cluster health, disk watermarks, slow queries), index
 lifecycle, authentication and TLS for a real cluster, and capacity planning.
 
+## Roles: real estate terminology
+
+The role names follow the functional specification's real estate terminology. **Role codes did
+not change** (the web and the mobile app depend on them); labels, descriptions and groups did, and
+four roles were added. All of it is reference data (`GET /v1/reference/account_roles`).
+
+| Group | Code | Label | Verification | Approval creates |
+| --- | --- | --- | --- | --- |
+| Property Seekers | `CONSUMER` | Prospective Buyer | no | (no onboarding) |
+| | `TENANT` | Prospective Tenant | no | (no onboarding) |
+| Real Estate Professionals | `AGENT` | Estate Agent | yes | AGENT membership in a verified agency + `agents` profile |
+| | `SALES_AGENT` (new) | Sales Agent | yes | as AGENT, profile `specialism` SALES |
+| | `LETTINGS_AGENT` (new) | Lettings Agent | yes | as AGENT, profile `specialism` LETTINGS |
+| | `PROPERTY_MANAGER` (new) | Property Manager | yes | organisation `PROPERTY_MANAGER` + OWNER + `property-managers` profile |
+| | `SOLICITOR` (new) | Solicitor | yes | organisation `LAW_FIRM` + OWNER + `solicitors` profile |
+| Real Estate Businesses | `AGENCY_OWNER` | Agency Principal | yes | organisation `AGENCY` + OWNER + `agencies` profile |
+| | `AGENCY_ADMIN` | Agency Administrator | yes | MANAGER membership in a verified agency |
+| | `AGENCY_STAFF` | Agency Staff | yes | STAFF membership in a verified agency |
+| Property Owners | `LANDLORD` | Landlord | yes | nothing: an individual owner; the role becomes ACTIVE |
+| | `PRIVATE_SELLER` | Property Seller (Vendor) | yes | nothing: an individual owner; the role becomes ACTIVE |
+| Other property businesses | `HOST` | Host | yes | organisation `HOST` + OWNER + `hosts` profile |
+| | `DEVELOPER` | Property Developer | yes | organisation `DEVELOPER` + OWNER + `developers` profile |
+| | `SERVICE_PROVIDER` | Property Service Provider | yes | organisation `SERVICE_PROVIDER` + OWNER + `service-providers` profile |
+
+Labels are written as titles, exactly as the specification and the mobile app write them.
+
+| Organisation kind (`GET /v1/reference/organisation_kinds`) | Label |
+| --- | --- |
+| `AGENCY` | Real Estate Agency |
+| `LAW_FIRM` | Law Firm |
+| `PROPERTY_MANAGER` | Property Manager |
+| `HOST` | Host |
+| `DEVELOPER` | Property Developer |
+| `SERVICE_PROVIDER` | Property Service Provider |
+
+| Directory (`GET /v1/reference/directory_kinds`) | Label | Singular |
+| --- | --- | --- |
+| `agencies` | Real Estate Agencies | Real Estate Agency |
+| `agents` | Estate Agents | Estate Agent |
+| `developers` | Property Developers | Property Developer |
+| `property-managers` | Property Managers | Property Manager |
+| `solicitors` (new) | Solicitors | Solicitor |
+| `hosts` | Hosts and Venues | Host |
+| `service-providers` | Property Services | Property Service Provider |
+
+Each membership in `GET /v1/me` has a `role_label`: in an agency OWNER is "Agency Principal",
+MANAGER "Agency Administrator", AGENT "Estate Agent", STAFF "Agency Staff"; in any other
+organisation "Principal", "Manager", "Estate Agent", "Staff". `role` itself is unchanged.
+
+- **Awaiting the project owner's decision:** the group "Other property businesses" (HOST,
+  DEVELOPER, SERVICE_PROVIDER) is not in the functional specification. It is kept as it was.
+- **SOLICITOR** is placed with the professionals, as asked, although approving it creates a firm
+  (an organisation of kind `LAW_FIRM`), like the business roles. The role code is `SOLICITOR`, the
+  organisation kind is `LAW_FIRM`, the directory is `solicitors`.
+- A person may hold several roles, for example Landlord and Property seller.
+- Platform roles are never in this set. Where the backend shows one it says "Super
+  Administrator", "Platform Administrator", "Market Administrator", "Finance Administrator",
+  "Content Administrator", "Moderator" or "Support".
+- **Landlords and property sellers are individual owners.** Either may open
+  `GET /v1/agent/property-requests`; they see only requests for listings they own directly.
+- **What changed for LANDLORD:** it used to create a business in "property-managers". Those
+  businesses are now `PROPERTY_MANAGER` organisations and their owners hold the `PROPERTY_MANAGER`
+  role (migration 0010 moves existing rows; the sample data was moved the same way).
+- **Onboarding status wording:** every onboarding `status` comes with a `status_label`: DRAFT =
+  "Pending Verification", SUBMITTED = "Under Review", CHANGES_REQUESTED = "Changes Requested",
+  APPROVED = "Approved", REJECTED = "Rejected" (title case, as the mobile app writes them). The specification also has "Suspended";
+  suspending is **not built**.
+
+### Solicitors
+
+A solicitor's firm is an organisation of kind `LAW_FIRM` ("Law Firm") with a verified profile in the public
+`solicitors` directory. It receives enquiries through `POST /v1/business-enquiries` (recipient
+kind `solicitors`) and reads them at `GET /v1/inbox/business-enquiries`, which is what the mobile
+app uses. Required documents (placeholders, like the rest): PROOF_OF_IDENTITY,
+BUSINESS_REGISTRATION, PROOF_OF_ADDRESS and PRACTISING_CERTIFICATE (new: "Current practising
+certificate from the Law Society"); TAX_CLEARANCE is optional.
+
+**Listing, appointment and booking rights.** One place in the code answers "may this caller
+manage listings or appointments": `internal/platform/auth/capabilities.go`.
+
+| Who | Listings | Appointments |
+| --- | --- | --- |
+| OWNER, MANAGER, AGENT of an `AGENCY`, `LAW_FIRM`, `PROPERTY_MANAGER`, `DEVELOPER` or `HOST` organisation | yes | yes |
+| STAFF of those organisations | no | yes |
+| Any member of a `SERVICE_PROVIDER` organisation | no | enquiries and consultations only |
+| An **approved** (ACTIVE) Landlord or Property Seller | their own listings | for their own listings |
+
+So a verified solicitor in a law firm has the same rights as an agent, and a `LAW_FIRM` can own
+listings on the same terms as an agency: property requests for such a listing reach the firm's
+inbox (tested). **But there are no endpoints to create or publish a listing, and no appointment
+or booking features, for any role yet.** These rules say who will be allowed once they are built;
+nothing in the role or organisation model has to change for that.
+
+### Specified but not built
+
+So that nobody assumes these exist. They are in the updated functional specification and are
+**not** in this backend:
+
+- enquiry lead statuses (New enquiry, Assigned, Contacted, Viewing requested, Viewing scheduled,
+  Follow-up required, Converted, Closed) and replies to enquiries;
+- agency principals assigning leads;
+- rental applications;
+- viewing appointment management;
+- subscription plans, and admin-recorded payments, invoices and receipts (the specification has no
+  online payment in the mobile app);
+- account deletion;
+- CAPTCHA or adaptive bot protection, and duplicate or spam detection;
+- administrator MFA;
+- account suspension (including the "Suspended" onboarding status) and abuse reporting;
+- push notifications.
+
+**Conflict with the specification, kept as the user decided:** the specification's technology
+table says "Neon PostgreSQL". The user decided on 2026-11-14 to use **self-hosted PostgreSQL**;
+this repository follows that decision.
+
 ## Professional onboarding and verification
 
 A professional role chosen at sign-up is only a request. Each such role gets an **onboarding
@@ -489,19 +616,20 @@ together.
 
 | Role | Outcome | Created on approval |
 | --- | --- | --- |
+| `AGENT`, `SALES_AGENT`, `LETTINGS_AGENT` | AGENCY_MEMBER | AGENT membership in the chosen **existing verified agency** + profile in `agents`, linked to it (specialism: none, SALES, LETTINGS) |
+| `PROPERTY_MANAGER` | ORGANISATION | organisation `PROPERTY_MANAGER` + OWNER + profile in `property-managers` |
+| `SOLICITOR` | ORGANISATION | organisation `LAW_FIRM` + OWNER + profile in `solicitors` |
 | `AGENCY_OWNER` | ORGANISATION | organisation `AGENCY` + OWNER membership + profile in `agencies` |
-| `LANDLORD` | ORGANISATION | organisation `LANDLORD` + OWNER + profile in `property-managers` |
+| `AGENCY_ADMIN` | AGENCY_MEMBER | MANAGER membership in the chosen agency; no profile |
+| `AGENCY_STAFF` | AGENCY_MEMBER | STAFF membership in the chosen agency; no profile |
+| `LANDLORD`, `PRIVATE_SELLER` | NONE | nothing; the role becomes ACTIVE |
 | `HOST` | ORGANISATION | organisation `HOST` + OWNER + profile in `hosts` |
 | `DEVELOPER` | ORGANISATION | organisation `DEVELOPER` + OWNER + profile in `developers` |
 | `SERVICE_PROVIDER` | ORGANISATION | organisation `SERVICE_PROVIDER` + OWNER + profile in `service-providers` (with its trade) |
-| `AGENT` | AGENCY_MEMBER | AGENT membership in the chosen **existing verified agency** + profile in `agents`, linked to it |
-| `AGENCY_STAFF` | AGENCY_MEMBER | STAFF membership in the chosen agency; no profile |
-| `AGENCY_ADMIN` | AGENCY_MEMBER | MANAGER membership in the chosen agency; no profile |
-| `PRIVATE_SELLER` | NONE | nothing; the role becomes ACTIVE |
 
 A created profile is published and `verified = true`, with a slug derived from the name (`-2`,
 `-3`, ... on a collision). **Public directory endpoints and the sitemap only ever return profiles
-that are published AND verified**; the 29 sample profiles are all verified. A profile gets public
+that are published AND verified**; the 32 sample profiles are all verified. A profile gets public
 content only: the contact phone, the registration number and the documents never leave the
 application (the public leak test walks an approved profile).
 
@@ -527,11 +655,12 @@ administrators see them, nobody else, and nothing copies them to a profile.
 | Role | Required | Optional |
 | --- | --- | --- |
 | `AGENCY_OWNER` | PROOF_OF_IDENTITY, BUSINESS_REGISTRATION, PROOF_OF_ADDRESS, ESTATE_AGENTS_COUNCIL_CERTIFICATE | TAX_CLEARANCE |
-| `LANDLORD`, `HOST`, `DEVELOPER` | PROOF_OF_IDENTITY, BUSINESS_REGISTRATION, PROOF_OF_ADDRESS | TAX_CLEARANCE |
+| `PROPERTY_MANAGER`, `HOST`, `DEVELOPER` | PROOF_OF_IDENTITY, BUSINESS_REGISTRATION, PROOF_OF_ADDRESS | TAX_CLEARANCE |
+| `SOLICITOR` | PROOF_OF_IDENTITY, BUSINESS_REGISTRATION, PROOF_OF_ADDRESS, PRACTISING_CERTIFICATE | TAX_CLEARANCE |
 | `SERVICE_PROVIDER` | PROOF_OF_IDENTITY, BUSINESS_REGISTRATION, PROOF_OF_ADDRESS | TAX_CLEARANCE, TRADE_LICENCE |
-| `AGENT` | PROOF_OF_IDENTITY, ESTATE_AGENTS_COUNCIL_CERTIFICATE | |
+| `AGENT`, `SALES_AGENT`, `LETTINGS_AGENT` | PROOF_OF_IDENTITY, ESTATE_AGENTS_COUNCIL_CERTIFICATE | |
 | `AGENCY_STAFF`, `AGENCY_ADMIN` | PROOF_OF_IDENTITY, PROOF_OF_EMPLOYMENT | |
-| `PRIVATE_SELLER` | PROOF_OF_IDENTITY, PROOF_OF_OWNERSHIP | |
+| `LANDLORD`, `PRIVATE_SELLER` | PROOF_OF_IDENTITY, PROOF_OF_OWNERSHIP | |
 
 ### File storage
 
@@ -1026,7 +1155,7 @@ internal/platform/httpx      middleware, error envelope, JSON decoding, rate lim
 internal/platform/auth       Principal + Authenticate / RequireAuth / RequireMembership / RequirePlatformRole
 internal/app                 router wiring (middleware order, routes); end-to-end tests live here
 internal/adminctl            logic of cmd/adminctl (argument and password validation)
-internal/devseed             the development sample data (organisations, people, 18 listings, 29 directory profiles)
+internal/devseed             the development sample data (organisations, people, 18 listings, 32 directory profiles)
 internal/platform/database   pgxpool setup (session or transaction pool mode)
 internal/platform/outbox     outbox dispatcher (lease, retry, dead-letter)
 internal/platform/elastic    Elasticsearch client (official Go client, transport only)
@@ -1130,6 +1259,14 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0010_real_estate_roles` renames and regroups the account roles (codes unchanged), adds
+  SALES_AGENT, LETTINGS_AGENT, PROPERTY_MANAGER and SOLICITOR, the organisation kinds
+  `PROPERTY_MANAGER` and `LAW_FIRM`, the `organisation_kinds` reference set, the `solicitors` directory and the PRACTISING_CERTIFICATE
+  document type, `specialism` on agent profiles and on the outcome table; it turns every
+  `LANDLORD` organisation into `PROPERTY_MANAGER` and moves its owners' LANDLORD role and
+  applications to PROPERTY_MANAGER, makes LANDLORD an individual-owner role, and **resets the
+  per-role document requirements** to the new baseline. LANDLORD applications that were not
+  approved stay LANDLORD under the new requirements. Its down migration is lossy. **Never run.**
 - `0009_onboarding` adds the `onboarding_documents` reference set, `onboarding_role_outcomes`,
   `onboarding_role_documents`, `onboarding_applications` (one current application per user and
   role), `onboarding_documents` and the immutable `onboarding_history`; it backfills a DRAFT

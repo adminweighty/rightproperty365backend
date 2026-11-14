@@ -246,17 +246,29 @@ func SafePreview(message string, max int) string {
 // reference-data labels (account_roles) and only a fallback: the notification
 // handlers read the current labels from the reference data when sending.
 var roleNames = map[string]string{
-	"CONSUMER":         "Buyer or renter",
-	"TENANT":           "Tenant",
-	"PRIVATE_SELLER":   "Private seller",
-	"LANDLORD":         "Landlord or property manager",
-	"HOST":             "Host: short stays and venues",
-	"DEVELOPER":        "Property developer",
-	"SERVICE_PROVIDER": "Service provider",
-	"AGENT":            "Estate agent",
-	"AGENCY_STAFF":     "Agency staff",
-	"AGENCY_ADMIN":     "Agency administrator",
-	"AGENCY_OWNER":     "Agency owner",
+	"CONSUMER":         "Prospective Buyer",
+	"TENANT":           "Prospective Tenant",
+	"AGENT":            "Estate Agent",
+	"SALES_AGENT":      "Sales Agent",
+	"LETTINGS_AGENT":   "Lettings Agent",
+	"PROPERTY_MANAGER": "Property Manager",
+	"SOLICITOR":        "Solicitor",
+	"AGENCY_OWNER":     "Agency Principal",
+	"AGENCY_ADMIN":     "Agency Administrator",
+	"AGENCY_STAFF":     "Agency Staff",
+	"LANDLORD":         "Landlord",
+	"PRIVATE_SELLER":   "Property Seller (Vendor)",
+	"HOST":             "Host",
+	"DEVELOPER":        "Property Developer",
+	"SERVICE_PROVIDER": "Property Service Provider",
+	// Platform roles are never selectable; these are their display names.
+	"SUPER_ADMIN":    "Super Administrator",
+	"PLATFORM_ADMIN": "Platform Administrator",
+	"MARKET_ADMIN":   "Market Administrator",
+	"FINANCE_ADMIN":  "Finance Administrator",
+	"CONTENT_ADMIN":  "Content Administrator",
+	"MODERATOR":      "Moderator",
+	"SUPPORT":        "Support",
 }
 
 // RoleName returns the plain-language name of an account role code.

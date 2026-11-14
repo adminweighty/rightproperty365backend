@@ -36,8 +36,15 @@ const (
 
 // Organisation kinds.
 const (
-	KindAgency          = "AGENCY"
+	KindAgency = "AGENCY"
+	// KindLandlord is no longer created: a landlord is an individual owner
+	// (an account role), and the businesses that used this kind are
+	// KindPropertyManager since migration 0010.
 	KindLandlord        = "LANDLORD"
+	KindPropertyManager = "PROPERTY_MANAGER"
+	// KindLawFirm is a solicitor's firm or practice. It can own listings on the
+	// same terms as an agency.
+	KindLawFirm         = "LAW_FIRM"
 	KindHost            = "HOST"
 	KindDeveloper       = "DEVELOPER"
 	KindServiceProvider = "SERVICE_PROVIDER"
@@ -78,6 +85,27 @@ func IsPlatformRole(role string) bool { return slices.Contains(AllPlatformRoles(
 // account role. It is the only account role any route looks at, and only to
 // let its holder open their (possibly empty) seller inbox.
 const AccountRolePrivateSeller = "PRIVATE_SELLER"
+
+// AccountRoleLandlord is the "I own property that I let" account role. Like
+// the property seller, a landlord is an individual who can be the direct
+// owner of listings, and the role is looked at for the same single purpose:
+// to let its holder open their (possibly empty) inbox.
+const AccountRoleLandlord = "LANDLORD"
+
+// DirectOwnerRoles are the account roles whose holders own listings
+// directly, without an organisation.
+func DirectOwnerRoles() []string { return []string{AccountRolePrivateSeller, AccountRoleLandlord} }
+
+// DeclaresDirectOwner reports whether the principal declared one of the
+// direct-owner roles (in any status). See AccountRole: not an authorisation.
+func (p *Principal) DeclaresDirectOwner() bool {
+	for _, role := range DirectOwnerRoles() {
+		if p.HasAccountRole(role) {
+			return true
+		}
+	}
+	return false
+}
 
 // AccountRole is a role the user chose for themselves at registration, with
 // its status. It is carried on the Principal for display and for the one

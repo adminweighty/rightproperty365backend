@@ -37,6 +37,9 @@ const (
 	KindAgents   = "agents"
 )
 
+// SpecialismLabels are the agent specialisms and how they are shown.
+var SpecialismLabels = map[string]string{"SALES": "Sales Agent", "LETTINGS": "Lettings Agent"}
+
 // StatusActive is the only profile status that is public.
 const StatusActive = "ACTIVE"
 
@@ -74,17 +77,19 @@ type Offering struct {
 
 // Profile is the public representation of a profile, as it appears in lists.
 type Profile struct {
-	Kind         string               `json:"kind"`
-	Slug         string               `json:"slug"`
-	Name         string               `json:"name"`
-	Role         string               `json:"role"`
-	Tagline      string               `json:"tagline"`
-	Description  string               `json:"description"`
-	City         listings.Coded       `json:"city"`
-	Areas        []string             `json:"areas"`
-	Services     []string             `json:"services"`
-	Offerings    []Offering           `json:"offerings"`
-	Trade        *listings.Coded      `json:"trade"`
+	Kind        string          `json:"kind"`
+	Slug        string          `json:"slug"`
+	Name        string          `json:"name"`
+	Role        string          `json:"role"`
+	Tagline     string          `json:"tagline"`
+	Description string          `json:"description"`
+	City        listings.Coded  `json:"city"`
+	Areas       []string        `json:"areas"`
+	Services    []string        `json:"services"`
+	Offerings   []Offering      `json:"offerings"`
+	Trade       *listings.Coded `json:"trade"`
+	// Specialism is set for an agent who specialises in sales or lettings.
+	Specialism   *listings.Coded      `json:"specialism"`
 	Verified     bool                 `json:"verified"`
 	Sponsored    bool                 `json:"sponsored"`
 	Since        *int                 `json:"since"`
@@ -117,11 +122,13 @@ type Record struct {
 	Services    []string
 	Offerings   []Offering
 	TradeCode   string
-	Verified    bool
-	Sponsored   bool
-	Since       *int
-	Status      string
-	UpdatedAt   time.Time
+	// Specialism is "SALES", "LETTINGS" or "" (agent profiles only).
+	Specialism string
+	Verified   bool
+	Sponsored  bool
+	Since      *int
+	Status     string
+	UpdatedAt  time.Time
 
 	OrganisationID uuid.UUID
 	// AgentUserID is set for agent profiles.
@@ -239,6 +246,9 @@ func (s *Service) present(ctx context.Context, r Record, cities, trades map[stri
 	}
 	if r.TradeCode != "" {
 		p.Trade = &listings.Coded{Code: r.TradeCode, Label: labelOr(trades, r.TradeCode)}
+	}
+	if label, ok := SpecialismLabels[r.Specialism]; ok {
+		p.Specialism = &listings.Coded{Code: r.Specialism, Label: label}
 	}
 	if r.Kind == KindAgents {
 		agency, err := s.store.AgencyOf(ctx, r.OrganisationID)
