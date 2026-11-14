@@ -61,6 +61,26 @@ func (s *MemoryStore) PublishedByIDs(_ context.Context, ids []uuid.UUID, now tim
 	return out, nil
 }
 
+// ByIDs implements Store.
+func (s *MemoryStore) ByIDs(_ context.Context, ids []uuid.UUID) ([]Record, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []Record
+	for _, r := range s.records {
+		if slices.Contains(ids, r.ID) {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+// AllPublished implements Store.
+func (s *MemoryStore) AllPublished(_ context.Context, now time.Time) ([]Record, error) {
+	records := s.public(now)
+	newestFirst(records)
+	return records, nil
+}
+
 // BySlug implements Store.
 func (s *MemoryStore) BySlug(_ context.Context, slug string) (Record, error) {
 	s.mu.RLock()

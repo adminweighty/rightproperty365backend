@@ -183,6 +183,17 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, hasher identity.Hashe
 			}
 			return fmt.Errorf("seed listing %s: %w", l.Slug, err)
 		}
+		// Tell the search index: the worker turns this into an upsert or a delete.
+		event := listings.EventListingPublished
+		if l.Status != listings.StatusPublished {
+			event = listings.EventListingExpired
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO outbox_events (id, event_type, aggregate_type, aggregate_id, payload, created_at, available_at)
+			VALUES ($1, $2, $3, $4, $5::jsonb, $6, $6)`,
+			uuid.New(), event, listings.AggregateListing, l.ID, fmt.Sprintf(`{"listing_id":%q}`, l.ID), now); err != nil {
+			return fmt.Errorf("seed listing %s event: %w", l.Slug, err)
+		}
 		// Features and photos are replaced wholesale so a re-run resets them.
 		if _, err := tx.Exec(ctx, `DELETE FROM listing_features WHERE listing_id = $1`, l.ID); err != nil {
 			return fmt.Errorf("seed listing %s features: %w", l.Slug, err)

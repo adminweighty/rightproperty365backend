@@ -331,6 +331,118 @@ real titles, prices, descriptions, features, photos, slugs and references
 relative to the moment of seeding, so the sample listings are always recent; the one expired
 listing (`expired-two-bedroom-flat-avenues`) answers `410`.
 
+## Search: Elasticsearch behind a port, the database underneath
+
+> **Open decision for the project owner: whether, where and under which licence to run a search
+> engine.** Elasticsearch is not in the BRD/FSD stack. It was added on the instruction "filtering
+> let is use elastic serach" (2026-11-14), and it has an operating cost: a cluster to host, secure,
+> snapshot, upgrade and monitor. The choices are (a) self-hosted Elasticsearch on the project's own
+> server (Elastic licence / SSPL / AGPL terms apply, depending on version and features), (b) Elastic
+> Cloud (managed, billed), or (c) OpenSearch (Apache 2.0 fork; the queries used here are plain
+> query DSL, but the client and `search_as_you_type` would need checking). **None is set up.** Until
+> one is, the API searches in PostgreSQL, which is fully supported and needs nothing extra.
+
+`GET /v1/listings` and `GET /v1/listings/suggest` are answered through a `Search` port
+(`internal/modules/listings`). There are three adapters: memory (development), PostgreSQL, and
+Elasticsearch. **The HTTP contract is the same whichever one answers.**
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `SEARCH_DRIVER` | _(automatic)_ | `database` or `elasticsearch`. Unset: `elasticsearch` when `ELASTICSEARCH_URL` is set, otherwise `database`. `elasticsearch` without a URL **fails startup**; `database` forces the database adapter even when a URL is set |
+| `ELASTICSEARCH_URL` | _(empty)_ | Cluster address, without credentials |
+| `ELASTICSEARCH_API_KEY` | _(empty)_ | Secret (the base64 `id:api_key` value). Never logged; redacted in every formatting path. Empty only for the local node with security off |
+| `SEARCH_INDEX_PREFIX` | `rp365-<APP_ENV>` | Indices are `<prefix>-listings-<timestamp>`, read and written through the alias `<prefix>-listings-current` |
+| `SEARCH_TIMEOUT` | `800ms` | One request to Elasticsearch may take this long (50 ms–5 s) before it is abandoned and answered from the database |
+
+The API and the worker each log one line at startup naming the driver:
+`search driver selected: database (...)` or `search driver selected: elasticsearch (...)`.
+
+**PostgreSQL stays the source of truth.**
+
+- Elasticsearch only proposes listing IDs, a total and facet counts. **Every hit is re-read from
+  the database**, which checks `status = 'PUBLISHED' AND expires_at > now` again, before anything
+  is returned. An index that is behind cannot bring back an expired or unpublished listing.
+- The Elasticsearch query itself also filters `status = PUBLISHED` and `expires_at > now`, so an
+  expired listing drops out of hits, totals and facets the moment it expires, without waiting for
+  the index to be updated.
+- **Trade-off, stated plainly:** a listing that was *unpublished* (paused, sold, closed) stays in
+  the index until the worker has processed its event. During that window it is never returned
+  (the database re-check removes it and takes it off `total`), but it can still be counted in the
+  **facet counts** and in `total` on pages where it is not among the hits. The window is the
+  outbox delay, normally seconds.
+- **Fallback.** If Elasticsearch is unreachable, slow (over `SEARCH_TIMEOUT`), returns an error or
+  an unreadable answer, that request is answered by the database adapter instead. Search does not
+  fail. Each fallback is logged as a warning (`search engine failed; answering from the database
+  instead`) with a running count `search_fallbacks_total`; there is no metrics endpoint yet. The
+  client does not retry: the database is the retry.
+
+**The index.** One index per environment behind an alias, with an explicit, strict mapping
+(`internal/modules/listings/es_mapping.json`): `keyword` for codes (deal, category, property type,
+city, suburb, features, market, currency), `text` with a `keyword` and a `search_as_you_type`
+sub-field for title, suburb and city labels, `scaled_float` for the price with the currency kept
+separately, integers for bedrooms and bathrooms, dates, a `version`, and a `geo_point` `location`
+that is mapped but unused. **A document holds public listing data only** — no customer, no contact
+detail, no owner account, not even the advertiser; a test checks every field name and that every
+field is in the mapping.
+
+**Keeping it in step.** Listing changes write an outbox event (`LISTING_PUBLISHED`,
+`LISTING_UPDATED`, `LISTING_EXPIRED`, `LISTING_UNPUBLISHED`) carrying only the listing ID. The
+worker reads the listing's *current* state from the database and writes the document if it is
+public, or deletes it if it is not. That makes the handler idempotent and independent of event
+order; writes and deletes also use external versioning (`updated_at` in microseconds), so
+Elasticsearch refuses an older write. Failures are retried with the outbox backoff and
+dead-lettered like any other event. With the database driver the worker acknowledges these events
+and does nothing.
+
+> **Listing lifecycle endpoints do not exist yet**, and there is no job that marks listings
+> expired. The only code that changes listings today is `cmd/seed`, which now writes these events.
+> When publish / edit / pause / relist are built, they must write the matching event in the same
+> transaction as the change. Expiry needs no event to be *correct* (the query and the re-check both
+> use `expires_at`), only to remove the stale document.
+
+**Rebuilding.** `go run ./cmd/reindex` (or `make reindex`) creates a new index from the database,
+bulk-indexes every public listing, refreshes it, moves the alias to it in **one atomic action**,
+and only then deletes the index the alias used to point to. Searches keep working throughout, and
+a failure before the swap leaves the alias untouched and removes the half-built index. It refuses
+to run without `DATABASE_URL` and `ELASTICSEARCH_URL`. Run it once after creating a cluster and
+after any mapping change.
+
+**Query.** Free text over title, suburb, city, property type (and summary, description,
+reference) with typo tolerance (`fuzziness: AUTO`, first letter fixed, every word must match);
+the same filters, sort orders and paging as the database; facets through filtered aggregations
+with `post_filter`, so each facet ignores its own filter exactly as the database adapter does.
+`from + size` is capped below Elasticsearch's 10,000-result window. Suggestions use the
+`search_as_you_type` fields.
+
+**Where the adapters can differ** (the response shape never does):
+
+| Behaviour | Database / memory | Elasticsearch |
+| --- | --- | --- |
+| Which listings match `q` | Exact substring of each word (`bor` matches Borrowdale) | Whole analysed words, with typos tolerated (`borowdale` matches; `bor` alone does not) |
+| Order under `relevance` | Fixed weights: title 4, place 3, type 2, rest 1 | Elasticsearch's BM25 score with those field boosts |
+| Words split on punctuation | No (`RP-ZW-10003` is one word) | Yes (analysed into `rp`, `zw`, `10003`, all required) |
+| Suggestions | Substring anywhere in the name; prefix matches first | Word-prefix matches from `search_as_you_type`; order by document count |
+| Price facet and price filter | Exact decimals | `scaled_float` with two decimals (rounded to the cent) |
+| Facet lists | Every value | Top N values per facet (50–1000 by facet) |
+| Freshness | Immediate | Behind by the outbox delay, plus Elasticsearch's refresh interval (1 s by default) |
+
+**Target and what is not measured.** The specification's target is a p95 of one second for
+search; the 800 ms timeout is set with that in mind. **Nothing has been measured.**
+
+**Local.** `docker compose up -d elasticsearch` starts a single node with security **off**, bound
+to this machine only (development only; never run it like this elsewhere). Then set
+`ELASTICSEARCH_URL=http://localhost:9200` and run `go run ./cmd/reindex`.
+
+**Not verified:** there is no Elasticsearch, Docker or PostgreSQL on the machine this was written
+on. The Elasticsearch adapter, the indexing handler and `cmd/reindex` are tested **only against a
+fake transport**; they have never run against a real cluster. The official Go client
+(`github.com/elastic/go-elasticsearch/v9`, the current stable major, used for its transport only)
+is likewise only exercised against a fake.
+
+**Operations: not set up, no owner.** Snapshots and restore testing, upgrades (the client major
+must match the cluster major), monitoring (cluster health, disk watermarks, slow queries), index
+lifecycle, authentication and TLS for a real cluster, and capacity planning.
+
 ## Reference data: drop-downs and lists come from the database
 
 Nothing that fills a drop-down, a filter or a list is hard-coded in the clients. It is all rows in
@@ -471,7 +583,7 @@ The log mailer (development only) sends nothing and writes one line per email, i
 | Your password was changed | Password reset confirmed; `adminctl set-password` | outbox `PASSWORD_CHANGED` |
 | Administrator sign-in | Successful `POST /v1/admin/auth/login` | outbox `ADMIN_SIGNED_IN` |
 | Request received (to the customer, with the reference) | Property request created | outbox `PROPERTY_REQUEST_CREATED` |
-| New property request (to the assigned agent or direct seller, otherwise the organisation's owners and managers) | Property request created | same event |
+| New property request (to the assigned agent or direct seller, otherwise the organisation's owners and managers); names the listing by title and reference | Property request created | same event |
 | Enquiry received (to the customer) | Business enquiry created | outbox `BUSINESS_ENQUIRY_CREATED` |
 | New enquiry (to the named agent, otherwise the owning organisation's owners and managers) | Business enquiry created | same event |
 
@@ -682,7 +794,8 @@ The middleware only answers "may this caller use the route at all". Handlers mus
 their data with `Principal.OrganisationIDs(...)` (and `PlatformRole.MarketCode` for
 `MARKET_ADMIN`).
 
-`GET /v1/agent/property-requests` shows how.
+`GET /v1/agent/property-requests` shows how. Each item carries `listing: {slug, title, reference}`
+(or null) so the inbox can show which property a request is about.
 
 - **Who may call it:** a user with any organisation membership, **or** the direct seller of at
   least one listing, **or** a user who declared the `PRIVATE_SELLER` account role. Everyone else
@@ -713,8 +826,12 @@ their data with `Principal.OrganisationIDs(...)` (and `PlatformRole.MarketCode` 
   create, edit, publish, relist, verify or suspend them. They exist only as seeded rows.
 - **Photo upload and object storage (MinIO)** – photo URLs are paths to the web app's own static
   sample images.
-- **A dedicated search engine** – search runs in Postgres (ILIKE) behind the `Search` port; the
-  Elasticsearch adapter is not written.
+- **A running search cluster** – the Elasticsearch adapter, indexing handler and `cmd/reindex` are
+  written and tested against a fake, but no cluster exists and hosting/licence is an open
+  decision; search runs in Postgres until then.
+- **Listing lifecycle (publish, edit, pause, relist) and an expiry job** – so nothing but the seed
+  emits listing events yet.
+- **Metrics** – the search-fallback count is only a log field.
 - **Verification / approval workflow for pending roles** – professional account roles stay
   `PENDING_VERIFICATION` forever; nothing reviews, approves, rejects or revokes them, and approval
   would not yet lead to a membership.
@@ -740,6 +857,7 @@ cmd/migrate    migration runner: up | down | status
 cmd/adminctl   create platform administrators / set their password (Postgres only)
 cmd/seed       development sample data into Postgres (refuses outside APP_ENV=development)
 cmd/mailpreview  render every email template to tmp/mail-preview/ (sends nothing)
+cmd/reindex    rebuild the Elasticsearch listings index and swap the alias (needs a cluster)
 internal/platform/config     env configuration + validation
 internal/platform/logging    slog JSON logger, request-ID propagation
 internal/platform/httpx      middleware, error envelope, JSON decoding, rate limiter
@@ -749,6 +867,7 @@ internal/adminctl            logic of cmd/adminctl (argument and password valida
 internal/devseed             the development sample data (organisations, people, 18 listings, 29 directory profiles)
 internal/platform/database   pgxpool setup (session or transaction pool mode)
 internal/platform/outbox     outbox dispatcher (lease, retry, dead-letter)
+internal/platform/elastic    Elasticsearch client (official Go client, transport only)
 internal/platform/mail       email templates, renderer, Resend client, log mailer, delivery log
 internal/platform/migrate    embedded-SQL migration runner
 internal/modules/health            /healthz, /readyz
@@ -824,7 +943,8 @@ Deliberately no empty stubs. These will be added under `internal/modules/` as th
   change the connection. The PostgreSQL server must have TLS enabled for `require` to work — that
   is server configuration and is not done by this repository.
 - **Deployment.** The GitOps manifests live in the user's separate `adminweighty/weightygitops`
-  repository (not touched from here). They need to provide `DATABASE_URL` and `RESEND_API_KEY` to
+  repository (not touched from here). They need to provide `DATABASE_URL`, `RESEND_API_KEY` (and
+  `ELASTICSEARCH_API_KEY` if Elasticsearch is used) to
   the API and worker from a **Kubernetes Secret** (and `DB_POOL_MODE` / `DATABASE_DIRECT_URL` only if a pooler is
   used). No connection string belongs in this repository, in an image or in a ConfigMap.
 - **Local development** keeps using the docker-compose Postgres (`docker compose up -d`) or no

@@ -11,6 +11,7 @@ import (
 	"net/mail"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -35,6 +36,16 @@ const (
 	// DefaultEmailFrom is the confirmed sender. Its domain must be verified
 	// in the Resend account before Resend will send from it.
 	DefaultEmailFrom = "RightProperty365 <no-reply@rightproperty365.com>"
+
+	// Search drivers (SEARCH_DRIVER).
+	SearchDriverDatabase      = "database"
+	SearchDriverElasticsearch = "elasticsearch"
+
+	// The search target is a p95 of one second (unmeasured). A request to
+	// the search engine that takes longer than this is abandoned and
+	// answered from the database instead.
+	defaultSearchTimeout = 800 * time.Millisecond
+	maxSearchTimeout     = 5 * time.Second
 
 	// Mail drivers (MAIL_DRIVER).
 	MailDriverLog    = "log"
@@ -73,6 +84,17 @@ type Config struct {
 	// ResendAPIKey is the Resend API key. It formats as "[redacted]"; call
 	// Reveal only where the Authorization header is built.
 	ResendAPIKey Secret
+	// SearchDriver is SearchDriverDatabase or SearchDriverElasticsearch,
+	// already resolved from SEARCH_DRIVER and ELASTICSEARCH_URL.
+	SearchDriver string
+	// ElasticsearchURL is the cluster address; ElasticsearchAPIKey formats as
+	// "[redacted]".
+	ElasticsearchURL    string
+	ElasticsearchAPIKey Secret
+	// SearchIndexPrefix names this environment's indices: <prefix>-listings-*.
+	SearchIndexPrefix string
+	// SearchTimeout bounds one request to the search engine.
+	SearchTimeout time.Duration
 	// EmailFrom is the sender of every email; EmailReplyTo is optional.
 	EmailFrom    string
 	EmailReplyTo string
@@ -137,6 +159,8 @@ func DatabaseTLSWarning(databaseURL string) string {
 	}
 }
 
+var searchPrefixRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,39}$`)
+
 // Secret is a configuration value that must never be printed. Every
 // formatting path (%s, %v, %+v, %#v, slog) yields "[redacted]".
 type Secret string
@@ -162,6 +186,32 @@ func (s Secret) LogValue() slog.Value { return slog.StringValue(s.String()) }
 
 // MarshalText keeps the value out of JSON and other encoders.
 func (s Secret) MarshalText() ([]byte, error) { return []byte(s.String()), nil }
+
+// resolveSearchDriver decides which search engine answers GET /v1/listings.
+//
+//	SEARCH_DRIVER=elasticsearch  Elasticsearch; ELASTICSEARCH_URL is required
+//	                             (startup fails without it, like DATABASE_URL).
+//	SEARCH_DRIVER=database       the database adapter, even when
+//	                             ELASTICSEARCH_URL is set.
+//	SEARCH_DRIVER unset          elasticsearch when ELASTICSEARCH_URL is set,
+//	(or empty)                   otherwise database.
+func resolveSearchDriver(raw string, urlSet bool) (string, error) {
+	switch strings.ToLower(raw) {
+	case SearchDriverElasticsearch:
+		if !urlSet {
+			return "", errors.New("SEARCH_DRIVER=elasticsearch requires ELASTICSEARCH_URL")
+		}
+		return SearchDriverElasticsearch, nil
+	case SearchDriverDatabase:
+		return SearchDriverDatabase, nil
+	case "":
+		if urlSet {
+			return SearchDriverElasticsearch, nil
+		}
+		return SearchDriverDatabase, nil
+	}
+	return "", fmt.Errorf("SEARCH_DRIVER must be %q or %q", SearchDriverDatabase, SearchDriverElasticsearch)
+}
 
 // resolveMailDriver decides which mailer runs.
 //
@@ -265,6 +315,33 @@ func FromLookup(get func(string) string) (Config, error) {
 	cfg.PublicWebURL = strings.TrimRight(val("PUBLIC_WEB_URL", val("WEB_BASE_URL", defaultPublicWebURL)), "/")
 	if u, err := url.Parse(cfg.PublicWebURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
 		errs = append(errs, errors.New("PUBLIC_WEB_URL must be an http(s) URL such as https://app.example.com"))
+	}
+
+	// Search. The address is validated without being echoed; the key never is.
+	cfg.ElasticsearchURL = strings.TrimRight(val("ELASTICSEARCH_URL", ""), "/")
+	if cfg.ElasticsearchURL != "" {
+		if u, err := url.Parse(cfg.ElasticsearchURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+			errs = append(errs, errors.New("ELASTICSEARCH_URL must be an http(s) URL without credentials, such as https://search.internal:9200"))
+		}
+	}
+	cfg.ElasticsearchAPIKey = Secret(val("ELASTICSEARCH_API_KEY", ""))
+	searchDriver, err := resolveSearchDriver(val("SEARCH_DRIVER", ""), cfg.ElasticsearchURL != "")
+	if err != nil {
+		errs = append(errs, err)
+	}
+	cfg.SearchDriver = searchDriver
+	cfg.SearchIndexPrefix = strings.ToLower(val("SEARCH_INDEX_PREFIX", "rp365-"+cfg.Env))
+	if !searchPrefixRe.MatchString(cfg.SearchIndexPrefix) {
+		errs = append(errs, errors.New("SEARCH_INDEX_PREFIX must be 1-40 lower-case letters, digits or dashes, starting with a letter"))
+	}
+	cfg.SearchTimeout = defaultSearchTimeout
+	if raw := val("SEARCH_TIMEOUT", ""); raw != "" {
+		v, err := time.ParseDuration(raw)
+		if err != nil || v < 50*time.Millisecond || v > maxSearchTimeout {
+			errs = append(errs, fmt.Errorf("SEARCH_TIMEOUT must be a Go duration between 50ms and %s, for example 800ms", maxSearchTimeout))
+		} else {
+			cfg.SearchTimeout = v
+		}
 	}
 
 	// Email. The API key is never echoed, not even in an error.

@@ -1,0 +1,581 @@
+{
+  "_source": false,
+  "aggs": {
+    "bedrooms": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "bedrooms",
+            "size": 60
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "sale"
+              }
+            },
+            {
+              "term": {
+                "category": "residential"
+              }
+            },
+            {
+              "term": {
+                "property_type": "house"
+              }
+            },
+            {
+              "term": {
+                "city": "harare"
+              }
+            },
+            {
+              "term": {
+                "suburb": "borrowdale"
+              }
+            },
+            {
+              "term": {
+                "currency": "USD"
+              }
+            },
+            {
+              "range": {
+                "price": {
+                  "gte": 100000,
+                  "lte": 400000.5
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "category": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "category",
+            "size": 50
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "sale"
+              }
+            },
+            {
+              "term": {
+                "property_type": "house"
+              }
+            },
+            {
+              "term": {
+                "city": "harare"
+              }
+            },
+            {
+              "term": {
+                "suburb": "borrowdale"
+              }
+            },
+            {
+              "range": {
+                "bedrooms": {
+                  "gte": 3
+                }
+              }
+            },
+            {
+              "term": {
+                "currency": "USD"
+              }
+            },
+            {
+              "range": {
+                "price": {
+                  "gte": 100000,
+                  "lte": 400000.5
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "city": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "city",
+            "size": 500
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "sale"
+              }
+            },
+            {
+              "term": {
+                "category": "residential"
+              }
+            },
+            {
+              "term": {
+                "property_type": "house"
+              }
+            },
+            {
+              "term": {
+                "suburb": "borrowdale"
+              }
+            },
+            {
+              "range": {
+                "bedrooms": {
+                  "gte": 3
+                }
+              }
+            },
+            {
+              "term": {
+                "currency": "USD"
+              }
+            },
+            {
+              "range": {
+                "price": {
+                  "gte": 100000,
+                  "lte": 400000.5
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "deal": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "deal",
+            "size": 50
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "category": "residential"
+              }
+            },
+            {
+              "term": {
+                "property_type": "house"
+              }
+            },
+            {
+              "term": {
+                "city": "harare"
+              }
+            },
+            {
+              "term": {
+                "suburb": "borrowdale"
+              }
+            },
+            {
+              "range": {
+                "bedrooms": {
+                  "gte": 3
+                }
+              }
+            },
+            {
+              "term": {
+                "currency": "USD"
+              }
+            },
+            {
+              "range": {
+                "price": {
+                  "gte": 100000,
+                  "lte": 400000.5
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "features": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "features",
+            "size": 1000
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "sale"
+              }
+            },
+            {
+              "term": {
+                "category": "residential"
+              }
+            },
+            {
+              "term": {
+                "property_type": "house"
+              }
+            },
+            {
+              "term": {
+                "city": "harare"
+              }
+            },
+            {
+              "term": {
+                "suburb": "borrowdale"
+              }
+            },
+            {
+              "range": {
+                "bedrooms": {
+                  "gte": 3
+                }
+              }
+            },
+            {
+              "term": {
+                "currency": "USD"
+              }
+            },
+            {
+              "range": {
+                "price": {
+                  "gte": 100000,
+                  "lte": 400000.5
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "price": {
+      "aggs": {
+        "max": {
+          "max": {
+            "field": "price"
+          }
+        },
+        "min": {
+          "min": {
+            "field": "price"
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "sale"
+              }
+            },
+            {
+              "term": {
+                "category": "residential"
+              }
+            },
+            {
+              "term": {
+                "property_type": "house"
+              }
+            },
+            {
+              "term": {
+                "city": "harare"
+              }
+            },
+            {
+              "term": {
+                "suburb": "borrowdale"
+              }
+            },
+            {
+              "range": {
+                "bedrooms": {
+                  "gte": 3
+                }
+              }
+            },
+            {
+              "term": {
+                "currency": "USD"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "property_type": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "property_type",
+            "size": 200
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "sale"
+              }
+            },
+            {
+              "term": {
+                "category": "residential"
+              }
+            },
+            {
+              "term": {
+                "city": "harare"
+              }
+            },
+            {
+              "term": {
+                "suburb": "borrowdale"
+              }
+            },
+            {
+              "range": {
+                "bedrooms": {
+                  "gte": 3
+                }
+              }
+            },
+            {
+              "term": {
+                "currency": "USD"
+              }
+            },
+            {
+              "range": {
+                "price": {
+                  "gte": 100000,
+                  "lte": 400000.5
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "suburb": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "suburb",
+            "size": 1000
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "sale"
+              }
+            },
+            {
+              "term": {
+                "category": "residential"
+              }
+            },
+            {
+              "term": {
+                "property_type": "house"
+              }
+            },
+            {
+              "term": {
+                "city": "harare"
+              }
+            },
+            {
+              "range": {
+                "bedrooms": {
+                  "gte": 3
+                }
+              }
+            },
+            {
+              "term": {
+                "currency": "USD"
+              }
+            },
+            {
+              "range": {
+                "price": {
+                  "gte": 100000,
+                  "lte": 400000.5
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "from": 48,
+  "post_filter": {
+    "bool": {
+      "filter": [
+        {
+          "term": {
+            "deal": "sale"
+          }
+        },
+        {
+          "term": {
+            "category": "residential"
+          }
+        },
+        {
+          "term": {
+            "property_type": "house"
+          }
+        },
+        {
+          "term": {
+            "city": "harare"
+          }
+        },
+        {
+          "term": {
+            "suburb": "borrowdale"
+          }
+        },
+        {
+          "range": {
+            "bedrooms": {
+              "gte": 3
+            }
+          }
+        },
+        {
+          "term": {
+            "currency": "USD"
+          }
+        },
+        {
+          "range": {
+            "price": {
+              "gte": 100000,
+              "lte": 400000.5
+            }
+          }
+        }
+      ]
+    }
+  },
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "term": {
+            "status": "PUBLISHED"
+          }
+        },
+        {
+          "range": {
+            "expires_at": {
+              "gt": "2026-11-14T09:00:00Z"
+            }
+          }
+        },
+        {
+          "term": {
+            "featured": true
+          }
+        },
+        {
+          "range": {
+            "bathrooms": {
+              "gte": 2
+            }
+          }
+        },
+        {
+          "term": {
+            "features": "borehole"
+          }
+        },
+        {
+          "term": {
+            "features": "solar-backup"
+          }
+        }
+      ],
+      "must": [
+        {
+          "multi_match": {
+            "fields": [
+              "title^4",
+              "suburb_label^3",
+              "city_label^3",
+              "property_type_label^2",
+              "summary",
+              "description",
+              "reference"
+            ],
+            "fuzziness": "AUTO",
+            "operator": "and",
+            "prefix_length": 1,
+            "query": "garden"
+          }
+        }
+      ]
+    }
+  },
+  "size": 24,
+  "sort": [
+    {
+      "price": "asc"
+    },
+    {
+      "published_at": "desc"
+    },
+    {
+      "id": "asc"
+    }
+  ],
+  "track_total_hits": true
+}

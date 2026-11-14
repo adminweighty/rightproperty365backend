@@ -16,7 +16,9 @@ import (
 
 	"rightproperty365.com/backend/internal/devseed"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
+	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/identity"
+	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/config"
@@ -121,6 +123,16 @@ func newFixture(t *testing.T) *fixture {
 	}
 	svc := mail.NewService(f.sender, f.log, logger)
 	f.handlers = NewHandlers(svc, renderer, NewMemorySource(f.identity, f.requests, f.enquiries), logger)
+	// The property request emails name the listing by title and reference.
+	catalogue := listings.NewMemoryStore(noLabels{})
+	devseed.SeedMemoryContent(catalogue, directory.NewMemoryStore(), now)
+	f.handlers.SetListingLookup(func(ctx context.Context, id uuid.UUID) (string, string, bool) {
+		records, err := catalogue.ByIDs(ctx, []uuid.UUID{id})
+		if err != nil || len(records) == 0 {
+			return "", "", false
+		}
+		return records[0].Title, records[0].Reference, true
+	})
 	f.mailer = NewAccountMailer(svc, renderer)
 	return f
 }
@@ -295,7 +307,8 @@ func TestRecipientEmailsHoldNoCustomerContactDetails(t *testing.T) {
 		}
 	}
 	pr := f.sender.byKind("property-request-new")[0]
-	if !strings.HasPrefix(pr.Subject, "New property request: RP-") || !strings.Contains(pr.Text, "Listing: "+propertyrequests.SeedListingID(1).String()) ||
+	if !strings.HasPrefix(pr.Subject, "New property request: RP-") || !strings.Contains(pr.Text, "Property: Four-bedroom family home with garden\nListing reference: RP-ZW-10001") ||
+		strings.Contains(pr.Text, propertyrequests.SeedListingID(1).String()) ||
 		!strings.Contains(pr.Text, "Request: Viewing request") || !strings.Contains(pr.Text, "Hello Tendai Ncube,") {
 		t.Fatalf("unexpected agent email:\n%s\n%s", pr.Subject, pr.Text)
 	}
@@ -307,6 +320,9 @@ func TestRecipientEmailsHoldNoCustomerContactDetails(t *testing.T) {
 	// Emails to the customer: their reference, no contact details of the business.
 	for _, kind := range []string{"property-request-received", "business-enquiry-received"} {
 		m := f.sender.byKind(kind)[0]
+		if kind == "property-request-received" && !strings.Contains(m.Text, "Property: Four-bedroom family home with garden\nListing reference: RP-ZW-10001") {
+			t.Fatalf("the customer's email must name the property:\n%s", m.Text)
+		}
 		if m.To != "tariro@example.com" || !strings.Contains(m.Text, "Hello Tariro Moyo,") || !strings.Contains(m.Text, "Reference: ") {
 			t.Fatalf("unexpected customer email:\n%s", m.Text)
 		}
@@ -683,3 +699,10 @@ func TestMailerSelection(t *testing.T) {
 		}
 	})
 }
+
+type noLabels struct{}
+
+func (noLabels) Labels(context.Context, string) (map[string]string, error) {
+	return map[string]string{}, nil
+}
+func (noLabels) ActiveCodes(context.Context, string) ([]string, error) { return nil, nil }

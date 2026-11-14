@@ -26,6 +26,28 @@ services:
       timeout: 3s
       retries: 10
 
+  # Search engine for GET /v1/listings (optional: without ELASTICSEARCH_URL the
+  # API searches in the database). Single node, security OFF: local
+  # development only, reachable from this machine only. Never run it like this
+  # anywhere else. After starting it: ELASTICSEARCH_URL=http://localhost:9200,
+  # then `go run ./cmd/reindex` to build the index.
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.1.5
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      xpack.ml.enabled: "false"
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    ports:
+      - "127.0.0.1:9200:9200"
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
   # S3-compatible object storage for the future media module.
   minio:
     image: minio/minio:latest
@@ -40,5 +62,6 @@ services:
       - minio-data:/data
 
 volumes:
+  elasticsearch-data:
   postgres-data:
   minio-data:

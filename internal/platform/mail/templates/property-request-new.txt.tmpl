@@ -7,7 +7,8 @@
 A customer has sent a request about one of your listings.
 
 Reference: {{.Reference}}
-{{if .ListingRef}}Listing: {{.ListingRef}}
+{{if .ListingTitle}}Property: {{.ListingTitle}}
+{{end}}{{if .ListingRef}}Listing reference: {{.ListingRef}}
 {{end}}{{if .RequestType}}Request: {{.RequestType}}
 {{end}}Received: {{date .When}}
 

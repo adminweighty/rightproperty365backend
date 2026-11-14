@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/google/uuid"
+
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/httpx"
 )
@@ -23,7 +25,13 @@ const HeaderIdempotencyKey = "Idempotency-Key"
 type Handler struct {
 	svc    *Service
 	logger *slog.Logger
+	// names resolves listing IDs to their public summary for the inbox. Nil
+	// leaves `listing` null.
+	names ListingNames
 }
+
+// SetListingNames makes the inbox show which listing each request is about.
+func (h *Handler) SetListingNames(names ListingNames) { h.names = names }
 
 // NewHandler builds the handler.
 func NewHandler(svc *Service, logger *slog.Logger) *Handler {
@@ -118,6 +126,22 @@ func (h *Handler) Inbox(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		httpx.WriteInternalError(w, r, h.logger, err)
 		return
+	}
+	if h.names != nil && len(items) > 0 {
+		ids := make([]uuid.UUID, 0, len(items))
+		for _, it := range items {
+			ids = append(ids, it.ListingID)
+		}
+		names, err := h.names.ListingNames(r.Context(), ids)
+		if err != nil {
+			httpx.WriteInternalError(w, r, h.logger, err)
+			return
+		}
+		for i := range items {
+			if name, ok := names[items[i].ListingID]; ok {
+				items[i].Listing = &name
+			}
+		}
 	}
 	httpx.WriteJSON(w, http.StatusOK, inboxResponse{Items: items})
 }

@@ -7,7 +7,8 @@ Hello Tendai Ncube,
 A customer has sent a request about one of your listings.
 
 Reference: RP-7K2M9Q4D
-Listing: 0195c0de-0000-7000-8000-000000000001
+Property: Four-bedroom family home with garden
+Listing reference: RP-ZW-10001
 Request: Viewing request
 Received: 14 November 2026
 

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.8.0
+  version: 0.9.0
   summary: Multi-country property marketplace API (Zimbabwe first).
   description: |
     Versioned REST API for RightProperty365.
@@ -354,6 +354,14 @@ paths:
         within the full result. Only values with at least one listing appear.
 
         **Sitemaps** should use `GET /v1/sitemap`, not this endpoint.
+
+        **Search engine.** The server answers this endpoint from Elasticsearch when it is
+        configured and from the database otherwise; if Elasticsearch fails, the same request is
+        answered from the database. The request and response are identical either way. What can
+        differ is which listings match a free-text `q` and in what order under `relevance`:
+        Elasticsearch tolerates typos (`borowdale` finds Borrowdale) and ranks by its own score,
+        the database matches substrings exactly. Filters, facets, paging and the other sort
+        orders mean the same thing in both.
 
         Public, the same for every caller, and cacheable (`Cache-Control`, `ETag`, `304`).
       parameters:
@@ -2842,12 +2850,23 @@ components:
           type: string
           format: date-time
 
+    ListingSummary:
+      type: object
+      description: The public name of a listing.
+      required: [slug, title, reference]
+      additionalProperties: false
+      properties:
+        slug: { type: string, description: "Use with `GET /v1/listings/{slug}`.", examples: [four-bedroom-family-home-borrowdale] }
+        title: { type: string, examples: [Four-bedroom family home with garden] }
+        reference: { type: string, examples: [RP-ZW-10001] }
+
     OrganisationPropertyRequest:
       type: object
       required:
         - request_id
         - reference
         - listing_id
+        - listing
         - request_type
         - status
         - message
@@ -2865,6 +2884,14 @@ components:
         listing_id:
           type: string
           format: uuid
+        listing:
+          oneOf:
+            - $ref: "#/components/schemas/ListingSummary"
+            - type: "null"
+          description: |
+            The listing the request is about, as a public summary, so the inbox can show its
+            title. It is present whatever the listing's status (an expired listing is still
+            named to its own advertiser) and null only when the listing has no public page.
         request_type:
           type: string
           enum: [ENQUIRY, PROPERTY_INFORMATION, VIEWING_REQUEST, CONSULTATION_REQUEST]

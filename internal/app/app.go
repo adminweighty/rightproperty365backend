@@ -125,6 +125,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 	identityH := identity.NewHandler(identitySvc, logger, secure)
 	marketsH := markets.NewHandler(d.Markets, logger)
 	requestsH := propertyrequests.NewHandler(propertyrequests.NewService(d.Requests, requestOpts...), logger)
+	requestsH.SetListingNames(listingNames{svc: listingsSvc})
 	enquiriesH := businessenquiries.NewHandler(businessenquiries.NewService(d.Enquiries, enquiryOpts...), logger)
 	authn := auth.NewMiddleware(identitySvc, cfg.CORSAllowedOrigins, logger)
 

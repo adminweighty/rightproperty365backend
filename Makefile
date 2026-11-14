@@ -1,7 +1,7 @@
 # Convenience targets. On Windows without make, run the underlying go commands
 # directly (see README.md).
 
-.PHONY: run worker migrate-up migrate-down migrate-status seed mail-preview fmt fmt-check vet test build check docker-api docker-worker docker-migrate
+.PHONY: run worker migrate-up migrate-down migrate-status seed reindex mail-preview fmt fmt-check vet test build check docker-api docker-worker docker-migrate
 
 run:
 	go run ./cmd/api
@@ -22,6 +22,11 @@ migrate-status:
 # APP_ENV=development and DEV_SEED_PASSWORD is set. Idempotent.
 seed:
 	go run ./cmd/seed
+
+# Rebuilds the Elasticsearch listings index from the database and swaps the
+# alias to it. Needs DATABASE_URL and ELASTICSEARCH_URL.
+reindex:
+	go run ./cmd/reindex
 
 # Renders every email template with sample data into tmp/mail-preview/
 # (git-ignored). Sends nothing and needs no API key.

@@ -3,8 +3,12 @@ package app
 import (
 	"context"
 
+	"github.com/google/uuid"
+
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/identity"
+	"rightproperty365.com/backend/internal/modules/listings"
+	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
 )
 
@@ -67,4 +71,20 @@ func (v vocabulary) DirectoryKindList(ctx context.Context) ([]directory.Kind, er
 // Labels implements directory.Reference.
 func (v vocabulary) Labels(ctx context.Context, set string) (map[string]string, error) {
 	return v.ref.Labels(ctx, set)
+}
+
+// listingNames adapts the listings service to propertyrequests.ListingNames.
+type listingNames struct{ svc *listings.Service }
+
+// ListingNames implements propertyrequests.ListingNames.
+func (l listingNames) ListingNames(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]propertyrequests.InboxListing, error) {
+	summaries, err := l.svc.Summaries(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[uuid.UUID]propertyrequests.InboxListing, len(summaries))
+	for id, s := range summaries {
+		out[id] = propertyrequests.InboxListing{Slug: s.Slug, Title: s.Title, Reference: s.Reference}
+	}
+	return out, nil
 }

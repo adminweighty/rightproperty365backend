@@ -180,9 +180,18 @@ type Handlers struct {
 	renderer *mail.Renderer
 	source   Source
 	logger   *slog.Logger
+	// listing returns the title and reference of a listing, for the property
+	// request emails. Nil (or not found) leaves them out.
+	listing func(ctx context.Context, id uuid.UUID) (title, reference string, ok bool)
 	// roleLabels returns the current reference-data labels of the account
 	// roles (code -> label). Nil means the built-in labels.
 	roleLabels func(ctx context.Context) (map[string]string, error)
+}
+
+// SetListingLookup makes the property request emails name the listing by its
+// title and reference instead of its ID.
+func (h *Handlers) SetListingLookup(lookup func(ctx context.Context, id uuid.UUID) (title, reference string, ok bool)) {
+	h.listing = lookup
 }
 
 // SetRoleLabels makes the welcome email name roles exactly as the reference
@@ -318,15 +327,21 @@ func (h *Handlers) build(ctx context.Context, ev outbox.Event) ([]mail.Notificat
 			return nil, err
 		}
 		requestType := mail.RequestTypeName(info.RequestType)
+		var listingTitle, listingRef string
+		if h.listing != nil {
+			listingTitle, listingRef, _ = h.listing(ctx, info.ListingID)
+		}
 		if err := add("property-request-received", "customer", info.Customer, mail.Data{
 			Name: info.Customer.Name, Path: PathHome, Reference: info.Reference, RequestType: requestType, When: info.CreatedAt,
+			ListingTitle: listingTitle, ListingRef: listingRef,
 		}); err != nil {
 			return nil, err
 		}
 		for _, r := range info.Recipients {
 			if err := add("property-request-new", recipientKey(r), r, mail.Data{
 				Name: r.Name, Path: PathInbox, Reference: info.Reference, RequestType: requestType,
-				ListingRef: info.ListingID.String(), Preview: mail.SafePreview(info.Message, previewLength), When: info.CreatedAt,
+				ListingTitle: listingTitle, ListingRef: listingRef,
+				Preview: mail.SafePreview(info.Message, previewLength), When: info.CreatedAt,
 			}); err != nil {
 				return nil, err
 			}

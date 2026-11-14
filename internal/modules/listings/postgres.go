@@ -112,6 +112,19 @@ func (s *PostgresStore) PublishedByIDs(ctx context.Context, ids []uuid.UUID, now
 	return s.records(ctx, publicCondition+` AND l.id IN (SELECT unnest($2::text[])::uuid)`, now, idStrings(ids))
 }
 
+// ByIDs implements Store.
+func (s *PostgresStore) ByIDs(ctx context.Context, ids []uuid.UUID) ([]Record, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return s.records(ctx, `l.slug IS NOT NULL AND l.id IN (SELECT unnest($1::text[])::uuid)`, idStrings(ids))
+}
+
+// AllPublished implements Store.
+func (s *PostgresStore) AllPublished(ctx context.Context, now time.Time) ([]Record, error) {
+	return s.records(ctx, publicCondition+` ORDER BY l.published_at DESC, l.id`, now)
+}
+
 // BySlug implements Store. It returns the record whatever its status; the
 // Service decides between "found", "no longer available" and "not found".
 func (s *PostgresStore) BySlug(ctx context.Context, slug string) (Record, error) {

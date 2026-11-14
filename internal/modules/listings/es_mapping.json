@@ -1,0 +1,59 @@
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "id": { "type": "keyword" },
+      "slug": { "type": "keyword" },
+      "reference": { "type": "text", "fields": { "keyword": { "type": "keyword" } } },
+      "title": {
+        "type": "text",
+        "fields": {
+          "keyword": { "type": "keyword" },
+          "suggest": { "type": "search_as_you_type" }
+        }
+      },
+      "summary": { "type": "text" },
+      "description": { "type": "text" },
+      "deal": { "type": "keyword" },
+      "category": { "type": "keyword" },
+      "property_type": { "type": "keyword" },
+      "property_type_label": { "type": "text", "fields": { "keyword": { "type": "keyword" } } },
+      "city": { "type": "keyword" },
+      "city_label": {
+        "type": "text",
+        "fields": {
+          "keyword": { "type": "keyword" },
+          "suggest": { "type": "search_as_you_type" }
+        }
+      },
+      "suburb": { "type": "keyword" },
+      "suburb_label": {
+        "type": "text",
+        "fields": {
+          "keyword": { "type": "keyword" },
+          "suggest": { "type": "search_as_you_type" }
+        }
+      },
+      "market": { "type": "keyword" },
+      "currency": { "type": "keyword" },
+      "price": { "type": "scaled_float", "scaling_factor": 100 },
+      "price_period": { "type": "keyword" },
+      "bedrooms": { "type": "integer" },
+      "bathrooms": { "type": "integer" },
+      "floor_area": { "type": "integer" },
+      "land_area": { "type": "integer" },
+      "features": { "type": "keyword" },
+      "featured": { "type": "boolean" },
+      "status": { "type": "keyword" },
+      "published_at": { "type": "date" },
+      "expires_at": { "type": "date" },
+      "updated_at": { "type": "date" },
+      "version": { "type": "long" },
+      "location": { "type": "geo_point" }
+    }
+  }
+}

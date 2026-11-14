@@ -28,9 +28,10 @@ func SampleData(name string) Data {
 		d.Name, d.Path = "Sam Admin", "/admin/sign-in"
 	case "property-request-received":
 		d.Path, d.Reference, d.RequestType = "/", "RP-7K2M9Q4D", "Viewing request"
+		d.ListingTitle, d.ListingRef = "Four-bedroom family home with garden", "RP-ZW-10001"
 	case "property-request-new":
 		d.Name, d.Path, d.Reference, d.RequestType = "Tendai Ncube", "/agent/requests", "RP-7K2M9Q4D", "Viewing request"
-		d.ListingRef, d.Preview = "0195c0de-0000-7000-8000-000000000001", SafePreview(preview, 140)
+		d.ListingTitle, d.ListingRef, d.Preview = "Four-bedroom family home with garden", "RP-ZW-10001", SafePreview(preview, 140)
 	case "business-enquiry-received":
 		d.Path, d.Reference, d.ProfileName, d.Service = "/", "BE-4H8N2RXT", "Sample Plumbers", "Burst pipes and leaks"
 	case "business-enquiry-new":

@@ -176,6 +176,19 @@ type Record struct {
 	SellerUserID   *uuid.UUID
 }
 
+// Version is a number that grows with every change of the record: its
+// updated_at in microseconds. The search index uses it as an external
+// version, so an older write can never overwrite a newer one.
+func (r Record) Version() int64 { return r.UpdatedAt.UnixMicro() }
+
+// Summary is the public name of a listing: enough to show which listing a
+// request is about.
+type Summary struct {
+	Slug      string `json:"slug"`
+	Title     string `json:"title"`
+	Reference string `json:"reference"`
+}
+
 // Public reports whether the record may be shown at the given instant.
 func (r Record) Public(now time.Time) bool {
 	return r.Status == StatusPublished && r.ExpiresAt.After(now)
@@ -286,6 +299,12 @@ type Store interface {
 	PublishedByIDs(ctx context.Context, ids []uuid.UUID, now time.Time) ([]Record, error)
 	// BySlug returns the record whatever its status, or ErrNotFound.
 	BySlug(ctx context.Context, slug string) (Record, error)
+	// ByIDs returns the records among ids whatever their status. It is used
+	// to keep the search index in step and to name a listing to its own
+	// advertiser; it is never used to answer a public search.
+	ByIDs(ctx context.Context, ids []uuid.UUID) ([]Record, error)
+	// AllPublished returns every public listing (rebuilding the search index).
+	AllPublished(ctx context.Context, now time.Time) ([]Record, error)
 	// PublishedByOwner returns the public listings of an organisation
 	// (organisationID) or of one agent (agentUserID), newest first.
 	PublishedByOwner(ctx context.Context, organisationID, agentUserID *uuid.UUID, now time.Time) ([]Record, error)

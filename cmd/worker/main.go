@@ -9,11 +9,16 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	"github.com/google/uuid"
+
+	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/notifications"
 	"rightproperty365.com/backend/internal/modules/reference"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/database"
+	"rightproperty365.com/backend/internal/platform/elastic"
 	"rightproperty365.com/backend/internal/platform/logging"
 	"rightproperty365.com/backend/internal/platform/mail"
 	"rightproperty365.com/backend/internal/platform/outbox"
@@ -77,8 +82,35 @@ func run() error {
 		return reference.NewService(reference.NewPostgresStore(pool), nil).Labels(ctx, reference.SetAccountRoles)
 	})
 
+	listingStore := listings.NewPostgresStore(pool)
+	handlers.SetListingLookup(func(ctx context.Context, id uuid.UUID) (string, string, bool) {
+		records, err := listingStore.ByIDs(ctx, []uuid.UUID{id})
+		if err != nil || len(records) == 0 {
+			return "", "", false
+		}
+		return records[0].Title, records[0].Reference, true
+	})
+
 	dispatcher := outbox.NewDispatcher(outbox.NewPostgresQueue(pool), logger, outbox.Config{})
 	handlers.Register(dispatcher)
+
+	// Search index: listing events keep Elasticsearch in step. With the
+	// database search driver there is no index, and the events are acknowledged.
+	if cfg.SearchDriver == config.SearchDriverElasticsearch {
+		es, err := elastic.New(elastic.Config{URL: cfg.ElasticsearchURL, APIKey: cfg.ElasticsearchAPIKey.Reveal(), Timeout: 30 * time.Second})
+		if err != nil {
+			return err
+		}
+		listings.NewIndexer(es, cfg.SearchIndexPrefix, listingStore, reference.NewService(reference.NewPostgresStore(pool), nil), logger).Register(dispatcher)
+		logger.Info("search driver selected: elasticsearch (listing events update the search index)",
+			slog.String("search_driver", config.SearchDriverElasticsearch), slog.String("search_alias", listings.IndexAlias(cfg.SearchIndexPrefix)))
+	} else {
+		for _, t := range listings.IndexEventTypes() {
+			dispatcher.Register(t, outbox.HandlerFunc(func(context.Context, outbox.Event) error { return nil }))
+		}
+		logger.Info("search driver selected: database (listing events are acknowledged; there is no search index)",
+			slog.String("search_driver", config.SearchDriverDatabase))
+	}
 
 	err = dispatcher.Run(ctx)
 	logger.Info("worker stopped")

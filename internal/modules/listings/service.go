@@ -122,6 +122,10 @@ func (s *Service) Find(ctx context.Context, q Query) (Page, error) {
 			page.Items = append(page.Items, present(r, labels))
 		}
 	}
+	// A hit the source of truth refused (the index was behind) is not counted either.
+	if dropped := len(hits.IDs) - len(page.Items); dropped > 0 && page.Total >= dropped {
+		page.Total -= dropped
+	}
 	if q.PageSize > 0 {
 		page.TotalPages = (hits.Total + q.PageSize - 1) / q.PageSize
 	}
@@ -225,6 +229,25 @@ func (s *Service) ByOwner(ctx context.Context, organisationID, agentUserID *uuid
 		return nil, err
 	}
 	return s.Present(ctx, records)
+}
+
+// Summaries returns the slug, title and reference of the given listings,
+// whatever their status (an advertiser's inbox still names an expired listing).
+func (s *Service) Summaries(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]Summary, error) {
+	out := map[uuid.UUID]Summary{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	records, err := s.store.ByIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range records {
+		if r.Slug != "" {
+			out[r.ID] = Summary{Slug: r.Slug, Title: r.Title, Reference: r.Reference}
+		}
+	}
+	return out, nil
 }
 
 // Slugs returns every public listing's slug and updated_at.

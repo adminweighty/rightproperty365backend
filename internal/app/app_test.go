@@ -303,9 +303,14 @@ type authBody struct {
 
 type inboxBody struct {
 	Items []struct {
-		RequestID              string    `json:"request_id"`
-		Reference              string    `json:"reference"`
-		ListingID              string    `json:"listing_id"`
+		RequestID string `json:"request_id"`
+		Reference string `json:"reference"`
+		ListingID string `json:"listing_id"`
+		Listing   *struct {
+			Slug      string `json:"slug"`
+			Title     string `json:"title"`
+			Reference string `json:"reference"`
+		} `json:"listing"`
 		RequestType            string    `json:"request_type"`
 		Status                 string    `json:"status"`
 		Message                string    `json:"message"`
@@ -998,6 +1003,11 @@ func TestAgentInbox(t *testing.T) {
 			if it.Status != "RECEIVED" || it.RequestType != "ENQUIRY" || it.PreferredContactMethod != "EMAIL" {
 				t.Fatalf("unexpected item: %+v", it)
 			}
+		}
+		// Each item names its listing by the public summary.
+		if oldest.Listing == nil || oldest.Listing.Slug != "four-bedroom-family-home-borrowdale" || oldest.Listing.Reference != "RP-ZW-10001" ||
+			oldest.Listing.Title != "Four-bedroom family home with garden" || newest.Listing == nil || newest.Listing.Reference != "RP-ZW-10002" {
+			t.Fatalf("listing summaries: %+v %+v", oldest.Listing, newest.Listing)
 		}
 		if oldest.Message != first["message"] || oldest.Contact.Name != "Tariro Moyo" || oldest.Contact.Email != "tariro@example.com" ||
 			oldest.Contact.Phone == nil || *oldest.Contact.Phone != "+263771234567" {

@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+
 	"rightproperty365.com/backend/internal/app"
 	"rightproperty365.com/backend/internal/devseed"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
@@ -25,6 +27,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/reference"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/database"
+	"rightproperty365.com/backend/internal/platform/elastic"
 	"rightproperty365.com/backend/internal/platform/logging"
 	"rightproperty365.com/backend/internal/platform/mail"
 	"rightproperty365.com/backend/internal/platform/outbox"
@@ -108,6 +111,13 @@ func run() error {
 		deliveryLog = memDeliveries
 		handlers := notifications.NewHandlers(mail.NewService(sender, memDeliveries, logger), renderer,
 			notifications.NewMemorySource(memIdentity, memRequests, memEnquiries), logger)
+		handlers.SetListingLookup(func(ctx context.Context, id uuid.UUID) (string, string, bool) {
+			records, err := memListings.ByIDs(ctx, []uuid.UUID{id})
+			if err != nil || len(records) == 0 {
+				return "", "", false
+			}
+			return records[0].Title, records[0].Reference, true
+		})
 		handlers.SetRoleLabels(func(ctx context.Context) (map[string]string, error) {
 			return reference.NewService(referenceStore, nil).Labels(ctx, reference.SetAccountRoles)
 		})
@@ -151,6 +161,28 @@ func run() error {
 		listingStore, listingSearch, directoryStore = pgListings, pgListings, directory.NewPostgresStore(pool)
 		healthH = health.NewHandler(health.StorePostgres, pool.Ping, logger)
 		deliveryLog = mail.NewPostgresDeliveryLog(pool)
+	}
+
+	// Search engine. Elasticsearch only proposes listing IDs: every hit is
+	// re-read from the source of truth, and if Elasticsearch fails the same
+	// request is answered by the database adapter.
+	switch cfg.SearchDriver {
+	case config.SearchDriverElasticsearch:
+		es, err := elastic.New(elastic.Config{URL: cfg.ElasticsearchURL, APIKey: cfg.ElasticsearchAPIKey.Reveal(), Timeout: cfg.SearchTimeout})
+		if err != nil {
+			return err
+		}
+		listingSearch = listings.NewFallbackSearch(listings.NewElasticSearch(es, cfg.SearchIndexPrefix, cfg.SearchTimeout), listingSearch, logger)
+		logger.Info("search driver selected: elasticsearch (falls back to the database adapter on error)",
+			slog.String("search_driver", config.SearchDriverElasticsearch), slog.String("search_alias", listings.IndexAlias(cfg.SearchIndexPrefix)),
+			slog.Duration("search_timeout", cfg.SearchTimeout), slog.Bool("api_key_set", cfg.ElasticsearchAPIKey.IsSet()))
+	default:
+		store := "postgres"
+		if cfg.UseMemoryStore() {
+			store = "memory"
+		}
+		logger.Info("search driver selected: database ("+store+" adapter; Elasticsearch is not used)",
+			slog.String("search_driver", config.SearchDriverDatabase), slog.String("search_store", store))
 	}
 
 	// Verification and password-reset emails are sent from the request path

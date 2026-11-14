@@ -7,7 +7,9 @@
 We have received your request about a property and saved it.
 
 Reference: {{.Reference}}
-{{if .RequestType}}Request: {{.RequestType}}
+{{if .ListingTitle}}Property: {{.ListingTitle}}
+{{end}}{{if .ListingRef}}Listing reference: {{.ListingRef}}
+{{end}}{{if .RequestType}}Request: {{.RequestType}}
 {{end}}Received: {{date .When}}
 
 

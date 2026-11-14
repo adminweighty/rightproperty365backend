@@ -402,3 +402,68 @@ func TestLoadDotEnvPrecedence(t *testing.T) {
 		t.Fatalf("driver=%s keySet=%v; want the log driver with the key present", cfg.MailDriver, cfg.ResendAPIKey.IsSet())
 	}
 }
+
+func TestSearchDriverSelection(t *testing.T) {
+	const db, es = "postgres://user:pw@db.example.internal/db", "https://search.example.internal:9200"
+	prod := func(extra map[string]string) map[string]string {
+		env := map[string]string{"APP_ENV": "production", "DATABASE_URL": db, "RESEND_API_KEY": fakeKey}
+		for k, v := range extra {
+			env[k] = v
+		}
+		return env
+	}
+	tests := []struct {
+		name       string
+		env        map[string]string
+		wantDriver string
+		wantErr    string
+	}{
+		{"development, nothing set: database", nil, SearchDriverDatabase, ""},
+		{"development, URL set: elasticsearch", map[string]string{"ELASTICSEARCH_URL": es}, SearchDriverElasticsearch, ""},
+		{"development, URL set but database forced", map[string]string{"ELASTICSEARCH_URL": es, "SEARCH_DRIVER": "database"}, SearchDriverDatabase, ""},
+		{"development, elasticsearch forced without a URL", map[string]string{"SEARCH_DRIVER": "elasticsearch"}, "", "requires ELASTICSEARCH_URL"},
+		{"production, nothing set: database", prod(nil), SearchDriverDatabase, ""},
+		{"production, elasticsearch without a URL fails startup", prod(map[string]string{"SEARCH_DRIVER": "elasticsearch"}), "", "requires ELASTICSEARCH_URL"},
+		{"production, elasticsearch configured", prod(map[string]string{"SEARCH_DRIVER": "ELASTICSEARCH", "ELASTICSEARCH_URL": es + "/", "ELASTICSEARCH_API_KEY": fakeKey}), SearchDriverElasticsearch, ""},
+		{"staging, URL set: elasticsearch", map[string]string{"APP_ENV": "staging", "DATABASE_URL": db, "RESEND_API_KEY": fakeKey, "ELASTICSEARCH_URL": es}, SearchDriverElasticsearch, ""},
+		{"unknown driver", map[string]string{"SEARCH_DRIVER": "solr"}, "", "SEARCH_DRIVER must be"},
+		{"URL without a scheme", map[string]string{"ELASTICSEARCH_URL": "es.private.example:9200"}, "", "ELASTICSEARCH_URL"},
+		{"URL with credentials", map[string]string{"ELASTICSEARCH_URL": "https://elastic:hunter2@es.private.example:9200"}, "", "ELASTICSEARCH_URL"},
+		{"bad prefix", map[string]string{"SEARCH_INDEX_PREFIX": "Bad Prefix!"}, "", "SEARCH_INDEX_PREFIX"},
+		{"bad timeout", map[string]string{"SEARCH_TIMEOUT": "30s"}, "", "SEARCH_TIMEOUT"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := FromLookup(lookup(tt.env))
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("err = %v, want it to contain %q", err, tt.wantErr)
+				}
+				for _, secret := range []string{fakeKey, "hunter2", "es.private.example"} {
+					if strings.Contains(err.Error(), secret) {
+						t.Fatalf("the configuration error echoes %q", secret)
+					}
+				}
+				return
+			}
+			if err != nil || cfg.SearchDriver != tt.wantDriver {
+				t.Fatalf("driver = %q, %v; want %q", cfg.SearchDriver, err, tt.wantDriver)
+			}
+		})
+	}
+
+	cfg, err := FromLookup(lookup(map[string]string{"ELASTICSEARCH_URL": es + "/", "ELASTICSEARCH_API_KEY": fakeKey, "SEARCH_TIMEOUT": "500ms", "SEARCH_INDEX_PREFIX": "RP365-QA"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ElasticsearchURL != es || cfg.SearchTimeout != 500*time.Millisecond || cfg.SearchIndexPrefix != "rp365-qa" || cfg.ElasticsearchAPIKey.Reveal() != fakeKey {
+		t.Fatalf("unexpected search config: %+v", cfg)
+	}
+	if strings.Contains(fmt.Sprintf("%v %+v %#v", cfg, cfg, cfg), fakeKey) {
+		t.Fatal("the Elasticsearch API key is printed with the config")
+	}
+	def, _ := FromLookup(lookup(nil))
+	if def.SearchIndexPrefix != "rp365-development" || def.SearchTimeout != 800*time.Millisecond || def.ElasticsearchAPIKey.IsSet() {
+		t.Fatalf("search defaults: %+v", def)
+	}
+}

@@ -1,0 +1,151 @@
+{
+  "aggs": {
+    "cities": {
+      "aggs": {
+        "values": {
+          "aggs": {
+            "top": {
+              "top_hits": {
+                "_source": [
+                  "city_label"
+                ],
+                "size": 1
+              }
+            }
+          },
+          "terms": {
+            "field": "city",
+            "size": 8
+          }
+        }
+      },
+      "filter": {
+        "multi_match": {
+          "fields": [
+            "city_label.suggest",
+            "city_label.suggest._2gram",
+            "city_label.suggest._3gram"
+          ],
+          "query": "bor",
+          "type": "bool_prefix"
+        }
+      }
+    },
+    "listings": {
+      "aggs": {
+        "top": {
+          "top_hits": {
+            "_source": [
+              "title",
+              "slug"
+            ],
+            "size": 8,
+            "sort": [
+              {
+                "published_at": "desc"
+              }
+            ]
+          }
+        }
+      },
+      "filter": {
+        "multi_match": {
+          "fields": [
+            "title.suggest",
+            "title.suggest._2gram",
+            "title.suggest._3gram"
+          ],
+          "query": "bor",
+          "type": "bool_prefix"
+        }
+      }
+    },
+    "suburbs": {
+      "aggs": {
+        "values": {
+          "aggs": {
+            "top": {
+              "top_hits": {
+                "_source": [
+                  "suburb_label",
+                  "city_label"
+                ],
+                "size": 1
+              }
+            }
+          },
+          "terms": {
+            "field": "suburb",
+            "size": 8
+          }
+        }
+      },
+      "filter": {
+        "multi_match": {
+          "fields": [
+            "suburb_label.suggest",
+            "suburb_label.suggest._2gram",
+            "suburb_label.suggest._3gram"
+          ],
+          "query": "bor",
+          "type": "bool_prefix"
+        }
+      }
+    }
+  },
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "term": {
+            "status": "PUBLISHED"
+          }
+        },
+        {
+          "range": {
+            "expires_at": {
+              "gt": "2026-11-14T09:00:00Z"
+            }
+          }
+        }
+      ],
+      "minimum_should_match": 1,
+      "should": [
+        {
+          "multi_match": {
+            "fields": [
+              "suburb_label.suggest",
+              "suburb_label.suggest._2gram",
+              "suburb_label.suggest._3gram"
+            ],
+            "query": "bor",
+            "type": "bool_prefix"
+          }
+        },
+        {
+          "multi_match": {
+            "fields": [
+              "city_label.suggest",
+              "city_label.suggest._2gram",
+              "city_label.suggest._3gram"
+            ],
+            "query": "bor",
+            "type": "bool_prefix"
+          }
+        },
+        {
+          "multi_match": {
+            "fields": [
+              "title.suggest",
+              "title.suggest._2gram",
+              "title.suggest._3gram"
+            ],
+            "query": "bor",
+            "type": "bool_prefix"
+          }
+        }
+      ]
+    }
+  },
+  "size": 0
+}

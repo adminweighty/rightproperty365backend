@@ -1,0 +1,169 @@
+{
+  "_source": false,
+  "aggs": {
+    "bedrooms": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "bedrooms",
+            "size": 60
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": []
+        }
+      }
+    },
+    "category": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "category",
+            "size": 50
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": []
+        }
+      }
+    },
+    "city": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "city",
+            "size": 500
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": []
+        }
+      }
+    },
+    "deal": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "deal",
+            "size": 50
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": []
+        }
+      }
+    },
+    "features": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "features",
+            "size": 1000
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": []
+        }
+      }
+    },
+    "price": {
+      "aggs": {
+        "max": {
+          "max": {
+            "field": "price"
+          }
+        },
+        "min": {
+          "min": {
+            "field": "price"
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "currency": "USD"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "property_type": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "property_type",
+            "size": 200
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": []
+        }
+      }
+    },
+    "suburb": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "suburb",
+            "size": 1000
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": []
+        }
+      }
+    }
+  },
+  "from": 0,
+  "post_filter": {
+    "bool": {
+      "filter": []
+    }
+  },
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "term": {
+            "status": "PUBLISHED"
+          }
+        },
+        {
+          "range": {
+            "expires_at": {
+              "gt": "2026-11-14T09:00:00Z"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "size": 12,
+  "sort": [
+    {
+      "published_at": "desc"
+    },
+    {
+      "id": "asc"
+    }
+  ],
+  "track_total_hits": true
+}

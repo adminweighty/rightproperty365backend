@@ -4,6 +4,7 @@
 package propertyrequests
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -191,15 +192,30 @@ type InboxScope struct {
 // InboxItem is one request as shown to the receiving organisation. Status is
 // the internal status.
 type InboxItem struct {
-	RequestID              uuid.UUID    `json:"request_id"`
-	Reference              string       `json:"reference"`
-	ListingID              uuid.UUID    `json:"listing_id"`
-	RequestType            string       `json:"request_type"`
-	Status                 string       `json:"status"`
-	Message                string       `json:"message"`
-	PreferredContactMethod string       `json:"preferred_contact_method"`
-	Contact                InboxContact `json:"contact"`
-	CreatedAt              time.Time    `json:"created_at"`
+	RequestID uuid.UUID `json:"request_id"`
+	Reference string    `json:"reference"`
+	ListingID uuid.UUID `json:"listing_id"`
+	// Listing is the public summary of the listing the request is about, or
+	// null when the listing has no public page.
+	Listing                *InboxListing `json:"listing"`
+	RequestType            string        `json:"request_type"`
+	Status                 string        `json:"status"`
+	Message                string        `json:"message"`
+	PreferredContactMethod string        `json:"preferred_contact_method"`
+	Contact                InboxContact  `json:"contact"`
+	CreatedAt              time.Time     `json:"created_at"`
+}
+
+// InboxListing names the listing a request is about.
+type InboxListing struct {
+	Slug      string `json:"slug"`
+	Title     string `json:"title"`
+	Reference string `json:"reference"`
+}
+
+// ListingNames supplies the public summary of listings by ID.
+type ListingNames interface {
+	ListingNames(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]InboxListing, error)
 }
 
 // InboxContact is how to reach the customer. Phone is null when not given.
