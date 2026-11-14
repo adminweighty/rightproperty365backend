@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.6.0
+  version: 0.7.0
   summary: Multi-country property marketplace API (Zimbabwe first).
   description: |
     Versioned REST API for RightProperty365.
@@ -21,6 +21,13 @@ info:
       to reach a profile is `POST /v1/business-enquiries`.
     - The customer's own contact details are stored with the enquiry and returned **only** by
       `GET /v1/inbox/business-enquiries` to the authorised recipient.
+
+    Reference data
+    - Every drop-down, filter and list value comes from `GET /v1/reference` (or
+      `GET /v1/reference/{set}`), not from this document. Where a field below is described as
+      "a code from the `X` reference set", the accepted values are the active rows of that set
+      **at the time of the request**; the values listed in this file are the baseline shipped
+      with the API and may be renamed, reordered, extended or retired by an administrator.
 
     Authentication
     - Sessions are opaque random tokens. The web app receives the token in the HttpOnly cookie
@@ -49,6 +56,7 @@ servers:
 tags:
   - name: health
   - name: markets
+  - name: reference
   - name: property-requests
   - name: business-enquiries
   - name: auth
@@ -148,6 +156,168 @@ paths:
                     currency_code: USD
                     timezone: Africa/Harare
                     status: ACTIVE
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/reference:
+    get:
+      tags: [reference]
+      operationId: getReferenceData
+      summary: All reference data (every drop-down, filter and list)
+      description: |
+        Returns the **active** rows of every reference set in one response. These are the
+        values behind every drop-down, filter and list in the clients; nothing of the kind
+        should be hard-coded.
+
+        The rows live in the database and can be changed by a market administrator without a
+        release. The API validates input against the same rows, so what this endpoint offers
+        and what the API accepts cannot disagree: a row that is deactivated disappears from
+        here and is refused (`400 VALIDATION_FAILED`) at the same moment.
+
+        | Set | Used for | Extra attributes |
+        | --- | --- | --- |
+        | `deal_types` | listing deal (`sale`, `rent`) | — |
+        | `property_categories` | `residential`, `commercial`, `land` | — |
+        | `property_types` | house, apartment, office, stand, … | `parent_code` = its category |
+        | `request_types` | `request_type` of a property request | — |
+        | `contact_methods` | `preferred_contact_method` | — |
+        | `account_roles` | `roles` at registration | `group`, `requires_verification` |
+        | `directory_kinds` | directory sections and `recipient.kind` | `singular_label`, `description` |
+        | `service_trades` | service-provider trades | — |
+        | `cities` | cities of a market | `market_code` |
+        | `suburbs` | suburbs of a city | `market_code`, `parent_code` = its city |
+        | `listing_features` | listing features and amenities | — |
+
+        Markets are not a set: use `GET /v1/markets`. Platform administrator roles are never in
+        `account_roles` and can never be chosen at registration, whatever this endpoint returns.
+
+        **Order.** Each set is ordered by `sort_order`, then `label` (account roles by their
+        group's `sort_order` first). Render in the order given.
+
+        **Caching.** The response is public and identical for every caller (it never depends on
+        a session). It carries `Cache-Control: public, max-age=60, stale-while-revalidate=300`
+        and a strong `ETag`; send it back in `If-None-Match` to get `304 Not Modified`.
+      parameters:
+        - $ref: "#/components/parameters/ReferenceMarket"
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: Every set, keyed by set code. Every set is always present (possibly empty).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/Cache-Control"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReferenceData"
+              example:
+                market: null
+                sets:
+                  deal_types:
+                    - { code: sale, label: For sale, singular_label: null, description: null, sort_order: 10, market_code: null, parent_code: null, group: null, requires_verification: null }
+                    - { code: rent, label: To rent, singular_label: null, description: null, sort_order: 20, market_code: null, parent_code: null, group: null, requires_verification: null }
+                  property_categories: []
+                  property_types:
+                    - { code: house, label: House, singular_label: null, description: null, sort_order: 10, market_code: null, parent_code: residential, group: null, requires_verification: null }
+                  request_types: []
+                  contact_methods: []
+                  account_roles:
+                    - code: PRIVATE_SELLER
+                      label: Private seller
+                      singular_label: null
+                      description: null
+                      sort_order: 30
+                      market_code: null
+                      parent_code: null
+                      group: { code: listing, label: Listing or managing property, sort_order: 2 }
+                      requires_verification: true
+                  directory_kinds:
+                    - { code: agencies, label: Estate agencies, singular_label: Estate agency, description: Registered agencies selling and letting property across Zimbabwe., sort_order: 10, market_code: null, parent_code: null, group: null, requires_verification: null }
+                  service_trades: []
+                  cities:
+                    - { code: harare, label: Harare, singular_label: null, description: null, sort_order: 10, market_code: ZW, parent_code: null, group: null, requires_verification: null }
+                  suburbs:
+                    - { code: borrowdale, label: Borrowdale, singular_label: null, description: null, sort_order: 10, market_code: ZW, parent_code: harare, group: null, requires_verification: null }
+                  listing_features: []
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "400":
+          description: "`VALIDATION_FAILED` with field `market`: the market code is not a known market."
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/reference/{set}:
+    get:
+      tags: [reference]
+      operationId: getReferenceSet
+      summary: One reference set
+      description: |
+        The active rows of one set, in display order. Same rows, order, caching and validation
+        rules as `GET /v1/reference`.
+      parameters:
+        - name: set
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/ReferenceSetCode"
+        - $ref: "#/components/parameters/ReferenceMarket"
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: The rows of the set (possibly an empty array).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/Cache-Control"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReferenceSet"
+              example:
+                set: contact_methods
+                market: null
+                items:
+                  - { code: EMAIL, label: Email, singular_label: null, description: null, sort_order: 10, market_code: null, parent_code: null, group: null, requires_verification: null }
+                  - { code: PHONE, label: Phone call, singular_label: null, description: null, sort_order: 20, market_code: null, parent_code: null, group: null, requires_verification: null }
+                  - { code: WHATSAPP, label: WhatsApp, singular_label: null, description: null, sort_order: 30, market_code: null, parent_code: null, group: null, requires_verification: null }
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "400":
+          description: "`VALIDATION_FAILED` with field `market`: the market code is not a known market."
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: No set has this code (`REFERENCE_SET_NOT_FOUND`).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
         "500":
           $ref: "#/components/responses/InternalError"
         "504":
@@ -540,13 +710,16 @@ paths:
 
         The verification link is `{PUBLIC_WEB_URL}/verify-email?token=...` and is valid for 24 hours.
 
-        **Account roles.** `roles` is required: 1 to 11 values from the allowlist in
-        `SelectableAccountRole`, enforced on the server. A missing or empty array, a platform
+        **Account roles.** `roles` is required: 1 to 11 codes from the active rows of the
+        `account_roles` reference set (`GET /v1/reference/account_roles`), enforced on the server.
+        A role that has been deactivated there is refused like an unknown one. A missing or empty array, a platform
         administrator role (`SUPER_ADMIN`, `PLATFORM_ADMIN`, `MARKET_ADMIN`, `FINANCE_ADMIN`,
         `CONTENT_ADMIN`, `MODERATOR`, `SUPPORT`), any other unknown value, a non-string entry or a
         **duplicate** is rejected with `400 VALIDATION_FAILED` and a plain-language message in
         `error.fields.roles`. `CONSUMER` and `TENANT` become `ACTIVE`; every other role is recorded
-        as `PENDING_VERIFICATION`.
+        as `PENDING_VERIFICATION` (decided by the row's `requires_verification`). Platform roles
+        are refused by a fixed deny-list before the reference data is consulted, so they cannot
+        be chosen even if such a row existed.
 
         Selecting a professional role only records a request. It does **not** create an
         organisation or a membership and grants no access to any organisation's data.
@@ -1117,6 +1290,26 @@ paths:
           $ref: "#/components/responses/Timeout"
 
 components:
+  parameters:
+    ReferenceMarket:
+      name: market
+      in: query
+      required: false
+      description: |
+        Market code (case-insensitive). Keeps the rows of that market plus the rows that apply
+        to every market. Without it, rows of all markets are returned.
+      schema:
+        type: string
+        pattern: "^[A-Za-z]{2}$"
+      example: ZW
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      required: false
+      description: The `ETag` of a previous response. A match answers `304` with no body.
+      schema:
+        type: string
+
   securitySchemes:
     cookieSession:
       type: apiKey
@@ -1135,12 +1328,30 @@ components:
         scope only: admin sessions are never issued or accepted as bearer tokens.
 
   headers:
+    ETag:
+      description: Strong validator of the response body. Changes whenever the content changes.
+      schema:
+        type: string
+      example: '"8884076b694c80c9a86962905377343a"'
+    Cache-Control:
+      description: "`public, max-age=60, stale-while-revalidate=300`. The response is the same for every caller."
+      schema:
+        type: string
     X-Request-Id:
       description: Request identifier (echoed from the request or generated). Equals `trace_id` in error bodies.
       schema:
         type: string
 
   responses:
+    NotModified:
+      description: The `If-None-Match` validator still matches. No body.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+        ETag:
+          $ref: "#/components/headers/ETag"
+        Cache-Control:
+          $ref: "#/components/headers/Cache-Control"
     VerificationSent:
       description: Accepted. The same answer is given whether or not the email has an account.
       headers:
@@ -1283,6 +1494,7 @@ components:
                 - LISTING_NOT_FOUND
                 - LISTING_UNAVAILABLE
                 - IDEMPOTENCY_CONFLICT
+                - REFERENCE_SET_NOT_FOUND
                 - RECIPIENT_NOT_FOUND
                 - RECIPIENT_UNAVAILABLE
                 - UNAUTHENTICATED
@@ -1309,6 +1521,119 @@ components:
         trace_id:
           type: string
           description: Same value as the `X-Request-Id` response header.
+
+    ReferenceSetCode:
+      type: string
+      enum:
+        - deal_types
+        - property_categories
+        - property_types
+        - request_types
+        - contact_methods
+        - account_roles
+        - directory_kinds
+        - service_trades
+        - cities
+        - suburbs
+        - listing_features
+
+    ReferenceGroup:
+      type: object
+      description: The heading an account role is listed under.
+      required: [code, label, sort_order]
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+          examples: [looking, listing, agency]
+        label:
+          type: string
+          examples: [Looking for property]
+        sort_order:
+          type: integer
+
+    ReferenceItem:
+      type: object
+      description: |
+        One row of a reference set. **Every key is always present**; a key that does not apply
+        to the set is `null`.
+      required: [code, label, singular_label, description, sort_order, market_code, parent_code, group, requires_verification]
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+          minLength: 1
+          maxLength: 80
+          description: Stable identifier. This is what a client sends back to the API. Its case is significant.
+        label:
+          type: string
+          description: Text shown to people. It can change at any time; do not branch on it.
+        singular_label:
+          type: [string, "null"]
+          description: "`directory_kinds` only: the singular form, e.g. `Estate agency` for `Estate agencies`."
+        description:
+          type: [string, "null"]
+          description: "`directory_kinds` only: one sentence describing the section."
+        sort_order:
+          type: integer
+          description: Display position within the set (within its group for account roles). Items already arrive in order.
+        market_code:
+          type: [string, "null"]
+          pattern: "^[A-Z]{2}$"
+          description: The market the row belongs to (`cities`, `suburbs`), or null when it applies to every market.
+        parent_code:
+          type: [string, "null"]
+          description: "`property_types`: the `property_categories` code. `suburbs`: the `cities` code. Null elsewhere."
+        group:
+          oneOf:
+            - $ref: "#/components/schemas/ReferenceGroup"
+            - type: "null"
+          description: "`account_roles` only."
+        requires_verification:
+          type: [boolean, "null"]
+          description: |
+            `account_roles` only. `true`: choosing the role at registration only records a
+            request (`PENDING_VERIFICATION`). `false`: the role is `ACTIVE` once the email is verified.
+
+    ReferenceData:
+      type: object
+      required: [market, sets]
+      additionalProperties: false
+      properties:
+        market:
+          type: [string, "null"]
+          description: The `market` filter that was applied, upper-cased, or null.
+        sets:
+          type: object
+          description: Every set, keyed by its code. All eleven keys are always present.
+          additionalProperties: false
+          required: [deal_types, property_categories, property_types, request_types, contact_methods, account_roles, directory_kinds, service_trades, cities, suburbs, listing_features]
+          properties:
+            deal_types: { type: array, items: { $ref: "#/components/schemas/ReferenceItem" } }
+            property_categories: { type: array, items: { $ref: "#/components/schemas/ReferenceItem" } }
+            property_types: { type: array, items: { $ref: "#/components/schemas/ReferenceItem" } }
+            request_types: { type: array, items: { $ref: "#/components/schemas/ReferenceItem" } }
+            contact_methods: { type: array, items: { $ref: "#/components/schemas/ReferenceItem" } }
+            account_roles: { type: array, items: { $ref: "#/components/schemas/ReferenceItem" } }
+            directory_kinds: { type: array, items: { $ref: "#/components/schemas/ReferenceItem" } }
+            service_trades: { type: array, items: { $ref: "#/components/schemas/ReferenceItem" } }
+            cities: { type: array, items: { $ref: "#/components/schemas/ReferenceItem" } }
+            suburbs: { type: array, items: { $ref: "#/components/schemas/ReferenceItem" } }
+            listing_features: { type: array, items: { $ref: "#/components/schemas/ReferenceItem" } }
+
+    ReferenceSet:
+      type: object
+      required: [set, market, items]
+      additionalProperties: false
+      properties:
+        set:
+          $ref: "#/components/schemas/ReferenceSetCode"
+        market:
+          type: [string, "null"]
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReferenceItem"
 
     User:
       type: object
@@ -1348,8 +1673,10 @@ components:
     SelectableAccountRole:
       type: string
       description: |
-        The roles a person may choose for themselves at registration. Platform administrator
-        roles are not in this list and can never be chosen.
+        A role a person may choose for themselves at registration: a code from the
+        `account_roles` reference set. The values below are the baseline; the set that is
+        accepted is whatever `GET /v1/reference/account_roles` returns. Platform administrator
+        roles are never in it and can never be chosen.
       enum:
         - CONSUMER
         - TENANT
@@ -1522,8 +1849,11 @@ components:
 
     DirectoryKind:
       type: string
-      description: The directory a profile is listed in; the first segment of its public address.
-      enum: [agencies, agents, developers, property-managers, hosts, service-providers]
+      description: |
+        The directory a profile is listed in; the first segment of its public address. A code
+        from the `directory_kinds` reference set (active rows only). Baseline values: agencies,
+        agents, developers, property-managers, hosts, service-providers.
+      examples: [service-providers]
 
     BusinessEnquiryCreate:
       type: object
@@ -1556,8 +1886,10 @@ components:
           description: Plain text. Anything containing HTML tags or control characters is rejected. Leading/trailing whitespace is trimmed.
         preferred_contact_method:
           type: string
-          enum: [EMAIL, PHONE, WHATSAPP]
-          description: PHONE and WHATSAPP require `guest_contact.phone`.
+          description: |
+            A code from the `contact_methods` reference set (active rows only). Baseline values:
+            EMAIL, PHONE, WHATSAPP. PHONE and WHATSAPP require `guest_contact.phone`.
+          examples: [EMAIL]
         idempotency_key:
           $ref: "#/components/schemas/IdempotencyKey"
         guest_contact:
@@ -1775,7 +2107,10 @@ components:
           format: uuid
         request_type:
           type: string
-          enum: [ENQUIRY, PROPERTY_INFORMATION, VIEWING_REQUEST, CONSULTATION_REQUEST]
+          description: |
+            A code from the `request_types` reference set (active rows only). Baseline values:
+            ENQUIRY, PROPERTY_INFORMATION, VIEWING_REQUEST, CONSULTATION_REQUEST.
+          examples: [VIEWING_REQUEST]
         message:
           type: string
           minLength: 1
@@ -1783,8 +2118,10 @@ components:
           description: Plain text. Anything containing HTML tags or control characters is rejected. Leading/trailing whitespace is trimmed.
         preferred_contact_method:
           type: string
-          enum: [EMAIL, PHONE, WHATSAPP]
-          description: PHONE and WHATSAPP require `guest_contact.phone`.
+          description: |
+            A code from the `contact_methods` reference set (active rows only). Baseline values:
+            EMAIL, PHONE, WHATSAPP. PHONE and WHATSAPP require `guest_contact.phone`.
+          examples: [EMAIL]
         preferred_slot_utc:
           type: [string, "null"]
           format: date-time

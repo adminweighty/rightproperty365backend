@@ -21,7 +21,34 @@ const (
 )
 
 // Service holds the business rules for creating property requests.
+// Vocabulary supplies the codes that are accepted right now. In the running
+// API it is backed by the reference data, so deactivating a request type or a
+// contact method there makes the API refuse it.
+type Vocabulary interface {
+	RequestTypes(ctx context.Context) ([]string, error)
+	ContactMethods(ctx context.Context) ([]string, error)
+}
+
+// WithVocabulary validates request types and contact methods against v.
+func WithVocabulary(v Vocabulary) Option { return func(s *Service) { s.vocab = v } }
+
+func (s *Service) allowed(ctx context.Context) (allowed, error) {
+	if s.vocab == nil {
+		return defaultAllowed(), nil
+	}
+	types, err := s.vocab.RequestTypes(ctx)
+	if err != nil {
+		return allowed{}, fmt.Errorf("load request types: %w", err)
+	}
+	methods, err := s.vocab.ContactMethods(ctx)
+	if err != nil {
+		return allowed{}, fmt.Errorf("load contact methods: %w", err)
+	}
+	return allowed{requestTypes: types, contactMethods: methods}, nil
+}
+
 type Service struct {
+	vocab  Vocabulary
 	store  Store
 	now    func() time.Time
 	newRef func() (string, error)
@@ -56,7 +83,11 @@ func NewService(store Store, opts ...Option) *Service {
 func (s *Service) Create(ctx context.Context, in Input, headerIdempotencyKey string) (Result, error) {
 	now := s.now().UTC().Truncate(time.Microsecond) // Postgres timestamptz precision
 
-	v, fields := validate(in, headerIdempotencyKey, now)
+	ok, err := s.allowed(ctx)
+	if err != nil {
+		return Result{}, err
+	}
+	v, fields := validate(in, headerIdempotencyKey, now, ok)
 	if len(fields) > 0 {
 		return Result{}, &ValidationError{Fields: fields}
 	}

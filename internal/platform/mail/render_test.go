@@ -81,7 +81,7 @@ func TestEveryTemplateMeetsTheHouseRules(t *testing.T) {
 			html, text := msg.HTML, msg.Text
 			for _, must := range []string{
 				`<html lang="en"`, `name="color-scheme" content="light dark"`, `prefers-color-scheme: dark`,
-				`role="presentation"`, `max-width:600px`, `#1900ac`, `#21ddba`, `linear-gradient(90deg,#1900ac 0%,#21ddba 100%)`,
+				`role="presentation"`, `width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:600px;`, `#1900ac`, `#21ddba`, `linear-gradient(90deg,#1900ac 0%,#21ddba 100%)`,
 				`src="` + testPublicURL + `/email/logo-on-indigo.png"`, `width="160"`, `height="31"`, `alt="RightProperty365"`,
 				`display:none`, "Sent by RightProperty365.",
 			} {
@@ -93,6 +93,12 @@ func TestEveryTemplateMeetsTheHouseRules(t *testing.T) {
 				if strings.Contains(strings.ToLower(html), banned) {
 					t.Fatalf("HTML contains %q", banned)
 				}
+			}
+			// Fluid layout: nothing has a fixed pixel width wider than a phone, so
+			// there is no horizontal scroll from 320px to 800px. (The only fixed
+			// width is the 600px ghost table that Outlook alone reads.)
+			if regexp.MustCompile(`[^-]width:600px`).MatchString(html) || regexp.MustCompile(`<table[^>]*\swidth="600"[^>]*class=`).MatchString(html) {
+				t.Fatal("the container must be fluid (width:100%; max-width:600px), not a fixed 600px")
 			}
 			// Exactly one button, at least 44px tall: 14 + 20 + 14 padding and line height.
 			if n := strings.Count(html, `class="btn"`); n != 1 {
@@ -211,7 +217,7 @@ func TestWelcomeListsRolesAndWhichArePending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"  - Buyer or renter: active", "  - Landlord: waiting for verification", "  - Estate agent: waiting for verification", "does not give access"} {
+	for _, want := range []string{"  - Buyer or renter: active", "  - Landlord or property manager: waiting for verification", "  - Estate agent: waiting for verification", "does not give access"} {
 		if !strings.Contains(msg.Text, want) {
 			t.Fatalf("text lacks %q:\n%s", want, msg.Text)
 		}

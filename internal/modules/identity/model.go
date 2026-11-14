@@ -9,6 +9,7 @@
 package identity
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -76,8 +77,33 @@ const (
 	AccountRolePendingVerification = "PENDING_VERIFICATION"
 )
 
-// selectableAccountRoles is the registration allowlist, in the order the API
-// returns account roles. Anything not listed here is rejected.
+// SelectableRole is an account role that may be chosen at sign-up.
+type SelectableRole struct {
+	Code string
+	// RequiresVerification: choosing it only records a request
+	// (PENDING_VERIFICATION) instead of an ACTIVE role.
+	RequiresVerification bool
+}
+
+// RoleCatalogue supplies the roles that may be chosen right now. In the
+// running API it is backed by the reference data, so an administrator can
+// deactivate a role without a release.
+type RoleCatalogue interface {
+	SelectableRoles(ctx context.Context) ([]SelectableRole, error)
+}
+
+// DefaultSelectableRoles is the built-in list, used when no catalogue is
+// configured (unit tests) and as the baseline the reference data is seeded from.
+func DefaultSelectableRoles() []SelectableRole {
+	out := make([]SelectableRole, 0, len(selectableAccountRoles))
+	for _, code := range selectableAccountRoles {
+		out = append(out, SelectableRole{Code: code, RequiresVerification: initialAccountRoleStatus(code) == AccountRolePendingVerification})
+	}
+	return out
+}
+
+// selectableAccountRoles is the built-in allowlist and the order in which the
+// API returns account roles.
 var selectableAccountRoles = []string{
 	AccountRoleConsumer, AccountRoleTenant, AccountRolePrivateSeller, AccountRoleLandlord,
 	AccountRoleHost, AccountRoleDeveloper, AccountRoleServiceProvider, AccountRoleAgent,

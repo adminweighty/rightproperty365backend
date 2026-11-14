@@ -64,6 +64,8 @@ func Templates() []Template {
 
 // Role is one account role shown in the welcome email.
 type Role struct {
+	// Code is the role code; Name is its label.
+	Code    string
 	Name    string
 	Pending bool
 }
@@ -232,13 +234,15 @@ func SafePreview(message string, max int) string {
 	return s
 }
 
-// roleNames are the plain-language names of the account roles.
+// roleNames are the plain-language names of the account roles. They are the
+// reference-data labels (account_roles) and only a fallback: the notification
+// handlers read the current labels from the reference data when sending.
 var roleNames = map[string]string{
 	"CONSUMER":         "Buyer or renter",
 	"TENANT":           "Tenant",
 	"PRIVATE_SELLER":   "Private seller",
-	"LANDLORD":         "Landlord",
-	"HOST":             "Host",
+	"LANDLORD":         "Landlord or property manager",
+	"HOST":             "Host: short stays and venues",
 	"DEVELOPER":        "Property developer",
 	"SERVICE_PROVIDER": "Service provider",
 	"AGENT":            "Estate agent",

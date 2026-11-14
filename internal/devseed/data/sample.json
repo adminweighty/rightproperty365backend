@@ -1,0 +1,1552 @@
+{
+ "listings": [
+  {
+   "id": "0195c0de-0000-7000-8000-000000000001",
+   "slug": "four-bedroom-family-home-borrowdale",
+   "image": {
+    "file": "listing-house-borrowdale.jpg",
+    "alt": "White two-storey house with a tiled roof under a blue sky",
+    "width": 1200,
+    "height": 900
+   },
+   "reference": "RP-ZW-10001",
+   "listedBy": "Tendai Ncube",
+   "publishedAt": "2026-11-10T08:00:00Z",
+   "title": "Four-bedroom family home with garden",
+   "deal": "sale",
+   "category": "residential",
+   "propertyType": "House",
+   "price": {
+    "amount": "385000.00",
+    "currency": "USD"
+   },
+   "suburb": "Borrowdale",
+   "city": "Harare",
+   "marketCode": "ZW",
+   "bedrooms": 4,
+   "bathrooms": 3,
+   "floorArea": 320,
+   "landArea": 2000,
+   "summary": "Single-storey home on a walled half-acre with borehole and solar backup.",
+   "description": "A well-kept single-storey home set back from a quiet road. The living areas open onto a covered veranda and an established garden. Borehole with storage tanks, a 5 kVA solar system and staff quarters are included.",
+   "features": [
+    "Borehole",
+    "Solar backup",
+    "Staff quarters",
+    "Double garage",
+    "Walled and gated"
+   ],
+   "advertiser": {
+    "name": "Sample Estates",
+    "kind": "agency",
+    "verified": true
+   },
+   "featured": true
+  },
+  {
+   "id": "0195c0de-0000-7000-8000-000000000002",
+   "slug": "two-bedroom-garden-apartment-avondale",
+   "image": {
+    "file": "listing-apartment-avondale.jpg",
+    "alt": "White apartment building behind a large green tree",
+    "width": 1200,
+    "height": 640
+   },
+   "reference": "RP-ZW-10002",
+   "listedBy": "Tendai Ncube",
+   "publishedAt": "2026-11-08T08:00:00Z",
+   "title": "Two-bedroom garden apartment",
+   "deal": "rent",
+   "category": "residential",
+   "propertyType": "Apartment",
+   "price": {
+    "amount": "950.00",
+    "currency": "USD"
+   },
+   "pricePeriod": "month",
+   "suburb": "Avondale",
+   "city": "Harare",
+   "marketCode": "ZW",
+   "bedrooms": 2,
+   "bathrooms": 1,
+   "floorArea": 96,
+   "summary": "Ground-floor unit in a small secure complex, walking distance to shops.",
+   "description": "A bright ground-floor apartment with its own small garden in a complex of twelve. Fitted kitchen, built-in cupboards, one covered parking bay and shared borehole water.",
+   "features": [
+    "Private garden",
+    "Covered parking",
+    "Shared borehole",
+    "24-hour security"
+   ],
+   "advertiser": {
+    "name": "Sample Estates",
+    "kind": "agency",
+    "verified": true
+   },
+   "featured": true
+  },
+  {
+   "id": "0195c0de-0000-7000-8000-000000000003",
+   "slug": "office-suite-eastlea",
+   "image": {
+    "file": "listing-office-eastlea.jpg",
+    "alt": "Bright office with a long meeting table and chairs",
+    "width": 1200,
+    "height": 801
+   },
+   "reference": "RP-ZW-10003",
+   "listedBy": "Farai Chikwanha",
+   "publishedAt": "2026-11-03T08:00:00Z",
+   "title": "Office suite with reception and boardroom",
+   "deal": "rent",
+   "category": "commercial",
+   "propertyType": "Office",
+   "price": {
+    "amount": "2400.00",
+    "currency": "USD"
+   },
+   "pricePeriod": "month",
+   "suburb": "Eastlea",
+   "city": "Harare",
+   "marketCode": "ZW",
+   "floorArea": 210,
+   "summary": "First-floor suite with six offices, fibre-ready, eight parking bays.",
+   "description": "A first-floor office suite in a converted office park. Six enclosed offices, an open-plan area, reception, boardroom and kitchenette. Backup generator serves the whole park.",
+   "features": [
+    "Fibre-ready",
+    "Backup generator",
+    "8 parking bays",
+    "Boardroom"
+   ],
+   "advertiser": {
+    "name": "Sample Commercial",
+    "kind": "agency",
+    "verified": true
+   }
+  },
+  {
+   "id": "0195c0de-0000-7000-8000-000000000004",
+   "slug": "residential-stand-hillside-bulawayo",
+   "image": {
+    "file": "listing-stand-hillside.jpg",
+    "alt": "Open grassy plot with trees along the boundary",
+    "width": 1200,
+    "height": 900
+   },
+   "reference": "RP-ZW-10004",
+   "listedBy": "Nomsa Sibanda",
+   "publishedAt": "2026-10-28T08:00:00Z",
+   "title": "Serviced residential stand",
+   "deal": "sale",
+   "category": "land",
+   "propertyType": "Stand",
+   "price": {
+    "amount": "48000.00",
+    "currency": "USD"
+   },
+   "suburb": "Hillside",
+   "city": "Bulawayo",
+   "marketCode": "ZW",
+   "landArea": 2000,
+   "summary": "Level 2,000 m² stand on a tarred road with water and power at the boundary.",
+   "description": "A level, cleared stand in an established suburb. Municipal water and electricity run along the boundary and the road is tarred. Title deeds are available for inspection.",
+   "features": [
+    "Title deeds",
+    "Tarred road",
+    "Water at boundary",
+    "Power at boundary"
+   ],
+   "advertiser": {
+    "name": "Sample Land Agents",
+    "kind": "agency",
+    "verified": true
+   }
+  },
+  {
+   "id": "0195c0de-0000-7000-8000-000000000005",
+   "slug": "three-bedroom-townhouse-mount-pleasant",
+   "image": {
+    "file": "listing-townhouse-mount-pleasant.jpg",
+    "alt": "Row of white townhouses beside a quiet road",
+    "width": 1200,
+    "height": 796
+   },
+   "reference": "RP-ZW-10005",
+   "listedBy": "Tendai Ncube",
+   "publishedAt": "2026-11-06T08:00:00Z",
+   "title": "Three-bedroom townhouse",
+   "deal": "rent",
+   "category": "residential",
+   "propertyType": "Townhouse",
+   "price": {
+    "amount": "1600.00",
+    "currency": "USD"
+   },
+   "pricePeriod": "month",
+   "suburb": "Mount Pleasant",
+   "city": "Harare",
+   "marketCode": "ZW",
+   "bedrooms": 3,
+   "bathrooms": 2,
+   "floorArea": 180,
+   "summary": "Double-storey townhouse in a gated cluster near the university.",
+   "description": "A modern double-storey townhouse with open-plan living downstairs and three bedrooms upstairs. Small private courtyard, lock-up garage and communal borehole.",
+   "features": [
+    "Gated cluster",
+    "Lock-up garage",
+    "Courtyard",
+    "Communal borehole"
+   ],
+   "advertiser": {
+    "name": "Sample Estates",
+    "kind": "agency",
+    "verified": true
+   },
+   "featured": true
+  },
+  {
+   "id": "0195c0de-0000-7000-8000-000000000006",
+   "slug": "five-bedroom-house-victoria-falls",
+   "image": {
+    "file": "listing-house-victoria-falls.jpg",
+    "alt": "Swimming pool and timber deck surrounded by trees",
+    "width": 1200,
+    "height": 900
+   },
+   "reference": "RP-ZW-10006",
+   "listedBy": "Grace Mhlanga",
+   "publishedAt": "2026-10-22T08:00:00Z",
+   "title": "Five-bedroom house near the river",
+   "deal": "sale",
+   "category": "residential",
+   "propertyType": "House",
+   "price": {
+    "amount": "520000.00",
+    "currency": "USD"
+   },
+   "suburb": "Low Density",
+   "city": "Victoria Falls",
+   "marketCode": "ZW",
+   "bedrooms": 5,
+   "bathrooms": 4,
+   "floorArea": 410,
+   "landArea": 4000,
+   "summary": "Thatched home on an acre, sold directly by the owner.",
+   "description": "A thatched five-bedroom home on a one-acre plot a short drive from the town centre. All bedrooms are en suite or share a bathroom between two. Pool, borehole and mature indigenous trees.",
+   "features": [
+    "Swimming pool",
+    "Borehole",
+    "Thatched roof",
+    "Sold by owner"
+   ],
+   "advertiser": {
+    "name": "Private seller",
+    "kind": "private-seller",
+    "verified": true
+   }
+  },
+  {
+   "id": "0195c0de-0000-7000-8000-000000000007",
+   "slug": "four-bedroom-house-highlands",
+   "image": {
+    "file": "listing-house-highlands.jpg",
+    "alt": "White and grey house beside a swimming pool",
+    "width": 1200,
+    "height": 800
+   },
+   "reference": "RP-ZW-10007",
+   "listedBy": "Chipo Dube",
+   "publishedAt": "2026-11-12T08:00:00Z",
+   "title": "Four-bedroom house with pool",
+   "deal": "sale",
+   "category": "residential",
+   "propertyType": "House",
+   "price": {
+    "amount": "295000.00",
+    "currency": "USD"
+   },
+   "suburb": "Highlands",
+   "city": "Harare",
+   "marketCode": "ZW",
+   "bedrooms": 4,
+   "bathrooms": 3,
+   "floorArea": 280,
+   "landArea": 1800,
+   "summary": "Renovated home on a quiet close with a pool and entertainment area.",
+   "description": "A renovated four-bedroom home with open-plan living that leads out to a covered patio and pool. New kitchen, borehole, and a cottage that can be let separately.",
+   "features": [
+    "Swimming pool",
+    "Borehole",
+    "Cottage",
+    "Electric gate"
+   ],
+   "advertiser": {
+    "name": "Sample Estates",
+    "kind": "agency",
+    "verified": true
+   },
+   "featured": true
+  },
+  {
+   "id": "0195c0de-0000-7000-8000-000000000008",
+   "slug": "five-bedroom-house-glen-lorne",
+   "image": {
+    "file": "listing-house-glen-lorne.jpg",
+    "alt": "Modern house with glass walls beside a pool",
+    "width": 1200,
+    "height": 800
+   },
+   "reference": "RP-ZW-10008",
+   "listedBy": "Tatenda Mutasa",
+   "publishedAt": "2026-11-11T08:00:00Z",
+   "title": "Five-bedroom contemporary house",
+   "deal": "sale",
+   "category": "residential",
+   "propertyType": "House",
+   "price": {
+    "amount": "640000.00",
+    "currency": "USD"
+   },
+   "suburb": "Glen Lorne",
+   "city": "Harare",
+   "marketCode": "ZW",
+   "bedrooms": 5,
+   "bathrooms": 5,
+   "floorArea": 520,
+   "landArea": 4200,
+   "summary": "Architect-designed home on an acre with views over the valley.",
+   "description": "Double-volume living spaces with floor-to-ceiling glass, five en-suite bedrooms and a study. Full solar system, two boreholes and a triple garage.",
+   "features": [
+    "Valley views",
+    "Full solar",
+    "Two boreholes",
+    "Triple garage",
+    "Study"
+   ],
+   "advertiser": {
+    "name": "Sample Realty",
+    "kind": "agency",
+    "verified": true
+   },
+   "featured": true
+  },
+  {
+   "id": "0195c0de-0000-7000-8000-000000000009",
+   "slug": "one-bedroom-apartment-avenues",
+   "image": {
+    "file": "listing-apartment-avenues.jpg",
+    "alt": "Paved walkway between two apartment buildings",
+    "width": 1200,
+    "height": 800
+   },
+   "reference": "RP-ZW-10009",
+   "listedBy": "Tatenda Mutasa",
+   "publishedAt": "2026-11-12T08:00:00Z",
+   "title": "One-bedroom apartment near the city",
+   "deal": "rent",
+   "category": "residential",
+   "propertyType": "Apartment",
+   "price": {
+    "amount": "700.00",
+    "currency": "USD"
+   },
+   "pricePeriod": "month",
+   "suburb": "Avenues",
+   "city": "Harare",
+   "marketCode": "ZW",
+   "bedrooms": 1,
+   "bathrooms": 1,
+   "floorArea": 58,
+   "summary": "Third-floor apartment with a lift, a short walk from the CBD.",
+   "description": "A neat one-bedroom apartment in a well-run block. Open-plan lounge and kitchen, balcony, one secure parking bay and a backup water tank.",
+   "features": [
+    "Lift",
+    "Balcony",
+    "Secure parking",
+    "Backup water"
+   ],
+   "advertiser": {
+    "name": "Sample Realty",
+    "kind": "agency",
+    "verified": true
+   }
+  },
+  {
+   "id": "0195c0de-0000-7000-8000-000000000010",
+   "slug": "three-bedroom-apartment-belgravia",
+   "image": {
+    "file": "listing-apartment-belgravia.jpg",
+    "alt": "Apartment balconies with plants",
+    "width": 1200,
+    "height": 900
+   },
+   "reference": "RP-ZW-10010",
+   "listedBy": "Chipo Dube",
+   "publishedAt": "2026-11-09T08:00:00Z",
+   "title": "Three-bedroom apartment with balcony",
+   "deal": "sale",
+   "category": "residential",
+   "propertyType": "Apartment",
+   "price": {
+    "amount": "145000.00",
+    "currency": "USD"
+   },
+   "suburb": "Belgravia",
+   "city": "Harare",
+   "marketCode": "ZW",
+   "bedrooms": 3,
+   "bathrooms": 2,
+   "floorArea": 132,
+   "summary": "Spacious second-floor unit in a small block with sectional title.",
+   "description": "Three bedrooms, two bathrooms and a wide balcony overlooking the gardens. Sectional title, lock-up garage and a communal borehole.",
+   "features": [
+    "Sectional title",
+    "Lock-up garage",
+    "Communal borehole",
+    "Balcony"
+   ],
+   "advertiser": {
+    "name": "Sample Estates",
+    "kind": "agency",
+    "verified": true
+   },
+   "featured": true
+  },
+  {
+   "id": "0195c0de-0000-7000-8000-000000000011",
+   "slug": "three-bedroom-house-burnside-bulawayo",
+   "image": {
+    "file": "listing-house-burnside.jpg",
+    "alt": "Two-storey family house with a front lawn",
+    "width": 1200,
+    "height": 805
+   },
+   "reference": "RP-ZW-10011",
+   "listedBy": "Sipho Nkomo",
+   "publishedAt": "2026-11-07T08:00:00Z",
+   "title": "Three-bedroom family house",
+   "deal": "rent",
+   "category": "residential",
+   "propertyType": "House",
+   "price": {
+    "amount": "1100.00",
+    "currency": "USD"
+   },
+   "pricePeriod": "month",
+   "suburb": "Burnside",
+   "city": "Bulawayo",
+   "marketCode": "ZW",
+   "bedrooms": 3,
+   "bathrooms": 2,
+   "floorArea": 210,
+   "landArea": 3000,
+   "summary": "Double-storey house on a large stand with a borehole and garden.",
+   "description": "A solid family home with three bedrooms upstairs and generous living rooms below. Large garden, borehole, double carport and staff quarters.",
+   "features": [
+    "Borehole",
+    "Large garden",
+    "Double carport",
+    "Staff quarters"
+   ],
+   "advertiser": {
+    "name": "Sample Homes Bulawayo",
+    "kind": "agency",
+    "verified": true
+   }
+  },
+  {
+   "id": "0195c0de-0000-7000-8000-000000000012",
+   "slug": "four-bedroom-house-suburbs-bulawayo",
+   "image": {
+    "file": "listing-house-suburbs-bulawayo.jpg",
+    "alt": "White and brown house under a blue sky",
+    "width": 1200,
+    "height": 800
+   },
+   "reference": "RP-ZW-10012",
+   "listedBy": "Sipho Nkomo",
+   "publishedAt": "2026-11-05T08:00:00Z",
+   "title": "Four-bedroom house close to schools",
+   "deal": "sale",
+   "category": "residential",
+   "propertyType": "House",
+   "price": {
+    "amount": "180000.00",
+    "currency": "USD"
+   },
+   "suburb": "Suburbs",
+   "city": "Bulawayo",
+   "marketCode": "ZW",
+   "bedrooms": 4,
+   "bathrooms": 2,
+   "floorArea": 260,
+   "landArea": 2400,
+   "summary": "Character home with high ceilings, walking distance to schools.",
+   "description": "A well-maintained older home with wooden floors and high ceilings. Four bedrooms, two bathrooms, a separate dining room and a flatlet at the back.",
+   "features": [
+    "Wooden floors",
+    "Flatlet",
+    "Borehole",
+    "Walled"
+   ],
+   "advertiser": {
+    "name": "Sample Homes Bulawayo",
+    "kind": "agency",
+    "verified": true
+   },
+   "featured": true
+  },
+  {
+   "id": "0195c0de-0000-7000-8000-000000000013",
+   "slug": "office-floor-harare-cbd",
+   "image": {
+    "file": "listing-office-cbd.jpg",
+    "alt": "Modern lobby with a marble reception desk",
+    "width": 1200,
+    "height": 675
+   },
+   "reference": "RP-ZW-10013",
+   "listedBy": "Farai Chikwanha",
+   "publishedAt": "2026-11-10T08:00:00Z",
+   "title": "Full office floor with reception",
+   "deal": "rent",
+   "category": "commercial",
+   "propertyType": "Office",
+   "price": {
+    "amount": "3800.00",
+    "currency": "USD"
+   },
+   "pricePeriod": "month",
+   "suburb": "CBD",
+   "city": "Harare",
+   "marketCode": "ZW",
+   "floorArea": 420,
+   "summary": "Whole fourth floor in a managed building with lifts and a generator.",
+   "description": "A complete floor with a reception area, open-plan space, eight partitioned offices and two meeting rooms. Building has lifts, a generator and basement parking.",
+   "features": [
+    "Lifts",
+    "Generator",
+    "Basement parking",
+    "Two meeting rooms"
+   ],
+   "advertiser": {
+    "name": "Sample Commercial",
+    "kind": "agency",
+    "verified": true
+   },
+   "featured": true
+  },
+  {
+   "id": "0195c0de-0000-7000-8000-000000000014",
+   "slug": "residential-stand-ruwa",
+   "image": {
+    "file": "listing-stand-ruwa.jpg",
+    "alt": "Green grass field under a cloudy sky",
+    "width": 1200,
+    "height": 706
+   },
+   "reference": "RP-ZW-10014",
+   "listedBy": "Nomsa Sibanda",
+   "publishedAt": "2026-11-08T08:00:00Z",
+   "title": "Residential stand in a new development",
+   "deal": "sale",
+   "category": "land",
+   "propertyType": "Stand",
+   "price": {
+    "amount": "22000.00",
+    "currency": "USD"
+   },
+   "suburb": "Ruwa",
+   "city": "Harare",
+   "marketCode": "ZW",
+   "landArea": 800,
+   "summary": "800 m² serviced stand with roads and water reticulation complete.",
+   "description": "A level stand in a gated development. Roads, water and sewer reticulation are complete, and power is being connected. Payment terms are available from the developer.",
+   "features": [
+    "Serviced",
+    "Gated development",
+    "Payment terms",
+    "Tarred roads"
+   ],
+   "advertiser": {
+    "name": "Sample Land Agents",
+    "kind": "agency",
+    "verified": true
+   }
+  },
+  {
+   "id": "0195c0de-0000-7000-8000-000000000015",
+   "slug": "one-acre-plot-murambi-mutare",
+   "image": {
+    "file": "listing-plot-mutare.jpg",
+    "alt": "Open green field under a blue sky",
+    "width": 1200,
+    "height": 900
+   },
+   "reference": "RP-ZW-10015",
+   "listedBy": "Nomsa Sibanda",
+   "publishedAt": "2026-11-02T08:00:00Z",
+   "title": "One-acre plot with mountain views",
+   "deal": "sale",
+   "category": "land",
+   "propertyType": "Plot",
+   "price": {
+    "amount": "65000.00",
+    "currency": "USD"
+   },
+   "suburb": "Murambi",
+   "city": "Mutare",
+   "marketCode": "ZW",
+   "landArea": 4000,
+   "summary": "Gently sloping acre in an established suburb, ready to build.",
+   "description": "A one-acre plot with views towards the mountains. Municipal water and power are available in the road, and title deeds are ready for transfer.",
+   "features": [
+    "Mountain views",
+    "Title deeds",
+    "Water in road",
+    "Power in road"
+   ],
+   "advertiser": {
+    "name": "Sample Land Agents",
+    "kind": "agency",
+    "verified": true
+   }
+  },
+  {
+   "id": "0195c0de-0000-7000-8000-000000000016",
+   "slug": "three-bedroom-townhouse-greendale",
+   "image": {
+    "file": "listing-townhouse-greendale.jpg",
+    "alt": "White modern townhouse in daylight",
+    "width": 1200,
+    "height": 813
+   },
+   "reference": "RP-ZW-10016",
+   "listedBy": "Tatenda Mutasa",
+   "publishedAt": "2026-11-06T08:00:00Z",
+   "title": "Three-bedroom townhouse in a small complex",
+   "deal": "sale",
+   "category": "residential",
+   "propertyType": "Townhouse",
+   "price": {
+    "amount": "210000.00",
+    "currency": "USD"
+   },
+   "suburb": "Greendale",
+   "city": "Harare",
+   "marketCode": "ZW",
+   "bedrooms": 3,
+   "bathrooms": 2,
+   "floorArea": 190,
+   "summary": "Modern lock-up-and-go unit, one of six, with its own garden.",
+   "description": "A modern townhouse with open-plan living, a fitted kitchen and three bedrooms. Private garden, double garage, solar geyser and a shared borehole.",
+   "features": [
+    "Private garden",
+    "Double garage",
+    "Solar geyser",
+    "Shared borehole"
+   ],
+   "advertiser": {
+    "name": "Sample Realty",
+    "kind": "agency",
+    "verified": true
+   }
+  },
+  {
+   "id": "0195c0de-0000-7000-8000-000000000017",
+   "slug": "garden-cottage-greystone-park",
+   "image": {
+    "file": "listing-cottage-greystone-park.jpg",
+    "alt": "Small white and timber cottage under a blue sky",
+    "width": 1200,
+    "height": 900
+   },
+   "reference": "RP-ZW-10017",
+   "listedBy": "Chipo Dube",
+   "publishedAt": "2026-11-11T08:00:00Z",
+   "title": "Garden cottage with its own entrance",
+   "deal": "rent",
+   "category": "residential",
+   "propertyType": "Cottage",
+   "price": {
+    "amount": "600.00",
+    "currency": "USD"
+   },
+   "pricePeriod": "month",
+   "suburb": "Greystone Park",
+   "city": "Harare",
+   "marketCode": "ZW",
+   "bedrooms": 1,
+   "bathrooms": 1,
+   "floorArea": 64,
+   "summary": "Self-contained cottage on a shared property, water and power included.",
+   "description": "A one-bedroom cottage with a private entrance and a small veranda. Rent includes borehole water, solar-backed power and garden service.",
+   "features": [
+    "Private entrance",
+    "Water included",
+    "Solar backup",
+    "Garden service"
+   ],
+   "advertiser": {
+    "name": "Sample Estates",
+    "kind": "agency",
+    "verified": true
+   }
+  },
+  {
+   "id": "0195c0de-0000-7000-8000-000000000018",
+   "slug": "three-bedroom-house-morningside-mutare",
+   "image": {
+    "file": "listing-house-mutare.jpg",
+    "alt": "White house with large windows under a blue sky",
+    "width": 1200,
+    "height": 796
+   },
+   "reference": "RP-ZW-10018",
+   "listedBy": "Tatenda Mutasa",
+   "publishedAt": "2026-10-30T08:00:00Z",
+   "title": "Three-bedroom house with garden",
+   "deal": "sale",
+   "category": "residential",
+   "propertyType": "House",
+   "price": {
+    "amount": "130000.00",
+    "currency": "USD"
+   },
+   "suburb": "Morningside",
+   "city": "Mutare",
+   "marketCode": "ZW",
+   "bedrooms": 3,
+   "bathrooms": 2,
+   "floorArea": 175,
+   "landArea": 1500,
+   "summary": "Bright family home on a corner stand in a quiet neighbourhood.",
+   "description": "A bright three-bedroom home with a modern kitchen and a covered veranda. Corner stand with a mature garden, borehole and a single garage.",
+   "features": [
+    "Corner stand",
+    "Borehole",
+    "Veranda",
+    "Single garage"
+   ],
+   "advertiser": {
+    "name": "Sample Realty",
+    "kind": "agency",
+    "verified": true
+   }
+  }
+ ],
+ "profiles": [
+  {
+   "slug": "sample-estates",
+   "kind": "agencies",
+   "name": "Sample Estates",
+   "role": "Residential sales and lettings",
+   "tagline": "Homes for sale and to rent in Harare's northern suburbs.",
+   "about": "Sample Estates sells and lets houses, townhouses and apartments in Harare. The team handles viewings, offers and lease paperwork, and keeps every enquiry on record from first message to handover.",
+   "city": "Harare",
+   "areas": [
+    "Borrowdale",
+    "Avondale",
+    "Mount Pleasant",
+    "Highlands",
+    "Belgravia",
+    "Greystone Park"
+   ],
+   "services": [
+    "Residential sales",
+    "Residential lettings",
+    "Valuations for sale"
+   ],
+   "verified": true,
+   "sponsored": true,
+   "since": 2009
+  },
+  {
+   "slug": "sample-realty",
+   "kind": "agencies",
+   "name": "Sample Realty",
+   "role": "Residential sales and lettings",
+   "tagline": "Family homes and apartments in Harare and Mutare.",
+   "about": "Sample Realty markets family homes, apartments and townhouses. It works with first-time buyers as well as owners moving up, and has an office in Mutare.",
+   "city": "Harare",
+   "areas": [
+    "Glen Lorne",
+    "Avenues",
+    "Greendale",
+    "Morningside (Mutare)"
+   ],
+   "services": [
+    "Residential sales",
+    "Residential lettings",
+    "Buyer representation"
+   ],
+   "verified": true,
+   "sponsored": true,
+   "since": 2014
+  },
+  {
+   "slug": "sample-commercial",
+   "kind": "agencies",
+   "name": "Sample Commercial",
+   "role": "Commercial property",
+   "tagline": "Offices, retail and industrial space to let and for sale.",
+   "about": "Sample Commercial lets and sells offices, shops and warehouses in Harare. It advises tenants on space planning and landlords on lease terms.",
+   "city": "Harare",
+   "areas": [
+    "CBD",
+    "Eastlea",
+    "Msasa"
+   ],
+   "services": [
+    "Office lettings",
+    "Commercial sales",
+    "Lease negotiation"
+   ],
+   "verified": true,
+   "since": 2011
+  },
+  {
+   "slug": "sample-land-agents",
+   "kind": "agencies",
+   "name": "Sample Land Agents",
+   "role": "Land and stands",
+   "tagline": "Serviced stands, plots and farms with clean title.",
+   "about": "Sample Land Agents specialises in residential stands, plots and agricultural land. Every listing is checked for title, servicing and access before it is advertised.",
+   "city": "Bulawayo",
+   "areas": [
+    "Hillside",
+    "Ruwa",
+    "Murambi (Mutare)"
+   ],
+   "services": [
+    "Stand sales",
+    "Plot and farm sales",
+    "Title checks"
+   ],
+   "verified": true,
+   "since": 2016
+  },
+  {
+   "slug": "sample-homes-bulawayo",
+   "kind": "agencies",
+   "name": "Sample Homes Bulawayo",
+   "role": "Residential sales and lettings",
+   "tagline": "Houses for sale and to rent across Bulawayo.",
+   "about": "Sample Homes Bulawayo is a local agency covering the city's established suburbs. It manages sales and rentals and knows the schools, roads and water situation street by street.",
+   "city": "Bulawayo",
+   "areas": [
+    "Burnside",
+    "Suburbs",
+    "Hillside",
+    "Kumalo"
+   ],
+   "services": [
+    "Residential sales",
+    "Residential lettings"
+   ],
+   "verified": true,
+   "since": 2018
+  },
+  {
+   "slug": "rudo-moyo",
+   "kind": "agents",
+   "name": "Rudo Moyo",
+   "role": "Principal agent",
+   "tagline": "Leads the sales team at Sample Estates.",
+   "about": "Rudo runs Sample Estates and oversees every sale and lease the agency handles. She has worked in Harare residential property for more than fifteen years.",
+   "city": "Harare",
+   "areas": [
+    "Borrowdale",
+    "Highlands"
+   ],
+   "services": [
+    "Residential sales",
+    "Valuations for sale"
+   ],
+   "verified": true,
+   "agencySlug": "sample-estates"
+  },
+  {
+   "slug": "tendai-ncube",
+   "kind": "agents",
+   "name": "Tendai Ncube",
+   "role": "Sales and lettings agent",
+   "tagline": "Houses and apartments in Borrowdale, Avondale and Mount Pleasant.",
+   "about": "Tendai handles both sales and rentals and is usually the person showing you around. He answers enquiries the same day.",
+   "city": "Harare",
+   "areas": [
+    "Borrowdale",
+    "Avondale",
+    "Mount Pleasant"
+   ],
+   "services": [
+    "Residential sales",
+    "Residential lettings"
+   ],
+   "verified": true,
+   "agencySlug": "sample-estates"
+  },
+  {
+   "slug": "chipo-dube",
+   "kind": "agents",
+   "name": "Chipo Dube",
+   "role": "Sales and lettings agent",
+   "tagline": "Family homes, apartments and cottages in Harare.",
+   "about": "Chipo works with families looking for their next home and with tenants looking for cottages and apartments close to work.",
+   "city": "Harare",
+   "areas": [
+    "Highlands",
+    "Belgravia",
+    "Greystone Park"
+   ],
+   "services": [
+    "Residential sales",
+    "Residential lettings"
+   ],
+   "verified": true,
+   "agencySlug": "sample-estates"
+  },
+  {
+   "slug": "tatenda-mutasa",
+   "kind": "agents",
+   "name": "Tatenda Mutasa",
+   "role": "Principal agent",
+   "tagline": "Homes in Harare's eastern suburbs and in Mutare.",
+   "about": "Tatenda founded Sample Realty and still handles listings personally, from contemporary homes in Glen Lorne to family houses in Mutare.",
+   "city": "Harare",
+   "areas": [
+    "Glen Lorne",
+    "Avenues",
+    "Greendale",
+    "Morningside (Mutare)"
+   ],
+   "services": [
+    "Residential sales",
+    "Residential lettings"
+   ],
+   "verified": true,
+   "agencySlug": "sample-realty"
+  },
+  {
+   "slug": "farai-chikwanha",
+   "kind": "agents",
+   "name": "Farai Chikwanha",
+   "role": "Commercial agent",
+   "tagline": "Office space in and around the Harare CBD.",
+   "about": "Farai matches businesses with office space and negotiates lease terms for both tenants and landlords.",
+   "city": "Harare",
+   "areas": [
+    "CBD",
+    "Eastlea"
+   ],
+   "services": [
+    "Office lettings",
+    "Lease negotiation"
+   ],
+   "verified": true,
+   "agencySlug": "sample-commercial"
+  },
+  {
+   "slug": "nomsa-sibanda",
+   "kind": "agents",
+   "name": "Nomsa Sibanda",
+   "role": "Land specialist",
+   "tagline": "Stands and plots in Bulawayo, Ruwa and Mutare.",
+   "about": "Nomsa sells residential stands and plots and walks buyers through title, servicing and payment terms before they commit.",
+   "city": "Bulawayo",
+   "areas": [
+    "Hillside",
+    "Ruwa",
+    "Murambi (Mutare)"
+   ],
+   "services": [
+    "Stand sales",
+    "Plot and farm sales"
+   ],
+   "verified": true,
+   "agencySlug": "sample-land-agents"
+  },
+  {
+   "slug": "sipho-nkomo",
+   "kind": "agents",
+   "name": "Sipho Nkomo",
+   "role": "Sales and lettings agent",
+   "tagline": "Family houses for sale and to rent in Bulawayo.",
+   "about": "Sipho has lived in Bulawayo all his life and sells and lets houses in its older suburbs.",
+   "city": "Bulawayo",
+   "areas": [
+    "Burnside",
+    "Suburbs"
+   ],
+   "services": [
+    "Residential sales",
+    "Residential lettings"
+   ],
+   "verified": true,
+   "agencySlug": "sample-homes-bulawayo"
+  },
+  {
+   "slug": "sample-developments",
+   "kind": "developers",
+   "name": "Sample Developments",
+   "role": "Gated estates and cluster homes",
+   "tagline": "Serviced stands and cluster homes in secure estates.",
+   "about": "Sample Developments plans and builds gated residential estates around Harare, selling serviced stands and completed cluster homes with staged payment terms.",
+   "city": "Harare",
+   "areas": [
+    "Ruwa",
+    "Borrowdale West",
+    "Mount Pleasant Heights"
+   ],
+   "services": [
+    "Serviced stands",
+    "Cluster homes",
+    "Staged payment plans"
+   ],
+   "verified": true,
+   "sponsored": true,
+   "since": 2012
+  },
+  {
+   "slug": "sample-urban-builders",
+   "kind": "developers",
+   "name": "Sample Urban Builders",
+   "role": "Apartments and townhouses",
+   "tagline": "Mid-rise apartments and townhouse complexes in Bulawayo.",
+   "about": "Sample Urban Builders develops sectional-title apartments and small townhouse complexes close to schools and transport.",
+   "city": "Bulawayo",
+   "areas": [
+    "Suburbs",
+    "Kumalo",
+    "Hillside"
+   ],
+   "services": [
+    "Apartments",
+    "Townhouses",
+    "Sectional title"
+   ],
+   "verified": true,
+   "since": 2017
+  },
+  {
+   "slug": "sample-heights",
+   "kind": "developers",
+   "name": "Sample Heights",
+   "role": "Residential and hospitality",
+   "tagline": "Homes and lodges near the Victoria Falls.",
+   "about": "Sample Heights builds low-density homes and small hospitality projects in Victoria Falls, designed for the climate and the setting.",
+   "city": "Victoria Falls",
+   "areas": [
+    "Low Density",
+    "Aerodrome"
+   ],
+   "services": [
+    "Residential projects",
+    "Hospitality projects"
+   ],
+   "verified": true,
+   "since": 2019
+  },
+  {
+   "slug": "sample-property-management",
+   "kind": "property-managers",
+   "name": "Sample Property Management",
+   "role": "Residential and commercial management",
+   "tagline": "Rent collection, maintenance and inspections for owners.",
+   "about": "Sample Property Management looks after houses, apartment blocks and offices on behalf of their owners: finding tenants, collecting rent, arranging repairs and reporting every month.",
+   "city": "Harare",
+   "areas": [
+    "Avondale",
+    "Avenues",
+    "Eastlea",
+    "CBD"
+   ],
+   "services": [
+    "Tenant placement",
+    "Rent collection",
+    "Maintenance",
+    "Inspections"
+   ],
+   "verified": true,
+   "sponsored": true,
+   "since": 2010
+  },
+  {
+   "slug": "sample-rentals-bulawayo",
+   "kind": "property-managers",
+   "name": "Sample Rentals Bulawayo",
+   "role": "Residential lettings",
+   "tagline": "A landlord with houses and flats to let in Bulawayo.",
+   "about": "Sample Rentals Bulawayo owns and lets a portfolio of houses and flats, and manages them directly.",
+   "city": "Bulawayo",
+   "areas": [
+    "Burnside",
+    "Kumalo",
+    "City centre"
+   ],
+   "services": [
+    "Houses to let",
+    "Flats to let"
+   ],
+   "verified": true,
+   "since": 2015
+  },
+  {
+   "slug": "sample-falls-stays",
+   "kind": "hosts",
+   "name": "Sample Falls Stays",
+   "role": "Short stays",
+   "tagline": "Self-catering houses and cottages near the Victoria Falls.",
+   "about": "Sample Falls Stays hosts visitors in self-catering houses and garden cottages a short drive from the Falls, for a few nights or a few weeks.",
+   "city": "Victoria Falls",
+   "areas": [
+    "Low Density",
+    "Town centre"
+   ],
+   "services": [
+    "Self-catering houses",
+    "Garden cottages",
+    "Airport transfers"
+   ],
+   "verified": true,
+   "since": 2020
+  },
+  {
+   "slug": "sample-showrooms",
+   "kind": "hosts",
+   "name": "Sample Showrooms",
+   "role": "Showroom and venue hire",
+   "tagline": "Showrooms and event space to hire by the hour in Harare.",
+   "about": "Sample Showrooms lets furnished showroom and event space by the hour for launches, exhibitions and pop-up retail.",
+   "city": "Harare",
+   "areas": [
+    "Borrowdale",
+    "Msasa"
+   ],
+   "services": [
+    "Hourly showroom hire",
+    "Event space",
+    "Pop-up retail"
+   ],
+   "verified": true,
+   "sponsored": true,
+   "since": 2021
+  },
+  {
+   "slug": "sample-plumbers",
+   "kind": "service-providers",
+   "name": "Sample Plumbers",
+   "role": "Plumbing",
+   "category": "Plumbing",
+   "tagline": "Emergency call-outs, geysers and full bathroom plumbing.",
+   "about": "Sample Plumbers is a team of qualified plumbers working on homes, rental properties and offices across Harare. They quote before they start and leave the site clean.",
+   "city": "Harare",
+   "areas": [
+    "Harare",
+    "Ruwa",
+    "Chitungwiza"
+   ],
+   "services": [
+    "Burst pipes and leaks",
+    "Geysers",
+    "Bathrooms and kitchens",
+    "Water tanks and pumps"
+   ],
+   "offerings": [
+    {
+     "name": "Burst pipes and leaks",
+     "description": "Same-day call-outs to find and fix leaks, burst pipes and blocked drains."
+    },
+    {
+     "name": "Geysers",
+     "description": "Supply, installation and repair of electric and solar geysers."
+    },
+    {
+     "name": "Bathrooms and kitchens",
+     "description": "First and second fix plumbing for renovations and new builds."
+    },
+    {
+     "name": "Water tanks and pumps",
+     "description": "Installing tanks, booster pumps and pressure systems for borehole or municipal water."
+    }
+   ],
+   "verified": true,
+   "sponsored": true,
+   "since": 2012
+  },
+  {
+   "slug": "sample-rapid-plumbing",
+   "kind": "service-providers",
+   "name": "Sample Rapid Plumbing",
+   "role": "Plumbing",
+   "category": "Plumbing",
+   "tagline": "Blocked drains, leaks and maintenance contracts for landlords.",
+   "about": "Sample Rapid Plumbing looks after houses and blocks of flats in Bulawayo, with maintenance contracts for landlords and agents who need a plumber they can rely on.",
+   "city": "Bulawayo",
+   "areas": [
+    "Bulawayo"
+   ],
+   "services": [
+    "Blocked drains",
+    "Leak detection",
+    "Landlord maintenance"
+   ],
+   "offerings": [
+    {
+     "name": "Blocked drains",
+     "description": "Rodding and jetting for sinks, toilets and sewer lines."
+    },
+    {
+     "name": "Leak detection",
+     "description": "Finding hidden leaks behind walls and under floors before they cause damage."
+    },
+    {
+     "name": "Landlord maintenance",
+     "description": "A fixed monthly arrangement for repairs across a rental portfolio."
+    }
+   ],
+   "verified": true,
+   "since": 2018
+  },
+  {
+   "slug": "sample-electricians",
+   "kind": "service-providers",
+   "name": "Sample Electricians",
+   "role": "Electrical",
+   "category": "Electrical",
+   "tagline": "Licensed electricians for homes, shops and offices.",
+   "about": "Sample Electricians carries out wiring, fault finding and compliance work. Every job is signed off by a licensed electrician.",
+   "city": "Harare",
+   "areas": [
+    "Harare",
+    "Norton"
+   ],
+   "services": [
+    "Fault finding and repairs",
+    "Rewiring and new installations",
+    "Certificates of compliance",
+    "Backup power changeovers"
+   ],
+   "offerings": [
+    {
+     "name": "Fault finding and repairs",
+     "description": "Tripping breakers, dead circuits and burnt sockets traced and repaired."
+    },
+    {
+     "name": "Rewiring and new installations",
+     "description": "Wiring for renovations, extensions and new buildings."
+    },
+    {
+     "name": "Certificates of compliance",
+     "description": "Inspection and certification for sales, lettings and insurance."
+    },
+    {
+     "name": "Backup power changeovers",
+     "description": "Generator and inverter changeover switches fitted safely."
+    }
+   ],
+   "verified": true,
+   "since": 2010
+  },
+  {
+   "slug": "sample-sparks",
+   "kind": "service-providers",
+   "name": "Sample Sparks",
+   "role": "Electrical",
+   "category": "Electrical",
+   "tagline": "Domestic and commercial electrical work in Bulawayo.",
+   "about": "Sample Sparks is a small firm of electricians handling everything from a new plug point to a full distribution board upgrade.",
+   "city": "Bulawayo",
+   "areas": [
+    "Bulawayo",
+    "Gwanda"
+   ],
+   "services": [
+    "Distribution boards",
+    "Lighting",
+    "Electric fences and gates"
+   ],
+   "offerings": [
+    {
+     "name": "Distribution boards",
+     "description": "Upgrades, earth leakage protection and surge protection."
+    },
+    {
+     "name": "Lighting",
+     "description": "Indoor, security and garden lighting, including LED conversions."
+    },
+    {
+     "name": "Electric fences and gates",
+     "description": "Installation and repair of electric fencing and gate motors."
+    }
+   ],
+   "verified": true,
+   "since": 2016
+  },
+  {
+   "slug": "sample-solar-installers",
+   "kind": "service-providers",
+   "name": "Sample Solar Installers",
+   "role": "Solar power",
+   "category": "Solar power",
+   "tagline": "Solar systems sized for your home, with batteries and backup.",
+   "about": "Sample Solar Installers designs and fits solar power systems for homes and small businesses. They start with a load assessment, so the system matches what you actually use.",
+   "city": "Harare",
+   "areas": [
+    "Harare",
+    "Mutare",
+    "Marondera"
+   ],
+   "services": [
+    "Home solar systems",
+    "Solar geysers",
+    "Business and farm systems",
+    "Servicing and upgrades"
+   ],
+   "offerings": [
+    {
+     "name": "Home solar systems",
+     "description": "Panels, inverter and lithium batteries sized from a load assessment."
+    },
+    {
+     "name": "Solar geysers",
+     "description": "Replacing electric geysers with solar water heating."
+    },
+    {
+     "name": "Business and farm systems",
+     "description": "Larger systems for offices, shops, boreholes and irrigation."
+    },
+    {
+     "name": "Servicing and upgrades",
+     "description": "Health checks, panel cleaning and adding batteries or panels to an existing system."
+    }
+   ],
+   "verified": true,
+   "sponsored": true,
+   "since": 2015
+  },
+  {
+   "slug": "sample-sun-power",
+   "kind": "service-providers",
+   "name": "Sample Sun Power",
+   "role": "Solar power",
+   "category": "Solar power",
+   "tagline": "Affordable solar kits and installations in Matabeleland.",
+   "about": "Sample Sun Power supplies and installs solar kits for lights, fridges and televisions, through to full off-grid systems for homes outside town.",
+   "city": "Bulawayo",
+   "areas": [
+    "Bulawayo",
+    "Victoria Falls",
+    "Hwange"
+   ],
+   "services": [
+    "Starter solar kits",
+    "Off-grid systems",
+    "Solar borehole pumps"
+   ],
+   "offerings": [
+    {
+     "name": "Starter solar kits",
+     "description": "Entry-level kits that keep lights, phones and a television running."
+    },
+    {
+     "name": "Off-grid systems",
+     "description": "Complete systems for homes and lodges with no mains connection."
+    },
+    {
+     "name": "Solar borehole pumps",
+     "description": "Solar-powered pumping for boreholes and tanks."
+    }
+   ],
+   "verified": true,
+   "since": 2019
+  },
+  {
+   "slug": "sample-borehole-drillers",
+   "kind": "service-providers",
+   "name": "Sample Borehole Drillers",
+   "role": "Boreholes and water",
+   "category": "Boreholes and water",
+   "tagline": "Siting, drilling and equipping boreholes.",
+   "about": "Sample Borehole Drillers surveys, drills and equips boreholes for homes, estates and farms, and services existing pumps.",
+   "city": "Harare",
+   "areas": [
+    "Harare",
+    "Bulawayo",
+    "Mutare"
+   ],
+   "services": [
+    "Siting and drilling",
+    "Pumps and tanks",
+    "Servicing"
+   ],
+   "offerings": [
+    {
+     "name": "Siting and drilling",
+     "description": "Geophysical survey followed by drilling and casing."
+    },
+    {
+     "name": "Pumps and tanks",
+     "description": "Submersible pumps, tank stands and storage tanks installed."
+    },
+    {
+     "name": "Servicing",
+     "description": "Pump repairs, flushing and yield testing for existing boreholes."
+    }
+   ],
+   "verified": true,
+   "since": 2011
+  },
+  {
+   "slug": "sample-conveyancers",
+   "kind": "service-providers",
+   "name": "Sample Conveyancers",
+   "role": "Legal and conveyancing",
+   "category": "Legal and conveyancing",
+   "tagline": "Transfers, title deeds and agreements of sale.",
+   "about": "Sample Conveyancers handles property transfers, title deed registration, agreements of sale and lease agreements.",
+   "city": "Harare",
+   "areas": [
+    "Harare",
+    "Bulawayo",
+    "Mutare"
+   ],
+   "services": [
+    "Property transfers",
+    "Title deed work",
+    "Agreements and leases"
+   ],
+   "offerings": [
+    {
+     "name": "Property transfers",
+     "description": "Transfer of ownership from agreement of sale to registered title."
+    },
+    {
+     "name": "Title deed work",
+     "description": "Deed searches, replacement of lost deeds and registration."
+    },
+    {
+     "name": "Agreements and leases",
+     "description": "Drafting and reviewing agreements of sale and lease agreements."
+    }
+   ],
+   "verified": true,
+   "sponsored": true,
+   "since": 2005
+  },
+  {
+   "slug": "sample-valuers",
+   "kind": "service-providers",
+   "name": "Sample Valuers",
+   "role": "Valuations",
+   "category": "Valuations",
+   "tagline": "Independent valuations for sale, finance and insurance.",
+   "about": "Sample Valuers provides independent valuations of residential, commercial and agricultural property.",
+   "city": "Harare",
+   "areas": [
+    "Harare",
+    "Bulawayo"
+   ],
+   "services": [
+    "Market valuations",
+    "Insurance valuations",
+    "Rental assessments"
+   ],
+   "offerings": [
+    {
+     "name": "Market valuations",
+     "description": "What a property should sell or let for today."
+    },
+    {
+     "name": "Insurance valuations",
+     "description": "Replacement cost assessments for buildings insurance."
+    },
+    {
+     "name": "Rental assessments",
+     "description": "Fair market rent for landlords, tenants and disputes."
+    }
+   ],
+   "verified": true,
+   "since": 2008
+  },
+  {
+   "slug": "sample-movers",
+   "kind": "service-providers",
+   "name": "Sample Movers",
+   "role": "Removals",
+   "category": "Removals",
+   "tagline": "House and office moves within Zimbabwe and across the border.",
+   "about": "Sample Movers packs, moves and stores household and office contents, locally and to neighbouring countries.",
+   "city": "Harare",
+   "areas": [
+    "Harare",
+    "Bulawayo",
+    "Victoria Falls"
+   ],
+   "services": [
+    "House moves",
+    "Office moves",
+    "Storage",
+    "Cross-border moves"
+   ],
+   "offerings": [
+    {
+     "name": "House moves",
+     "description": "Packing, loading, transport and unpacking for local and long-distance moves."
+    },
+    {
+     "name": "Office moves",
+     "description": "After-hours and weekend moves to keep a business running."
+    },
+    {
+     "name": "Storage",
+     "description": "Secure short-term and long-term storage."
+    },
+    {
+     "name": "Cross-border moves",
+     "description": "Moves to and from neighbouring countries, including customs paperwork."
+    }
+   ],
+   "verified": true,
+   "since": 2013
+  }
+ ],
+ "kinds": [
+  {
+   "code": "agencies",
+   "title": "Estate agencies",
+   "singular": "Estate agency",
+   "description": "Registered agencies selling and letting property across Zimbabwe."
+  },
+  {
+   "code": "agents",
+   "title": "Estate agents",
+   "singular": "Estate agent",
+   "description": "Individual agents, the areas they cover and the properties they are marketing."
+  },
+  {
+   "code": "developers",
+   "title": "Property developers",
+   "singular": "Property developer",
+   "description": "Developers of estates, cluster homes, apartments and commercial projects."
+  },
+  {
+   "code": "property-managers",
+   "title": "Landlords and property managers",
+   "singular": "Property manager",
+   "description": "Landlords and managers who let and look after residential and commercial property."
+  },
+  {
+   "code": "hosts",
+   "title": "Hosts and venues",
+   "singular": "Host",
+   "description": "Short-stay hosts and owners of showrooms and venues for hire."
+  },
+  {
+   "code": "service-providers",
+   "title": "Property services",
+   "singular": "Service provider",
+   "description": "Plumbers, electricians, solar installers, borehole drillers, conveyancers, valuers and movers."
+  }
+ ]
+}

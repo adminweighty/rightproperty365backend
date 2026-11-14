@@ -180,6 +180,35 @@ type Handlers struct {
 	renderer *mail.Renderer
 	source   Source
 	logger   *slog.Logger
+	// roleLabels returns the current reference-data labels of the account
+	// roles (code -> label). Nil means the built-in labels.
+	roleLabels func(ctx context.Context) (map[string]string, error)
+}
+
+// SetRoleLabels makes the welcome email name roles exactly as the reference
+// data (and so the sign-up form) does.
+func (h *Handlers) SetRoleLabels(labels func(ctx context.Context) (map[string]string, error)) {
+	h.roleLabels = labels
+}
+
+// labelled replaces each role's name with its reference-data label, when one exists.
+func (h *Handlers) labelled(ctx context.Context, roles []mail.Role) []mail.Role {
+	if h.roleLabels == nil {
+		return roles
+	}
+	labels, err := h.roleLabels(ctx)
+	if err != nil {
+		h.logger.WarnContext(ctx, "could not load role labels; using the built-in ones", slog.String("error", err.Error()))
+		return roles
+	}
+	out := make([]mail.Role, len(roles))
+	for i, r := range roles {
+		if label, ok := labels[r.Code]; ok {
+			r.Name = label
+		}
+		out[i] = r
+	}
+	return out
 }
 
 // NewHandlers builds the outbox handlers.
@@ -336,7 +365,7 @@ func (h *Handlers) build(ctx context.Context, ev outbox.Event) ([]mail.Notificat
 		d := mail.Data{Name: user.Name, When: occurredAt(ev)}
 		switch ev.Type {
 		case identity.EventUserEmailVerified:
-			template, d.Path, d.Roles = "welcome", PathAccount, user.Roles
+			template, d.Path, d.Roles = "welcome", PathAccount, h.labelled(ctx, user.Roles)
 		case identity.EventPasswordChanged:
 			template, d.Path = "password-changed", signIn
 		case identity.EventAdminSignedIn:

@@ -20,8 +20,33 @@ const (
 	referenceAttempts = 5
 )
 
+// Vocabulary supplies the codes that are accepted right now (reference data).
+type Vocabulary interface {
+	DirectoryKinds(ctx context.Context) ([]string, error)
+	ContactMethods(ctx context.Context) ([]string, error)
+}
+
+// WithVocabulary validates directory kinds and contact methods against v.
+func WithVocabulary(v Vocabulary) Option { return func(s *Service) { s.vocab = v } }
+
+func (s *Service) allowed(ctx context.Context) (allowed, error) {
+	if s.vocab == nil {
+		return defaultAllowed(), nil
+	}
+	kinds, err := s.vocab.DirectoryKinds(ctx)
+	if err != nil {
+		return allowed{}, fmt.Errorf("load directory kinds: %w", err)
+	}
+	methods, err := s.vocab.ContactMethods(ctx)
+	if err != nil {
+		return allowed{}, fmt.Errorf("load contact methods: %w", err)
+	}
+	return allowed{kinds: kinds, contactMethods: methods}, nil
+}
+
 // Service holds the business rules for business enquiries.
 type Service struct {
+	vocab  Vocabulary
 	store  Store
 	now    func() time.Time
 	newRef func() (string, error)
@@ -56,7 +81,11 @@ func NewService(store Store, opts ...Option) *Service {
 func (s *Service) Create(ctx context.Context, in Input, headerIdempotencyKey string) (Result, error) {
 	now := s.now().UTC().Truncate(time.Microsecond) // Postgres timestamptz precision
 
-	v, fields := validate(in, headerIdempotencyKey)
+	ok, err := s.allowed(ctx)
+	if err != nil {
+		return Result{}, err
+	}
+	v, fields := validate(in, headerIdempotencyKey, ok)
 	if len(fields) > 0 {
 		return Result{}, &ValidationError{Fields: fields}
 	}

@@ -29,7 +29,7 @@ const (
 // to their defined state (including the shared password). Rows it does not
 // own are never touched. Callers must have passed CheckEnvironment.
 //
-// It requires migrations 0001-0005. If a sample email already belongs to a
+// It requires migrations 0001-0007. If a sample email already belongs to a
 // different user row the run fails and changes nothing.
 //
 // NOTE: compiled but NEVER run — there is no Postgres on the machine this was
@@ -49,6 +49,33 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, hasher identity.Hashe
 		return fmt.Errorf("begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	// Reference data: the baseline rows (also inserted by migration 0007).
+	// Existing rows keep their `active` flag, so re-seeding does not undo an
+	// administrator's deactivation; labels and order are reset to the baseline.
+	for set, items := range ReferenceItems() {
+		for _, it := range items {
+			var groupCode, groupLabel *string
+			var groupSort *int
+			if it.Group != nil {
+				groupCode, groupLabel, groupSort = &it.Group.Code, &it.Group.Label, &it.Group.SortOrder
+			}
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO reference_items (set_code, code, label, singular_label, description, sort_order, market_id,
+				                             parent_code, group_code, group_label, group_sort_order, requires_verification)
+				VALUES ($1, $2, $3, $4, $5, $6, (SELECT id FROM markets WHERE code = $7), $8, $9, $10, $11, $12)
+				ON CONFLICT (set_code, code) DO UPDATE
+				SET label = EXCLUDED.label, singular_label = EXCLUDED.singular_label, description = EXCLUDED.description,
+				    sort_order = EXCLUDED.sort_order, market_id = EXCLUDED.market_id, parent_code = EXCLUDED.parent_code,
+				    group_code = EXCLUDED.group_code, group_label = EXCLUDED.group_label,
+				    group_sort_order = EXCLUDED.group_sort_order, requires_verification = EXCLUDED.requires_verification,
+				    updated_at = now()`,
+				set, it.Code, it.Label, it.SingularLabel, it.Description, it.SortOrder, it.MarketCode,
+				it.ParentCode, groupCode, groupLabel, groupSort, it.RequiresVerification); err != nil {
+				return fmt.Errorf("seed reference %s/%s: %w", set, it.Code, err)
+			}
+		}
+	}
 
 	for _, o := range Organisations() {
 		if _, err := tx.Exec(ctx, `

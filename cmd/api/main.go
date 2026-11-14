@@ -20,6 +20,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/modules/notifications"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
+	"rightproperty365.com/backend/internal/modules/reference"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/database"
 	"rightproperty365.com/backend/internal/platform/logging"
@@ -64,16 +65,18 @@ func run() error {
 	var deliveryLog mail.DeliveryLog
 
 	var (
-		marketStore   markets.Store
-		requestStore  propertyrequests.Store
-		identityStore identity.Store
-		enquiryStore  businessenquiries.Store
-		healthH       *health.Handler
+		marketStore    markets.Store
+		requestStore   propertyrequests.Store
+		identityStore  identity.Store
+		enquiryStore   businessenquiries.Store
+		referenceStore reference.Store
+		healthH        *health.Handler
 	)
 	if cfg.UseMemoryStore() {
 		// config.Load guarantees this branch is only reachable in development.
 		logger.Warn("DATABASE_URL is not set: using IN-MEMORY stores. Data is lost on restart and the worker cannot see it. Development only.")
 		marketStore = markets.NewMemoryStore()
+		referenceStore = devseed.NewMemoryReferenceStore()
 		memRequests := propertyrequests.NewMemoryStore()
 		// Development sample data: 18 published listings, each with its
 		// organisation and assigned agent (or its direct seller).
@@ -95,6 +98,9 @@ func run() error {
 		deliveryLog = memDeliveries
 		handlers := notifications.NewHandlers(mail.NewService(sender, memDeliveries, logger), renderer,
 			notifications.NewMemorySource(memIdentity, memRequests, memEnquiries), logger)
+		handlers.SetRoleLabels(func(ctx context.Context) (map[string]string, error) {
+			return reference.NewService(referenceStore, nil).Labels(ctx, reference.SetAccountRoles)
+		})
 		sink := func(ev outbox.Event) {
 			go func() {
 				hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
@@ -130,6 +136,7 @@ func run() error {
 		requestStore = propertyrequests.NewPostgresStore(pool)
 		identityStore = identity.NewPostgresStore(pool)
 		enquiryStore = businessenquiries.NewPostgresStore(pool)
+		referenceStore = reference.NewPostgresStore(pool)
 		healthH = health.NewHandler(health.StorePostgres, pool.Ping, logger)
 		deliveryLog = mail.NewPostgresDeliveryLog(pool)
 	}
@@ -145,6 +152,7 @@ func run() error {
 		Markets:   marketStore,
 		Requests:  requestStore,
 		Enquiries: enquiryStore,
+		Reference: referenceStore,
 		Identity:  identityStore,
 		Mailer:    mailer,
 	})

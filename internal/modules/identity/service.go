@@ -55,7 +55,7 @@ const (
 // returns it in allowlist order with initial statuses, or a message for the
 // "roles" field. The allowlist is the only thing that admits a value: platform
 // administrator roles and anything else unknown are refused, as are duplicates.
-func parseAccountRoles(raw json.RawMessage) ([]AccountRole, string) {
+func parseAccountRoles(raw json.RawMessage, selectable []SelectableRole) ([]AccountRole, string) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil, msgRolesRequired
 	}
@@ -72,11 +72,16 @@ func parseAccountRoles(raw json.RawMessage) ([]AccountRole, string) {
 		if err := json.Unmarshal(entry, &role); err != nil || string(entry) == "null" {
 			return nil, msgRoleUnknown // not a string
 		}
-		switch {
-		case auth.IsPlatformRole(role):
+		// The platform-role check comes FIRST and does not consult the
+		// catalogue: even if someone inserted SUPER_ADMIN into the reference
+		// table as a selectable role, it still cannot be chosen at sign-up.
+		if auth.IsPlatformRole(role) {
 			return nil, msgRoleNotAllowed
-		case !slices.Contains(selectableAccountRoles, role):
-			return nil, msgRoleUnknown
+		}
+		index := slices.IndexFunc(selectable, func(r SelectableRole) bool { return r.Code == role })
+		switch {
+		case index < 0:
+			return nil, msgRoleUnknown // unknown, or deactivated in the reference data
 		case slices.Contains(chosen, role):
 			return nil, msgRolesDuplicated
 		}
@@ -84,7 +89,11 @@ func parseAccountRoles(raw json.RawMessage) ([]AccountRole, string) {
 	}
 	roles := make([]AccountRole, 0, len(chosen))
 	for _, role := range chosen {
-		roles = append(roles, AccountRole{Role: role, Status: initialAccountRoleStatus(role)})
+		status := AccountRoleActive
+		if selectable[slices.IndexFunc(selectable, func(r SelectableRole) bool { return r.Code == role })].RequiresVerification {
+			status = AccountRolePendingVerification
+		}
+		roles = append(roles, AccountRole{Role: role, Status: status})
 	}
 	sortAccountRoles(roles)
 	return roles, ""
@@ -106,6 +115,9 @@ type Service struct {
 	// dummyHash is verified against when a login names an unknown account, so
 	// that the response takes as long as a real password check.
 	dummyHash string
+	// roles lists the account roles that can be chosen right now (reference
+	// data). Nil means the built-in list.
+	roles RoleCatalogue
 	// Lifetimes of administrator sessions.
 	adminTTL     time.Duration
 	adminIdleTTL time.Duration
@@ -131,6 +143,17 @@ func WithAdminSessionTTLs(absolute, idle time.Duration) Option {
 			s.adminIdleTTL = idle
 		}
 	}
+}
+
+// WithRoleCatalogue makes registration validate roles against the reference data.
+func WithRoleCatalogue(c RoleCatalogue) Option { return func(s *Service) { s.roles = c } }
+
+// selectableRoles returns the roles that may be chosen at sign-up right now.
+func (s *Service) selectableRoles(ctx context.Context) ([]SelectableRole, error) {
+	if s.roles == nil {
+		return DefaultSelectableRoles(), nil
+	}
+	return s.roles.SelectableRoles(ctx)
 }
 
 // NewService builds a Service.
@@ -259,7 +282,11 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) error {
 			fields["consent.privacy_version"] = "is not a valid privacy notice version"
 		}
 	}
-	accountRoles, msg := parseAccountRoles(in.Roles)
+	selectable, err := s.selectableRoles(ctx)
+	if err != nil {
+		return fmt.Errorf("load selectable roles: %w", err)
+	}
+	accountRoles, msg := parseAccountRoles(in.Roles, selectable)
 	if msg != "" {
 		fields["roles"] = msg
 	}

@@ -25,6 +25,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
+	"rightproperty365.com/backend/internal/modules/reference"
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/httpx"
@@ -107,6 +108,7 @@ type env struct {
 	identity  *identity.MemoryStore
 	requests  *propertyrequests.MemoryStore
 	enquiries *businessenquiries.MemoryStore
+	reference *reference.MemoryStore
 	mail      *captureMailer
 	logs      *bytes.Buffer
 	now       time.Time
@@ -133,6 +135,7 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		identity:  identity.NewMemoryStore(),
 		requests:  propertyrequests.NewMemoryStore(),
 		enquiries: businessenquiries.NewMemoryStore(),
+		reference: devseed.NewMemoryReferenceStore(),
 		mail:      &captureMailer{},
 		logs:      &bytes.Buffer{},
 		now:       time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC),
@@ -151,6 +154,7 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		Markets:   markets.NewMemoryStore(),
 		Requests:  e.requests,
 		Enquiries: e.enquiries,
+		Reference: e.reference,
 		Identity:  e.identity,
 		Mailer:    e.mail,
 		Now:       func() time.Time { return e.now },

@@ -18,7 +18,7 @@ import (
 func rolesOf(roles []identity.AccountRole) []mail.Role {
 	out := make([]mail.Role, 0, len(roles))
 	for _, r := range roles {
-		out = append(out, mail.Role{Name: mail.RoleName(r.Role), Pending: r.Status != identity.AccountRoleActive})
+		out = append(out, mail.Role{Code: r.Role, Name: mail.RoleName(r.Role), Pending: r.Status != identity.AccountRoleActive})
 	}
 	return out
 }

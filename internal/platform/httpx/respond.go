@@ -3,12 +3,18 @@
 package httpx
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"mime"
 	"net/http"
+	"strings"
+	"time"
 
 	"rightproperty365.com/backend/internal/platform/logging"
 )
@@ -107,4 +113,45 @@ func DecodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 		return false
 	}
 	return true
+}
+
+// WriteCacheableJSON writes a PUBLIC response that may be cached: it sets
+// Cache-Control (public, max-age, stale-while-revalidate) and a strong ETag
+// derived from the body, and answers 304 Not Modified when the request's
+// If-None-Match matches.
+//
+// Use it only for responses that are identical for every caller. It must
+// never be used for anything that depends on the session: the response says
+// "public" and carries no Vary on Cookie or Authorization.
+func WriteCacheableJSON(w http.ResponseWriter, r *http.Request, v any, maxAge, staleWhileRevalidate time.Duration) {
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(v); err != nil {
+		WriteError(w, r, http.StatusInternalServerError, CodeInternal, "Something went wrong on our side. Please try again.", nil)
+		return
+	}
+	sum := sha256.Sum256(body.Bytes())
+	etag := `"` + hex.EncodeToString(sum[:16]) + `"`
+
+	h := w.Header()
+	h.Set("Cache-Control", fmt.Sprintf("public, max-age=%d, stale-while-revalidate=%d",
+		int(maxAge.Seconds()), int(staleWhileRevalidate.Seconds())))
+	h.Set("ETag", etag)
+	if etagMatches(r.Header.Get("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	h.Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body.Bytes())
+}
+
+// etagMatches implements the weak comparison of If-None-Match (RFC 9110).
+func etagMatches(header, etag string) bool {
+	for _, candidate := range strings.Split(header, ",") {
+		candidate = strings.TrimPrefix(strings.TrimSpace(candidate), "W/")
+		if candidate == "*" || candidate == etag {
+			return true
+		}
+	}
+	return false
 }

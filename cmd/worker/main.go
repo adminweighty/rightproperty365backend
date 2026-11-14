@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"rightproperty365.com/backend/internal/modules/notifications"
+	"rightproperty365.com/backend/internal/modules/reference"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/database"
 	"rightproperty365.com/backend/internal/platform/logging"
@@ -71,6 +72,10 @@ func run() error {
 	handlers := notifications.NewHandlers(
 		mail.NewService(sender, mail.NewPostgresDeliveryLog(pool), logger),
 		renderer, notifications.NewPostgresSource(pool), logger)
+
+	handlers.SetRoleLabels(func(ctx context.Context) (map[string]string, error) {
+		return reference.NewService(reference.NewPostgresStore(pool), nil).Labels(ctx, reference.SetAccountRoles)
+	})
 
 	dispatcher := outbox.NewDispatcher(outbox.NewPostgresQueue(pool), logger, outbox.Config{})
 	handlers.Register(dispatcher)

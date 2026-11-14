@@ -433,7 +433,7 @@ func TestAccountNotifications(t *testing.T) {
 		}
 		m := f.sender.byKind("welcome")[0]
 		for _, want := range []string{
-			"Hello Rudo Ncube,", "  - Buyer or renter: active\n  - Landlord: waiting for verification\n  - Estate agent: waiting for verification",
+			"Hello Rudo Ncube,", "  - Buyer or renter: active\n  - Landlord or property manager: waiting for verification\n  - Estate agent: waiting for verification",
 			"does not give access to agency or business tools", publicURL + "/account",
 		} {
 			if !strings.Contains(m.Text, want) {

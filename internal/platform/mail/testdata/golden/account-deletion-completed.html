@@ -12,7 +12,7 @@
   body { margin: 0; padding: 0; }
   img { border: 0; display: block; }
   @media only screen and (max-width: 620px) {
-    .container { width: 100% !important; }
+    .outer { padding: 12px 0 !important; }
     .card { padding: 28px 20px !important; }
     .header { padding: 20px !important; }
     .footer { padding: 20px !important; }
@@ -34,11 +34,12 @@
 </head>
 <body class="page" style="margin:0;padding:0;background-color:#f1f3f8;">
 <div style="display:none;max-height:0;max-width:0;overflow:hidden;opacity:0;mso-hide:all;font-size:1px;line-height:1px;color:#f1f3f8;">Your RightProperty365 account has been deleted.</div>
-<table role="presentation" class="page" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f1f3f8;">
-<tr><td align="center" style="padding:24px 12px;">
-<table role="presentation" class="container frame" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px;max-width:600px;border:1px solid #e6e9f0;border-radius:14px;overflow:hidden;">
+<table role="presentation" class="page" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;background-color:#f1f3f8;table-layout:fixed;">
+<tr><td class="outer" align="center" style="padding:24px 12px;">
+
+<table role="presentation" class="container frame" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:600px;margin:0 auto;border:1px solid #e6e9f0;border-radius:14px;overflow:hidden;table-layout:fixed;">
 <tr><td class="header" bgcolor="#1900AC" style="padding:24px 32px;background-color:#1900ac;">
-<a href="https://rightproperty365.com" style="text-decoration:none;"><img src="https://rightproperty365.com/email/logo-on-indigo.png" width="160" height="31" alt="RightProperty365" style="display:block;border:0;width:160px;height:31px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:20px;line-height:31px;font-weight:700;color:#ffffff;"></a>
+<a href="https://rightproperty365.com" style="text-decoration:none;"><img src="https://rightproperty365.com/email/logo-on-indigo.png" width="160" height="31" alt="RightProperty365" style="display:block;border:0;width:160px;max-width:100%;height:31px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:20px;line-height:31px;font-weight:700;color:#ffffff;"></a>
 </td></tr>
 <tr><td height="3" bgcolor="#21DDBA" style="height:3px;font-size:0;line-height:0;background-color:#21ddba;background-image:linear-gradient(90deg,#1900ac 0%,#21ddba 100%);">&nbsp;</td></tr>
 <tr><td class="card" bgcolor="#FFFFFF" style="padding:36px 32px 28px;background-color:#ffffff;">
@@ -60,6 +61,7 @@
 <p class="footer-text" style="margin:0;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:13px;line-height:20px;color:#4f586a;">Sent by RightProperty365.</p>
 </td></tr>
 </table>
+
 </td></tr>
 </table>
 </body>

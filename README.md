@@ -177,6 +177,7 @@ All configuration comes from environment variables. For local development you ma
 | GET | `/healthz` | Liveness (always 200) |
 | GET | `/readyz` | Readiness (pings the database when configured; reports the store in use) |
 | GET | `/v1/markets` | Markets: ZW active; BW, ZA, AE planned |
+| GET | `/v1/reference`, `/v1/reference/{set}` | Reference data behind every drop-down, filter and list (public, cacheable) |
 | POST | `/v1/property-requests` | The single entry point for every customer enquiry (guest or signed-in) |
 | POST | `/v1/business-enquiries` | The only way to contact a directory profile (guest or signed-in) |
 | GET | `/v1/inbox/business-enquiries` | Business enquiries received by the caller's organisation(s) |
@@ -267,6 +268,61 @@ delivery.
 - **Notifications.** The customer gets an "enquiry received" email and the recipient a "new
   enquiry" email with a reference, a preview with contact details removed and a button to the
   inbox (see "Email"). The customer's contact details are never put in an email.
+
+## Reference data: drop-downs and lists come from the database
+
+Nothing that fills a drop-down, a filter or a list is hard-coded in the clients. It is all rows in
+`reference_items` (migration `0007`), served by two public endpoints:
+
+| Method | Path | Returns |
+| --- | --- | --- |
+| GET | `/v1/reference` | `{"market": null, "sets": {"deal_types": [...], ...}}` — the active rows of every set |
+| GET | `/v1/reference/{set}` | `{"set": "cities", "market": "ZW", "items": [...]}` — one set; unknown set → `404 REFERENCE_SET_NOT_FOUND` |
+
+Optional `?market=ZW` keeps that market's rows plus the rows that apply everywhere (unknown market
+→ `400`, field `market`). Both responses are public and the same for every caller:
+`Cache-Control: public, max-age=60, stale-while-revalidate=300`, a strong `ETag`, and
+`304 Not Modified` on `If-None-Match`.
+
+| Set | Baseline rows | Notes |
+| --- | --- | --- |
+| `deal_types` | 2 | `sale`, `rent` (the web's URL values) |
+| `property_categories` | 3 | `residential`, `commercial`, `land` |
+| `property_types` | 7 | `parent_code` is the category |
+| `request_types` | 4 | the `request_type` of a property request |
+| `contact_methods` | 3 | `EMAIL`, `PHONE`, `WHATSAPP` |
+| `account_roles` | 11 | with `group` (code, label, sort) and `requires_verification`; **never** a platform role |
+| `directory_kinds` | 6 | with `singular_label` and `description` |
+| `service_trades` | 7 | service-provider trades |
+| `cities` | 4 | market `ZW` |
+| `suburbs` | 18 | market `ZW`; `parent_code` is the city |
+| `listing_features` | 59 | features and amenities |
+
+Each row has a stable `code` (what clients send and tables store), a `label` (what people read),
+`sort_order` and an internal `active` flag; only active rows are returned. Markets are not a set:
+they keep `GET /v1/markets`. The baseline is exactly what the web app used to hard-code, defined
+once in `internal/devseed/reference.go`, inserted by migration `0007` and upserted by `cmd/seed`
+(a test keeps the migration and the Go data in step).
+
+**Validation uses the same rows.** Registration roles, request types, contact methods and directory
+kinds are checked against the active rows on every request (nothing is cached in the API), so a
+row that an administrator deactivates disappears from the endpoint and is refused with
+`400 VALIDATION_FAILED` at the same moment. The fixed lists that used to be `CHECK` constraints on
+`property_requests`, `business_enquiries`, `directory_profiles` and `user_account_roles` were
+dropped by migration `0007` for that reason.
+
+**Platform roles stay impossible at sign-up.** The seven platform roles are refused by a hard
+deny-list in the code *before* the reference data is read, so inserting `SUPER_ADMIN` into
+`account_roles` would not make it selectable (there is a test for exactly that). The table and
+`user_account_roles` also carry a `CHECK` that rejects those seven codes.
+
+What stays in code, because it is behaviour rather than a list: a phone number is required for
+`PHONE` and `WHATSAPP`; a preferred slot is only allowed for `VIEWING_REQUEST` and
+`CONSULTATION_REQUEST`. A new contact method or request type added as a row is accepted, but gets
+none of those rules.
+
+**Not built:** admin endpoints to create, edit, reorder or deactivate reference rows. Today that
+is done directly in the database.
 
 ## Email
 
@@ -376,7 +432,8 @@ One shared layout plus one HTML and one plain-text template per email, rendered 
 `text/template`. The look follows the brand kit: indigo `#1900AC` header band with the reverse
 logo, a 3px indigo-to-turquoise rule (solid turquoise where gradients are not supported), a white
 card on a light slate page, one button per email (48px tall), a short footer saying why the email
-was sent. Table layout, inline styles, 600px maximum width, a hidden preheader, `lang="en"`, and a
+was sent. Table layout, inline styles, a fluid container (`width:100%; max-width:600px`, so there
+is no horizontal scroll at any width; measured from 320px to 800px for every template), a hidden preheader, `lang="en"`, and a
 dark-mode treatment (`color-scheme` plus `prefers-color-scheme`). No JavaScript, no external CSS,
 no web fonts (Inter with a system fallback), no tracking pixel, and one image (the logo, with
 width, height and alt text).
@@ -582,6 +639,8 @@ their data with `Principal.OrganisationIDs(...)` (and `PlatformRole.MarketCode` 
   built**; platform administrators sign in with a password only, so the administrator login must
   not be treated as production-ready.
 - **Durable audit trail** – administrator sign-ins are only written to the process log.
+- **Admin endpoints for reference data** – rows are served and enforced, but can only be changed
+  in the database.
 - **WhatsApp and in-app notifications.** Recipients and customers are notified by email only.
 - **Bounce and complaint handling** – there is no Resend webhook endpoint, so a message that
   Resend accepted and later failed to deliver is never noticed; no suppression list.
@@ -632,6 +691,7 @@ internal/modules/markets           GET /v1/markets
 internal/modules/propertyrequests  POST /v1/property-requests, GET /v1/agent/property-requests (handler, service, store: postgres + memory)
 internal/modules/businessenquiries POST /v1/business-enquiries, GET /v1/inbox/business-enquiries (handler, service, store: postgres + memory)
 internal/modules/notifications     outbox events -> emails; verification/reset mailer; data lookups (postgres + memory)
+internal/modules/reference         GET /v1/reference, /v1/reference/{set}; the rows other modules validate against
 internal/modules/identity          /v1/auth/*, /v1/me: accounts, sessions, tokens, roles, Mailer (store: postgres + memory)
 migrations/    embedded SQL (NNNN_name.up.sql / .down.sql)
 api/openapi.yaml             OpenAPI 3.1 contract
@@ -739,6 +799,9 @@ Until these have owners, a disk failure or a bad migration on the server means d
   like its store queries.
 - `0006_email_messages` adds the per-email delivery record (`ATTEMPTED` / `PROVIDER_ACCEPTED` /
   `FAILED`, provider message ID; no address, subject or body). Also **never run**.
+- `0007_reference_data` adds `reference_items`, inserts the baseline rows, and replaces the fixed
+  vocabulary `CHECK` constraints with API validation (plus a guard against platform roles). Also
+  **never run**.
 - `0001_init` seeds the four markets. It does **not** seed listings or profiles: against a real
   database `POST /v1/property-requests` and `POST /v1/business-enquiries` return 404 until they
   exist (in development, `cmd/seed` creates the sample ones).

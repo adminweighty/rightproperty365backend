@@ -4,6 +4,7 @@
 package app
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
+	"rightproperty365.com/backend/internal/modules/reference"
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/httpx"
@@ -57,6 +59,7 @@ type Deps struct {
 	Requests  propertyrequests.Store
 	Enquiries businessenquiries.Store
 	Identity  identity.Store
+	Reference reference.Store
 	Mailer    identity.Mailer
 
 	// Optional overrides used by tests.
@@ -68,9 +71,28 @@ type Deps struct {
 func NewRouter(d Deps) (http.Handler, error) {
 	cfg, logger := d.Config, d.Logger
 
-	identityOpts := []identity.Option{identity.WithAdminSessionTTLs(cfg.AdminSessionTTL, cfg.AdminSessionIdleTTL)}
-	var requestOpts []propertyrequests.Option
-	var enquiryOpts []businessenquiries.Option
+	// Reference data: served to clients and used to validate what they send,
+	// so drop-downs and validation can never disagree.
+	referenceSvc := reference.NewService(d.Reference, func(ctx context.Context) ([]string, error) {
+		all, err := d.Markets.List(ctx)
+		if err != nil {
+			return nil, err
+		}
+		codes := make([]string, 0, len(all))
+		for _, m := range all {
+			codes = append(codes, m.Code)
+		}
+		return codes, nil
+	})
+	vocab := vocabulary{ref: referenceSvc}
+	referenceH := reference.NewHandler(referenceSvc, logger)
+
+	identityOpts := []identity.Option{
+		identity.WithAdminSessionTTLs(cfg.AdminSessionTTL, cfg.AdminSessionIdleTTL),
+		identity.WithRoleCatalogue(vocab),
+	}
+	requestOpts := []propertyrequests.Option{propertyrequests.WithVocabulary(vocab)}
+	enquiryOpts := []businessenquiries.Option{businessenquiries.WithVocabulary(vocab)}
 	if d.Now != nil {
 		identityOpts = append(identityOpts, identity.WithClock(d.Now))
 		requestOpts = append(requestOpts, propertyrequests.WithClock(d.Now))
@@ -116,6 +138,10 @@ func NewRouter(d Deps) (http.Handler, error) {
 	r.Get("/readyz", d.Health.Ready)
 	r.Route("/v1", func(r chi.Router) {
 		r.Get("/markets", marketsH.List)
+
+		// Reference data behind every drop-down, filter and list. Public and cacheable.
+		r.Get("/reference", referenceH.All)
+		r.Get("/reference/{set}", referenceH.One)
 
 		// Open to guests and signed-in customers alike.
 		r.With(requestLimiter.Middleware).Post("/property-requests", requestsH.Create)

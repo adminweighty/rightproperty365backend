@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -48,7 +49,22 @@ type validated struct {
 
 // validate normalises in and returns per-field errors (empty when valid).
 // The idempotency key in the body wins over the Idempotency-Key header.
-func validate(in Input, headerKey string, now time.Time) (validated, map[string]string) {
+// allowed holds the codes accepted right now for the reference-data fields.
+type allowed struct {
+	requestTypes   []string
+	contactMethods []string
+}
+
+// defaultAllowed is the built-in vocabulary, used when no Vocabulary is
+// configured (unit tests).
+func defaultAllowed() allowed {
+	return allowed{
+		requestTypes:   []string{TypeEnquiry, TypePropertyInformation, TypeViewingRequest, TypeConsultationRequest},
+		contactMethods: []string{ContactEmail, ContactPhone, ContactWhatsApp},
+	}
+}
+
+func validate(in Input, headerKey string, now time.Time, ok allowed) (validated, map[string]string) {
 	var v validated
 	fields := map[string]string{}
 
@@ -78,12 +94,12 @@ func validate(in Input, headerKey string, now time.Time) (validated, map[string]
 
 	// Request type.
 	v.requestType = in.RequestType
-	switch in.RequestType {
-	case TypeEnquiry, TypePropertyInformation, TypeViewingRequest, TypeConsultationRequest:
-	case "":
+	switch {
+	case in.RequestType == "":
 		fields["request_type"] = "is required"
-	default:
-		fields["request_type"] = "must be one of ENQUIRY, PROPERTY_INFORMATION, VIEWING_REQUEST, CONSULTATION_REQUEST"
+	case !slices.Contains(ok.requestTypes, in.RequestType):
+		// Unknown, or deactivated in the reference data.
+		fields["request_type"] = "must be one of " + strings.Join(ok.requestTypes, ", ")
 	}
 
 	// Message: plain text only.
@@ -101,12 +117,11 @@ func validate(in Input, headerKey string, now time.Time) (validated, map[string]
 
 	// Contact method.
 	v.contactMethod = in.PreferredContactMethod
-	switch in.PreferredContactMethod {
-	case ContactEmail, ContactPhone, ContactWhatsApp:
-	case "":
+	switch {
+	case in.PreferredContactMethod == "":
 		fields["preferred_contact_method"] = "is required"
-	default:
-		fields["preferred_contact_method"] = "must be one of EMAIL, PHONE, WHATSAPP"
+	case !slices.Contains(ok.contactMethods, in.PreferredContactMethod):
+		fields["preferred_contact_method"] = "must be one of " + strings.Join(ok.contactMethods, ", ")
 	}
 
 	// Preferred slot.

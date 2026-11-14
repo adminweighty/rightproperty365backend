@@ -50,7 +50,19 @@ type validated struct {
 
 // validate normalises in and returns per-field errors (empty when valid).
 // The idempotency key in the body wins over the Idempotency-Key header.
-func validate(in Input, headerKey string) (validated, map[string]string) {
+// allowed holds the codes accepted right now for the reference-data fields.
+type allowed struct {
+	kinds          []string
+	contactMethods []string
+}
+
+// defaultAllowed is the built-in vocabulary, used when no Vocabulary is
+// configured (unit tests).
+func defaultAllowed() allowed {
+	return allowed{kinds: Kinds(), contactMethods: []string{ContactEmail, ContactPhone, ContactWhatsApp}}
+}
+
+func validate(in Input, headerKey string, ok allowed) (validated, map[string]string) {
 	var v validated
 	fields := map[string]string{}
 
@@ -77,8 +89,9 @@ func validate(in Input, headerKey string) (validated, map[string]string) {
 		switch {
 		case v.kind == "":
 			fields["recipient.kind"] = "is required"
-		case !slices.Contains(Kinds(), v.kind):
-			fields["recipient.kind"] = "must be one of " + strings.Join(Kinds(), ", ")
+		case !slices.Contains(ok.kinds, v.kind):
+			// Unknown, or deactivated in the reference data.
+			fields["recipient.kind"] = "must be one of " + strings.Join(ok.kinds, ", ")
 		}
 		v.slug = strings.TrimSpace(in.Recipient.Slug)
 		switch {
@@ -117,12 +130,11 @@ func validate(in Input, headerKey string) (validated, map[string]string) {
 
 	// Contact method.
 	v.contactMethod = in.PreferredContactMethod
-	switch in.PreferredContactMethod {
-	case ContactEmail, ContactPhone, ContactWhatsApp:
-	case "":
+	switch {
+	case in.PreferredContactMethod == "":
 		fields["preferred_contact_method"] = "is required"
-	default:
-		fields["preferred_contact_method"] = "must be one of EMAIL, PHONE, WHATSAPP"
+	case !slices.Contains(ok.contactMethods, in.PreferredContactMethod):
+		fields["preferred_contact_method"] = "must be one of " + strings.Join(ok.contactMethods, ", ")
 	}
 	needsPhone := in.PreferredContactMethod == ContactPhone || in.PreferredContactMethod == ContactWhatsApp
 
