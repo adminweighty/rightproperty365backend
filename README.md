@@ -224,6 +224,10 @@ All configuration comes from environment variables. For local development you ma
 | POST | `/v1/admin/auth/login` | Administrator sign-in (platform-role accounts only; cookie only) |
 | GET | `/v1/admin/me` | Same as `/v1/me`, but requires an admin-scope session and a platform role |
 | GET | `/v1/agent/property-requests` | Requests received by the caller: their organisation's (scoped by role) and/or their own as a direct seller |
+| POST | `/v1/appointments` | A signed-in customer asks for a viewing or a consultation |
+| GET, POST | `/v1/me/appointments`, `/{id}`, `/{id}/cancel`, `/{id}/reschedule`, `/{id}/accept` | The customer's own appointments |
+| GET, POST | `/v1/inbox/appointments`, `/{id}`, `/{id}/confirm`, `/reschedule`, `/cancel`, `/complete`, `/no-show`, `/assign` | Appointments received by a professional (list, calendar and actions) |
+| GET | `/v1/inbox/summary` | Badge counts: new requests, new enquiries, appointments |
 
 Every error uses one envelope, and `trace_id` equals the `X-Request-Id` response header:
 
@@ -300,6 +304,105 @@ delivery.
 - **Notifications.** The customer gets an "enquiry received" email and the recipient a "new
   enquiry" email with a reference, a preview with contact details removed and a button to the
   inbox (see "Email"). The customer's contact details are never put in an email.
+
+## Appointments: viewings and consultations
+
+Professionals (estate agents, agency staff, property managers, solicitors, the other business
+roles, and landlords and property sellers for their own listings) see and manage their
+appointments through `/v1/inbox/appointments`; customers through `/v1/me/appointments`.
+
+An appointment is a property **VIEWING** (always tied to a listing) or a **CONSULTATION** (with a
+listing's advertiser, or with a directory profile such as a solicitor or an estate agent). It is
+created in one of two ways:
+
+1. **With a property request.** `POST /v1/property-requests` of type `VIEWING_REQUEST` or
+   `CONSULTATION_REQUEST` **with** a `preferred_slot_utc` writes the appointment in the same
+   transaction as the request (status `REQUESTED`, 30 minutes, linked to the request). The
+   response gains `appointment: {id, reference} | null`: null without a slot, for the other request
+   types, and when the request could not be routed.
+2. **Explicitly, by a signed-in customer.** `POST /v1/appointments` with exactly one of
+   `listing_id` and `recipient: {kind, slug}`, `start_utc`, optional `duration_minutes` (15–240,
+   default 30) and `note`, `preferred_contact_method` (plus `phone` for PHONE or WHATSAPP), an
+   idempotency key and `consent`. Idempotent like property requests (`200` replay,
+   `409 IDEMPOTENCY_CONFLICT`); its own rate-limit bucket (burst 10, 10/min); `201 {appointment}`.
+
+**Routing** is the routing of property requests and business enquiries, nothing new: the listing's
+assigned agent, else the organisation, else the direct owner (landlord or property seller); for a
+profile, its organisation, and for an agent profile the named agent. Unlike an enquiry, an
+appointment nobody could confirm is refused (`410`), not stored.
+
+```
+REQUESTED ──confirm──> CONFIRMED ──complete──> COMPLETED
+    │                     │  └─────no-show───> NO_SHOW
+    └── either party proposes a new time ──> RESCHEDULE_REQUESTED ──the OTHER party accepts──> CONFIRMED
+REQUESTED | CONFIRMED | RESCHEDULE_REQUESTED ──cancel──> CANCELLED
+```
+
+- Every transition is one immutable row in `appointment_timeline` (actor, from, to, note, time; a
+  trigger refuses updates) and one outbox event (`APPOINTMENT_REQUESTED`, `_CONFIRMED`,
+  `_RESCHEDULE_REQUESTED`, `_CANCELLED`, `_COMPLETED`, `_NO_SHOW`, `_ASSIGNED`) carrying
+  identifiers, statuses and times only, written in the same transaction.
+- `status` always comes with `status_label`: "Requested", "Confirmed", "Reschedule Requested",
+  "Completed", "No Show", "Cancelled".
+- Start times must be in the future (and at most 12 months ahead) to create, propose or confirm;
+  `COMPLETED` and `NO_SHOW` only after the start time. An illegal transition is
+  `409 INVALID_STATE`.
+- **Proposing a new time** sets `proposed_start_utc` and `proposed_by` (`CUSTOMER` or
+  `PROFESSIONAL`); `start_utc` changes only when the other party accepts. The customer accepts
+  with `POST /v1/me/appointments/{id}/accept`; **the professional accepts a customer's proposal
+  with `POST /v1/inbox/appointments/{id}/confirm` and no body.** A confirm with a *different*
+  `start_utc` does not confirm: it becomes the professional's proposal. The party being asked may
+  answer with a counter-proposal instead (an addition to the brief's state machine).
+- **No double booking.** One professional — the assigned user, or the organisation when nobody is
+  assigned — cannot have two `CONFIRMED` appointments that overlap; back-to-back is fine.
+  Confirming, accepting or assigning into a clash is `409 SLOT_TAKEN`. In Postgres this is a
+  **locked check inside the confirming transaction** (`pg_advisory_xact_lock` on the professional,
+  then a search for an overlapping confirmed row), not an exclusion constraint, so no extension is
+  needed; in memory it runs under the store lock.
+- **Who may manage them** is decided in `internal/platform/auth/capabilities.go`
+  (`MayManageAppointments`, `MayAssignWork`, `IsDirectOwner`): OWNER and MANAGER see all of their
+  organisation's appointments and may assign them to a member; AGENT and STAFF see those assigned
+  to them, the organisation's unassigned **viewings**, and consultations addressed to their own
+  agent profile; an **approved** landlord or property seller sees those for their own listings.
+  Anyone else gets `403`; another organisation's appointment is `404`.
+- **Contact details.** The customer's name, email and phone are a private snapshot on the
+  appointment, returned only by `/v1/inbox/appointments`. The customer sees the professional only
+  as a public profile reference (`with: {kind, slug, name}`), never a phone number or an email
+  address. Listing and profile names are a snapshot too, so **an appointment's history stays
+  readable after its listing expires**.
+- **Guests.** An appointment made from a guest's viewing request has no customer account, so the
+  guest cannot act on it through the API. The professional can still confirm, propose another
+  time or cancel, and the guest is told by email. (A guest cannot *accept* a proposed time: the
+  professional has to confirm the original time or cancel.)
+- **Emails** (outbox-driven, one per transition and recipient, sent once however often the worker
+  runs): to the professional — appointment requested, cancelled by the customer, the customer
+  proposed a new time; to the customer — confirmed, a new time proposed, cancelled. Times are
+  written in the market's time zone with the zone named ("Tuesday 17 November 2026, 10:00
+  (Central Africa Time)"). No email carries the other party's contact details. A confirmation
+  always goes to the customer (also when it was the customer who accepted a proposed time); the
+  professional is not emailed about it, nor is anyone about completed, no-show and assignments.
+  The buttons open `/agent/appointments` and
+  `/account/appointments` on the web app (`notifications.PathAppointmentsInbox`,
+  `PathMyAppointments`): **those pages must exist there**.
+- `GET /v1/inbox/summary` returns `{property_requests: {new}, business_enquiries: {new},
+  appointments: {requested, reschedule_requested, upcoming_confirmed}}`, each scoped as its own
+  inbox. Requests and enquiries have no read status yet, so `new` is all of them (capped at 100).
+- **Sample data** (memory and `cmd/seed`): seven appointments relative to the moment of seeding —
+  for `agent@example.test` (requested, confirmed, completed, a confirmed consultation),
+  `estates.agent2@example.test` (a reschedule the consumer can accept, a guest's request), the
+  solicitor `sample-law-chambers@example.test` (a consultation), all but the guest's for
+  `consumer@example.test`.
+
+**Not built** (appointments): venue and showroom hourly bookings, short-stay bookings,
+availability calendars and slot configuration (any future time can be requested), ICS invites,
+calendar sync, reminders, push notifications, an endpoint listing an organisation's members (so
+`assign` needs a user ID the client already knows), appointments created from business enquiries
+(`business_enquiry_id` exists and is always null), and automatic expiry of requests that were
+never answered.
+
+**Not verified:** the Postgres store, migration `0011` (tables, the timeline trigger), the
+advisory-lock overlap check and the `cmd/seed` rows have never run against a database. Everything
+above is tested on the in-memory stores.
 
 ## Listings and directories: the public catalogue
 
@@ -565,9 +668,9 @@ manage listings or appointments": `internal/platform/auth/capabilities.go`.
 
 So a verified solicitor in a law firm has the same rights as an agent, and a `LAW_FIRM` can own
 listings on the same terms as an agency: property requests for such a listing reach the firm's
-inbox (tested). **But there are no endpoints to create or publish a listing, and no appointment
-or booking features, for any role yet.** These rules say who will be allowed once they are built;
-nothing in the role or organisation model has to change for that.
+inbox (tested). Appointments (viewings and consultations) are built on these rules: see
+"Appointments". **But there are no endpoints to create or publish a listing, and no venue or
+short-stay bookings, for any role yet.**
 
 ### Specified but not built
 
@@ -578,7 +681,8 @@ So that nobody assumes these exist. They are in the updated functional specifica
   Follow-up required, Converted, Closed) and replies to enquiries;
 - agency principals assigning leads;
 - rental applications;
-- viewing appointment management;
+- appointments beyond viewings and consultations (see "Appointments": venue and short-stay
+  bookings, availability calendars, ICS invites, calendar sync, reminders);
 - subscription plans, and admin-recorded payments, invoices and receipts (the specification has no
   online payment in the mobile app);
 - account deletion;
@@ -874,6 +978,10 @@ The log mailer (development only) sends nothing and writes one line per email, i
 | New property request (to the assigned agent or direct seller, otherwise the organisation's owners and managers); names the listing by title and reference | Property request created | same event |
 | Enquiry received (to the customer) | Business enquiry created | outbox `BUSINESS_ENQUIRY_CREATED` |
 | New enquiry (to the named agent, otherwise the owning organisation's owners and managers) | Business enquiry created | same event |
+| New appointment request (to the assigned professional, otherwise the organisation's owners and managers) | Appointment created | outbox `APPOINTMENT_REQUESTED` |
+| Appointment confirmed (to the customer) | Confirmed by the professional, or a proposed time accepted | outbox `APPOINTMENT_CONFIRMED` |
+| New time proposed (to the customer) / The customer proposed a new time (to the professional) | A new time proposed by the other party | outbox `APPOINTMENT_RESCHEDULE_REQUESTED` |
+| Appointment cancelled (to the customer) / cancelled by the customer (to the professional) | Cancelled by the other party | outbox `APPOINTMENT_CANCELLED` |
 
 **Designed, written and tested, but NOT triggered by anything** (the features do not exist yet):
 reply or status update to the customer, listing expiring in 14 / 7 / 1 days, listing expired, relist
@@ -1165,6 +1273,7 @@ internal/modules/health            /healthz, /readyz
 internal/modules/markets           GET /v1/markets
 internal/modules/propertyrequests  POST /v1/property-requests, GET /v1/agent/property-requests (handler, service, store: postgres + memory)
 internal/modules/businessenquiries POST /v1/business-enquiries, GET /v1/inbox/business-enquiries (handler, service, store: postgres + memory)
+internal/modules/appointments      /v1/appointments, /v1/me/appointments, /v1/inbox/appointments, /v1/inbox/summary (handler, service, store: postgres + memory)
 internal/modules/notifications     outbox events -> emails; verification/reset mailer; data lookups (postgres + memory)
 internal/modules/listings          GET /v1/listings, /v1/listings/suggest, /v1/listings/{slug}; Search port (postgres + memory)
 internal/modules/directory         GET /v1/directory, /v1/directory/{kind}[/{slug}], /v1/sitemap (postgres + memory)
@@ -1259,6 +1368,13 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0011_appointments` adds `appointments` (type, status, the listing or profile with a snapshot of
+  their public names, the link to the property request, the customer's private contact snapshot,
+  the routed organisation and assigned user, `start_at` / `duration_minutes` / `end_at`, the
+  proposed time and who proposed it, cancellation, the idempotency key of explicit creation) and
+  the immutable `appointment_timeline` (a trigger refuses updates). The no-overlap rule for
+  confirmed appointments is a locked check in the store, not a constraint (see "Appointments").
+  **Never run.**
 - `0010_real_estate_roles` renames and regroups the account roles (codes unchanged), adds
   SALES_AGENT, LETTINGS_AGENT, PROPERTY_MANAGER and SOLICITOR, the organisation kinds
   `PROPERTY_MANAGER` and `LAW_FIRM`, the `organisation_kinds` reference set, the `solicitors` directory and the PRACTISING_CERTIFICATE

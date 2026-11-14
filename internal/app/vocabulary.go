@@ -7,6 +7,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"rightproperty365.com/backend/internal/modules/appointments"
+	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/listings"
@@ -14,6 +16,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/onboarding"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
+	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/storage"
 )
 
@@ -92,6 +95,127 @@ func (l listingNames) ListingNames(ctx context.Context, ids []uuid.UUID) (map[uu
 		out[id] = propertyrequests.InboxListing{Slug: s.Slug, Title: s.Title, Reference: s.Reference}
 	}
 	return out, nil
+}
+
+// listingCards adapts the listing store to appointments.Catalogue. It reads a
+// listing whatever its status: an appointment keeps the name of its listing.
+type listingCards struct{ store listings.Store }
+
+// ListingCard implements appointments.Catalogue.
+func (l listingCards) ListingCard(ctx context.Context, id uuid.UUID) (appointments.ListingCard, bool, error) {
+	records, err := l.store.ByIDs(ctx, []uuid.UUID{id})
+	if err != nil || len(records) == 0 {
+		return appointments.ListingCard{}, false, err
+	}
+	r := records[0]
+	card := appointments.ListingCard{Slug: r.Slug, Title: r.Title, Reference: r.Reference}
+	// The person the customer meets: the listing's agent, else its agency.
+	// A private seller has no public profile.
+	if ref := r.Advertiser.Agent; ref != nil {
+		card.WithKind, card.WithSlug, card.WithName = ref.Kind, ref.Slug, ref.Name
+	} else if ref := r.Advertiser.Agency; ref != nil {
+		card.WithKind, card.WithSlug, card.WithName = ref.Kind, ref.Slug, ref.Name
+	}
+	return card, true, nil
+}
+
+// marketZones adapts the markets to appointments.Zones.
+type marketZones struct{ markets markets.Store }
+
+// MarketTimezone implements appointments.Zones.
+func (z marketZones) MarketTimezone(ctx context.Context, marketID uuid.UUID) (string, error) {
+	all, err := z.markets.List(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, m := range all {
+		if m.ID == marketID {
+			return m.Timezone, nil
+		}
+	}
+	return "", nil
+}
+
+// people adapts the identity store to appointments.People.
+type people struct{ identity identity.Store }
+
+// Member implements appointments.People.
+func (p people) Member(ctx context.Context, organisationID, userID uuid.UUID) (string, bool, error) {
+	u, err := p.identity.UserByID(ctx, userID)
+	if errors.Is(err, identity.ErrNotFound) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	if u.Status != identity.StatusActive {
+		return "", false, nil
+	}
+	for _, m := range u.Memberships {
+		if m.OrganisationID == organisationID {
+			return u.Name, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+// Name implements appointments.People.
+func (p people) Name(ctx context.Context, userID uuid.UUID) (string, error) {
+	u, err := p.identity.UserByID(ctx, userID)
+	if errors.Is(err, identity.ErrNotFound) {
+		return "", nil
+	}
+	return u.Name, err
+}
+
+// inboxCounts counts what is waiting in the two enquiry inboxes, each scoped
+// exactly as its own endpoint scopes it. Neither inbox has a "read" or lead
+// status yet, so "new" is every received item the caller can see (capped at
+// the inbox size, 100).
+type inboxCounts struct {
+	requests  *propertyrequests.Service
+	enquiries *businessenquiries.Service
+}
+
+// NewPropertyRequests implements appointments.InboxCounts.
+func (c inboxCounts) NewPropertyRequests(ctx context.Context, p *auth.Principal) (int, error) {
+	items, err := c.requests.Inbox(ctx, propertyrequests.InboxScope{
+		UserID:                 p.UserID,
+		ManagedOrganisationIDs: p.OrganisationIDs(auth.RoleOwner, auth.RoleManager),
+		MemberOrganisationIDs:  p.OrganisationIDs(auth.RoleAgent, auth.RoleStaff),
+	})
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, it := range items {
+		if it.Status == propertyrequests.StatusReceived {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// NewBusinessEnquiries implements appointments.InboxCounts.
+func (c inboxCounts) NewBusinessEnquiries(ctx context.Context, p *auth.Principal) (int, error) {
+	if !p.HasMembership() {
+		return 0, nil
+	}
+	items, err := c.enquiries.Inbox(ctx, businessenquiries.InboxScope{
+		UserID:                 p.UserID,
+		ManagedOrganisationIDs: p.OrganisationIDs(auth.RoleOwner, auth.RoleManager),
+		MemberOrganisationIDs:  p.OrganisationIDs(auth.RoleAgent, auth.RoleStaff),
+	})
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, it := range items {
+		if it.Status == businessenquiries.StatusReceived {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // onboardingVocabulary adapts the reference data to onboarding.Vocabulary.

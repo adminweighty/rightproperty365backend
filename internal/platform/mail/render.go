@@ -11,6 +11,9 @@ import (
 	"strings"
 	texttemplate "text/template"
 	"time"
+	// The zone database is embedded so that market time zones resolve on a
+	// machine without one (Windows, minimal containers).
+	_ "time/tzdata"
 	"unicode/utf8"
 )
 
@@ -54,6 +57,12 @@ func Templates() []Template {
 		{"onboarding-approved", "Onboarding application approved (to the applicant)", true},
 		{"onboarding-changes-requested", "Onboarding application needs changes (to the applicant)", true},
 		{"onboarding-rejected", "Onboarding application not approved (to the applicant)", true},
+		{"appointment-requested", "Appointment requested (to the professional)", true},
+		{"appointment-cancelled-by-customer", "Appointment cancelled by the customer (to the professional)", true},
+		{"appointment-reschedule-proposed", "Customer proposed a new time (to the professional)", true},
+		{"appointment-confirmed", "Appointment confirmed (to the customer)", true},
+		{"appointment-new-time-proposed", "New time proposed (to the customer)", true},
+		{"appointment-cancelled", "Appointment cancelled (to the customer)", true},
 
 		{"request-update", "Reply or status update to the customer", false},
 		{"listing-expiring", "Listing expiring in 14, 7 or 1 days", false},
@@ -106,6 +115,51 @@ type Data struct {
 	Days          int
 	Amount        string // with the currency code, e.g. "USD 25.00"
 	InvoiceNumber string
+
+	// Appointment emails. AppointmentTime and ProposedTime are already
+	// formatted in the market's time zone with the zone named (see
+	// LocalDateTime); WithName is the public name of the professional or
+	// business; Location is the professional's note with contact details removed.
+	AppointmentType string
+	AppointmentTime string
+	ProposedTime    string
+	WithName        string
+	Location        string
+}
+
+// zoneNames are the names of the time zones of the markets, as people say them.
+var zoneNames = map[string]string{
+	"Africa/Harare":       "Central Africa Time",
+	"Africa/Gaborone":     "Central Africa Time",
+	"Africa/Johannesburg": "South Africa Standard Time",
+	"Asia/Dubai":          "Gulf Standard Time",
+	"UTC":                 "Coordinated Universal Time",
+}
+
+// LocalDateTime writes an instant in an IANA time zone and names the zone,
+// because the reader may be somewhere else: "Tuesday 17 November 2026, 10:00
+// (Central Africa Time)". An unknown zone is shown in UTC.
+func LocalDateTime(t time.Time, zone string) string {
+	loc, err := time.LoadLocation(zone)
+	if err != nil || zone == "" {
+		loc, zone = time.UTC, "UTC"
+	}
+	name, ok := zoneNames[zone]
+	if !ok {
+		name = zone
+	}
+	return t.In(loc).Format("Monday 2 January 2006, 15:04") + " (" + name + ")"
+}
+
+// appointmentTypeNames are the plain-language names of appointment types.
+var appointmentTypeNames = map[string]string{"VIEWING": "Property viewing", "CONSULTATION": "Consultation"}
+
+// AppointmentTypeName returns the plain-language name of an appointment type.
+func AppointmentTypeName(code string) string {
+	if name, ok := appointmentTypeNames[code]; ok {
+		return name
+	}
+	return strings.ToLower(strings.ReplaceAll(code, "_", " "))
 }
 
 // view is Data plus the values the layout needs.

@@ -1,0 +1,18 @@
+{{define "subject"}}New appointment request: {{.Reference}}{{end}}
+{{define "heading"}}New appointment request{{end}}
+{{define "button"}}Open your appointments{{end}}
+{{define "why"}}You are receiving this because an appointment was routed to you on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+A customer has asked for an appointment with you. It is not confirmed until you confirm it.
+
+Reference: {{.Reference}}
+Appointment: {{.AppointmentType}}
+{{if .ListingTitle}}Property: {{.ListingTitle}}
+{{end}}{{if .ListingRef}}Listing reference: {{.ListingRef}}
+{{end}}Requested time: {{.AppointmentTime}}
+Status: {{.StatusText}}
+
+You can confirm the time, propose another one or cancel the request.
+
+The customer's contact details are in your appointments. They are not included in this email.{{end}}

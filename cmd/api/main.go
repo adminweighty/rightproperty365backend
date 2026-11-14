@@ -16,6 +16,7 @@ import (
 
 	"rightproperty365.com/backend/internal/app"
 	"rightproperty365.com/backend/internal/devseed"
+	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/health"
@@ -81,15 +82,16 @@ func run() error {
 	var onboardingStore onboarding.Store
 
 	var (
-		marketStore    markets.Store
-		requestStore   propertyrequests.Store
-		identityStore  identity.Store
-		enquiryStore   businessenquiries.Store
-		referenceStore reference.Store
-		listingStore   listings.Store
-		listingSearch  listings.Search
-		directoryStore directory.Store
-		healthH        *health.Handler
+		appointmentStore appointments.Store
+		marketStore      markets.Store
+		requestStore     propertyrequests.Store
+		identityStore    identity.Store
+		enquiryStore     businessenquiries.Store
+		referenceStore   reference.Store
+		listingStore     listings.Store
+		listingSearch    listings.Search
+		directoryStore   directory.Store
+		healthH          *health.Handler
 	)
 	if cfg.UseMemoryStore() {
 		// config.Load guarantees this branch is only reachable in development.
@@ -110,6 +112,12 @@ func run() error {
 		memEnquiries := businessenquiries.NewMemoryStore()
 		devseed.SeedMemoryProfiles(memEnquiries)
 		enquiryStore = memEnquiries
+		// Appointments: a request with a preferred slot stores its
+		// appointment together with itself. A few sample ones are seeded.
+		memAppointments := appointments.NewMemoryStore()
+		memRequests.SetAppointmentWriter(memAppointments.CreateLinked)
+		devseed.SeedMemoryAppointments(memAppointments, time.Now())
+		appointmentStore = memAppointments
 		healthH = health.NewHandler(health.StoreMemory, nil, logger)
 
 		memIdentity := identity.NewMemoryStore()
@@ -149,6 +157,7 @@ func run() error {
 			return reference.NewService(referenceStore, nil).Labels(ctx, reference.SetAccountRoles)
 		})
 		handlers.SetOnboardingSource(app.OnboardingNotifications(memOnboarding, files, referenceStore, logger))
+		handlers.SetAppointmentSource(memAppointments.Get)
 		sink := func(ev outbox.Event) {
 			go func() {
 				hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
@@ -163,6 +172,7 @@ func run() error {
 		memRequests.SetOutboxSink(sink)
 		memEnquiries.SetOutboxSink(sink)
 		memOnboarding.SetOutboxSink(sink)
+		memAppointments.SetOutboxSink(sink)
 		if cfg.DevSeedPassword == "" {
 			logger.Warn("DEV_SEED_PASSWORD is not set: development seed users were NOT created (copy .env.example to .env to get them)")
 		} else {
@@ -186,7 +196,11 @@ func run() error {
 		defer pool.Close()
 		logger.Info("database pool ready", slog.Int("max_conns", int(cfg.DBMaxConns)), slog.String("pool_mode", cfg.DBPoolMode))
 		marketStore = markets.NewPostgresStore(pool)
-		requestStore = propertyrequests.NewPostgresStore(pool)
+		pgRequests := propertyrequests.NewPostgresStore(pool)
+		// The request and its appointment commit in one transaction.
+		pgRequests.SetAppointmentWriter(appointments.InsertLinkedTx)
+		requestStore = pgRequests
+		appointmentStore = appointments.NewPostgresStore(pool)
 		identityStore = identity.NewPostgresStore(pool)
 		enquiryStore = businessenquiries.NewPostgresStore(pool)
 		referenceStore = reference.NewPostgresStore(pool)
@@ -237,6 +251,7 @@ func run() error {
 		Identity:      identityStore,
 		Mailer:        mailer,
 		Onboarding:    onboardingStore,
+		Appointments:  appointmentStore,
 		Files:         files,
 	})
 	if err != nil {

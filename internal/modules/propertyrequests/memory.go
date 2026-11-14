@@ -40,6 +40,17 @@ type MemoryStore struct {
 	activity []MemoryActivityEntry
 	outbox   []MemoryOutboxEvent
 	sink     outbox.Sink
+	// appointments writes the appointment that belongs to a request; it is
+	// called under the store lock so both are stored or neither is.
+	appointments func(NewRequest) error
+}
+
+// SetAppointmentWriter registers the function that stores a request's
+// appointment (the in-memory appointment store's CreateLinked).
+func (s *MemoryStore) SetAppointmentWriter(write func(NewRequest) error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.appointments = write
 }
 
 // SetOutboxSink registers a receiver for events as they are written
@@ -155,6 +166,16 @@ func (s *MemoryStore) Create(_ context.Context, req NewRequest) (Record, bool, e
 	}
 
 	rec := Record{ID: req.ID, Reference: req.Reference, Status: req.Status, RequestHash: req.RequestHash, CreatedAt: req.CreatedAt}
+	if req.Appointment != nil {
+		if s.appointments == nil {
+			return Record{}, false, fmt.Errorf("no appointment writer is configured")
+		}
+		// First, so that a failure (a reference collision) leaves nothing behind.
+		if err := s.appointments(req); err != nil {
+			return Record{}, false, err
+		}
+		rec.Appointment = &AppointmentRef{ID: req.Appointment.ID, Reference: req.Appointment.Reference}
+	}
 	s.byKey[req.IdempotencyKey] = rec
 	s.refs[req.Reference] = struct{}{}
 	s.requests = append(s.requests, req)

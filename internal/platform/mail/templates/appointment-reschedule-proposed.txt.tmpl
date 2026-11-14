@@ -1,0 +1,19 @@
+{{define "subject"}}New time proposed for appointment {{.Reference}}{{end}}
+{{define "heading"}}The customer proposed a new time{{end}}
+{{define "button"}}Open your appointments{{end}}
+{{define "why"}}You are receiving this because an appointment was routed to you on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+The customer has proposed a new time for this appointment. The new time is not confirmed until you accept it.
+
+Reference: {{.Reference}}
+Appointment: {{.AppointmentType}}
+{{if .ListingTitle}}Property: {{.ListingTitle}}
+{{end}}{{if .ListingRef}}Listing reference: {{.ListingRef}}
+{{end}}Current time: {{.AppointmentTime}}
+Proposed time: {{.ProposedTime}}
+Status: {{.StatusText}}
+
+You can accept the proposed time, propose another one or cancel the appointment.
+
+The customer's contact details are in your appointments. They are not included in this email.{{end}}

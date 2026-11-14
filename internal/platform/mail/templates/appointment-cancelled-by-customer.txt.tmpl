@@ -1,0 +1,16 @@
+{{define "subject"}}Appointment cancelled by the customer: {{.Reference}}{{end}}
+{{define "heading"}}Appointment cancelled{{end}}
+{{define "button"}}Open your appointments{{end}}
+{{define "why"}}You are receiving this because an appointment was routed to you on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+The customer has cancelled this appointment. You do not need to do anything.
+
+Reference: {{.Reference}}
+Appointment: {{.AppointmentType}}
+{{if .ListingTitle}}Property: {{.ListingTitle}}
+{{end}}{{if .ListingRef}}Listing reference: {{.ListingRef}}
+{{end}}Time: {{.AppointmentTime}}
+Status: {{.StatusText}}
+{{if .Reason}}Reason: {{.Reason}}
+{{end}}{{end}}

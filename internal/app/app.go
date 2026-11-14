@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/health"
@@ -41,6 +42,11 @@ const (
 	// 10, refilled at 10 per minute.
 	businessEnquiriesPerMinute = 10
 	businessEnquiriesBurst     = 10
+
+	// Per-IP limit on POST /v1/appointments, its own bucket: bursts of 10,
+	// refilled at 10 per minute.
+	appointmentsPerMinute = 10
+	appointmentsBurst     = 10
 
 	// Per-IP limit shared by every POST /v1/auth/* route (its own bucket,
 	// separate from property requests): bursts of 20, refilled at 20 per minute.
@@ -90,6 +96,10 @@ type Deps struct {
 	// private object storage their documents are kept in.
 	Onboarding onboarding.Store
 	Files      storage.Storage
+	// Appointments holds viewings and consultations. The store behind
+	// Requests must have been given its appointment writer (see cmd/api), so
+	// that a request and its appointment are written together.
+	Appointments appointments.Store
 
 	// Optional overrides used by tests.
 	Now    func() time.Time
@@ -146,9 +156,23 @@ func NewRouter(d Deps) (http.Handler, error) {
 	secure := cfg.Env != config.EnvDevelopment
 	identityH := identity.NewHandler(identitySvc, logger, secure)
 	marketsH := markets.NewHandler(d.Markets, logger)
-	requestsH := propertyrequests.NewHandler(propertyrequests.NewService(d.Requests, requestOpts...), logger)
+	// Appointments: routed with the request and enquiry rules, named from the
+	// public catalogue, shown in the market's time zone.
+	appointmentsSvc := appointments.NewService(appointments.Deps{
+		Store: d.Appointments, Listings: d.Requests, Profiles: d.Enquiries,
+		Catalogue: listingCards{store: d.Listings}, Zones: marketZones{markets: d.Markets},
+		People: people{identity: d.Identity}, Vocabulary: vocab, Now: d.Now,
+	})
+	// A viewing or consultation request with a preferred slot creates its
+	// appointment in the same transaction.
+	requestOpts = append(requestOpts, propertyrequests.WithAppointmentPlanner(appointmentsSvc))
+	requestsSvc := propertyrequests.NewService(d.Requests, requestOpts...)
+	enquiriesSvc := businessenquiries.NewService(d.Enquiries, enquiryOpts...)
+	requestsH := propertyrequests.NewHandler(requestsSvc, logger)
 	requestsH.SetListingNames(listingNames{svc: listingsSvc})
-	enquiriesH := businessenquiries.NewHandler(businessenquiries.NewService(d.Enquiries, enquiryOpts...), logger)
+	enquiriesH := businessenquiries.NewHandler(enquiriesSvc, logger)
+	appointmentsH := appointments.NewHandler(appointmentsSvc, inboxCounts{requests: requestsSvc, enquiries: enquiriesSvc}, logger)
+	appointmentLimiter := httpx.NewRateLimiter(appointmentsPerMinute, appointmentsBurst)
 	authn := auth.NewMiddleware(identitySvc, cfg.CORSAllowedOrigins, logger)
 
 	onboardingSvc := onboarding.NewService(d.Onboarding, d.Files, onboardingVocabulary{ref: referenceSvc},
@@ -236,6 +260,34 @@ func NewRouter(d Deps) (http.Handler, error) {
 		})
 
 		r.With(auth.RequireAuth).Get("/me", identityH.Me)
+
+		// Appointments. A signed-in customer asks for one and manages their
+		// own; they never see another customer's (404).
+		r.With(auth.RequireAuth, appointmentLimiter.Middleware).Post("/appointments", appointmentsH.Create)
+		r.Route("/me/appointments", func(r chi.Router) {
+			r.Use(auth.RequireAuth)
+			r.Get("/", appointmentsH.ListMine)
+			r.Get("/{id}", appointmentsH.GetMine)
+			r.Post("/{id}/cancel", appointmentsH.CancelMine)
+			r.Post("/{id}/reschedule", appointmentsH.RescheduleMine)
+			r.Post("/{id}/accept", appointmentsH.AcceptMine)
+		})
+		// The professional side. The handler decides who may enter (a member
+		// of an organisation that takes appointments, or an approved direct
+		// owner: auth/capabilities.go) and scopes every row to the caller.
+		r.Route("/inbox/appointments", func(r chi.Router) {
+			r.Use(auth.RequireAuth)
+			r.Get("/", appointmentsH.Inbox)
+			r.Get("/{id}", appointmentsH.Received)
+			r.Post("/{id}/confirm", appointmentsH.Confirm)
+			r.Post("/{id}/reschedule", appointmentsH.Reschedule)
+			r.Post("/{id}/cancel", appointmentsH.Cancel)
+			r.Post("/{id}/complete", appointmentsH.Complete)
+			r.Post("/{id}/no-show", appointmentsH.NoShow)
+			r.Post("/{id}/assign", appointmentsH.Assign)
+		})
+		// Badge counts for the apps, each scoped as its own inbox.
+		r.With(auth.RequireAuth).Get("/inbox/summary", appointmentsH.Summary)
 
 		// Onboarding for professional roles. What each role has to provide is
 		// public; an application is only ever its owner's.

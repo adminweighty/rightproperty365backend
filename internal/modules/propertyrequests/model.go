@@ -107,9 +107,34 @@ type Result struct {
 	Reference string    `json:"reference"`
 	Status    string    `json:"status"`
 	CreatedAt time.Time `json:"created_at"`
+	// Appointment is the appointment created together with a viewing or
+	// consultation request that carried a preferred slot; null otherwise.
+	Appointment *AppointmentRef `json:"appointment"`
 	// Replayed is true when an existing request was returned for a repeated
 	// idempotency key; the handler maps it to 200 instead of 201.
 	Replayed bool `json:"-"`
+}
+
+// AppointmentRef names the appointment that belongs to a request.
+type AppointmentRef struct {
+	ID        uuid.UUID `json:"id"`
+	Reference string    `json:"reference"`
+}
+
+// LinkedAppointment is the appointment a request creates in the same
+// transaction. Data is the appointments module's own record; this package
+// only carries it to the store.
+type LinkedAppointment struct {
+	ID        uuid.UUID
+	Reference string
+	Data      any
+}
+
+// AppointmentPlanner decides whether a request gets an appointment (a viewing
+// or consultation request with a preferred slot) and builds it. It returns
+// nil when the request gets none.
+type AppointmentPlanner interface {
+	PlanAppointment(ctx context.Context, req NewRequest) (*LinkedAppointment, error)
 }
 
 // Listing is the slice of listing state needed to accept and route a request.
@@ -164,6 +189,9 @@ type NewRequest struct {
 	ConsentAcceptedAt time.Time  // UTC
 	Recipient         *Recipient // nil when routing failed
 	CreatedAt         time.Time  // UTC, microsecond precision
+	// Appointment is written together with the request, or not at all. Nil
+	// when the request gets no appointment.
+	Appointment *LinkedAppointment
 }
 
 // MaxInboxItems caps GET /v1/agent/property-requests until it is paginated.
@@ -232,4 +260,6 @@ type Record struct {
 	Status      string
 	RequestHash string
 	CreatedAt   time.Time
+	// Appointment is the appointment created with the request, if any.
+	Appointment *AppointmentRef
 }

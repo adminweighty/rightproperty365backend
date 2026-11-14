@@ -1,0 +1,18 @@
+{{define "subject"}}New time proposed for your appointment {{.Reference}}{{end}}
+{{define "heading"}}A new time has been proposed{{end}}
+{{define "button"}}Review the new time{{end}}
+{{define "why"}}You are receiving this because you asked for an appointment on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+A new time has been proposed for your appointment. It is not confirmed until you accept it.
+
+Reference: {{.Reference}}
+Appointment: {{.AppointmentType}}
+{{if .ListingTitle}}Property: {{.ListingTitle}}
+{{end}}{{if .ListingRef}}Listing reference: {{.ListingRef}}
+{{end}}{{if .WithName}}With: {{.WithName}}
+{{end}}Current time: {{.AppointmentTime}}
+Proposed time: {{.ProposedTime}}
+Status: {{.StatusText}}
+
+You can accept the proposed time, propose another one or cancel the appointment from your account.{{end}}

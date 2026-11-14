@@ -1,0 +1,23 @@
+Subject: Appointment cancelled by the customer: AP-5T8W2KXN
+
+Appointment cancelled
+
+Hello Tendai Ncube,
+
+The customer has cancelled this appointment. You do not need to do anything.
+
+Reference: AP-5T8W2KXN
+Appointment: Property viewing
+Property: Four-bedroom family home with garden
+Listing reference: RP-ZW-10001
+Time: Tuesday 17 November 2026, 10:00 (Central Africa Time)
+Status: Cancelled
+Reason: I have found another property.
+
+Open your appointments:
+https://rightproperty365.com/agent/appointments
+
+--
+You are receiving this because an appointment was routed to you on RightProperty365.
+Sent by RightProperty365.
+https://rightproperty365.com

@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"rightproperty365.com/backend/internal/app"
+	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/notifications"
 	"rightproperty365.com/backend/internal/modules/onboarding"
@@ -87,6 +88,9 @@ func run() error {
 	// Onboarding emails read the application at send time. The worker never
 	// opens a document, so it needs no file storage.
 	handlers.SetOnboardingSource(app.OnboardingNotifications(onboarding.NewPostgresStore(pool), nil, reference.NewPostgresStore(pool), logger))
+
+	// Appointment emails read the appointment at send time.
+	handlers.SetAppointmentSource(appointments.NewPostgresStore(pool).Get)
 
 	listingStore := listings.NewPostgresStore(pool)
 	handlers.SetListingLookup(func(ctx context.Context, id uuid.UUID) (string, string, bool) {

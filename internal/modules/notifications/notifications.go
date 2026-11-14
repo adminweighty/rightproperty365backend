@@ -29,6 +29,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/onboarding"
@@ -47,6 +48,9 @@ const (
 	PathAccount     = "/account"
 	PathInbox       = "/agent/requests"
 	PathAdminSignIn = "/admin/sign-in"
+	// Where the appointment emails send the professional and the customer.
+	PathAppointmentsInbox = "/agent/appointments"
+	PathMyAppointments    = "/account/appointments"
 )
 
 // previewLength is the size of the message preview in emails to recipients.
@@ -103,6 +107,10 @@ type Source interface {
 	PropertyRequest(ctx context.Context, id uuid.UUID) (PropertyRequestInfo, error)
 	BusinessEnquiry(ctx context.Context, id uuid.UUID) (BusinessEnquiryInfo, error)
 	User(ctx context.Context, id uuid.UUID) (UserInfo, error)
+	// Recipients resolves a routed user or organisation to the people to
+	// notify: the named active user, otherwise the organisation's active
+	// owners and managers.
+	Recipients(ctx context.Context, userID, organisationID *uuid.UUID) ([]Person, error)
 }
 
 // NewSender builds the transport selected by the configuration and logs one
@@ -189,6 +197,95 @@ type Handlers struct {
 	roleLabels func(ctx context.Context) (map[string]string, error)
 	// onboarding loads the data behind an onboarding event.
 	onboarding func(ctx context.Context, applicationID uuid.UUID) (onboarding.NotificationInfo, error)
+	// appointment loads the appointment behind an appointment event.
+	appointment func(ctx context.Context, id uuid.UUID) (appointments.Appointment, error)
+}
+
+// SetAppointmentSource supplies the appointment behind an appointment event
+// (the appointment store's Get). Without it those events are dead-lettered.
+func (h *Handlers) SetAppointmentSource(source func(ctx context.Context, id uuid.UUID) (appointments.Appointment, error)) {
+	h.appointment = source
+}
+
+// appointmentNotes builds the emails for one appointment event: one email per
+// logical transition, to the party that did NOT make it. The times come from
+// the event (what was true when it happened), everything else from the
+// appointment. No email carries the other party's contact details: the
+// customer's are never read here, and the professional is named only by the
+// public profile name.
+func (h *Handlers) appointmentNotes(ctx context.Context, ev outbox.Event, add func(template, recipient string, to Person, d mail.Data) error) error {
+	if h.appointment == nil {
+		return outbox.Permanent(fmt.Errorf("notifications: no appointment source for event type %q", ev.Type))
+	}
+	var payload appointments.EventPayload
+	if err := json.Unmarshal(ev.Payload, &payload); err != nil {
+		return outbox.Permanent(fmt.Errorf("notifications: unreadable %s payload: %w", ev.Type, err))
+	}
+	a, err := h.appointment(ctx, ev.AggregateID)
+	if errors.Is(err, appointments.ErrNotFound) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	start := payload.StartUTC
+	if start.IsZero() {
+		start = a.StartUTC
+	}
+	d := mail.Data{
+		Reference: a.Reference, AppointmentType: mail.AppointmentTypeName(a.Type),
+		ListingTitle: a.ListingTitle, ListingRef: a.ListingReference,
+		AppointmentTime: mail.LocalDateTime(start, a.Timezone), StatusText: appointments.StatusLabel(payload.To),
+		When: occurredAt(ev),
+	}
+	if payload.ProposedStartUTC != nil {
+		d.ProposedTime = mail.LocalDateTime(*payload.ProposedStartUTC, a.Timezone)
+	}
+
+	toCustomer := func(template string) error {
+		d := d
+		d.Name, d.Path, d.WithName = a.CustomerName, PathMyAppointments, a.WithName
+		if a.CustomerUserID == nil {
+			// A guest has no account page to open.
+			d.Path = PathHome
+		}
+		return add(template, "customer", Person{UserID: a.CustomerUserID, Name: a.CustomerName, Email: a.CustomerEmail}, d)
+	}
+	toProfessional := func(template string) error {
+		people, err := h.source.Recipients(ctx, a.AssignedUserID, a.OrganisationID)
+		if err != nil {
+			return err
+		}
+		for _, r := range people {
+			d := d
+			d.Name, d.Path = r.Name, PathAppointmentsInbox
+			if err := add(template, recipientKey(r), r, d); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	switch ev.Type {
+	case appointments.EventRequested:
+		return toProfessional("appointment-requested")
+	case appointments.EventConfirmed:
+		d.Location = mail.SafePreview(a.LocationNote, 200)
+		return toCustomer("appointment-confirmed")
+	case appointments.EventRescheduleRequested:
+		if payload.ProposedBy == appointments.PartyCustomer {
+			return toProfessional("appointment-reschedule-proposed")
+		}
+		return toCustomer("appointment-new-time-proposed")
+	case appointments.EventCancelled:
+		d.Reason = mail.SafePreview(a.CancelReason, 300)
+		if payload.CancelledBy == appointments.PartyCustomer {
+			return toProfessional("appointment-cancelled-by-customer")
+		}
+		return toCustomer("appointment-cancelled")
+	}
+	// Completed, no-show and assigned: recorded, nobody is emailed.
+	return nil
 }
 
 // SetListingLookup makes the property request emails name the listing by its
@@ -230,13 +327,13 @@ func NewHandlers(svc *mail.Service, renderer *mail.Renderer, source Source, logg
 
 // EventTypes lists the outbox events this module handles.
 func EventTypes() []string {
-	return append([]string{
+	return append(append([]string{
 		propertyrequests.EventPropertyRequestCreated,
 		businessenquiries.EventBusinessEnquiryCreated,
 		identity.EventUserEmailVerified,
 		identity.EventPasswordChanged,
 		identity.EventAdminSignedIn,
-	}, onboarding.EventTypes()...)
+	}, onboarding.EventTypes()...), appointments.EventTypes()...)
 }
 
 // PathOnboarding is the web page where an applicant fills in an application.
@@ -436,6 +533,12 @@ func (h *Handlers) build(ctx context.Context, ev outbox.Event) ([]mail.Notificat
 		}
 		user := info.UserID
 		if err := add(t.template, "applicant", Person{UserID: &user, Name: info.Name, Email: info.Email}, d); err != nil {
+			return nil, err
+		}
+
+	case appointments.EventRequested, appointments.EventConfirmed, appointments.EventRescheduleRequested,
+		appointments.EventCancelled, appointments.EventCompleted, appointments.EventNoShow, appointments.EventAssigned:
+		if err := h.appointmentNotes(ctx, ev, add); err != nil {
 			return nil, err
 		}
 

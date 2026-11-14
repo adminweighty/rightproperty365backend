@@ -1,0 +1,18 @@
+{{define "subject"}}Appointment cancelled: {{.Reference}}{{end}}
+{{define "heading"}}Your appointment has been cancelled{{end}}
+{{define "button"}}View your appointments{{end}}
+{{define "why"}}You are receiving this because you asked for an appointment on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+Your appointment has been cancelled. It will not take place.
+
+Reference: {{.Reference}}
+Appointment: {{.AppointmentType}}
+{{if .ListingTitle}}Property: {{.ListingTitle}}
+{{end}}{{if .ListingRef}}Listing reference: {{.ListingRef}}
+{{end}}{{if .WithName}}With: {{.WithName}}
+{{end}}Time: {{.AppointmentTime}}
+Status: {{.StatusText}}
+{{if .Reason}}Reason: {{.Reason}}
+{{end}}
+You can ask for a new appointment at any time.{{end}}

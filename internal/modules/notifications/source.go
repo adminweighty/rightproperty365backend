@@ -66,6 +66,11 @@ func (s *MemorySource) recipients(ctx context.Context, userID, organisationID *u
 	return out
 }
 
+// Recipients implements Source.
+func (s *MemorySource) Recipients(ctx context.Context, userID, organisationID *uuid.UUID) ([]Person, error) {
+	return s.recipients(ctx, userID, organisationID), nil
+}
+
 // PropertyRequest implements Source.
 func (s *MemorySource) PropertyRequest(ctx context.Context, id uuid.UUID) (PropertyRequestInfo, error) {
 	for _, req := range s.requests.Requests() {
@@ -159,6 +164,11 @@ func (s *PostgresSource) recipients(ctx context.Context, userID, organisationID 
 			ORDER BY u.email`, *organisationID)
 	}
 	return nil, nil
+}
+
+// Recipients implements Source.
+func (s *PostgresSource) Recipients(ctx context.Context, userID, organisationID *uuid.UUID) ([]Person, error) {
+	return s.recipients(ctx, userID, organisationID)
 }
 
 // PropertyRequest implements Source.

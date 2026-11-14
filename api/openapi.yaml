@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.11.0
+  version: 0.12.0
   summary: Multi-country property marketplace API (Zimbabwe first).
   description: |
     Versioned REST API for RightProperty365.
@@ -64,6 +64,25 @@ tags:
   - name: directory
   - name: property-requests
   - name: business-enquiries
+  - name: appointments
+    description: |
+      Appointments for property **viewings** (tied to a listing) and **consultations** (with a
+      listing's advertiser or a directory profile). An appointment is created by
+      `POST /v1/property-requests` with a `preferred_slot_utc` (guests included) or by
+      `POST /v1/appointments` (signed-in customers), and is not confirmed until the
+      professional confirms it.
+
+      Status flow: `REQUESTED` -> `CONFIRMED` -> `COMPLETED` | `NO_SHOW`; `REQUESTED` |
+      `CONFIRMED` -> `RESCHEDULE_REQUESTED` -> `CONFIRMED` (the other party accepts the
+      proposed time); any open status -> `CANCELLED`. One professional cannot have two
+      `CONFIRMED` appointments that overlap (`409 SLOT_TAKEN`).
+
+      A guest's appointment has no customer account, so the guest cannot act through the API:
+      the professional confirms, proposes or cancels, and the guest is told by email.
+
+      Not built: venue and showroom hourly bookings, short-stay bookings, availability
+      calendars and slot configuration, ICS invites, calendar sync, reminders and push
+      notifications.
   - name: auth
   - name: account
   - name: organisation-workspace
@@ -865,6 +884,13 @@ paths:
         `guest_contact.phone` is read. In both cases the phone is required when the preferred
         contact method is PHONE or WHATSAPP (reported as field `guest_contact.phone`) and
         `consent` is required. The same idempotency key used by a different customer is a `409`.
+
+        **Appointments.** A `VIEWING_REQUEST` or `CONSULTATION_REQUEST` sent with a
+        `preferred_slot_utc` also creates an appointment (`VIEWING` or `CONSULTATION`, status
+        `REQUESTED`, 30 minutes) in the same transaction, routed to the same recipient; the
+        response names it in `appointment`. Without a slot `appointment` is null. A guest's
+        appointment has no customer account: the professional confirms or cancels it and the
+        guest is told by email.
       security:
         - {}
         - cookieSession: []
@@ -2589,8 +2615,710 @@ paths:
         "504":
           $ref: "#/components/responses/Timeout"
 
+  /v1/appointments:
+    post:
+      tags: [appointments]
+      operationId: createAppointment
+      summary: Ask for an appointment (signed-in customer)
+      description: |
+        Creates an appointment in status `REQUESTED` for the signed-in customer: a property
+        `VIEWING` of a listing, or a `CONSULTATION` with a listing's advertiser (`listing_id`) or
+        with a directory profile (`recipient`, for example a solicitor or an estate agent).
+        Send **exactly one** of `listing_id` and `recipient`; a `VIEWING` needs `listing_id`.
+
+        The appointment is routed with the same rules as property requests (the listing's
+        assigned agent, else the organisation, else the direct owner) and business enquiries
+        (the profile's organisation; for an agent profile the named agent). It is **not
+        confirmed** until the professional confirms it.
+
+        The customer's name and email come from the account. `phone` is required when
+        `preferred_contact_method` is `PHONE` or `WHATSAPP`. These contact details are returned
+        only to the professional, by `/v1/inbox/appointments`.
+
+        Idempotent exactly like property requests: `idempotency_key` in the body or the
+        `Idempotency-Key` header (the body wins); the same key with the same content answers
+        `200` with the original appointment, the same key with different content `409
+        IDEMPOTENCY_CONFLICT`. The key space is separate from requests and enquiries.
+
+        Own per-IP rate limit: bursts of 10, refilled at 10 per minute.
+
+        The other way an appointment is created is `POST /v1/property-requests` with a
+        `preferred_slot_utc` (guests included).
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema:
+            $ref: "#/components/schemas/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AppointmentCreate"
+            examples:
+              viewing:
+                value:
+                  type: VIEWING
+                  listing_id: 0195c0de-0000-7000-8000-000000000001
+                  start_utc: "2026-11-17T08:00:00Z"
+                  note: I would like to see the garden as well.
+                  preferred_contact_method: EMAIL
+                  idempotency_key: 6f1c2f0a-8f0e-4f43-9a55-2f6f3f1f9c11
+                  consent: { privacy_version: "2026-01", accepted: true }
+              consultation:
+                value:
+                  type: CONSULTATION
+                  recipient: { kind: solicitors, slug: sample-law-chambers }
+                  start_utc: "2026-11-18T12:00:00Z"
+                  duration_minutes: 60
+                  preferred_contact_method: PHONE
+                  phone: "+263771234567"
+                  idempotency_key: 0b0f5d0e-3a53-4f1e-9a0e-7b1f0f3f2a10
+                  consent: { privacy_version: "2026-01", accepted: true }
+      responses:
+        "201":
+          description: Created and committed, in status `REQUESTED`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CustomerAppointmentEnvelope"
+        "200":
+          description: Idempotent replay; the original appointment (in its current state).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CustomerAppointmentEnvelope"
+        "400":
+          description: |
+            `VALIDATION_FAILED` or `INVALID_JSON`. Fields: `type`, `listing_id` (missing, not a
+            UUID, neither target given, or a VIEWING without a listing), `recipient` (both targets
+            given), `recipient.kind`, `recipient.slug`, `start_utc` (not RFC 3339, not in the
+            future, or more than 12 months ahead), `duration_minutes` (15 to 240), `note`,
+            `preferred_contact_method`, `phone`, `idempotency_key`, `consent`,
+            `consent.privacy_version`, `consent.accepted`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/CsrfOrigin"
+        "404":
+          description: "`LISTING_NOT_FOUND` or `RECIPIENT_NOT_FOUND`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: "`IDEMPOTENCY_CONFLICT`: the key was already used for different content."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "410":
+          description: |
+            `LISTING_UNAVAILABLE` (not published, expired, or nobody can receive appointments for
+            it) or `RECIPIENT_UNAVAILABLE` (the profile is suspended, unverified, or has nobody to
+            receive appointments).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/me/appointments:
+    get:
+      tags: [appointments]
+      operationId: listMyAppointments
+      summary: The signed-in customer's own appointments
+      description: |
+        Only appointments whose customer is the caller. `upcoming` (the default) is every
+        appointment that is still open (`REQUESTED`, `CONFIRMED`, `RESCHEDULE_REQUESTED`) and
+        has not ended, **soonest first**; `past` is everything else (ended, completed, no-show,
+        cancelled), **newest first**; `all` is both, newest first. List items carry no
+        `timeline`; read one appointment for it.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - name: when
+          in: query
+          schema:
+            type: string
+            enum: [upcoming, past, all]
+            default: upcoming
+        - $ref: "#/components/parameters/AppointmentStatusFilter"
+        - $ref: "#/components/parameters/AppointmentPage"
+        - $ref: "#/components/parameters/AppointmentPageSize"
+      responses:
+        "200":
+          description: One page (possibly empty).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CustomerAppointmentPage"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/me/appointments/{id}:
+    get:
+      tags: [appointments]
+      operationId: getMyAppointment
+      summary: One of the customer's own appointments, with its timeline
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - $ref: "#/components/parameters/AppointmentId"
+      responses:
+        "200":
+          $ref: "#/components/responses/CustomerAppointment"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/AppointmentNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/me/appointments/{id}/cancel:
+    post:
+      tags: [appointments]
+      operationId: cancelMyAppointment
+      summary: Cancel (customer)
+      description: |
+        `REQUESTED`, `CONFIRMED` or `RESCHEDULE_REQUESTED` -> `CANCELLED` with `cancelled_by`
+        `CUSTOMER`. The body is optional. The professional is told by email.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - $ref: "#/components/parameters/AppointmentId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                reason:
+                  type: string
+                  maxLength: 500
+                  description: Plain text, shown to the professional.
+      responses:
+        "200":
+          $ref: "#/components/responses/CustomerAppointment"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/CsrfOrigin"
+        "404":
+          $ref: "#/components/responses/AppointmentNotFound"
+        "409":
+          $ref: "#/components/responses/AppointmentConflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/me/appointments/{id}/reschedule:
+    post:
+      tags: [appointments]
+      operationId: rescheduleMyAppointment
+      summary: Propose a new time (customer)
+      description: |
+        `REQUESTED` or `CONFIRMED` -> `RESCHEDULE_REQUESTED` with `proposed_start_utc` and
+        `proposed_by` `CUSTOMER`. `start_utc` itself does not change until the professional
+        accepts (`POST /v1/inbox/appointments/{id}/confirm`). A confirmed appointment stops
+        being confirmed the moment a new time is proposed.
+
+        Also allowed while the appointment is `RESCHEDULE_REQUESTED` with `proposed_by`
+        `PROFESSIONAL`: the customer's time replaces the professional's (a counter-proposal).
+        `409 INVALID_STATE` when the customer's own proposal is still waiting, or the
+        appointment is closed.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - $ref: "#/components/parameters/AppointmentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AppointmentReschedule"
+      responses:
+        "200":
+          $ref: "#/components/responses/CustomerAppointment"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/CsrfOrigin"
+        "404":
+          $ref: "#/components/responses/AppointmentNotFound"
+        "409":
+          $ref: "#/components/responses/AppointmentConflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/me/appointments/{id}/accept:
+    post:
+      tags: [appointments]
+      operationId: acceptMyAppointment
+      summary: Accept the time the professional proposed (customer)
+      description: |
+        Only when `status` is `RESCHEDULE_REQUESTED` and `proposed_by` is `PROFESSIONAL`
+        (`can_accept`): the appointment becomes `CONFIRMED` at the proposed time. No body.
+        `409 SLOT_TAKEN` when the professional meanwhile has another confirmed appointment that
+        overlaps; `409 INVALID_STATE` otherwise, including when the proposed time has passed.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - $ref: "#/components/parameters/AppointmentId"
+      responses:
+        "200":
+          $ref: "#/components/responses/CustomerAppointment"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/CsrfOrigin"
+        "404":
+          $ref: "#/components/responses/AppointmentNotFound"
+        "409":
+          $ref: "#/components/responses/AppointmentConflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/inbox/appointments:
+    get:
+      tags: [appointments]
+      operationId: listReceivedAppointments
+      summary: Appointments received by the caller (the professional's list and calendar)
+      description: |
+        `401` when not signed in. `403 FORBIDDEN` unless the caller is a member of an
+        organisation that takes appointments (agency, law firm, property manager, developer,
+        host, service provider) or an **approved** landlord or property seller.
+
+        **What is returned** (decided on the server; the filters only narrow it):
+        - OWNER and MANAGER: every appointment of their organisation.
+        - AGENT and STAFF: those assigned to them, plus the organisation's **unassigned
+          property viewings**. A consultation addressed to their own agent profile is assigned
+          to them.
+        - A landlord or property seller: those for the listings they own directly.
+
+        Another organisation's appointments are never returned. Ordered by `start_utc`,
+        **soonest first**; pass `from` (for example the start of today) for a calendar or an
+        "upcoming" list. Items carry the customer's `contact`; this and
+        `GET /v1/inbox/appointments/{id}` are the only places it is returned. List items carry
+        no `timeline`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - name: from
+          in: query
+          description: Only appointments starting at or after this instant.
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          description: Only appointments starting before this instant. Must be after `from`.
+          schema:
+            type: string
+            format: date-time
+        - $ref: "#/components/parameters/AppointmentStatusFilter"
+        - name: type
+          in: query
+          schema:
+            $ref: "#/components/schemas/AppointmentType"
+        - name: listing_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/AppointmentPage"
+        - $ref: "#/components/parameters/AppointmentPageSize"
+      responses:
+        "200":
+          description: One page (possibly empty).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReceivedAppointmentPage"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/inbox/appointments/{id}:
+    get:
+      tags: [appointments]
+      operationId: getReceivedAppointment
+      summary: One received appointment, with its timeline
+      description: "`404` for an appointment the caller may not see (another organisation's, another agent's)."
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - $ref: "#/components/parameters/AppointmentId"
+      responses:
+        "200":
+          $ref: "#/components/responses/ReceivedAppointment"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/AppointmentNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/inbox/appointments/{id}/confirm:
+    post:
+      tags: [appointments]
+      operationId: confirmReceivedAppointment
+      summary: Confirm the requested time, or accept the customer's proposed time (professional)
+      description: |
+        The body is optional. What happens depends on the appointment and on `start_utc`:
+
+        | Appointment | `start_utc` in the body | Result |
+        | --- | --- | --- |
+        | `REQUESTED` | absent, or equal to the appointment's `start_utc` | `CONFIRMED` at the requested time |
+        | `RESCHEDULE_REQUESTED`, `proposed_by` `CUSTOMER` | absent, or equal to `proposed_start_utc` | `CONFIRMED` at the customer's proposed time (**this is how a professional accepts a customer's proposal: `POST .../confirm` with no body or `{}`**) |
+        | either of the above | a **different** time | **Not confirmed.** `RESCHEDULE_REQUESTED` with that time as `proposed_start_utc` and `proposed_by` `PROFESSIONAL`; the customer must accept it (`POST /v1/me/appointments/{id}/accept`) |
+        | anything else | any | `409 INVALID_STATE` |
+
+        `duration_minutes` and `location_note`, when sent, are saved in every successful case.
+
+        `409 SLOT_TAKEN`: confirming would give the professional (the assigned user, or the
+        organisation when nobody is assigned) two `CONFIRMED` appointments that overlap.
+        Back-to-back appointments are fine. `409 INVALID_STATE` also when the time to confirm
+        has already passed. The customer is told by email.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - $ref: "#/components/parameters/AppointmentId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AppointmentConfirm"
+      responses:
+        "200":
+          $ref: "#/components/responses/ReceivedAppointment"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/AppointmentNotFound"
+        "409":
+          $ref: "#/components/responses/AppointmentConflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/inbox/appointments/{id}/reschedule:
+    post:
+      tags: [appointments]
+      operationId: rescheduleReceivedAppointment
+      summary: Propose a new time (professional)
+      description: |
+        `REQUESTED` or `CONFIRMED` -> `RESCHEDULE_REQUESTED` with `proposed_by` `PROFESSIONAL`;
+        the customer must accept. Also allowed as a counter-proposal while the customer's
+        proposal is waiting. `409 INVALID_STATE` when the professional's own proposal is still
+        waiting, or the appointment is closed. `start_utc` must differ from the current start.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - $ref: "#/components/parameters/AppointmentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AppointmentReschedule"
+      responses:
+        "200":
+          $ref: "#/components/responses/ReceivedAppointment"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/AppointmentNotFound"
+        "409":
+          $ref: "#/components/responses/AppointmentConflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/inbox/appointments/{id}/cancel:
+    post:
+      tags: [appointments]
+      operationId: cancelReceivedAppointment
+      summary: Cancel (professional); a reason is required
+      description: |
+        `REQUESTED`, `CONFIRMED` or `RESCHEDULE_REQUESTED` -> `CANCELLED` with `cancelled_by`
+        `PROFESSIONAL`. The reason is shown to the customer and sent to them by email (with
+        anything that looks like a phone number, an email address or a link removed from the
+        email).
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - $ref: "#/components/parameters/AppointmentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+                  minLength: 1
+                  maxLength: 500
+      responses:
+        "200":
+          $ref: "#/components/responses/ReceivedAppointment"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/AppointmentNotFound"
+        "409":
+          $ref: "#/components/responses/AppointmentConflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/inbox/appointments/{id}/complete:
+    post:
+      tags: [appointments]
+      operationId: completeReceivedAppointment
+      summary: Mark a confirmed appointment as having taken place
+      description: "`CONFIRMED` -> `COMPLETED`, only once the start time has passed (`409 INVALID_STATE` before). No body. Nobody is emailed."
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - $ref: "#/components/parameters/AppointmentId"
+      responses:
+        "200":
+          $ref: "#/components/responses/ReceivedAppointment"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/AppointmentNotFound"
+        "409":
+          $ref: "#/components/responses/AppointmentConflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/inbox/appointments/{id}/no-show:
+    post:
+      tags: [appointments]
+      operationId: noShowReceivedAppointment
+      summary: Mark a confirmed appointment the customer did not attend
+      description: "`CONFIRMED` -> `NO_SHOW`, only once the start time has passed (`409 INVALID_STATE` before). No body. Nobody is emailed."
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - $ref: "#/components/parameters/AppointmentId"
+      responses:
+        "200":
+          $ref: "#/components/responses/ReceivedAppointment"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/AppointmentNotFound"
+        "409":
+          $ref: "#/components/responses/AppointmentConflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/inbox/appointments/{id}/assign:
+    post:
+      tags: [appointments]
+      operationId: assignReceivedAppointment
+      summary: Assign to a member of the organisation (OWNER and MANAGER only)
+      description: |
+        Gives an open appointment of the caller's organisation to one of its members; the
+        status does not change, and a timeline entry `ASSIGNED` is added (not shown to the
+        customer). `403 FORBIDDEN` for AGENT and STAFF (and for a direct owner); `400
+        VALIDATION_FAILED` on `user_id` when that user is not an active member of the same
+        organisation; `409 INVALID_STATE` when the appointment is closed; `409 SLOT_TAKEN` when
+        the appointment is `CONFIRMED` and the new assignee already has a confirmed appointment
+        at that time.
+
+        **There is no endpoint that lists an organisation's members yet**, so a client can
+        only offer the user IDs it already knows (for example `assigned_to.user_id` of other
+        appointments).
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - $ref: "#/components/parameters/AppointmentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [user_id]
+              properties:
+                user_id:
+                  type: string
+                  format: uuid
+      responses:
+        "200":
+          $ref: "#/components/responses/ReceivedAppointment"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/AppointmentNotFound"
+        "409":
+          $ref: "#/components/responses/AppointmentConflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/inbox/summary:
+    get:
+      tags: [appointments]
+      operationId: getInboxSummary
+      summary: Badge counts for the apps
+      description: |
+        The numbers behind the app's badges, each scoped exactly as its own inbox. Any
+        signed-in caller may ask (`401` otherwise); a caller who receives nothing gets zeros,
+        never `403`.
+
+        - `property_requests.new` and `business_enquiries.new`: the requests and enquiries the
+          caller can see in `GET /v1/agent/property-requests` and
+          `GET /v1/inbox/business-enquiries`. Neither has a read or lead status yet, so "new"
+          is **every** one of them, capped at 100.
+        - `appointments.requested` and `appointments.reschedule_requested`: appointments in
+          those statuses (whoever proposed the new time). `appointments.upcoming_confirmed`:
+          `CONFIRMED` appointments that have not ended.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The counts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InboxSummary"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
 components:
   parameters:
+    AppointmentId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    AppointmentStatusFilter:
+      name: status
+      in: query
+      description: One status, or several separated by commas.
+      schema:
+        type: string
+      examples:
+        one:
+          value: REQUESTED
+        several:
+          value: REQUESTED,RESCHEDULE_REQUESTED
+    AppointmentPage:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    AppointmentPageSize:
+      name: page_size
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
     ReferenceMarket:
       name: market
       in: query
@@ -2647,6 +3375,33 @@ components:
         type: string
 
   responses:
+    CustomerAppointment:
+      description: The appointment as its customer sees it, with its timeline.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/CustomerAppointmentEnvelope"
+    ReceivedAppointment:
+      description: The appointment as the professional sees it, with the customer's contact details and the timeline.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ReceivedAppointmentEnvelope"
+    AppointmentNotFound:
+      description: "`APPOINTMENT_NOT_FOUND`: no such appointment, or it is not the caller's to see."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    AppointmentConflict:
+      description: |
+        `INVALID_STATE`: the appointment's status does not allow this (or the time concerned has
+        passed). `SLOT_TAKEN`: the professional already has a confirmed appointment that
+        overlaps. Nothing was changed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
     NotModified:
       description: The `If-None-Match` validator still matches. No body.
       headers:
@@ -4214,7 +4969,7 @@ components:
 
     PropertyRequestReceipt:
       type: object
-      required: [request_id, reference, status, created_at]
+      required: [request_id, reference, status, created_at, appointment]
       additionalProperties: false
       properties:
         request_id:
@@ -4232,3 +4987,443 @@ components:
         created_at:
           type: string
           format: date-time
+        appointment:
+          type: [object, "null"]
+          additionalProperties: false
+          required: [id, reference]
+          description: |
+            The appointment (status `REQUESTED`) created in the same transaction when the request
+            is a `VIEWING_REQUEST` or `CONSULTATION_REQUEST` with a `preferred_slot_utc`. Null
+            when there is no slot, for other request types, and when the request could not be
+            routed to anyone. A signed-in customer finds it under `/v1/me/appointments`.
+          properties:
+            id:
+              type: string
+              format: uuid
+            reference:
+              type: string
+              pattern: "^AP-[2-9A-HJKMNP-TV-Z]{8}$"
+
+    AppointmentType:
+      type: string
+      enum: [VIEWING, CONSULTATION]
+      description: "`VIEWING`: a property viewing (always tied to a listing). `CONSULTATION`: a meeting with a listing's advertiser or with a directory profile."
+
+    AppointmentStatus:
+      type: string
+      enum: [REQUESTED, CONFIRMED, RESCHEDULE_REQUESTED, COMPLETED, NO_SHOW, CANCELLED]
+      description: |
+        `REQUESTED` -> `CONFIRMED` -> `COMPLETED` | `NO_SHOW`; `REQUESTED` | `CONFIRMED` ->
+        `RESCHEDULE_REQUESTED` -> `CONFIRMED` (the other party accepts the proposed time);
+        `REQUESTED` | `CONFIRMED` | `RESCHEDULE_REQUESTED` -> `CANCELLED`. `COMPLETED`,
+        `NO_SHOW` and `CANCELLED` are final. Show `status_label` to people.
+
+    AppointmentParty:
+      type: string
+      enum: [CUSTOMER, PROFESSIONAL]
+
+    AppointmentTimelineEntry:
+      type: object
+      additionalProperties: false
+      required: [event, from, to, to_label, actor, note, start_utc, at]
+      properties:
+        event:
+          type: string
+          enum: [REQUESTED, CONFIRMED, RESCHEDULE_REQUESTED, CANCELLED, COMPLETED, NO_SHOW, ASSIGNED]
+          description: "`ASSIGNED` (an internal assignment; `from` equals `to`) is returned to the professional only."
+        from:
+          type: [string, "null"]
+          description: The status before; null for the first entry.
+        to:
+          $ref: "#/components/schemas/AppointmentStatus"
+        to_label:
+          type: string
+          examples: [Reschedule Requested]
+        actor:
+          type: string
+          enum: [CUSTOMER, PROFESSIONAL, SYSTEM]
+          description: Who did it. Never a name or an account.
+        note:
+          type: [string, "null"]
+          description: The note sent with a proposal, or the reason of a cancellation.
+        start_utc:
+          type: [string, "null"]
+          format: date-time
+          description: The time the entry is about (requested, confirmed or proposed); null when it is not about a time.
+        at:
+          type: string
+          format: date-time
+
+    Appointment:
+      type: object
+      description: What both parties see. Never contains the professional's phone number or email address.
+      required:
+        - id
+        - reference
+        - type
+        - status
+        - status_label
+        - start_utc
+        - end_utc
+        - timezone
+        - duration_minutes
+        - proposed_start_utc
+        - proposed_by
+        - listing
+        - with
+        - location_note
+        - note
+        - property_request_reference
+        - business_enquiry_reference
+        - cancelled_by
+        - cancel_reason
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        reference:
+          type: string
+          pattern: "^AP-[2-9A-HJKMNP-TV-Z]{8}$"
+          examples: [AP-7K3M9QXD]
+        type:
+          $ref: "#/components/schemas/AppointmentType"
+        status:
+          $ref: "#/components/schemas/AppointmentStatus"
+        status_label:
+          type: string
+          enum: [Requested, Confirmed, Reschedule Requested, Completed, No Show, Cancelled]
+        start_utc:
+          type: string
+          format: date-time
+          description: The requested or confirmed start. It does not change while a proposal is waiting.
+        end_utc:
+          type: string
+          format: date-time
+          description: "`start_utc` plus `duration_minutes`."
+        timezone:
+          type: string
+          description: The market's IANA time zone; show times to people in it, and name it.
+          examples: [Africa/Harare]
+        duration_minutes:
+          type: integer
+          minimum: 15
+          maximum: 240
+          default: 30
+        proposed_start_utc:
+          type: [string, "null"]
+          format: date-time
+          description: Set exactly while `status` is `RESCHEDULE_REQUESTED`.
+        proposed_by:
+          oneOf:
+            - $ref: "#/components/schemas/AppointmentParty"
+            - type: "null"
+          description: Who proposed `proposed_start_utc`; the OTHER party accepts it.
+        listing:
+          oneOf:
+            - $ref: "#/components/schemas/ListingSummary"
+            - type: "null"
+          description: |
+            The listing as it was named when the appointment was made (kept after the listing
+            expires). Null for an appointment addressed to a directory profile.
+        with:
+          type: [object, "null"]
+          additionalProperties: false
+          required: [kind, slug, name]
+          description: |
+            The public profile of the professional or business: the addressed profile, or the
+            listing's agent, else its agency. Null for a private owner (landlord or property
+            seller), who has no public profile.
+          properties:
+            kind:
+              type: string
+              description: A code from the `directory_kinds` reference set.
+            slug:
+              type: string
+            name:
+              type: string
+        location_note:
+          type: [string, "null"]
+          maxLength: 200
+          description: Where to meet, set by the professional.
+        note:
+          type: [string, "null"]
+          description: The customer's note (for an appointment made from a property request, the request's message).
+        property_request_reference:
+          type: [string, "null"]
+          description: The reference (`RP-...`) of the property request that created the appointment.
+        business_enquiry_reference:
+          type: [string, "null"]
+          description: Always null today; nothing creates an appointment from a business enquiry yet.
+        cancelled_by:
+          type: [string, "null"]
+          enum: [CUSTOMER, PROFESSIONAL, SYSTEM, null]
+        cancel_reason:
+          type: [string, "null"]
+        timeline:
+          type: array
+          description: Oldest first. Present on a single appointment (read and action responses); **absent from list items**.
+          items:
+            $ref: "#/components/schemas/AppointmentTimelineEntry"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CustomerAppointment:
+      allOf:
+        - $ref: "#/components/schemas/Appointment"
+        - type: object
+          required: [can_cancel, can_reschedule, can_accept]
+          properties:
+            can_cancel:
+              type: boolean
+              description: The appointment is still open.
+            can_reschedule:
+              type: boolean
+              description: "`REQUESTED`, `CONFIRMED`, or a professional's proposal is waiting (a counter-proposal)."
+            can_accept:
+              type: boolean
+              description: A professional's proposal is waiting and its time has not passed.
+
+    ReceivedAppointment:
+      allOf:
+        - $ref: "#/components/schemas/Appointment"
+        - type: object
+          required:
+            - listing_id
+            - organisation_id
+            - assigned_to
+            - contact
+            - preferred_contact_method
+            - can_confirm
+            - can_reschedule
+            - can_cancel
+            - can_complete
+            - can_no_show
+            - can_assign
+          properties:
+            listing_id:
+              type: [string, "null"]
+              format: uuid
+            organisation_id:
+              type: [string, "null"]
+              format: uuid
+              description: Null for a direct owner's appointment.
+            assigned_to:
+              type: [object, "null"]
+              additionalProperties: false
+              required: [user_id, name]
+              description: The member (or direct owner) it is assigned to; null means the organisation, unassigned.
+              properties:
+                user_id:
+                  type: string
+                  format: uuid
+                name:
+                  type: string
+            contact:
+              type: object
+              additionalProperties: false
+              required: [name, email, phone]
+              description: The customer's contact details. Returned only to the professional.
+              properties:
+                name:
+                  type: string
+                email:
+                  type: string
+                  format: email
+                phone:
+                  type: [string, "null"]
+            preferred_contact_method:
+              type: string
+              description: A code from the `contact_methods` reference set.
+            can_confirm:
+              type: boolean
+              description: A confirm without `start_utc` would confirm (the requested time, or the customer's proposal, is still ahead).
+            can_reschedule:
+              type: boolean
+            can_cancel:
+              type: boolean
+            can_complete:
+              type: boolean
+              description: "`CONFIRMED` and the start time has passed."
+            can_no_show:
+              type: boolean
+            can_assign:
+              type: boolean
+              description: The caller is OWNER or MANAGER of the appointment's organisation and it is open.
+
+    CustomerAppointmentEnvelope:
+      type: object
+      additionalProperties: false
+      required: [appointment]
+      properties:
+        appointment:
+          $ref: "#/components/schemas/CustomerAppointment"
+
+    ReceivedAppointmentEnvelope:
+      type: object
+      additionalProperties: false
+      required: [appointment]
+      properties:
+        appointment:
+          $ref: "#/components/schemas/ReceivedAppointment"
+
+    CustomerAppointmentPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, page_size, total, total_pages]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CustomerAppointment"
+        page:
+          type: integer
+        page_size:
+          type: integer
+        total:
+          type: integer
+        total_pages:
+          type: integer
+
+    ReceivedAppointmentPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, page_size, total, total_pages]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReceivedAppointment"
+        page:
+          type: integer
+        page_size:
+          type: integer
+        total:
+          type: integer
+        total_pages:
+          type: integer
+
+    AppointmentCreate:
+      type: object
+      additionalProperties: false
+      required: [type, start_utc, preferred_contact_method, consent]
+      properties:
+        type:
+          $ref: "#/components/schemas/AppointmentType"
+        listing_id:
+          type: string
+          format: uuid
+          description: Exactly one of `listing_id` and `recipient`. Required for a `VIEWING`.
+        recipient:
+          type: object
+          additionalProperties: false
+          required: [kind, slug]
+          description: A directory profile; `CONSULTATION` only.
+          properties:
+            kind:
+              type: string
+              description: A code from the `directory_kinds` reference set.
+            slug:
+              type: string
+        start_utc:
+          type: string
+          format: date-time
+          description: In the future and at most 12 months ahead. Seconds are kept, fractions dropped.
+        duration_minutes:
+          type: integer
+          minimum: 15
+          maximum: 240
+          default: 30
+        note:
+          type: string
+          maxLength: 1000
+          description: Plain text, no HTML.
+        preferred_contact_method:
+          type: string
+          description: A code from the `contact_methods` reference set.
+        phone:
+          type: string
+          pattern: "^\\+[1-9][0-9]{6,14}$"
+          description: E.164. Required for `PHONE` and `WHATSAPP`.
+        idempotency_key:
+          $ref: "#/components/schemas/IdempotencyKey"
+        consent:
+          type: object
+          additionalProperties: false
+          required: [privacy_version, accepted]
+          properties:
+            privacy_version:
+              type: string
+              maxLength: 32
+            accepted:
+              type: boolean
+              const: true
+
+    AppointmentReschedule:
+      type: object
+      additionalProperties: false
+      required: [start_utc]
+      properties:
+        start_utc:
+          type: string
+          format: date-time
+          description: "The proposed start: in the future, at most 12 months ahead, and different from the current start."
+        note:
+          type: string
+          maxLength: 500
+          description: Plain text, shown to the other party in the timeline.
+
+    AppointmentConfirm:
+      type: object
+      additionalProperties: false
+      properties:
+        start_utc:
+          type: string
+          format: date-time
+          description: |
+            Omit to confirm the time on the table. A different time does **not** confirm: it
+            proposes that time to the customer (see the operation).
+        duration_minutes:
+          type: integer
+          minimum: 15
+          maximum: 240
+        location_note:
+          type: string
+          maxLength: 200
+          description: Where to meet. Plain text, one line.
+
+    InboxSummary:
+      type: object
+      additionalProperties: false
+      required: [property_requests, business_enquiries, appointments]
+      properties:
+        property_requests:
+          type: object
+          additionalProperties: false
+          required: [new]
+          properties:
+            new:
+              type: integer
+        business_enquiries:
+          type: object
+          additionalProperties: false
+          required: [new]
+          properties:
+            new:
+              type: integer
+        appointments:
+          type: object
+          additionalProperties: false
+          required: [requested, reschedule_requested, upcoming_confirmed]
+          properties:
+            requested:
+              type: integer
+            reschedule_requested:
+              type: integer
+            upcoming_confirmed:
+              type: integer

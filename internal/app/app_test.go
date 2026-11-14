@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 
 	"rightproperty365.com/backend/internal/devseed"
+	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/health"
@@ -116,6 +117,7 @@ type env struct {
 	listings  *listings.MemoryStore
 	directory *directory.MemoryStore
 	onboard   *onboarding.MemoryStore
+	appts     *appointments.MemoryStore
 	files     *storage.Local
 	mail      *captureMailer
 	logs      *bytes.Buffer
@@ -154,6 +156,10 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 	devseed.SeedMemoryContent(e.listings, e.directory, e.now)
 	devseed.SeedMemoryListings(e.requests)
 	devseed.SeedMemoryProfiles(e.enquiries)
+	// Appointments start empty in tests (the sample ones are seeded by the
+	// tests that want them); a request and its appointment are stored together.
+	e.appts = appointments.NewMemoryStore()
+	e.requests.SetAppointmentWriter(e.appts.CreateLinked)
 	if err := devseed.SeedMemoryUsers(context.Background(), e.identity, hasher, seedPassword, e.now); err != nil {
 		t.Fatal(err)
 	}
@@ -181,8 +187,9 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		Identity:   e.identity,
 		Mailer:     e.mail,
 		Onboarding: e.onboard, Files: e.files,
-		Now:    func() time.Time { return e.now },
-		Hasher: &hasher,
+		Appointments: e.appts,
+		Now:          func() time.Time { return e.now },
+		Hasher:       &hasher,
 	})
 	if err != nil {
 		t.Fatal(err)

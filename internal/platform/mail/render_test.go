@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 var update = flag.Bool("update", false, "rewrite the golden files in testdata/golden")
@@ -59,8 +60,8 @@ func TestTemplatesMatchGoldenFiles(t *testing.T) {
 // Rules every email must meet, whatever its content.
 func TestEveryTemplateMeetsTheHouseRules(t *testing.T) {
 	r := testRenderer(t)
-	if len(Templates()) != 22 {
-		t.Fatalf("%d templates, want 22", len(Templates()))
+	if len(Templates()) != 28 {
+		t.Fatalf("%d templates, want 28", len(Templates()))
 	}
 	hrefRe := regexp.MustCompile(`(?:href|src)="([^"]*)"`)
 	bannedWords := regexp.MustCompile(`(?i)\b(delivered|amazing|simply|oops|awesome)\b`)
@@ -227,6 +228,26 @@ func TestWelcomeListsRolesAndWhichArePending(t *testing.T) {
 	msg, _ = r.Render("welcome", "a@example.com", d)
 	if strings.Contains(msg.Text, "waiting for verification") || strings.Contains(msg.HTML, "does not give access") {
 		t.Fatalf("no pending note is needed when nothing is pending:\n%s", msg.Text)
+	}
+}
+
+func TestAppointmentTimesNameTheMarketTimeZone(t *testing.T) {
+	at := time.Date(2026, 11, 17, 8, 0, 0, 0, time.UTC)
+	if got := LocalDateTime(at, "Africa/Harare"); got != "Tuesday 17 November 2026, 10:00 (Central Africa Time)" {
+		t.Fatalf("LocalDateTime = %q", got)
+	}
+	if got := LocalDateTime(at, "Nowhere/Unknown"); got != "Tuesday 17 November 2026, 08:00 (Coordinated Universal Time)" {
+		t.Fatalf("an unknown zone must fall back to UTC, got %q", got)
+	}
+	r := testRenderer(t)
+	for _, name := range []string{"appointment-requested", "appointment-confirmed", "appointment-new-time-proposed"} {
+		msg, err := r.Render(name, "a@example.com", SampleData(name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(msg.Text, "Tuesday 17 November 2026, 10:00 (Central Africa Time)") {
+			t.Fatalf("%s must show the time in the market's zone and name it:\n%s", name, msg.Text)
+		}
 	}
 }
 

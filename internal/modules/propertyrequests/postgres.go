@@ -20,10 +20,24 @@ const (
 // PostgresStore is the production Store. Statements use no session state and
 // one explicit short transaction, so they work on a plain PostgreSQL
 // connection and equally behind a transaction pooler (DB_POOL_MODE=transaction).
-type PostgresStore struct{ pool *pgxpool.Pool }
+type PostgresStore struct {
+	pool *pgxpool.Pool
+	// appointments inserts the appointment that belongs to a request inside
+	// the request's transaction (appointments.InsertLinkedTx).
+	appointments func(ctx context.Context, tx pgx.Tx, req NewRequest) error
+}
+
+// SetAppointmentWriter registers the function that inserts a request's
+// appointment in the same transaction.
+func (s *PostgresStore) SetAppointmentWriter(write func(ctx context.Context, tx pgx.Tx, req NewRequest) error) {
+	s.appointments = write
+}
 
 // NewPostgresStore returns a Postgres-backed store.
 func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore { return &PostgresStore{pool: pool} }
+
+// appointmentReferenceConstraint is from migrations/0011_appointments.up.sql.
+const appointmentReferenceConstraint = "appointments_reference_key"
 
 // GetListing implements Store.
 func (s *PostgresStore) GetListing(ctx context.Context, id uuid.UUID) (Listing, error) {
@@ -67,10 +81,16 @@ func (s *PostgresStore) GetListing(ctx context.Context, id uuid.UUID) (Listing, 
 // FindByIdempotencyKey implements Store.
 func (s *PostgresStore) FindByIdempotencyKey(ctx context.Context, key string) (Record, error) {
 	var rec Record
+	var appointmentID *uuid.UUID
+	var appointmentRef *string
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, reference, status, request_hash, created_at
-		FROM property_requests
-		WHERE idempotency_key = $1`, key).Scan(&rec.ID, &rec.Reference, &rec.Status, &rec.RequestHash, &rec.CreatedAt)
+		SELECT pr.id, pr.reference, pr.status, pr.request_hash, pr.created_at, a.id, a.reference
+		FROM property_requests pr
+		LEFT JOIN appointments a ON a.property_request_id = pr.id
+		WHERE pr.idempotency_key = $1`, key).Scan(&rec.ID, &rec.Reference, &rec.Status, &rec.RequestHash, &rec.CreatedAt, &appointmentID, &appointmentRef)
+	if err == nil && appointmentID != nil && appointmentRef != nil {
+		rec.Appointment = &AppointmentRef{ID: *appointmentID, Reference: *appointmentRef}
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Record{}, ErrNotFound
 	}
@@ -183,10 +203,28 @@ func (s *PostgresStore) Create(ctx context.Context, req NewRequest) (Record, boo
 		return Record{}, false, fmt.Errorf("insert outbox event: %w", err)
 	}
 
+	rec := Record{ID: req.ID, Reference: req.Reference, Status: req.Status, RequestHash: req.RequestHash, CreatedAt: req.CreatedAt}
+	if req.Appointment != nil {
+		if s.appointments == nil {
+			return Record{}, false, errors.New("no appointment writer is configured")
+		}
+		// Same transaction: the request and its appointment commit together.
+		// A taken appointment reference fails the whole transaction and is
+		// reported as ErrReferenceCollision; the service retries with new ones.
+		if err := s.appointments(ctx, tx, req); err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation && pgErr.ConstraintName == appointmentReferenceConstraint {
+				return Record{}, false, ErrReferenceCollision
+			}
+			return Record{}, false, fmt.Errorf("insert appointment: %w", err)
+		}
+		rec.Appointment = &AppointmentRef{ID: req.Appointment.ID, Reference: req.Appointment.Reference}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return Record{}, false, fmt.Errorf("commit: %w", err)
 	}
-	return Record{ID: req.ID, Reference: req.Reference, Status: req.Status, RequestHash: req.RequestHash, CreatedAt: req.CreatedAt}, true, nil
+	return rec, true, nil
 }
 
 // ListInbox implements Store. Organisation IDs are passed as text arrays and

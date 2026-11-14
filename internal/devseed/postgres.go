@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/markets"
@@ -258,6 +259,14 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 				return fmt.Errorf("seed profile %s/%s: that kind and slug already belong to a different profile in this database", p.Kind, p.Slug)
 			}
 			return fmt.Errorf("seed profile %s/%s: %w", p.Kind, p.Slug, err)
+		}
+	}
+
+	// Sample appointments (needs migration 0011), replaced on every run.
+	// No events: nobody is emailed about sample data.
+	for _, s := range Appointments(now) {
+		if err := appointments.SeedTx(ctx, tx, s.Appointment, s.Timeline...); err != nil {
+			return fmt.Errorf("seed appointment %s: %w", s.Appointment.Reference, err)
 		}
 	}
 

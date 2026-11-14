@@ -1,0 +1,18 @@
+{{define "subject"}}Appointment confirmed: {{.Reference}}{{end}}
+{{define "heading"}}Your appointment is confirmed{{end}}
+{{define "button"}}View your appointments{{end}}
+{{define "why"}}You are receiving this because you asked for an appointment on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+Your appointment is confirmed for the time below.
+
+Reference: {{.Reference}}
+Appointment: {{.AppointmentType}}
+{{if .ListingTitle}}Property: {{.ListingTitle}}
+{{end}}{{if .ListingRef}}Listing reference: {{.ListingRef}}
+{{end}}{{if .WithName}}With: {{.WithName}}
+{{end}}Time: {{.AppointmentTime}}
+{{if .Location}}Location: {{.Location}}
+{{end}}Status: {{.StatusText}}
+
+If you can no longer attend, cancel the appointment or propose a new time from your account.{{end}}

@@ -48,10 +48,11 @@ func (s *Service) allowed(ctx context.Context) (allowed, error) {
 }
 
 type Service struct {
-	vocab  Vocabulary
-	store  Store
-	now    func() time.Time
-	newRef func() (string, error)
+	planner AppointmentPlanner
+	vocab   Vocabulary
+	store   Store
+	now     func() time.Time
+	newRef  func() (string, error)
 }
 
 // Option customises a Service (used by tests).
@@ -64,6 +65,10 @@ func WithClock(now func() time.Time) Option { return func(s *Service) { s.now = 
 func WithReferenceGenerator(f func() (string, error)) Option {
 	return func(s *Service) { s.newRef = f }
 }
+
+// WithAppointmentPlanner makes viewing and consultation requests that carry a
+// preferred slot create an appointment in the same transaction.
+func WithAppointmentPlanner(p AppointmentPlanner) Option { return func(s *Service) { s.planner = p } }
 
 // NewService builds a Service on the given store.
 func NewService(store Store, opts ...Option) *Service {
@@ -147,6 +152,13 @@ func (s *Service) Create(ctx context.Context, in Input, headerIdempotencyKey str
 		if req.Reference, err = s.newRef(); err != nil {
 			return Result{}, fmt.Errorf("generate reference: %w", err)
 		}
+		if s.planner != nil {
+			// Planned on every attempt, so a reference collision also gets a
+			// fresh appointment reference.
+			if req.Appointment, err = s.planner.PlanAppointment(ctx, req); err != nil {
+				return Result{}, fmt.Errorf("plan appointment: %w", err)
+			}
+		}
 		rec, created, err := s.store.Create(ctx, req)
 		switch {
 		case errors.Is(err, ErrReferenceCollision):
@@ -213,11 +225,12 @@ func replay(rec Record, hash string) (Result, error) {
 // RECEIVED, whatever the internal status is.
 func result(rec Record, replayed bool) Result {
 	return Result{
-		RequestID: rec.ID,
-		Reference: rec.Reference,
-		Status:    StatusReceived,
-		CreatedAt: rec.CreatedAt.UTC(),
-		Replayed:  replayed,
+		RequestID:   rec.ID,
+		Reference:   rec.Reference,
+		Status:      StatusReceived,
+		CreatedAt:   rec.CreatedAt.UTC(),
+		Appointment: rec.Appointment,
+		Replayed:    replayed,
 	}
 }
 
