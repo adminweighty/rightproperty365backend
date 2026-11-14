@@ -181,6 +181,51 @@ func (s *PostgresStore) CountByCountry(ctx context.Context, now time.Time) (map[
 	return out, rows.Err()
 }
 
+// Owned implements Store.
+func (s *PostgresStore) Owned(ctx context.Context, organisationIDs []uuid.UUID, sellerUserID *uuid.UUID) ([]Record, error) {
+	if len(organisationIDs) == 0 && sellerUserID == nil {
+		return nil, nil
+	}
+	return s.records(ctx, `l.slug IS NOT NULL AND (l.organisation_id = ANY($1::uuid[]) OR l.seller_user_id = $2)
+		ORDER BY l.published_at DESC NULLS LAST, l.id`, idStrings(organisationIDs), sellerUserID)
+}
+
+// SetStayRules implements Store. The change and the event that tells the
+// search index about it are written in one transaction.
+func (s *PostgresStore) SetStayRules(ctx context.Context, id uuid.UUID, minNights, maxGuests *int, now time.Time) (Record, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Record{}, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	tag, err := tx.Exec(ctx, `
+		UPDATE listings SET min_nights = COALESCE($2, min_nights), max_guests = COALESCE($3, max_guests), updated_at = $4
+		WHERE id = $1 AND category = 'short-stay'`, id, minNights, maxGuests, now)
+	if err != nil {
+		return Record{}, fmt.Errorf("set stay rules: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return Record{}, ErrNotFound
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO outbox_events (id, event_type, aggregate_type, aggregate_id, payload, created_at, available_at)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $6)`,
+		uuid.New(), EventListingUpdated, AggregateListing, id, fmt.Sprintf(`{"listing_id":%q}`, id), now); err != nil {
+		return Record{}, fmt.Errorf("set stay rules event: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Record{}, err
+	}
+	records, err := s.ByIDs(ctx, []uuid.UUID{id})
+	if err != nil {
+		return Record{}, err
+	}
+	if len(records) == 0 {
+		return Record{}, ErrNotFound
+	}
+	return records[0], nil
+}
+
 // PublishedSlugs implements Store.
 func (s *PostgresStore) PublishedSlugs(ctx context.Context, now time.Time) ([]SlugEntry, error) {
 	rows, err := s.pool.Query(ctx, `SELECT l.slug, l.updated_at FROM listings l WHERE `+publicCondition+` ORDER BY l.published_at DESC, l.id`, now)
@@ -294,6 +339,16 @@ func where(q Query, now time.Time, skip string) *builder {
 	}
 	for _, f := range q.Features {
 		b.add(`EXISTS (SELECT 1 FROM listing_features lf WHERE lf.listing_id = l.id AND lf.feature_code = %s)`, f)
+	}
+	// A stay: never skipped, so every facet is counted with it applied.
+	if q.Stay != nil {
+		b.add(`COALESCE(l.min_nights, 1) <= %s`, q.Stay.Nights)
+		if len(q.Stay.ExcludeIDs) > 0 {
+			b.add(`l.id <> ALL(%s::uuid[])`, idStrings(q.Stay.ExcludeIDs))
+		}
+		if len(q.Stay.ExcludeCountries) > 0 {
+			b.add(`mk.code <> ALL(%s::text[])`, q.Stay.ExcludeCountries)
+		}
 	}
 	if skip != "price" && q.priced() {
 		b.add(`l.currency_code = %s`, currencyOf(q))

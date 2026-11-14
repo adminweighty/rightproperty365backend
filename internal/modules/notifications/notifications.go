@@ -74,6 +74,8 @@ type PropertyRequestInfo struct {
 	Message     string
 	CreatedAt   time.Time
 	Customer    Person
+	// Stay is the dates, nights and guests of a request to stay; nil otherwise.
+	Stay *propertyrequests.StayDetails
 	// Recipients are the people the request was routed to: the assigned agent
 	// or direct seller, otherwise the organisation's owners and managers.
 	// Empty for a routing exception.
@@ -445,20 +447,25 @@ func (h *Handlers) build(ctx context.Context, ev outbox.Event) ([]mail.Notificat
 			return nil, err
 		}
 		requestType := mail.RequestTypeName(info.RequestType)
+		// A request to stay says which nights and how many guests.
+		stay := ""
+		if info.Stay != nil {
+			stay = mail.StayText(info.Stay.CheckIn, info.Stay.CheckOut, info.Stay.Nights, info.Stay.Guests)
+		}
 		var listingTitle, listingRef string
 		if h.listing != nil {
 			listingTitle, listingRef, _ = h.listing(ctx, info.ListingID)
 		}
 		if err := add("property-request-received", "customer", info.Customer, mail.Data{
 			Name: info.Customer.Name, Path: PathHome, Reference: info.Reference, RequestType: requestType, When: info.CreatedAt,
-			ListingTitle: listingTitle, ListingRef: listingRef,
+			ListingTitle: listingTitle, ListingRef: listingRef, Stay: stay,
 		}); err != nil {
 			return nil, err
 		}
 		for _, r := range info.Recipients {
 			if err := add("property-request-new", recipientKey(r), r, mail.Data{
 				Name: r.Name, Path: PathInbox, Reference: info.Reference, RequestType: requestType,
-				ListingTitle: listingTitle, ListingRef: listingRef,
+				ListingTitle: listingTitle, ListingRef: listingRef, Stay: stay,
 				Preview: mail.SafePreview(info.Message, previewLength), When: info.CreatedAt,
 			}); err != nil {
 				return nil, err

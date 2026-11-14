@@ -17,6 +17,7 @@ import (
 	"rightproperty365.com/backend/internal/app"
 	"rightproperty365.com/backend/internal/devseed"
 	"rightproperty365.com/backend/internal/modules/appointments"
+	"rightproperty365.com/backend/internal/modules/availability"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/health"
@@ -89,9 +90,11 @@ func run() error {
 		enquiryStore     businessenquiries.Store
 		referenceStore   reference.Store
 		listingStore     listings.Store
-		listingSearch    listings.Search
-		directoryStore   directory.Store
-		healthH          *health.Handler
+		// availabilityStore holds the calendars of the short stays.
+		availabilityStore availability.Store
+		listingSearch     listings.Search
+		directoryStore    directory.Store
+		healthH           *health.Handler
 	)
 	if cfg.UseMemoryStore() {
 		// config.Load guarantees this branch is only reachable in development.
@@ -118,6 +121,10 @@ func run() error {
 		memRequests.SetAppointmentWriter(memAppointments.CreateLinked)
 		devseed.SeedMemoryAppointments(memAppointments, time.Now())
 		appointmentStore = memAppointments
+		// Availability of the sample short stays: a booked week, a blocked weekend.
+		memAvailability := availability.NewMemoryStore()
+		devseed.SeedMemoryAvailability(memAvailability, time.Now())
+		availabilityStore = memAvailability
 		healthH = health.NewHandler(health.StoreMemory, nil, logger)
 
 		memIdentity := identity.NewMemoryStore()
@@ -201,6 +208,7 @@ func run() error {
 		pgRequests.SetAppointmentWriter(appointments.InsertLinkedTx)
 		requestStore = pgRequests
 		appointmentStore = appointments.NewPostgresStore(pool)
+		availabilityStore = availability.NewPostgresStore(pool)
 		identityStore = identity.NewPostgresStore(pool)
 		enquiryStore = businessenquiries.NewPostgresStore(pool)
 		referenceStore = reference.NewPostgresStore(pool)
@@ -252,6 +260,7 @@ func run() error {
 		Mailer:        mailer,
 		Onboarding:    onboardingStore,
 		Appointments:  appointmentStore,
+		Availability:  availabilityStore,
 		Files:         files,
 	})
 	if err != nil {

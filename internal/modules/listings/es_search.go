@@ -141,6 +141,27 @@ func BuildSearchBody(q Query, now time.Time) J {
 	for _, f := range q.Features { // every feature must be present
 		filter = append(filter, J{"term": J{"features": f}})
 	}
+	// A stay. The index holds no availability data: the listings that are
+	// not free were resolved from the database and are excluded by ID. It is
+	// part of the main filter, so hits, the total and every facet are
+	// computed with it applied.
+	if q.Stay != nil {
+		// A short stay without a minimum is one night.
+		filter = append(filter, J{"bool": J{"should": []any{
+			J{"range": J{"min_nights": J{"lte": q.Stay.Nights}}},
+			J{"bool": J{"must_not": []any{J{"exists": J{"field": "min_nights"}}}}},
+		}, "minimum_should_match": 1}})
+		var excluded []any
+		if len(q.Stay.ExcludeIDs) > 0 {
+			excluded = append(excluded, J{"ids": J{"values": idStrings(q.Stay.ExcludeIDs)}})
+		}
+		if len(q.Stay.ExcludeCountries) > 0 {
+			excluded = append(excluded, J{"terms": J{"market": q.Stay.ExcludeCountries}})
+		}
+		if len(excluded) > 0 {
+			filter = append(filter, J{"bool": J{"must_not": excluded}})
+		}
+	}
 	boolQuery := J{"filter": filter}
 	words := terms(q.Q)
 	if len(words) > 0 {

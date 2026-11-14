@@ -675,6 +675,9 @@ func publicGETs(e *env) []string {
 	// A country without reference places (free-text city and region).
 	paths = append(paths, "/v1/listings?country=MU", "/v1/listings?q=grand+baie", "/v1/listings?country=FR", "/v1/directory/hosts?country=MU",
 		"/v1/reference/cities?market=MU")
+	// Availability calendars of the short stays, and a search by stay.
+	paths = append(paths, "/v1/listings/safari-lodge-victoria-falls/availability", "/v1/listings/serviced-apartment-shoreditch/availability?from=2026-12-01&to=2026-12-31",
+		"/v1/listings?check_in=2026-11-20&check_out=2026-11-23")
 	// The United Kingdom and the short stays.
 	paths = append(paths, "/v1/listings?country=GB", "/v1/listings?category=short-stay&guests_min=2", "/v1/listings?q=airbnb",
 		"/v1/reference/regions?market=GB", "/v1/reference/price_periods", "/v1/directory/agencies?country=GB", "/v1/directory/hosts?region=scotland")
@@ -720,6 +723,9 @@ func TestPublicResponsesCarryNoContactDetails(t *testing.T) {
 	// ...including an onboarding application with a private phone number, a
 	// registration number and documents, approved into a public profile.
 	approved := e.approveSeededProvider()
+	// ...and availability calendars with private reasons and notes.
+	devseed.SeedMemoryAvailability(e.calendars, e.now)
+	newCast(e).setCalendar("sample-falls-stays@example.test", 22, change("2026-11-02", "2026-11-04", "BOOKED", "Tariro Moyo, +263 77 123 4567, tariro@example.com"))
 
 	paths := append(publicGETs(e), "/v1/directory/service-providers/"+approved, "/v1/onboarding/requirements")
 	if len(paths) < 70 {
@@ -753,7 +759,8 @@ func TestPublicResponsesCarryNoContactDetails(t *testing.T) {
 			}
 		})
 		for _, private := range []string{"@example.test", "@example.com", "tariro", "+263", "771234567", "enquiries@", "password",
-			"770000001", "sample-0001", "pamela", "pending.provider", "devseed", "object_key", "sha256"} {
+			"770000001", "sample-0001", "pamela", "pending.provider", "devseed", "object_key", "sha256",
+			"sample booking", "owner's weekend", `"reason"`, `"note"`, "first_night", "updated_by"} {
 			if strings.Contains(strings.ToLower(body), private) {
 				t.Fatalf("%s contains %q", path, private)
 			}

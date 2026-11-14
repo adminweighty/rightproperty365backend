@@ -299,6 +299,29 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 		}
 	}
 
+	// Availability of the sample short stays (needs migration 0015): each
+	// one's calendar is replaced, so a re-run resets it. Nothing else is touched.
+	for _, c := range AvailabilitySamples(now) {
+		if _, err := tx.Exec(ctx, `DELETE FROM listing_availability WHERE listing_id = $1`, c.ListingID); err != nil {
+			return fmt.Errorf("seed availability of %s: %w", c.ListingID, err)
+		}
+		for _, r := range c.Ranges {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO listing_availability (id, listing_id, first_night, last_night, reason, note, updated_at, updated_by)
+				VALUES ($1, $2, $3::text::date, $4::text::date, $5, NULLIF($6, ''), $7, $8)`,
+				r.ID, c.ListingID, r.First.String(), r.Last.String(), r.Reason, r.Note, r.UpdatedAt, r.UpdatedBy); err != nil {
+				return fmt.Errorf("seed availability of %s: %w", c.ListingID, err)
+			}
+		}
+		var updated *time.Time
+		if len(c.Ranges) > 0 {
+			updated = &now
+		}
+		if _, err := tx.Exec(ctx, `UPDATE listings SET availability_updated_at = $2 WHERE id = $1`, c.ListingID, updated); err != nil {
+			return fmt.Errorf("seed availability of %s: %w", c.ListingID, err)
+		}
+	}
+
 	// The two onboarding demo accounts (needs migration 0009). Their sample
 	// documents are written to the configured file storage.
 	if err := seedPostgresOnboarding(ctx, tx, files, hash, now); err != nil {

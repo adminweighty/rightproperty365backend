@@ -233,6 +233,7 @@ func (s *MemoryStore) ListInbox(_ context.Context, scope InboxScope) ([]InboxIte
 			PreferredContactMethod: req.PreferredContactMethod,
 			Contact:                InboxContact{Name: req.GuestName, Email: req.GuestEmail},
 			CreatedAt:              req.CreatedAt,
+			Stay:                   req.Stay,
 		}
 		if req.GuestPhone != "" {
 			phone := req.GuestPhone

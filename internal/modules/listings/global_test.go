@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // globalStore is placesStore plus a short stay in Mauritius: a country
@@ -293,5 +295,90 @@ func TestListingPlaceRules(t *testing.T) {
 	free.City, free.Suburb, free.CityName, free.RegionName, free.MarketCode = "", "", strings.Repeat("é", 80), "Rivière du Rempart", "MU"
 	if err := CheckRecord(free); err != nil {
 		t.Fatalf("a free-text place of 80 characters: %v", err)
+	}
+}
+
+// A stay (check_in / check_out) is resolved from the database into listing
+// IDs to leave out. That exclusion reaches the Elasticsearch query and the
+// database adapter's SQL as part of the MAIN filter, so hits, the total and
+// every facet are computed with it applied; the index holds no availability.
+func TestStayExclusionReachesEveryAdapter(t *testing.T) {
+	stay := &Stay{Nights: 3, ExcludeCountries: []string{"MU"}, ExcludeIDs: []uuid.UUID{
+		uuid.MustParse("0195c0de-0000-7000-8000-000000000022"), uuid.MustParse("0195c0de-0000-7000-8000-000000000023"),
+	}}
+	q := Query{Category: CategoryShortStay, City: "harare", Stay: stay, Sort: SortNewest, Page: 1, PageSize: 12}
+	raw, _ := json.Marshal(BuildSearchBody(q, esNow))
+	var body struct {
+		Query struct {
+			Bool struct {
+				Filter []json.RawMessage `json:"filter"`
+			} `json:"bool"`
+		} `json:"query"`
+		PostFilter json.RawMessage `json:"post_filter"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatal(err)
+	}
+	var main []string
+	for _, f := range body.Query.Bool.Filter {
+		main = append(main, string(f))
+	}
+	filter := strings.Join(main, " ")
+	for _, want := range []string{
+		`{"bool":{"must_not":[{"ids":{"values":["0195c0de-0000-7000-8000-000000000022","0195c0de-0000-7000-8000-000000000023"]}},{"terms":{"market":["MU"]}}]}}`,
+		`{"range":{"min_nights":{"lte":3}}}`, `{"bool":{"must_not":[{"exists":{"field":"min_nights"}}]}}`,
+	} {
+		if !strings.Contains(filter, want) {
+			t.Fatalf("the main filter lacks %s:\n%s", want, filter)
+		}
+	}
+	if strings.Contains(string(body.PostFilter), `"ids"`) || !strings.Contains(string(body.PostFilter), `"category"`) {
+		t.Fatalf("the exclusion must not be a post_filter (facets would ignore it): %s", body.PostFilter)
+	}
+	// No availability field is asked of the index.
+	for _, field := range []string{"availab", "check_in", "booked", "blocked"} {
+		if strings.Contains(strings.ToLower(string(raw)), field) || strings.Contains(strings.ToLower(string(IndexMapping)), field) {
+			t.Fatalf("the index or the query knows about %q", field)
+		}
+	}
+	if plain, _ := json.Marshal(BuildSearchBody(Query{Sort: SortNewest, Page: 1, PageSize: 12}, esNow)); strings.Contains(string(plain), `"ids"`) || strings.Contains(string(plain), "min_nights") {
+		t.Fatalf("a search without a stay excludes something: %s", plain)
+	}
+	// The database adapter: also in the WHERE of every facet (whatever it skips).
+	for _, skip := range []string{"", "category", "city", "country", "price", "bedrooms"} {
+		b := where(q, esNow, skip)
+		sql := b.sql()
+		for _, want := range []string{`COALESCE(l.min_nights, 1) <= $`, `l.id <> ALL($`, `mk.code <> ALL($`} {
+			if !strings.Contains(sql, want) {
+				t.Fatalf("WHERE (skip %q) lacks %q:\n%s", skip, want, sql)
+			}
+		}
+		if strings.Count(sql, "$") != len(b.args) {
+			t.Fatalf("placeholders and arguments differ: %s %v", sql, b.args)
+		}
+	}
+	// The memory adapter.
+	store, svc := globalStore(t)
+	two := 2
+	store.Put(filterRecord(5, func(r *Record) {
+		r.Category, r.Deal, r.PricePeriod, r.MinNights = CategoryShortStay, DealRent, PricePeriodNight, &two
+	}))
+	all := Query{Category: CategoryShortStay, Sort: SortNewest, Page: 1, PageSize: 12, Stay: &Stay{Nights: 2}}
+	page, err := svc.Find(context.Background(), all)
+	if err != nil || page.Total != 1 || facetCodes(page.Facets.Country) != "ZW" {
+		t.Fatalf("a stay nobody is excluded from: %+v %v", page, err)
+	}
+	for name, s := range map[string]*Stay{
+		"excluded by ID":      {Nights: 2, ExcludeIDs: []uuid.UUID{page.Items[0].ID}},
+		"excluded by country": {Nights: 2, ExcludeCountries: []string{"ZW"}},
+		"too short a stay":    {Nights: 1},
+	} {
+		all.Stay = s
+		page, err := svc.Find(context.Background(), all)
+		// (The category facet leaves out its own filter, as every facet does,
+		// so it still offers the other categories; everything else is empty.)
+		if err != nil || page.Total != 0 || len(page.Facets.Country) != 0 || len(page.Facets.City) != 0 || len(page.Facets.Currencies) != 0 {
+			t.Fatalf("%s: %+v %v", name, page, err)
+		}
 	}
 }

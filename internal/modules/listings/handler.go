@@ -132,6 +132,15 @@ func parseQuery(v url.Values) (Query, map[string]string) {
 			q.GuestsMin = &n
 		}
 	}
+	// A stay: both dates or neither. Their format and range are checked by
+	// the Service, which also resolves which listings are free.
+	q.CheckIn, q.CheckOut = strings.TrimSpace(v.Get("check_in")), strings.TrimSpace(v.Get("check_out"))
+	switch {
+	case q.CheckIn != "" && q.CheckOut == "":
+		fields["check_out"] = "is required with check_in"
+	case q.CheckOut != "" && q.CheckIn == "":
+		fields["check_in"] = "is required with check_out"
+	}
 	if raw := v.Get("listed_within_days"); raw != "" {
 		n, err := strconv.Atoi(raw)
 		if err != nil || n < 1 || n > 365 {

@@ -253,6 +253,10 @@ All configuration comes from environment variables. For local development you ma
 | GET, POST | `/v1/me/appointments`, `/{id}`, `/{id}/cancel`, `/{id}/reschedule`, `/{id}/accept` | The customer's own appointments |
 | GET, POST | `/v1/inbox/appointments`, `/{id}`, `/{id}/confirm`, `/reschedule`, `/cancel`, `/complete`, `/no-show`, `/assign` | Appointments received by a professional (list, calendar and actions) |
 | GET | `/v1/inbox/summary` | Badge counts: new requests, new enquiries, appointments |
+| GET | `/v1/listings/{slug}/availability` | A short stay's calendar as the public sees it: available or not per night |
+| GET | `/v1/me/listings` | The listings the caller may manage (read-only summaries) |
+| GET, PUT | `/v1/me/listings/{id}/availability` | The lister's calendar of a short stay: read it, mark nights available, blocked or booked |
+| PATCH | `/v1/me/listings/{id}/stay-rules` | A short stay's `min_nights` and `max_guests` |
 
 Every error uses one envelope, and `trace_id` equals the `X-Request-Id` response header:
 
@@ -419,7 +423,7 @@ REQUESTED | CONFIRMED | RESCHEDULE_REQUESTED ──cancel──> CANCELLED
   `consumer@example.test`.
 
 **Not built** (appointments): venue and showroom hourly bookings, short-stay bookings,
-availability calendars and slot configuration (any future time can be requested), ICS invites,
+appointment slot configuration (any future time can be requested), ICS invites,
 calendar sync, reminders, push notifications, an endpoint listing an organisation's members (so
 `assign` needs a user ID the client already knows), appointments created from business enquiries
 (`business_enquiry_id` exists and is always null), and automatic expiry of requests that were
@@ -584,9 +588,103 @@ property types are `holiday-home`, `serviced-apartment`, `guest-house`, `private
   `HOST` role and organisation, directory "Hosts and Venues"), property managers, developers,
   law firms and individual owners can own such listings. A listing's `advertiser.agency` is the
   owning organisation's own profile, so for a host it has `kind: hosts`.
-- **Not built: booking.** There is no availability calendar, no booking, no payment and no
-  nightly-rate rules. **A short stay today is a listing people enquire about**, through
-  `POST /v1/property-requests`, exactly like any other listing.
+- **Availability** — which nights are free, set by the lister and shown to the public — is
+  built: see "Availability calendar for short stays". **Not built: booking.** There is no
+  booking, no payment and no nightly-rate rules. A short stay is still a listing people
+  enquire about, through `POST /v1/property-requests` (now with a "Request to stay" type).
+
+## Availability calendar for short stays
+
+> "Yes the lister must show it's availability for short stay" (the project owner, 2026-11-14)
+
+Whoever lists a short stay (category `short-stay`) says which nights are free, and the public
+sees it. **It is not a booking engine: there are no payments, no instant booking and no
+holds.** A guest *asks* to stay; the lister answers and marks the nights themselves.
+
+**How it works**
+
+- **Dates are calendar nights in the time zone of the listing's country**, written
+  `YYYY-MM-DD`, with no time of day. A stay from `check_in` to `check_out` occupies the nights
+  `check_in` .. `check_out - 1`: the day of leaving is not a night.
+- **Every night is available unless marked otherwise**, inside a booking window from today
+  (in that time zone) to **365 days** ahead. Nights in the past or beyond the window are
+  never available. "Today" is the listing's own: at 22:30 UTC it is already tomorrow in
+  Harare and still today in London.
+- The lister marks runs of nights **unavailable** with a private reason — `BLOCKED` (their
+  choice) or `BOOKED` (taken) — and an optional private note (plain text, at most 200
+  characters). Ranges `[first_night, last_night]` are stored per listing
+  (`listing_availability`); neighbours with the same reason and note are merged; making
+  nights available again removes or splits ranges (`availability.Apply`, a pure function).
+- `listings.availability_updated_at` records the last change, and every change is one row of
+  an audit trail (`listing_availability_audit`: who, which nights, what, when). **No endpoint
+  returns the trail yet.**
+- **Reasons, notes and who changed what are private to the lister.** The public gets
+  `available: true | false` per night and nothing else; a test walks the public responses for
+  it.
+
+| Method | Path | Who | What |
+| --- | --- | --- | --- |
+| GET | `/v1/me/listings?category=&status=&page=&page_size=` | lister | The listings the caller may manage, as summaries. **Read-only: creating and editing listings is still not built** |
+| GET | `/v1/me/listings/{id}/availability?from=&to=` | lister | The calendar with reasons, notes and the stored ranges (default today .. +90 days; at most 366 nights) |
+| PUT | `/v1/me/listings/{id}/availability` | lister | `{"changes":[{"from","to","status":"AVAILABLE"\|"BLOCKED"\|"BOOKED","note"?}]}`: 1–50 changes, applied in order, atomically |
+| PATCH | `/v1/me/listings/{id}/stay-rules` | lister | `{min_nights?, max_guests?}` (1–365 / 1–50) |
+| GET | `/v1/listings/{slug}/availability?from=&to=` | public | `{listing: {slug}, timezone, min_nights, max_guests, from, to, days: [{date, available}], availability_updated_at}`; cacheable like the listing |
+
+- **Who is a lister** (`internal/platform/auth/capabilities.go`: `MayManageListing`,
+  `ManagesListings`, `ListingOrganisationIDs`): an `OWNER`, `MANAGER` or `AGENT` of the
+  organisation that owns the listing (kinds that manage listings: agency, law firm, property
+  manager, developer, host) — for **all** of that organisation's listings, not only the ones
+  assigned to them — or the **approved** direct owner (Landlord or Property Seller) of the
+  listing. `STAFF` and service providers manage no listings. A listing the caller may not
+  manage is `404` (as if it did not exist); a caller who manages no listings at all gets
+  `403` on the list.
+- **Errors**: `400 VALIDATION_FAILED` with field paths such as `changes[1].to`; `409
+  NOT_SHORT_STAY` for a listing of another category; `404` / `410` on the public endpoint
+  exactly as for the listing itself. Changes are rate limited per IP (bursts of 30, 30 per
+  minute) and follow the CSRF rule for cookie sessions.
+- **On the listing**: `availability: {updated_at, next_available} | null` — null for every
+  listing that is not a short stay; `updated_at` is null until the lister first changes the
+  calendar; `next_available` is the first free night from today on, or null when the window
+  has none.
+- **Search by stay**: `GET /v1/listings?check_in=2026-12-24&check_out=2026-12-27` (both or
+  neither; 1–90 nights; inside the window) keeps the short stays that are free for **every**
+  night of the stay and whose `min_nights` it satisfies (add `guests_min` for the guests).
+  It implies `category=short-stay`; another category is `400`. The listings that are not free
+  are **resolved from the database on every search** and handed to the search adapter as an
+  exclusion (`listings.Stay`: listing IDs, plus the countries where the stay is outside the
+  window because today differs by time zone). So all three adapters exclude exactly the same
+  listings, **Elasticsearch holds no availability data, and a calendar change needs no
+  reindex**. Facet counts are computed with the exclusion applied in all three adapters (it
+  is part of the main filter, not the post-filter). The one thing to know: the `category`
+  facet leaves out its own filter, as every facet does, so it still lists the other
+  categories next to `short-stay`.
+- **Requests to stay**: `POST /v1/property-requests` with `request_type: "STAY_REQUEST"`
+  ("Request to stay", a row of the `request_types` reference set) and `check_in`,
+  `check_out`, `guests`. Valid only for a short stay; inside the window, at least
+  `min_nights`, at most `max_guests`: otherwise `400`. Every night must be available right
+  now: otherwise `409 DATES_UNAVAILABLE`, with the first unavailable night under
+  `fields.check_in`. **It is still an enquiry: it does not block the dates and creates no
+  appointment.** Two people can ask for the same nights. The inbox item
+  (`GET /v1/agent/property-requests`) gains `stay: {check_in, check_out, nights, guests} |
+  null`, and the two request emails print "Stay: Saturday 5 December 2026 to Tuesday 8
+  December 2026 (3 nights, 2 guests)". The lister then marks the nights `BOOKED`.
+- **Sample data** (memory and `cmd/seed`, relative to the moment of seeding): the Victoria
+  Falls lodge (22) has a booked week (days +10 to +16) and a blocked weekend (the first
+  Saturday and Sunday at least three weeks ahead); the London apartment (21) three booked
+  nights (+5 to +7); the Harare guest house (23) the same blocked weekend; the villa in
+  Mauritius (24) is free throughout. Sign in as `sample-falls-stays@example.test` to manage
+  22 and 24.
+
+**Not built** (availability): payments; instant booking; holds on dates and their expiry (a
+request to stay reserves nothing); iCal import / export and calendar sync with other
+platforms; seasonal pricing; per-night price overrides; a booking record or a guest's "my
+stays"; an endpoint for the audit trail; changing anything else about a listing.
+
+**Not verified:** migration `0015`, the Postgres store (the row lock, the replace-in-one-
+transaction, the overlap query), the stay columns of `property_requests`, the `SetStayRules`
+transaction and the `cmd/seed` rows have never run against a database, and the Elasticsearch
+exclusion (`ids` and `terms` inside `must_not`) only against a fake transport. Everything
+above is tested on the in-memory stores and by query-builder tests.
 
 ## Listings and directories: the public catalogue
 
@@ -929,7 +1027,12 @@ So that nobody assumes these exist. They are in the updated functional specifica
 - agency principals assigning leads;
 - rental applications;
 - appointments beyond viewings and consultations (see "Appointments": venue and short-stay
-  bookings, availability calendars, ICS invites, calendar sync, reminders);
+  bookings, slot configuration, ICS invites, calendar sync, reminders);
+- short-stay **bookings**: payments, instant booking, holds, iCal sync, seasonal and per-night
+  pricing (the availability calendar itself is built: see "Availability calendar for short
+  stays");
+- creating, editing and publishing listings (only a short stay's calendar and stay rules can
+  be changed through the API);
 - subscription plans, and admin-recorded payments, invoices and receipts (the specification has no
   online payment in the mobile app);
 - per-country **legal texts, payment gateways and tax rules** (see "Countries": any country can
@@ -1106,7 +1209,7 @@ Optional `?market=ZW` keeps that market's rows plus the rows that apply everywhe
 | `property_categories` | 4 | `residential`, `commercial`, `land`, `short-stay` (with a description) |
 | `property_types` | 12 | `parent_code` is the category; five are short-stay types |
 | `price_periods` | 2 | `month` "per month", `night` "per night" |
-| `request_types` | 4 | the `request_type` of a property request |
+| `request_types` | 5 | the `request_type` of a property request; `STAY_REQUEST` ("Request to stay") is for short stays only |
 | `contact_methods` | 3 | `EMAIL`, `PHONE`, `WHATSAPP` |
 | `account_roles` | 11 | with `group` (code, label, sort) and `requires_verification`; **never** a platform role |
 | `directory_kinds` | 6 | with `singular_label` and `description` |
@@ -1523,6 +1626,7 @@ internal/platform/mail       email templates, renderer, Resend client, log maile
 internal/platform/migrate    embedded-SQL migration runner
 internal/modules/health            /healthz, /readyz
 internal/modules/markets           GET /v1/countries, /v1/markets (every ISO country)
+internal/modules/availability      /v1/me/listings, availability calendars of short stays, GET /v1/listings/{slug}/availability
 internal/modules/propertyrequests  POST /v1/property-requests, GET /v1/agent/property-requests (handler, service, store: postgres + memory)
 internal/modules/businessenquiries POST /v1/business-enquiries, GET /v1/inbox/business-enquiries (handler, service, store: postgres + memory)
 internal/modules/appointments      /v1/appointments, /v1/me/appointments, /v1/inbox/appointments, /v1/inbox/summary (handler, service, store: postgres + memory)
@@ -1620,6 +1724,14 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0015_availability` adds `listing_availability` (unavailable ranges of nights per listing,
+  with the private reason and note), `listing_availability_audit` (the trail),
+  `listings.availability_updated_at`, two indexes for "my listings", the stay columns of
+  `property_requests` (`check_in`, `check_out`, `guests`, all NULL for other request types) and
+  the `STAY_REQUEST` reference row (an upsert). It only adds tables and nullable columns. Ranges
+  are kept non-overlapping by the API inside a transaction that locks the listing row; there is
+  no exclusion constraint (it would need the `btree_gist` extension). Its down migration deletes
+  every calendar. **Not run by me.**
 - `0014_global_countries` upserts every ISO 3166-1 country into `markets` (by code: the five
   existing rows keep their IDs; AE, BW and ZA become ACTIVE), adds `markets.enabled`, the
   free-text place columns `city_name` / `region_name` on `listings` and `directory_profiles`

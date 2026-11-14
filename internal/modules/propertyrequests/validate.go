@@ -45,6 +45,8 @@ type validated struct {
 	phone          string
 	privacyVersion string
 	customerUserID *uuid.UUID
+	// stay is set for a STAY_REQUEST; its Nights are filled by the Service.
+	stay *StayDetails
 }
 
 // validate normalises in and returns per-field errors (empty when valid).
@@ -57,6 +59,11 @@ type allowed struct {
 
 // defaultAllowed is the built-in vocabulary, used when no Vocabulary is
 // configured (unit tests).
+// stayDateRe is the shape of check_in and check_out; maxStayGuests bounds guests.
+var stayDateRe = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}$`)
+
+const maxStayGuests = 100
+
 func defaultAllowed() allowed {
 	return allowed{
 		requestTypes:   []string{TypeEnquiry, TypePropertyInformation, TypeViewingRequest, TypeConsultationRequest},
@@ -141,6 +148,44 @@ func validate(in Input, headerKey string, now time.Time, ok allowed) (validated,
 		}
 	}
 
+	// A request to stay names its dates and guests; no other type may. Only
+	// their shape is checked here: the listing decides the rest (StayChecker).
+	checkIn, checkOut := "", ""
+	if in.CheckIn != nil {
+		checkIn = strings.TrimSpace(*in.CheckIn)
+	}
+	if in.CheckOut != nil {
+		checkOut = strings.TrimSpace(*in.CheckOut)
+	}
+	if in.RequestType == TypeStayRequest {
+		for field, value := range map[string]string{"check_in": checkIn, "check_out": checkOut} {
+			switch {
+			case value == "":
+				fields[field] = "is required for STAY_REQUEST"
+			case !stayDateRe.MatchString(value):
+				fields[field] = "must be a date such as 2026-12-24"
+			}
+		}
+		switch {
+		case in.Guests == nil:
+			fields["guests"] = "is required for STAY_REQUEST"
+		case *in.Guests < 1 || *in.Guests > maxStayGuests:
+			fields["guests"] = "must be a whole number from 1 to 100"
+		default:
+			v.stay = &StayDetails{CheckIn: checkIn, CheckOut: checkOut, Guests: *in.Guests}
+		}
+	} else {
+		if checkIn != "" {
+			fields["check_in"] = "is only allowed for STAY_REQUEST"
+		}
+		if checkOut != "" {
+			fields["check_out"] = "is only allowed for STAY_REQUEST"
+		}
+		if in.Guests != nil {
+			fields["guests"] = "is only allowed for STAY_REQUEST"
+		}
+	}
+
 	// Contact details. An authenticated customer is identified by the session:
 	// name and email come from the account (anything sent in guest_contact for
 	// them is ignored) and guest_contact may be omitted; only its phone is read.
@@ -222,6 +267,10 @@ func (v validated) hash() string {
 	if v.slot != nil {
 		slot = v.slot.Format(time.RFC3339Nano)
 	}
+	var stay StayDetails
+	if v.stay != nil {
+		stay = *v.stay
+	}
 	canonical, _ := json.Marshal(struct {
 		ListingID      string `json:"listing_id"`
 		RequestType    string `json:"request_type"`
@@ -233,7 +282,13 @@ func (v validated) hash() string {
 		Phone          string `json:"guest_phone"`
 		PrivacyVersion string `json:"privacy_version"`
 		CustomerUserID string `json:"customer_user_id,omitempty"`
-	}{v.listingID.String(), v.requestType, v.message, v.contactMethod, slot, v.name, v.email, v.phone, v.privacyVersion, customer})
+		// Omitted for every type but STAY_REQUEST, which keeps the hashes
+		// of all other requests as they were.
+		CheckIn  string `json:"check_in,omitempty"`
+		CheckOut string `json:"check_out,omitempty"`
+		Guests   int    `json:"guests,omitempty"`
+	}{v.listingID.String(), v.requestType, v.message, v.contactMethod, slot, v.name, v.email, v.phone, v.privacyVersion, customer,
+		stay.CheckIn, stay.CheckOut, stay.Guests})
 	sum := sha256.Sum256(canonical)
 	return hex.EncodeToString(sum[:])
 }

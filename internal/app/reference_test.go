@@ -53,7 +53,7 @@ func codes(items []refItem) string {
 
 // Row counts of the baseline data: a change here is a change to what the web shows.
 var wantSetSizes = map[string]int{
-	"deal_types": 2, "property_categories": 4, "property_types": 12, "request_types": 4, "contact_methods": 3,
+	"deal_types": 2, "property_categories": 4, "property_types": 12, "request_types": 5, "contact_methods": 3,
 	"account_roles": 15, "directory_kinds": 7, "service_trades": 7, "cities": 14, "suburbs": 24, "listing_features": 59,
 	"onboarding_documents": 9, "organisation_kinds": 6, "regions": 14, "price_periods": 2,
 }
@@ -98,7 +98,7 @@ func TestReferenceAllSets(t *testing.T) {
 		"deal_types":          "sale,rent",
 		"property_categories": "residential,commercial,land,short-stay",
 		"property_types":      "house,apartment,townhouse,cottage,office,stand,plot,holiday-home,serviced-apartment,guest-house,private-room,lodge",
-		"request_types":       "ENQUIRY,PROPERTY_INFORMATION,VIEWING_REQUEST,CONSULTATION_REQUEST",
+		"request_types":       "ENQUIRY,PROPERTY_INFORMATION,VIEWING_REQUEST,CONSULTATION_REQUEST,STAY_REQUEST",
 		"contact_methods":     "EMAIL,PHONE,WHATSAPP",
 		"account_roles":       strings.Join(identity.SelectableAccountRoles(), ","),
 		"directory_kinds":     "agencies,agents,developers,property-managers,solicitors,hosts,service-providers",
@@ -354,7 +354,7 @@ func TestInactiveReferenceRowsAreHiddenAndRefused(t *testing.T) {
 		pr := e.propertyRequest(1)
 		pr["request_type"] = "CONSULTATION_REQUEST"
 		env := wantError(t, e.post("/v1/property-requests", pr), http.StatusBadRequest, httpx.CodeValidationFailed)
-		if env.Error.Fields["request_type"] != "must be one of ENQUIRY, PROPERTY_INFORMATION, VIEWING_REQUEST" {
+		if env.Error.Fields["request_type"] != "must be one of ENQUIRY, PROPERTY_INFORMATION, VIEWING_REQUEST, STAY_REQUEST" {
 			t.Fatalf("fields = %v", env.Error.Fields)
 		}
 	})
@@ -412,7 +412,7 @@ func TestPlatformRolesAreDeniedEvenIfInTheReferenceTable(t *testing.T) {
 // solicitors directory) are the same rows the memory store and cmd/seed use.
 func TestMigrationSeedsTheSameReferenceRows(t *testing.T) {
 	sql := ""
-	for _, name := range []string{"0007_reference_data.up.sql", "0009_onboarding.up.sql", "0010_real_estate_roles.up.sql", "0012_locations.up.sql", "0013_uk_short_stays.up.sql"} {
+	for _, name := range []string{"0007_reference_data.up.sql", "0009_onboarding.up.sql", "0010_real_estate_roles.up.sql", "0012_locations.up.sql", "0013_uk_short_stays.up.sql", "0015_availability.up.sql"} {
 		raw, err := os.ReadFile(filepath.Join("..", "..", "migrations", name))
 		if err != nil {
 			t.Fatal(err)

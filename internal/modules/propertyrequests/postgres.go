@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -136,6 +137,12 @@ func (s *PostgresStore) Create(ctx context.Context, req NewRequest) (Record, boo
 	if req.GuestPhone != "" {
 		guestPhone = &req.GuestPhone
 	}
+	// A request to stay stores its dates and guests (NULL for every other type).
+	var stayCheckIn, stayCheckOut *string
+	var stayGuests *int
+	if req.Stay != nil {
+		stayCheckIn, stayCheckOut, stayGuests = &req.Stay.CheckIn, &req.Stay.CheckOut, &req.Stay.Guests
+	}
 
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO property_requests (
@@ -144,15 +151,16 @@ func (s *PostgresStore) Create(ctx context.Context, req NewRequest) (Record, boo
 			guest_name, guest_email, guest_phone,
 			consent_privacy_version, consent_accepted_at,
 			recipient_type, recipient_user_id, recipient_organisation_id,
-			created_at, updated_at, customer_user_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $20, $21)
+			created_at, updated_at, customer_user_id, check_in, check_out, guests)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $20, $21,
+		        $22::text::date, $23::text::date, $24)
 		ON CONFLICT (idempotency_key) DO NOTHING`,
 		req.ID, req.Reference, req.MarketID, req.ListingID, req.RequestType, req.Status, req.Message,
 		req.PreferredContactMethod, req.PreferredSlot, req.IdempotencyKey, req.RequestHash,
 		req.GuestName, req.GuestEmail, guestPhone,
 		req.PrivacyVersion, req.ConsentAcceptedAt,
 		recipientType, recipientUserID, recipientOrgID,
-		req.CreatedAt, req.CustomerUserID,
+		req.CreatedAt, req.CustomerUserID, stayCheckIn, stayCheckOut, stayGuests,
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -239,7 +247,7 @@ func (s *PostgresStore) ListInbox(ctx context.Context, scope InboxScope) ([]Inbo
 		       pr.preferred_contact_method,
 		       COALESCE(pr.guest_name, u.full_name, ''),
 		       COALESCE(pr.guest_email, u.email, ''),
-		       pr.guest_phone, pr.created_at
+		       pr.guest_phone, pr.created_at, pr.check_in::text, pr.check_out::text, pr.guests
 		FROM property_requests pr
 		LEFT JOIN users u ON u.id = pr.customer_user_id
 		WHERE pr.recipient_organisation_id IN (SELECT unnest($1::text[])::uuid)
@@ -254,11 +262,29 @@ func (s *PostgresStore) ListInbox(ctx context.Context, scope InboxScope) ([]Inbo
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (InboxItem, error) {
 		var it InboxItem
+		var checkIn, checkOut *string
+		var guests *int
 		err := row.Scan(&it.RequestID, &it.Reference, &it.ListingID, &it.RequestType, &it.Status, &it.Message,
-			&it.PreferredContactMethod, &it.Contact.Name, &it.Contact.Email, &it.Contact.Phone, &it.CreatedAt)
+			&it.PreferredContactMethod, &it.Contact.Name, &it.Contact.Email, &it.Contact.Phone, &it.CreatedAt, &checkIn, &checkOut, &guests)
 		it.CreatedAt = it.CreatedAt.UTC()
+		it.Stay = StayOf(checkIn, checkOut, guests)
 		return it, err
 	})
+}
+
+// StayOf builds the stay of a stored request from its nullable columns
+// (dates as YYYY-MM-DD); nil unless all three are set.
+func StayOf(checkIn, checkOut *string, guests *int) *StayDetails {
+	if checkIn == nil || checkOut == nil || guests == nil {
+		return nil
+	}
+	stay := &StayDetails{CheckIn: *checkIn, CheckOut: *checkOut, Guests: *guests}
+	from, errFrom := time.Parse("2006-01-02", *checkIn)
+	to, errTo := time.Parse("2006-01-02", *checkOut)
+	if errFrom == nil && errTo == nil {
+		stay.Nights = int(to.Sub(from).Hours() / 24)
+	}
+	return stay
 }
 
 func uuidStrings(ids []uuid.UUID) []string {

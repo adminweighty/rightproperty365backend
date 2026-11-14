@@ -105,3 +105,32 @@ func MembershipRoleLabel(organisationKind, role string) string {
 	}
 	return role
 }
+
+// ListingOrganisationIDs returns the organisations whose listings the caller
+// may manage (see MayManageListings).
+func (p *Principal) ListingOrganisationIDs() []uuid.UUID {
+	var out []uuid.UUID
+	for _, m := range p.Memberships {
+		if p.MayManageListings(m.OrganisationID) {
+			out = append(out, m.OrganisationID)
+		}
+	}
+	return out
+}
+
+// ManagesListings reports whether the caller may manage any listings at all:
+// a member who may manage listings for at least one organisation, or an
+// approved direct owner.
+func (p *Principal) ManagesListings() bool {
+	return len(p.ListingOrganisationIDs()) > 0 || p.IsDirectOwner()
+}
+
+// MayManageListing reports whether the caller may manage ONE listing, given
+// who it belongs to: a member who may manage listings for the listing's
+// organisation, or the approved direct owner who sells or lets it themselves.
+func (p *Principal) MayManageListing(organisationID, sellerUserID *uuid.UUID) bool {
+	if organisationID != nil && p.MayManageListings(*organisationID) {
+		return true
+	}
+	return sellerUserID != nil && *sellerUserID == p.UserID && p.IsDirectOwner()
+}

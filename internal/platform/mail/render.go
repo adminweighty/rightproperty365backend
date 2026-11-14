@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	texttemplate "text/template"
 	"time"
@@ -95,8 +96,11 @@ type Data struct {
 	Path  string
 	Query url.Values
 
-	Reference    string
-	RequestType  string
+	Reference   string
+	RequestType string
+	// Stay is set for a request to stay: the dates, nights and guests asked
+	// for, already written out (see StayText).
+	Stay         string
 	ListingRef   string
 	ListingTitle string
 	ProfileName  string
@@ -329,6 +333,28 @@ var requestTypeNames = map[string]string{
 	"PROPERTY_INFORMATION": "More information",
 	"VIEWING_REQUEST":      "Viewing request",
 	"CONSULTATION_REQUEST": "Consultation request",
+	"STAY_REQUEST":         "Request to stay",
+}
+
+// StayText writes the dates, nights and guests of a request to stay:
+// "Saturday 5 December 2026 to Tuesday 8 December 2026 (3 nights, 2 guests)".
+// The dates are calendar dates (YYYY-MM-DD) in the listing's time zone; a
+// date that does not parse is shown as it is.
+func StayText(checkIn, checkOut string, nights, guests int) string {
+	day := func(raw string) string {
+		t, err := time.Parse("2006-01-02", raw)
+		if err != nil {
+			return raw
+		}
+		return t.Format("Monday 2 January 2006")
+	}
+	plural := func(n int, word string) string {
+		if n == 1 {
+			return "1 " + word
+		}
+		return strconv.Itoa(n) + " " + word + "s"
+	}
+	return day(checkIn) + " to " + day(checkOut) + " (" + plural(nights, "night") + ", " + plural(guests, "guest") + ")"
 }
 
 // RequestTypeName returns the plain-language name of a request type code.

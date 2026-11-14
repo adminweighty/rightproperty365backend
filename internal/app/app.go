@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"rightproperty365.com/backend/internal/modules/appointments"
+	"rightproperty365.com/backend/internal/modules/availability"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/health"
@@ -47,6 +48,12 @@ const (
 	// refilled at 10 per minute.
 	appointmentsPerMinute = 10
 	appointmentsBurst     = 10
+
+	// Per-IP limit on changes to an availability calendar and to stay rules
+	// (PUT / PATCH under /v1/me/listings), its own bucket: bursts of 30,
+	// refilled at 30 per minute.
+	calendarChangesPerMinute = 30
+	calendarChangesBurst     = 30
 
 	// Per-IP limit shared by every POST /v1/auth/* route (its own bucket,
 	// separate from property requests): bursts of 20, refilled at 20 per minute.
@@ -100,6 +107,8 @@ type Deps struct {
 	// Requests must have been given its appointment writer (see cmd/api), so
 	// that a request and its appointment are written together.
 	Appointments appointments.Store
+	// Availability holds the calendars of the short stays.
+	Availability availability.Store
 
 	// Optional overrides used by tests.
 	Now    func() time.Time
@@ -135,6 +144,15 @@ func NewRouter(d Deps) (http.Handler, error) {
 	// country and region filters, facets and suggestions.
 	geography := places{ref: referenceSvc, markets: d.Markets}
 	listingsSvc.SetPlaces(geography)
+	// The availability calendar of the short stays: behind a listing's
+	// `availability`, the check_in / check_out search and requests to stay.
+	availabilitySvc := availability.NewService(d.Availability, listingsSvc, countryZones{markets: d.Markets})
+	if d.Now != nil {
+		availabilitySvc.SetClock(d.Now)
+	}
+	listingsSvc.SetCalendar(availabilitySvc)
+	availabilityH := availability.NewHandler(availabilitySvc, logger)
+	calendarLimiter := httpx.NewRateLimiter(calendarChangesPerMinute, calendarChangesBurst)
 	listingsH := listings.NewHandler(listingsSvc, logger)
 	directorySvc := directory.NewService(d.Directory, vocab, listingsSvc)
 	directorySvc.SetPlaces(geography)
@@ -144,7 +162,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 		identity.WithAdminSessionTTLs(cfg.AdminSessionTTL, cfg.AdminSessionIdleTTL),
 		identity.WithRoleCatalogue(vocab),
 	}
-	requestOpts := []propertyrequests.Option{propertyrequests.WithVocabulary(vocab)}
+	requestOpts := []propertyrequests.Option{propertyrequests.WithVocabulary(vocab), propertyrequests.WithStayChecker(stayChecker{svc: availabilitySvc})}
 	enquiryOpts := []businessenquiries.Option{businessenquiries.WithVocabulary(vocab)}
 	if d.Now != nil {
 		identityOpts = append(identityOpts, identity.WithClock(d.Now))
@@ -245,6 +263,9 @@ func NewRouter(d Deps) (http.Handler, error) {
 		r.Get("/listings", listingsH.List)
 		r.Get("/listings/suggest", listingsH.Suggest)
 		r.Get("/listings/{slug}", listingsH.Get)
+		// A short stay's calendar as the public sees it: available or not
+		// per night, never why.
+		r.Get("/listings/{slug}/availability", availabilityH.Public)
 		r.Get("/directory", directoryH.Kinds)
 		r.Get("/directory/{kind}", directoryH.List)
 		r.Get("/directory/{kind}/{slug}", directoryH.Get)
@@ -271,6 +292,19 @@ func NewRouter(d Deps) (http.Handler, error) {
 		})
 
 		r.With(auth.RequireAuth).Get("/me", identityH.Me)
+
+		// The lister's side: the listings the caller may manage (read-only;
+		// creating and editing listings is not built) and the availability
+		// calendar and stay rules of the short stays among them. The handler
+		// decides who may enter (auth/capabilities.go): 403 for a caller who
+		// manages no listings, 404 for a listing that is not theirs.
+		r.Route("/me/listings", func(r chi.Router) {
+			r.Use(auth.RequireAuth)
+			r.Get("/", availabilityH.MyListings)
+			r.Get("/{id}/availability", availabilityH.Calendar)
+			r.With(calendarLimiter.Middleware).Put("/{id}/availability", availabilityH.Change)
+			r.With(calendarLimiter.Middleware).Patch("/{id}/stay-rules", availabilityH.StayRules)
+		})
 
 		// Appointments. A signed-in customer asks for one and manages their
 		// own; they never see another customer's (404).

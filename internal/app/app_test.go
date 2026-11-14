@@ -21,6 +21,7 @@ import (
 
 	"rightproperty365.com/backend/internal/devseed"
 	"rightproperty365.com/backend/internal/modules/appointments"
+	"rightproperty365.com/backend/internal/modules/availability"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/health"
@@ -119,12 +120,14 @@ type env struct {
 	onboard   *onboarding.MemoryStore
 	// marketStore holds the countries (all enabled unless a test says otherwise).
 	marketStore *markets.MemoryStore
-	appts       *appointments.MemoryStore
-	files       *storage.Local
-	mail        *captureMailer
-	logs        *bytes.Buffer
-	now         time.Time
-	seq         int
+	// calendars holds the availability of the short stays (empty unless a test fills it).
+	calendars *availability.MemoryStore
+	appts     *appointments.MemoryStore
+	files     *storage.Local
+	mail      *captureMailer
+	logs      *bytes.Buffer
+	now       time.Time
+	seq       int
 }
 
 func newEnv(t *testing.T) *env {
@@ -181,6 +184,7 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 	}
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	e.marketStore = markets.NewMemoryStore()
+	e.calendars = availability.NewMemoryStore()
 	e.handler, err = NewRouter(Deps{
 		Config:    cfg,
 		Logger:    logging.New(e.logs, slog.LevelInfo, "api", cfg.Env),
@@ -194,6 +198,7 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		Mailer:     e.mail,
 		Onboarding: e.onboard, Files: e.files,
 		Appointments: e.appts,
+		Availability: e.calendars,
 		Now:          func() time.Time { return e.now },
 		Hasher:       &hasher,
 	})

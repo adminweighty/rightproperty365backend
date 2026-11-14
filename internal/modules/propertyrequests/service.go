@@ -49,10 +49,12 @@ func (s *Service) allowed(ctx context.Context) (allowed, error) {
 
 type Service struct {
 	planner AppointmentPlanner
-	vocab   Vocabulary
-	store   Store
-	now     func() time.Time
-	newRef  func() (string, error)
+	// stays checks a request to stay against the listing's calendar.
+	stays  StayChecker
+	vocab  Vocabulary
+	store  Store
+	now    func() time.Time
+	newRef func() (string, error)
 }
 
 // Option customises a Service (used by tests).
@@ -65,6 +67,10 @@ func WithClock(now func() time.Time) Option { return func(s *Service) { s.now = 
 func WithReferenceGenerator(f func() (string, error)) Option {
 	return func(s *Service) { s.newRef = f }
 }
+
+// WithStayChecker makes STAY_REQUEST available: the checker decides whether
+// the stay can be asked for at the listing.
+func WithStayChecker(c StayChecker) Option { return func(s *Service) { s.stays = c } }
 
 // WithAppointmentPlanner makes viewing and consultation requests that carry a
 // preferred slot create an appointment in the same transaction.
@@ -117,6 +123,25 @@ func (s *Service) Create(ctx context.Context, in Input, headerIdempotencyKey str
 		return Result{}, ErrListingUnavailable
 	}
 
+	// A request to stay: the listing must be a short stay that is free for
+	// those nights. Nothing is held: the request is an enquiry, and the
+	// lister marks the nights BOOKED themselves.
+	if v.stay != nil {
+		if s.stays == nil {
+			return Result{}, &ValidationError{Fields: map[string]string{"request_type": "STAY_REQUEST is not available"}}
+		}
+		nights, err := s.stays.CheckStay(ctx, listing.ID, v.stay.CheckIn, v.stay.CheckOut, v.stay.Guests)
+		if err != nil {
+			var verr *ValidationError
+			var taken *DatesUnavailableError
+			if errors.As(err, &verr) || errors.As(err, &taken) {
+				return Result{}, err
+			}
+			return Result{}, fmt.Errorf("check the stay: %w", err)
+		}
+		v.stay.Nights = nights
+	}
+
 	id, err := uuid.NewV7()
 	if err != nil {
 		return Result{}, fmt.Errorf("generate request id: %w", err)
@@ -141,6 +166,7 @@ func (s *Service) Create(ctx context.Context, in Input, headerIdempotencyKey str
 		ConsentAcceptedAt:      now,
 		Recipient:              ResolveRecipient(listing),
 		CreatedAt:              now,
+		Stay:                   v.stay,
 	}
 	if req.Recipient == nil {
 		// Still accepted: the customer gets RECEIVED and operations picks up

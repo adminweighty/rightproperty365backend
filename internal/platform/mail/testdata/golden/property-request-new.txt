@@ -7,9 +7,10 @@ Hello Tendai Ncube,
 A customer has sent a request about one of your listings.
 
 Reference: RP-7K2M9Q4D
-Property: Four-bedroom family home with garden
-Listing reference: RP-ZW-10001
-Request: Viewing request
+Property: Thatched lodge near the Falls for up to eight guests
+Listing reference: RP-ZW-10019
+Request: Request to stay
+Stay: Saturday 5 December 2026 to Tuesday 8 December 2026 (3 nights, 2 guests)
 Received: 14 November 2026
 
 Message preview:

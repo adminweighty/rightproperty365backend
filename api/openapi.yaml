@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.15.0
+  version: 0.16.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -76,6 +76,25 @@ tags:
   - name: reference
   - name: listings
   - name: directory
+  - name: availability
+    description: |
+      The availability calendar of short-stay listings (category `short-stay`). Whoever lists
+      the property marks nights unavailable (`BLOCKED` by their choice, or `BOOKED`); the
+      public sees which nights are free.
+
+      **It is not a booking engine.** There are no payments, no instant booking and no holds.
+      A guest asks to stay with `POST /v1/property-requests` (`request_type: STAY_REQUEST`),
+      which is an enquiry: it does not block the dates. The lister then marks the nights
+      `BOOKED` themselves.
+
+      Dates are calendar nights in the time zone of the listing's country (`YYYY-MM-DD`). A
+      stay from `check_in` to `check_out` occupies the nights `check_in` .. `check_out - 1`.
+      Every night is available unless marked otherwise, inside a booking window from today to
+      365 days ahead.
+
+      Not built: payments, instant booking, holds and their expiry, iCal import / export and
+      calendar sync, seasonal pricing, per-night price overrides, and an endpoint for the
+      audit trail.
   - name: property-requests
   - name: business-enquiries
   - name: appointments
@@ -618,6 +637,32 @@ paths:
             short stay is always deal `rent` with `price_period` `night`.
           schema: { type: string }
           example: residential
+        - name: check_in
+          in: query
+          description: |
+            First night of a stay (`YYYY-MM-DD`). **With `check_out`** (both or neither). The
+            results are then limited to short stays that are available for **every** night of
+            the stay (`check_in` .. `check_out - 1`) and whose `min_nights` the stay satisfies;
+            combine with `guests_min` for the number of guests. They imply
+            `category=short-stay`; any other `category` is `400` on `category`.
+
+            The stay must be 1 to 90 nights, must not start in the past and must end inside
+            the booking window (365 days from today). "Today" is each listing's own (its
+            country's time zone), so a stay starting today is no longer offered in countries
+            where that day has already ended.
+
+            Which listings are not free is read from the database on every search and passed
+            to the search engine as an exclusion, so the answer is the same whichever engine
+            answers and a calendar change needs no reindex. **Every facet count is computed
+            with the exclusion applied**; as always, the `category` facet leaves out its own
+            filter, so it still lists the other categories.
+          schema: { type: string, format: date }
+          example: "2026-12-24"
+        - name: check_out
+          in: query
+          description: "The day of leaving (`YYYY-MM-DD`): after `check_in`, at most 90 nights later. See `check_in`."
+          schema: { type: string, format: date }
+          example: "2026-12-27"
         - name: guests_min
           in: query
           description: Short stays that sleep at least this many guests (`max_guests` >= n). Listings without `max_guests` (everything that is not a short stay) never match.
@@ -758,7 +803,7 @@ paths:
             `bedrooms_min`, `bathrooms_min`, `features`, `featured`, `sort`, `page`, `page_size`,
             `country`, `market`, `region`, `bedrooms_max`, `bathrooms_max`, `floor_area_min`,
             `floor_area_max`, `land_area_min`, `land_area_max`, `listed_within_days`,
-            `advertiser_type`, `reference`, `has_photos`, `guests_min`. A maximum lower than its minimum is
+            `advertiser_type`, `reference`, `has_photos`, `guests_min`, `check_in`, `check_out`. A maximum lower than its minimum is
             reported on the `_max` parameter; a location that does not belong to the wider one
             on the narrower parameter (`suburb`, `city` or `region`). `currency` is also where a
             price filter without a single currency is reported: `min_price` or `max_price`
@@ -895,6 +940,362 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/listings/{slug}/availability:
+    get:
+      tags: [availability]
+      operationId: getListingAvailability
+      summary: Availability calendar of a short stay (public)
+      description: |
+        Which nights of a short-stay listing are available. **Available or unavailable per
+        night, and nothing else**: why a night is unavailable (blocked by the owner, or
+        booked), the lister's notes and who changed the calendar are private and are never in
+        this response.
+
+        - Dates are calendar **nights** in the time zone of the listing's country
+          (`timezone`), written `YYYY-MM-DD`, with no time of day. A stay from `check_in` to
+          `check_out` occupies the nights `check_in` .. `check_out - 1`: the day of leaving is
+          not a night of the stay.
+        - Every night is available unless the lister marked it otherwise, inside a **booking
+          window** from today (in that time zone) to 365 days ahead. Nights in the past or
+          beyond the window are never available.
+        - **This is not a booking.** Nothing can be reserved, held or paid for through the
+          API. To ask to stay, send `POST /v1/property-requests` with `request_type:
+          STAY_REQUEST`; the lister answers and marks the nights themselves.
+
+        Public, the same for every caller (it never reads the session) and cacheable like the
+        listing (`Cache-Control: public, max-age=30, stale-while-revalidate=120`, an `ETag`),
+        so a change by the lister can take up to 30 seconds to show.
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string }
+        - name: from
+          in: query
+          description: "First night to return (`YYYY-MM-DD`). Default: today in the listing's time zone."
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          description: "Last night to return, inclusive. Default: `from` + 90 days. The span `from`..`to` is at most 366 nights."
+          schema: { type: string, format: date }
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: The calendar.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            ETag:
+              $ref: "#/components/headers/ETag"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicAvailability" }
+              example:
+                listing: { slug: safari-lodge-victoria-falls }
+                timezone: Africa/Harare
+                min_nights: 2
+                max_guests: 8
+                from: "2026-12-23"
+                to: "2026-12-25"
+                days:
+                  - { date: "2026-12-23", available: true }
+                  - { date: "2026-12-24", available: false }
+                  - { date: "2026-12-25", available: false }
+                availability_updated_at: "2026-11-14T08:00:00Z"
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "400":
+          description: "`VALIDATION_FAILED` on `from` or `to`: not a `YYYY-MM-DD` date, `to` before `from`, or a span of more than 366 nights."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404":
+          description: "`LISTING_NOT_FOUND`: no such slug, or a listing that has never been public (as `GET /v1/listings/{slug}`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: "`NOT_SHORT_STAY`: the listing is public but is not in the `short-stay` category, so it has no calendar."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "410":
+          description: "`LISTING_UNAVAILABLE`: the listing was public once and no longer is."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/me/listings:
+    get:
+      tags: [availability]
+      operationId: listMyListings
+      summary: The listings the caller may manage
+      description: |
+        The first "my listings" endpoint, and it is **read-only: creating, editing and
+        publishing listings is still not built.** It exists so a lister can find the short
+        stays whose calendar they manage.
+
+        Returns the listings, **whatever their status**, that the caller may manage (newest
+        first):
+        - every listing of an organisation in which the caller is `OWNER`, `MANAGER` or
+          `AGENT`, when the organisation's kind manages listings (`AGENCY`, `LAW_FIRM`,
+          `PROPERTY_MANAGER`, `DEVELOPER`, `HOST`) — all of the organisation's listings, not
+          only those assigned to the caller;
+        - the caller's own listings as an **approved** (ACTIVE) Landlord or Property Seller.
+
+        `STAFF`, members of a `SERVICE_PROVIDER` and people without either get `403`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - name: category
+          in: query
+          description: "A `property_categories` code, for example `short-stay`."
+          schema: { type: string }
+        - name: status
+          in: query
+          description: "A listing status: `PUBLISHED`, `EXPIRED`, `DRAFT`, `PAUSED`, `SOLD`, `LET`, `CLOSED`."
+          schema: { type: string }
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 48, default: 12 }
+      responses:
+        "200":
+          description: One page of the caller's listings.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MyListingPage" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: "`FORBIDDEN`: the caller manages no listings at all."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/me/listings/{id}/availability:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The listing's `id` (not its slug).
+        schema: { type: string, format: uuid }
+    get:
+      tags: [availability]
+      operationId: getMyListingAvailability
+      summary: The lister's calendar of a short stay
+      description: |
+        The calendar with the **private** parts: for each night whether it is available and,
+        when the lister marked it, the reason (`BLOCKED`: the owner's choice; `BOOKED`: taken)
+        and the note; and the stored ranges. A night that is unavailable only because it is in
+        the past or beyond the booking window has `available: false` and `reason: null`.
+
+        Who may call it: someone who may manage the listing (see `GET /v1/me/listings`). A
+        listing the caller may not manage, and one that does not exist, are both `404`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - name: from
+          in: query
+          description: "First night to return (`YYYY-MM-DD`). Default: today in the listing's time zone."
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          description: "Last night to return, inclusive. Default: `from` + 90 days. At most 366 nights."
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: The calendar.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ListerAvailability" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: "`LISTING_NOT_FOUND`: no such listing, or one the caller may not manage."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: "`NOT_SHORT_STAY`: the listing is not in the `short-stay` category."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+    put:
+      tags: [availability]
+      operationId: changeMyListingAvailability
+      summary: Mark nights available, blocked or booked
+      description: |
+        Applies 1 to 50 changes **in order and atomically**: either all are applied or none
+        is. Each change marks an inclusive run of nights (`from`..`to`, at most 366 nights)
+        `AVAILABLE`, `BLOCKED` or `BOOKED`:
+
+        - `BLOCKED` / `BOOKED` replace whatever those nights were, with the optional private
+          `note`;
+        - `AVAILABLE` re-opens them: a stored range inside them disappears, one that sticks
+          out is trimmed, one that contains them is split in two;
+        - neighbouring ranges with the same reason and note are merged.
+
+        Nights must not be in the past and must be inside the booking window (today .. 365
+        days ahead, in the listing's time zone). Every change is written to an audit trail
+        (who, which nights, what, when), which no endpoint returns yet.
+
+        The response is the calendar for the default span (today .. +90 days), in the same
+        shape as the GET. Rate limited per IP (bursts of 30, 30 per minute, shared with the
+        stay rules). A cookie session needs the web app's `Origin` (CSRF rule).
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AvailabilityChanges" }
+            example:
+              changes:
+                - { from: "2026-12-24", to: "2026-12-30", status: BOOKED, note: "The Moyo family" }
+                - { from: "2027-01-10", to: "2027-01-11", status: BLOCKED }
+                - { from: "2026-12-27", to: "2026-12-27", status: AVAILABLE }
+      responses:
+        "200":
+          description: The calendar after the changes, for today .. +90 days.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ListerAvailability" }
+        "400":
+          description: |
+            `VALIDATION_FAILED`. `error.fields` names the change: `changes` (not 1 to 50 items),
+            `changes[i].from` (not a date, or in the past), `changes[i].to` (not a date, before
+            `from`, more than 366 nights, or beyond the booking window), `changes[i].status`
+            (not `AVAILABLE`, `BLOCKED` or `BOOKED`), `changes[i].note` (longer than 200
+            characters, not plain text, or sent with `AVAILABLE`). Also malformed JSON or an
+            unknown field.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+              example:
+                error:
+                  code: VALIDATION_FAILED
+                  message: Some fields need your attention.
+                  fields:
+                    "changes[1].to": must not be before from
+                trace_id: 4b0b8f0e-5d0c-4e0e-9a39-0a5a4f1f6c55
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/CsrfOrigin"
+        "404":
+          description: "`LISTING_NOT_FOUND`: no such listing, or one the caller may not manage."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: "`NOT_SHORT_STAY`: the listing is not in the `short-stay` category."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/me/listings/{id}/stay-rules:
+    patch:
+      tags: [availability]
+      operationId: setMyListingStayRules
+      summary: Change a short stay's shortest stay and number of guests
+      description: |
+        Sets `min_nights` (1–365) and / or `max_guests` (1–50) of a short stay the caller may
+        manage; a key that is absent is left unchanged, and at least one must be sent. These
+        are the only listing fields that can be edited through the API today.
+
+        Same authorisation, rate limit and CSRF rule as the calendar. With Elasticsearch, the
+        search index follows after the worker has processed the listing's update event
+        (`guests_min` and the stay search read these values).
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                min_nights: { type: integer, minimum: 1, maximum: 365 }
+                max_guests: { type: integer, minimum: 1, maximum: 50 }
+            example: { min_nights: 3 }
+      responses:
+        "200":
+          description: The listing's summary after the change.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [listing]
+                additionalProperties: false
+                properties:
+                  listing: { $ref: "#/components/schemas/MyListing" }
+        "400":
+          description: "`VALIDATION_FAILED` on `min_nights` or `max_guests` (out of range, or neither sent), malformed JSON or an unknown field."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/CsrfOrigin"
+        "404":
+          description: "`LISTING_NOT_FOUND`: no such listing, or one the caller may not manage."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: "`NOT_SHORT_STAY`: the listing is not in the `short-stay` category."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalError"
         "504":
@@ -1270,7 +1671,18 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
         "409":
-          description: The idempotency key was already used with different content (`IDEMPOTENCY_CONFLICT`).
+          description: |
+            `IDEMPOTENCY_CONFLICT`: the idempotency key was already used with different content.
+
+            `DATES_UNAVAILABLE` (STAY_REQUEST only, new in 0.16.0): at least one night of the
+            stay is not available. `error.fields.check_in` names the first night that is taken
+            (for example "is not available for every night: the first night that is taken is
+            2026-12-24"). The other stay rules are `400 VALIDATION_FAILED`: `request_type`
+            (the listing is not a short stay), `check_in` (not a date, or in the past),
+            `check_out` (not a date, not after `check_in`, fewer nights than the listing's
+            `min_nights`, more than 90 nights, or beyond the booking window), `guests` (missing,
+            below 1, or above the listing's `max_guests`); and `check_in`, `check_out` or
+            `guests` sent with another request type.
           headers:
             X-Request-Id:
               $ref: "#/components/headers/X-Request-Id"
@@ -3976,7 +4388,7 @@ components:
       description: A public listing. The same object is used in search results, on the detail endpoint and on profiles.
       required: [id, slug, reference, title, deal, category, property_type, price, price_period, suburb, city, region, country, market_code,
                  bedrooms, bathrooms, floor_area, land_area, max_guests, min_nights, summary, description, features, featured, photos, advertiser,
-                 published_at, expires_at, updated_at]
+                 published_at, expires_at, updated_at, availability]
       additionalProperties: false
       properties:
         id: { type: string, format: uuid, description: "Use as `listing_id` in `POST /v1/property-requests`." }
@@ -4038,6 +4450,11 @@ components:
         published_at: { type: string, format: date-time, description: Start of the current publication cycle (UTC). }
         expires_at: { type: string, format: date-time, description: End of the current publication cycle (90 days after `published_at`). Always in the future for a returned listing. }
         updated_at: { type: string, format: date-time }
+        availability:
+          oneOf:
+            - $ref: "#/components/schemas/ListingAvailability"
+            - type: "null"
+          description: "New in 0.16.0. Set for short stays; **null for every other category**. The calendar itself is `GET /v1/listings/{slug}/availability`."
       example:
         id: 0195c0de-0000-7000-8000-000000000001
         slug: four-bedroom-family-home-borrowdale
@@ -4072,6 +4489,183 @@ components:
         published_at: "2026-11-10T08:00:00Z"
         expires_at: "2027-02-08T08:00:00Z"
         updated_at: "2026-11-10T08:00:00Z"
+
+    ListingAvailability:
+      type: object
+      description: What a short-stay listing says about its availability calendar. No reason, note or author.
+      required: [updated_at, next_available]
+      additionalProperties: false
+      properties:
+        updated_at:
+          type: [string, "null"]
+          format: date-time
+          description: When the lister last changed the calendar; null when they never have (every night in the booking window is then available).
+        next_available:
+          type: [string, "null"]
+          format: date
+          description: "The first available night from today on, in the listing's time zone (`YYYY-MM-DD`); null when no night in the booking window is free."
+
+    PublicAvailability:
+      type: object
+      description: The calendar as the public sees it.
+      required: [listing, timezone, min_nights, max_guests, from, to, days, availability_updated_at]
+      additionalProperties: false
+      properties:
+        listing:
+          type: object
+          required: [slug]
+          additionalProperties: false
+          properties:
+            slug: { type: string }
+        timezone: { type: string, description: "IANA zone of the listing's country: the zone the dates are in." }
+        min_nights: { type: integer, minimum: 1, description: The shortest stay, in nights (1 when the listing does not say). }
+        max_guests: { type: [integer, "null"], minimum: 1 }
+        from: { type: string, format: date }
+        to: { type: string, format: date }
+        days:
+          type: array
+          description: One entry per night from `from` to `to`, in order.
+          items:
+            type: object
+            required: [date, available]
+            additionalProperties: false
+            properties:
+              date: { type: string, format: date }
+              available: { type: boolean, description: "False for a night the lister marked unavailable, a night in the past and a night beyond the booking window. Never says which." }
+        availability_updated_at: { type: [string, "null"], format: date-time }
+
+    AvailabilityReason:
+      type: string
+      enum: [BLOCKED, BOOKED]
+      description: "Private to the lister. `BLOCKED`: the owner's choice. `BOOKED`: taken."
+
+    ListerAvailability:
+      type: object
+      description: The calendar as the lister sees it, with the private reasons and notes.
+      required: [listing, timezone, window, min_nights, max_guests, from, to, days, ranges, availability_updated_at]
+      additionalProperties: false
+      properties:
+        listing:
+          type: object
+          required: [id, slug, title, reference]
+          additionalProperties: false
+          properties:
+            id: { type: string, format: uuid }
+            slug: { type: string }
+            title: { type: string }
+            reference: { type: string }
+        timezone: { type: string, description: "IANA zone of the listing's country: the zone the dates are in." }
+        window:
+          type: object
+          description: "The booking window: today .. today + 365 days in `timezone`. Changes must lie inside it."
+          required: [from, to]
+          additionalProperties: false
+          properties:
+            from: { type: string, format: date }
+            to: { type: string, format: date }
+        min_nights: { type: integer, minimum: 1 }
+        max_guests: { type: [integer, "null"], minimum: 1 }
+        from: { type: string, format: date }
+        to: { type: string, format: date }
+        days:
+          type: array
+          description: One entry per night from `from` to `to`, in order.
+          items:
+            type: object
+            required: [date, available, reason, note]
+            additionalProperties: false
+            properties:
+              date: { type: string, format: date }
+              available: { type: boolean }
+              reason:
+                oneOf:
+                  - $ref: "#/components/schemas/AvailabilityReason"
+                  - type: "null"
+                description: Set for a night the lister marked; null for an available night and for one that is unavailable only because it is in the past or beyond the window.
+              note: { type: [string, "null"], maxLength: 200 }
+        ranges:
+          type: array
+          description: Every stored range of unavailable nights (not only those inside `from`..`to`), sorted by first night. They never overlap.
+          items:
+            type: object
+            required: [id, first_night, last_night, reason, note, updated_at]
+            additionalProperties: false
+            properties:
+              id: { type: string, format: uuid, description: "Not stable across changes: a range that is merged or split gets a new shape, and the right half of a split a new id." }
+              first_night: { type: string, format: date }
+              last_night: { type: string, format: date, description: Inclusive. }
+              reason: { $ref: "#/components/schemas/AvailabilityReason" }
+              note: { type: [string, "null"], maxLength: 200 }
+              updated_at: { type: string, format: date-time }
+        availability_updated_at: { type: [string, "null"], format: date-time }
+
+    AvailabilityChanges:
+      type: object
+      required: [changes]
+      additionalProperties: false
+      properties:
+        changes:
+          type: array
+          minItems: 1
+          maxItems: 50
+          description: Applied in order.
+          items:
+            type: object
+            required: [from, to, status]
+            additionalProperties: false
+            properties:
+              from: { type: string, format: date, description: First night, not in the past. }
+              to: { type: string, format: date, description: "Last night, inclusive; not before `from`, at most 366 nights, inside the booking window." }
+              status: { type: string, enum: [AVAILABLE, BLOCKED, BOOKED] }
+              note: { type: [string, "null"], maxLength: 200, description: "Private. Plain text on one line. Only with `BLOCKED` or `BOOKED`." }
+
+    MyListing:
+      type: object
+      description: One of the caller's listings, as a summary.
+      required: [id, slug, reference, title, category, property_type, status, price, price_period, city, country, max_guests, min_nights, availability_updated_at, photo]
+      additionalProperties: false
+      properties:
+        id: { type: string, format: uuid }
+        slug: { type: string }
+        reference: { type: string }
+        title: { type: string }
+        category: { $ref: "#/components/schemas/Coded" }
+        property_type: { $ref: "#/components/schemas/Coded" }
+        status: { type: string, description: "The listing's status, whatever it is: `PUBLISHED`, `EXPIRED`, `DRAFT`, `PAUSED`, `SOLD`, `LET`, `CLOSED`." }
+        price: { $ref: "#/components/schemas/Money" }
+        price_period: { type: [string, "null"], enum: [month, night, null] }
+        city: { $ref: "#/components/schemas/Place" }
+        country: { $ref: "#/components/schemas/Country" }
+        max_guests: { type: [integer, "null"], description: Short stays only. }
+        min_nights: { type: [integer, "null"], description: Short stays only (1 when the listing does not say). }
+        availability_updated_at: { type: [string, "null"], format: date-time, description: Short stays only; null when the calendar was never changed. }
+        photo:
+          oneOf:
+            - $ref: "#/components/schemas/Photo"
+            - type: "null"
+          description: The first photo, or null.
+
+    MyListingPage:
+      type: object
+      required: [items, page, page_size, total, total_pages]
+      additionalProperties: false
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/MyListing" } }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer }
+        total_pages: { type: integer }
+
+    StayDetails:
+      type: object
+      description: The dates and guests of a request to stay.
+      required: [check_in, check_out, nights, guests]
+      additionalProperties: false
+      properties:
+        check_in: { type: string, format: date, description: The first night. }
+        check_out: { type: string, format: date, description: The day of leaving (not a night of the stay). }
+        nights: { type: integer, minimum: 1 }
+        guests: { type: integer, minimum: 1 }
 
     Country:
       type: object
@@ -5206,6 +5800,7 @@ components:
     OrganisationPropertyRequest:
       type: object
       required:
+        - stay
         - request_id
         - reference
         - listing_id
@@ -5218,6 +5813,11 @@ components:
         - created_at
       additionalProperties: false
       properties:
+        stay:
+          oneOf:
+            - $ref: "#/components/schemas/StayDetails"
+            - type: "null"
+          description: "New in 0.16.0. The dates, nights and guests of a `STAY_REQUEST`; null for every other request type."
         request_id:
           type: string
           format: uuid
@@ -5325,7 +5925,12 @@ components:
           type: string
           description: |
             A code from the `request_types` reference set (active rows only). Baseline values:
-            ENQUIRY, PROPERTY_INFORMATION, VIEWING_REQUEST, CONSULTATION_REQUEST.
+            ENQUIRY, PROPERTY_INFORMATION, VIEWING_REQUEST, CONSULTATION_REQUEST, STAY_REQUEST.
+
+            `STAY_REQUEST` ("Request to stay", new in 0.16.0) is valid only for a listing in
+            the `short-stay` category and requires `check_in`, `check_out` and `guests`. It is
+            still an enquiry: it does **not** block the dates and creates no appointment or
+            booking.
           examples: [VIEWING_REQUEST]
         message:
           type: string
@@ -5342,6 +5947,19 @@ components:
           type: [string, "null"]
           format: date-time
           description: Optional. Only allowed for VIEWING_REQUEST and CONSULTATION_REQUEST and must be in the future.
+        check_in:
+          type: [string, "null"]
+          format: date
+          description: "**Required for STAY_REQUEST, not allowed for any other type.** The first night (`YYYY-MM-DD`, in the listing's time zone). Not in the past."
+        check_out:
+          type: [string, "null"]
+          format: date
+          description: "**Required for STAY_REQUEST, not allowed otherwise.** The day of leaving: after `check_in`, at least the listing's `min_nights` and at most 90 nights later, inside the booking window."
+        guests:
+          type: [integer, "null"]
+          minimum: 1
+          maximum: 100
+          description: "**Required for STAY_REQUEST, not allowed otherwise.** At most the listing's `max_guests`."
         idempotency_key:
           $ref: "#/components/schemas/IdempotencyKey"
         guest_contact:

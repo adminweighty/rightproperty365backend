@@ -236,6 +236,10 @@ func matches(r Record, q Query, skip string) bool {
 			return false
 		}
 	}
+	// A stay: never skipped, so every facet is counted with it applied.
+	if q.Stay != nil && !stayMatches(r, *q.Stay) {
+		return false
+	}
 	if skip != "price" && q.priced() {
 		if r.Price.Currency != currencyOf(q) {
 			return false
@@ -246,6 +250,52 @@ func matches(r Record, q Query, skip string) bool {
 		}
 	}
 	return true
+}
+
+// stayMatches reports whether a listing can take a stay: it is not among the
+// excluded listings or countries, and the stay is long enough for it.
+func stayMatches(r Record, stay Stay) bool {
+	if slices.Contains(stay.ExcludeIDs, r.ID) || slices.Contains(stay.ExcludeCountries, r.MarketCode) {
+		return false
+	}
+	return r.MinNights == nil || *r.MinNights <= stay.Nights
+}
+
+// Owned implements Store.
+func (s *MemoryStore) Owned(_ context.Context, organisationIDs []uuid.UUID, sellerUserID *uuid.UUID) ([]Record, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []Record
+	for _, r := range s.records {
+		if (r.OrganisationID != nil && slices.Contains(organisationIDs, *r.OrganisationID)) ||
+			(sellerUserID != nil && r.SellerUserID != nil && *r.SellerUserID == *sellerUserID) {
+			out = append(out, r)
+		}
+	}
+	newestFirst(out)
+	return out, nil
+}
+
+// SetStayRules implements Store.
+func (s *MemoryStore) SetStayRules(_ context.Context, id uuid.UUID, minNights, maxGuests *int, now time.Time) (Record, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.records {
+		if s.records[i].ID != id {
+			continue
+		}
+		if minNights != nil {
+			n := *minNights
+			s.records[i].MinNights = &n
+		}
+		if maxGuests != nil {
+			n := *maxGuests
+			s.records[i].MaxGuests = &n
+		}
+		s.records[i].UpdatedAt = now
+		return s.records[i], nil
+	}
+	return Record{}, ErrNotFound
 }
 
 // Search implements Search.

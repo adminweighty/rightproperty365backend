@@ -80,6 +80,7 @@ func (s *MemorySource) PropertyRequest(ctx context.Context, id uuid.UUID) (Prope
 		info := PropertyRequestInfo{
 			Reference: req.Reference, ListingID: req.ListingID, RequestType: req.RequestType, Message: req.Message,
 			CreatedAt: req.CreatedAt, Customer: Person{UserID: req.CustomerUserID, Name: req.GuestName, Email: req.GuestEmail},
+			Stay: req.Stay,
 		}
 		if req.Recipient != nil {
 			info.Recipients = s.recipients(ctx, req.Recipient.UserID, req.Recipient.OrganisationID)
@@ -175,21 +176,24 @@ func (s *PostgresSource) Recipients(ctx context.Context, userID, organisationID 
 func (s *PostgresSource) PropertyRequest(ctx context.Context, id uuid.UUID) (PropertyRequestInfo, error) {
 	var info PropertyRequestInfo
 	var recipientUser, recipientOrg *uuid.UUID
+	var checkIn, checkOut *string
+	var guests *int
 	err := s.pool.QueryRow(ctx, `
 		SELECT pr.reference, pr.listing_id, pr.request_type, pr.message, pr.created_at,
 		       pr.customer_user_id, COALESCE(pr.guest_name, cu.full_name, ''), COALESCE(pr.guest_email, cu.email, ''),
-		       pr.recipient_user_id, pr.recipient_organisation_id
+		       pr.recipient_user_id, pr.recipient_organisation_id, pr.check_in::text, pr.check_out::text, pr.guests
 		FROM property_requests pr
 		LEFT JOIN users cu ON cu.id = pr.customer_user_id
 		WHERE pr.id = $1`, id).Scan(
 		&info.Reference, &info.ListingID, &info.RequestType, &info.Message, &info.CreatedAt,
-		&info.Customer.UserID, &info.Customer.Name, &info.Customer.Email, &recipientUser, &recipientOrg)
+		&info.Customer.UserID, &info.Customer.Name, &info.Customer.Email, &recipientUser, &recipientOrg, &checkIn, &checkOut, &guests)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PropertyRequestInfo{}, ErrNotFound
 	}
 	if err != nil {
 		return PropertyRequestInfo{}, fmt.Errorf("load property request: %w", err)
 	}
+	info.Stay = propertyrequests.StayOf(checkIn, checkOut, guests)
 	if info.Recipients, err = s.recipients(ctx, recipientUser, recipientOrg); err != nil {
 		return PropertyRequestInfo{}, fmt.Errorf("load request recipients: %w", err)
 	}

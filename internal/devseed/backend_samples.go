@@ -238,6 +238,8 @@ func addBackendReference(sets map[string][]reference.Item) {
 	appendRows(reference.SetPricePeriods,
 		reference.Item{Code: listings.PricePeriodMonth, Label: "per month"},
 		reference.Item{Code: listings.PricePeriodNight, Label: "per night"})
+	// A request to stay at a short stay (the availability calendar).
+	appendRows(reference.SetRequestTypes, reference.Item{Code: propertyrequests.TypeStayRequest, Label: "Request to stay"})
 	for _, name := range ukRegions {
 		appendRows(reference.SetRegions, reference.Item{Code: Code(name), Label: name, MarketCode: gb})
 	}

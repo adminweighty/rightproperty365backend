@@ -27,11 +27,13 @@ func SampleData(name string) Data {
 	case "admin-sign-in":
 		d.Name, d.Path = "Sam Admin", "/admin/sign-in"
 	case "property-request-received":
-		d.Path, d.Reference, d.RequestType = "/", "RP-7K2M9Q4D", "Viewing request"
-		d.ListingTitle, d.ListingRef = "Four-bedroom family home with garden", "RP-ZW-10001"
+		d.Path, d.Reference, d.RequestType = "/", "RP-7K2M9Q4D", RequestTypeName("STAY_REQUEST")
+		d.ListingTitle, d.ListingRef = "Thatched lodge near the Falls for up to eight guests", "RP-ZW-10019"
+		d.Stay = StayText("2026-12-05", "2026-12-08", 3, 2)
 	case "property-request-new":
-		d.Name, d.Path, d.Reference, d.RequestType = "Tendai Ncube", "/agent/requests", "RP-7K2M9Q4D", "Viewing request"
-		d.ListingTitle, d.ListingRef, d.Preview = "Four-bedroom family home with garden", "RP-ZW-10001", SafePreview(preview, 140)
+		d.Name, d.Path, d.Reference, d.RequestType = "Tendai Ncube", "/agent/requests", "RP-7K2M9Q4D", RequestTypeName("STAY_REQUEST")
+		d.ListingTitle, d.ListingRef, d.Preview = "Thatched lodge near the Falls for up to eight guests", "RP-ZW-10019", SafePreview(preview, 140)
+		d.Stay = StayText("2026-12-05", "2026-12-08", 3, 2)
 	case "business-enquiry-received":
 		d.Path, d.Reference, d.ProfileName, d.Service = "/", "BE-4H8N2RXT", "Sample Plumbers", "Burst pipes and leaks"
 	case "business-enquiry-new":

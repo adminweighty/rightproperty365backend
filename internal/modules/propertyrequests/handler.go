@@ -16,6 +16,8 @@ const (
 	CodeListingNotFound     = "LISTING_NOT_FOUND"
 	CodeListingUnavailable  = "LISTING_UNAVAILABLE"
 	CodeIdempotencyConflict = "IDEMPOTENCY_CONFLICT"
+	// CodeDatesUnavailable: a request to stay names at least one night that is taken.
+	CodeDatesUnavailable = "DATES_UNAVAILABLE"
 )
 
 // HeaderIdempotencyKey may carry the idempotency key instead of the body.
@@ -54,6 +56,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	res, err := h.svc.Create(r.Context(), in, r.Header.Get(HeaderIdempotencyKey))
 	if err != nil {
 		var verr *ValidationError
+		var taken *DatesUnavailableError
 		switch {
 		case errors.As(err, &verr):
 			httpx.WriteError(w, r, http.StatusBadRequest, httpx.CodeValidationFailed, "Some fields need your attention.", verr.Fields)
@@ -61,6 +64,9 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteError(w, r, http.StatusNotFound, CodeListingNotFound, "This listing does not exist.", nil)
 		case errors.Is(err, ErrListingUnavailable):
 			httpx.WriteError(w, r, http.StatusGone, CodeListingUnavailable, "This listing is no longer accepting requests.", nil)
+		case errors.As(err, &taken):
+			httpx.WriteError(w, r, http.StatusConflict, CodeDatesUnavailable, "Some of these nights are no longer available.",
+				map[string]string{"check_in": "is not available for every night: the first night that is taken is " + taken.Date})
 		case errors.Is(err, ErrIdempotencyConflict):
 			httpx.WriteError(w, r, http.StatusConflict, CodeIdempotencyConflict, "This idempotency key was already used for a different request.", nil)
 		default:

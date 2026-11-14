@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"rightproperty365.com/backend/internal/modules/appointments"
+	"rightproperty365.com/backend/internal/modules/availability"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/identity"
@@ -192,6 +193,42 @@ func (z marketZones) MarketTimezone(ctx context.Context, marketID uuid.UUID) (st
 		}
 	}
 	return "", nil
+}
+
+// countryZones adapts the countries to availability.Zones: a listing's nights
+// are calendar dates in its country's default time zone.
+type countryZones struct{ markets markets.Store }
+
+// CountryZones implements availability.Zones.
+func (z countryZones) CountryZones(ctx context.Context) (map[string]string, error) {
+	all, err := z.markets.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(all))
+	for _, m := range all {
+		out[m.Code] = m.Timezone
+	}
+	return out, nil
+}
+
+// stayChecker adapts the availability calendar to propertyrequests.StayChecker.
+type stayChecker struct{ svc *availability.Service }
+
+// CheckStay implements propertyrequests.StayChecker.
+func (c stayChecker) CheckStay(ctx context.Context, listingID uuid.UUID, checkIn, checkOut string, guests int) (int, error) {
+	stay, err := c.svc.CheckStay(ctx, listingID, checkIn, checkOut, guests)
+	var verr *availability.ValidationError
+	var taken *availability.UnavailableError
+	switch {
+	case errors.As(err, &verr):
+		return 0, &propertyrequests.ValidationError{Fields: verr.Fields}
+	case errors.As(err, &taken):
+		return 0, &propertyrequests.DatesUnavailableError{Date: taken.Night.String()}
+	case err != nil:
+		return 0, err
+	}
+	return stay.Nights, nil
 }
 
 // people adapts the identity store to appointments.People.

@@ -18,7 +18,7 @@ import (
 const HeaderRequestID = "X-Request-Id"
 
 const (
-	corsAllowMethods  = "GET, POST, PUT, DELETE, OPTIONS"
+	corsAllowMethods  = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
 	corsAllowHeaders  = "Content-Type, Idempotency-Key, Authorization, X-Request-Id, If-None-Match"
 	corsExposeHeaders = "X-Request-Id, Retry-After, ETag"
 	corsMaxAge        = "600"

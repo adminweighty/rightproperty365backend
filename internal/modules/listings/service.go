@@ -21,7 +21,32 @@ type Service struct {
 	labels Labels
 	// places supplies the location hierarchy; nil means none (no regions).
 	places Places
-	now    func() time.Time
+	// calendar is the availability calendar of the short stays; nil means
+	// none (no availability on listings, no check_in / check_out search).
+	calendar Calendar
+	now      func() time.Time
+}
+
+// SetCalendar gives the Service the availability calendar behind a
+// listing's `availability` and the check_in / check_out search.
+func (s *Service) SetCalendar(c Calendar) { s.calendar = c }
+
+// withAvailability sets `availability` on the short stays among listings.
+// records and listings are parallel.
+func (s *Service) withAvailability(ctx context.Context, records []Record, out []Listing) error {
+	if s.calendar == nil || len(records) == 0 {
+		return nil
+	}
+	summaries, err := s.calendar.Summaries(ctx, records, s.now().UTC())
+	if err != nil {
+		return fmt.Errorf("load availability: %w", err)
+	}
+	for i := range out {
+		if summary, ok := summaries[out[i].ID]; ok {
+			out[i].Availability = &summary
+		}
+	}
+	return nil
 }
 
 // SetPlaces gives the Service the location hierarchy behind the country and
@@ -124,6 +149,9 @@ func (s *Service) Present(ctx context.Context, records []Record) ([]Listing, err
 	for _, r := range records {
 		out = append(out, present(r, labels))
 	}
+	if err := s.withAvailability(ctx, records, out); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
@@ -148,10 +176,15 @@ func (s *Service) Find(ctx context.Context, q Query) (Page, error) {
 		return Page{}, err
 	}
 	page := Page{Items: []Listing{}, Page: q.Page, PageSize: q.PageSize, Total: hits.Total}
+	var shown []Record
 	for _, id := range hits.IDs { // keep the search order; drop what the source of truth refused
 		if r, ok := byID[id]; ok && r.Public(now) {
 			page.Items = append(page.Items, present(r, labels))
+			shown = append(shown, r)
 		}
+	}
+	if err := s.withAvailability(ctx, shown, page.Items); err != nil {
+		return Page{}, err
 	}
 	// A hit the source of truth refused (the index was behind) is not counted either.
 	if dropped := len(hits.IDs) - len(page.Items); dropped > 0 && page.Total >= dropped {
@@ -260,11 +293,50 @@ func (s *Service) BySlug(ctx context.Context, slug string) (Listing, error) {
 		}
 		return Listing{}, ErrNotFound
 	}
-	labels, err := s.labelSets(ctx)
+	listings, err := s.Present(ctx, []Record{r})
 	if err != nil {
 		return Listing{}, err
 	}
-	return present(r, labels), nil
+	return listings[0], nil
+}
+
+// PublicRecord returns the stored record behind a public listing, with the
+// same answers as BySlug: ErrUnavailable or ErrNotFound when it is not public.
+func (s *Service) PublicRecord(ctx context.Context, slug string) (Record, error) {
+	r, err := s.store.BySlug(ctx, slug)
+	if err != nil {
+		return Record{}, err
+	}
+	if !r.Public(s.now().UTC()) {
+		if r.EverPublished() {
+			return Record{}, ErrUnavailable
+		}
+		return Record{}, ErrNotFound
+	}
+	return r, nil
+}
+
+// Owned returns the listings an organisation's members or a direct owner
+// manage, whatever their status. Authorisation is the caller's business.
+func (s *Service) Owned(ctx context.Context, organisationIDs []uuid.UUID, sellerUserID *uuid.UUID) ([]Record, error) {
+	return s.store.Owned(ctx, organisationIDs, sellerUserID)
+}
+
+// Record returns one listing whatever its status, or ErrNotFound.
+func (s *Service) Record(ctx context.Context, id uuid.UUID) (Record, error) {
+	records, err := s.store.ByIDs(ctx, []uuid.UUID{id})
+	if err != nil {
+		return Record{}, err
+	}
+	if len(records) == 0 {
+		return Record{}, ErrNotFound
+	}
+	return records[0], nil
+}
+
+// SetStayRules changes a short stay's shortest stay and / or guest count.
+func (s *Service) SetStayRules(ctx context.Context, id uuid.UUID, minNights, maxGuests *int) (Record, error) {
+	return s.store.SetStayRules(ctx, id, minNights, maxGuests, s.now().UTC().Truncate(time.Microsecond))
 }
 
 // Suggest returns up to MaxSuggestions suggestions for a search term.
@@ -359,10 +431,45 @@ func (s *Service) Resolve(ctx context.Context, q Query) (Query, map[string]strin
 	if err := s.checkPlaces(ctx, &q, fields); err != nil {
 		return q, nil, err
 	}
+	if err := s.resolveStay(ctx, &q, fields); err != nil {
+		return q, nil, err
+	}
 	if err := s.chooseCurrency(ctx, &q, fields); err != nil {
 		return q, nil, err
 	}
 	return q, fields, nil
+}
+
+// resolveStay turns check_in / check_out into what the adapters apply: the
+// short stays that are free for every night of the stay. Which listings are
+// not free is asked of the availability calendar (the database), so every
+// adapter excludes exactly the same listings and the search index needs no
+// availability data. A stay implies the short-stay category.
+func (s *Service) resolveStay(ctx context.Context, q *Query, fields map[string]string) error {
+	if q.CheckIn == "" && q.CheckOut == "" {
+		return nil
+	}
+	switch {
+	case q.Category == "":
+		q.Category = CategoryShortStay
+	case q.Category != CategoryShortStay:
+		fields["category"] = "must be " + CategoryShortStay + " when check_in and check_out are given"
+	}
+	if s.calendar == nil {
+		fields["check_in"] = "availability search is not available"
+		return nil
+	}
+	stay, problems, err := s.calendar.Stay(ctx, q.CheckIn, q.CheckOut, s.now().UTC())
+	if err != nil {
+		return fmt.Errorf("resolve the stay: %w", err)
+	}
+	for field, message := range problems {
+		fields[field] = message
+	}
+	if len(problems) == 0 {
+		q.Stay = &stay
+	}
+	return nil
 }
 
 // CurrencyNeededMessage is the message of the 400 on `currency` when a price

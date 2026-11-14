@@ -284,6 +284,45 @@ type Listing struct {
 	PublishedAt time.Time  `json:"published_at"`
 	ExpiresAt   time.Time  `json:"expires_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
+	// Availability is set for short stays only (null otherwise): when the
+	// lister last changed the calendar and the first night that is free.
+	// The calendar itself is GET /v1/listings/{slug}/availability.
+	Availability *AvailabilitySummary `json:"availability"`
+}
+
+// AvailabilitySummary is what a listing says about its availability
+// calendar. It carries no reason, note or author: those are the lister's.
+type AvailabilitySummary struct {
+	// UpdatedAt is when the lister last changed the calendar; null when they
+	// never have (every night in the window is then available).
+	UpdatedAt *time.Time `json:"updated_at"`
+	// NextAvailable is the first available night from today on, in the
+	// listing's time zone (YYYY-MM-DD); null when no night in the booking
+	// window is free.
+	NextAvailable *string `json:"next_available"`
+}
+
+// Stay is what a search with check_in and check_out is narrowed by.
+type Stay struct {
+	// Nights is the length of the stay.
+	Nights int
+	// ExcludeIDs are the short stays that are not available for every night
+	// of the stay, resolved from the database (the source of truth), so the
+	// search engine holds no availability data.
+	ExcludeIDs []uuid.UUID
+	// ExcludeCountries are the countries where the stay starts in the past or
+	// ends beyond the booking window (today differs by time zone).
+	ExcludeCountries []string
+}
+
+// Calendar is the availability calendar of the short stays, as the listings
+// module needs it. The availability module implements it.
+type Calendar interface {
+	// Summaries returns the availability summary of each short stay among records.
+	Summaries(ctx context.Context, records []Record, now time.Time) (map[uuid.UUID]AvailabilitySummary, error)
+	// Stay validates check_in and check_out (YYYY-MM-DD) and resolves what a
+	// search for that stay must leave out. Problems are per-field messages.
+	Stay(ctx context.Context, checkIn, checkOut string, now time.Time) (Stay, map[string]string, error)
 }
 
 // Record is a listing as stored: codes instead of labels, plus the fields
@@ -394,6 +433,12 @@ type Query struct {
 	HasPhotos bool
 	// GuestsMin keeps short stays that sleep at least this many guests.
 	GuestsMin *int
+	// CheckIn and CheckOut (YYYY-MM-DD) ask for short stays that are free for
+	// every night of that stay. The Service resolves them into Stay, which is
+	// what the adapters apply; clients cannot set Stay.
+	CheckIn  string
+	CheckOut string
+	Stay     *Stay
 	// CityRegion (city code -> region code) is filled by the Service from the
 	// reference data; the memory adapter evaluates regions with it. Clients
 	// cannot set it.
@@ -521,6 +566,13 @@ type Store interface {
 	// CountByCountry returns the number of public listings per country code
 	// (GET /v1/countries: which countries have listings right now).
 	CountByCountry(ctx context.Context, now time.Time) (map[string]int, error)
+	// Owned returns the listings, WHATEVER THEIR STATUS, that belong to one of
+	// the organisations or are sold directly by the user, newest first. It is
+	// for the lister's own pages, never for the public.
+	Owned(ctx context.Context, organisationIDs []uuid.UUID, sellerUserID *uuid.UUID) ([]Record, error)
+	// SetStayRules changes the shortest stay and / or the number of guests of
+	// a short stay (nil leaves a value as it is) and returns the new record.
+	SetStayRules(ctx context.Context, id uuid.UUID, minNights, maxGuests *int, now time.Time) (Record, error)
 	// PublishedSlugs returns the slug and updated_at of every public listing (sitemap).
 	PublishedSlugs(ctx context.Context, now time.Time) ([]SlugEntry, error)
 }

@@ -17,6 +17,10 @@ const (
 	TypePropertyInformation = "PROPERTY_INFORMATION"
 	TypeViewingRequest      = "VIEWING_REQUEST"
 	TypeConsultationRequest = "CONSULTATION_REQUEST"
+	// TypeStayRequest asks to stay at a short-stay listing from check_in to
+	// check_out with a number of guests. It is still an enquiry: it does not
+	// block the dates and creates no appointment or booking.
+	TypeStayRequest = "STAY_REQUEST"
 )
 
 // Preferred contact methods.
@@ -56,6 +60,29 @@ var (
 	ErrReferenceCollision = errors.New("reference already in use")
 )
 
+// StayDetails are the dates and guests of a request to stay.
+type StayDetails struct {
+	CheckIn  string `json:"check_in"`  // YYYY-MM-DD: the first night
+	CheckOut string `json:"check_out"` // YYYY-MM-DD: the morning of leaving
+	Nights   int    `json:"nights"`
+	Guests   int    `json:"guests"`
+}
+
+// StayChecker decides whether a stay can be asked for at a listing: the
+// listing is a short stay, the dates are inside its booking window, the stay
+// is long enough, the guests fit and every night is available right now. It
+// returns the number of nights, a *ValidationError for a broken rule, or a
+// *DatesUnavailableError. It never changes availability.
+type StayChecker interface {
+	CheckStay(ctx context.Context, listingID uuid.UUID, checkIn, checkOut string, guests int) (nights int, err error)
+}
+
+// DatesUnavailableError: at least one night of the stay is taken. Date is
+// the first such night (YYYY-MM-DD).
+type DatesUnavailableError struct{ Date string }
+
+func (e *DatesUnavailableError) Error() string { return "dates unavailable from " + e.Date }
+
 // ValidationError carries per-field messages for a 400 response.
 type ValidationError struct {
 	Fields map[string]string
@@ -73,6 +100,11 @@ type Input struct {
 	IdempotencyKey         string        `json:"idempotency_key"`
 	GuestContact           *GuestContact `json:"guest_contact"`
 	Consent                *Consent      `json:"consent"`
+	// CheckIn, CheckOut (YYYY-MM-DD, in the listing's time zone) and Guests
+	// are required for STAY_REQUEST and not allowed for any other type.
+	CheckIn  *string `json:"check_in"`
+	CheckOut *string `json:"check_out"`
+	Guests   *int    `json:"guests"`
 
 	// Customer is the authenticated caller, set by the handler from the
 	// session and never read from the body. Nil for a guest request.
@@ -189,6 +221,8 @@ type NewRequest struct {
 	ConsentAcceptedAt time.Time  // UTC
 	Recipient         *Recipient // nil when routing failed
 	CreatedAt         time.Time  // UTC, microsecond precision
+	// Stay is set for a STAY_REQUEST only.
+	Stay *StayDetails
 	// Appointment is written together with the request, or not at all. Nil
 	// when the request gets no appointment.
 	Appointment *LinkedAppointment
@@ -232,6 +266,8 @@ type InboxItem struct {
 	PreferredContactMethod string        `json:"preferred_contact_method"`
 	Contact                InboxContact  `json:"contact"`
 	CreatedAt              time.Time     `json:"created_at"`
+	// Stay is the dates, nights and guests of a STAY_REQUEST; null for every other type.
+	Stay *StayDetails `json:"stay"`
 }
 
 // InboxListing names the listing a request is about.
