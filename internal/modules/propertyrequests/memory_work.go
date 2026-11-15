@@ -19,6 +19,9 @@ type memoryWork struct {
 	ResolvedAt     *time.Time
 	ResolvedBy     *uuid.UUID
 	ResolutionNote string
+	// Recipient replaces the routed recipient once the request was assigned
+	// or unassigned (nil: as routed).
+	Recipient *Recipient
 }
 
 // stored builds the stored form of a request. Caller holds the lock.
@@ -33,6 +36,10 @@ func (s *MemoryStore) stored(req NewRequest) StoredRequest {
 	if w, ok := s.work[req.ID]; ok {
 		r.Stage, r.StageChangedAt, r.StageChangedBy, r.UpdatedAt = w.Stage, w.StageChangedAt, w.StageChangedBy, w.UpdatedAt
 		r.ResolvedAt, r.ResolvedBy, r.ResolutionNote = w.ResolvedAt, w.ResolvedBy, w.ResolutionNote
+		if w.Recipient != nil {
+			recipient := *w.Recipient
+			r.Recipient = &recipient
+		}
 	}
 	return r
 }
@@ -139,7 +146,7 @@ func (s *MemoryStore) RequestTimeline(_ context.Context, id uuid.UUID) ([]Timeli
 		if e.RequestID == id {
 			out = append(out, TimelineEntry{
 				EventType: e.EventType, ActorType: e.ActorType, ActorUserID: e.ActorUserID, ActorName: e.ActorName,
-				FromStage: e.FromStage, ToStage: e.ToStage, At: e.CreatedAt,
+				FromStage: e.FromStage, ToStage: e.ToStage, At: e.CreatedAt, AssigneeName: e.AssigneeName,
 			})
 		}
 	}

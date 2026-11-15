@@ -35,6 +35,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/onboarding"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
+	"rightproperty365.com/backend/internal/modules/teams"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/mail"
 	"rightproperty365.com/backend/internal/platform/outbox"
@@ -54,6 +55,8 @@ const (
 	PathMyAppointments    = "/account/appointments"
 	// Where the listing review emails send the advertiser.
 	PathMyListings = "/agent/listings"
+	// PathInvitation is followed by the invitation token.
+	PathInvitation = "/invitations/"
 )
 
 // previewLength is the size of the message preview in emails to recipients.
@@ -182,6 +185,17 @@ func (m *AccountMailer) SendPasswordReset(ctx context.Context, to, name, token s
 // SendAccountExists implements identity.Mailer.
 func (m *AccountMailer) SendAccountExists(ctx context.Context, to, name string) error {
 	return m.send(ctx, "account-exists", to, mail.Data{Name: name, Path: PathSignIn})
+}
+
+// SendInvitation implements teams.Mailer: the invitation to join an
+// organisation's team. The token is the secret part of the link
+// (/invitations/{token}); it is only rendered into the message, and the
+// notification key is random.
+func (m *AccountMailer) SendInvitation(ctx context.Context, to string, inv teams.InvitationMail) error {
+	return m.send(ctx, "team-invitation", to, mail.Data{
+		Path: PathInvitation + url.PathEscape(inv.Token), OrganisationName: inv.OrganisationName, RoleName: inv.RoleLabel,
+		JobTitle: inv.JobTitle, ActorName: inv.InviterName, ExpiresOn: inv.ExpiresAt,
+	})
 }
 
 // SendSignInCode implements identity.Mailer. The code is rendered into the
@@ -405,6 +419,7 @@ func NewHandlers(svc *mail.Service, renderer *mail.Renderer, source Source, logg
 func EventTypes() []string {
 	return append(append([]string{
 		propertyrequests.EventPropertyRequestCreated,
+		propertyrequests.EventRequestAssigned,
 		businessenquiries.EventBusinessEnquiryCreated,
 		identity.EventUserEmailVerified,
 		identity.EventPasswordChanged,
@@ -541,6 +556,43 @@ func (h *Handlers) build(ctx context.Context, ev outbox.Event) ([]mail.Notificat
 				Name: r.Name, Path: PathInbox, Reference: info.Reference, RequestType: requestType,
 				ListingTitle: listingTitle, ListingRef: listingRef, Stay: stay,
 				Preview: mail.SafePreview(info.Message, previewLength), When: info.CreatedAt,
+			}); err != nil {
+				return nil, err
+			}
+		}
+
+	case propertyrequests.EventRequestAssigned:
+		// To the person the request was given to only.
+		var payload struct {
+			Assignee *uuid.UUID `json:"assignee_user_id"`
+			Actor    *uuid.UUID `json:"actor_user_id"`
+		}
+		if err := json.Unmarshal(ev.Payload, &payload); err != nil || payload.Assignee == nil {
+			return nil, outbox.Permanent(fmt.Errorf("notifications: unreadable %s payload", ev.Type))
+		}
+		info, err := h.source.PropertyRequest(ctx, ev.AggregateID)
+		if err != nil {
+			return nil, err
+		}
+		people, err := h.source.Recipients(ctx, payload.Assignee, nil)
+		if err != nil {
+			return nil, err
+		}
+		actorName := ""
+		if payload.Actor != nil {
+			if actor, err := h.source.User(ctx, *payload.Actor); err == nil {
+				actorName = actor.Name
+			}
+		}
+		var listingTitle, listingRef string
+		if h.listing != nil {
+			listingTitle, listingRef, _ = h.listing(ctx, info.ListingID)
+		}
+		for _, r := range people {
+			if err := add("property-request-assigned", recipientKey(r), r, mail.Data{
+				Name: r.Name, Path: PathInbox, Reference: info.Reference, RequestType: mail.RequestTypeName(info.RequestType),
+				ListingTitle: listingTitle, ListingRef: listingRef, ActorName: actorName,
+				Preview: mail.SafePreview(info.Message, previewLength), When: occurredAt(ev),
 			}); err != nil {
 				return nil, err
 			}

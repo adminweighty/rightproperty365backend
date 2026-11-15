@@ -219,3 +219,19 @@ func (s *MemoryStore) Outbox() []MemoryOutboxEvent {
 	defer s.mu.Unlock()
 	return append([]MemoryOutboxEvent(nil), s.outbox...)
 }
+
+// SetAgentEligible marks whether the user can receive enquiries addressed to
+// their agent profiles of the organisation. Postgres reads this from the
+// membership on every enquiry; the memory store keeps it on the profile, so
+// the team store updates it when a member is suspended, reactivated,
+// removed or joins.
+func (s *MemoryStore) SetAgentEligible(organisationID, userID uuid.UUID, eligible bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, p := range s.profiles {
+		if p.OrganisationID == organisationID && p.AgentUserID != nil && *p.AgentUserID == userID {
+			p.AgentEligible = eligible
+			s.profiles[k] = p
+		}
+	}
+}

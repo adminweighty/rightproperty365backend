@@ -99,9 +99,16 @@ func (s *MemoryStore) SetAccountRoleStatus(userID uuid.UUID, role, status string
 	return fmt.Errorf("set account role status: %w", ErrNotFound)
 }
 
-// SetMembership makes the user a member of an organisation with the given
-// role, replacing an existing membership of the same organisation.
+// SetMembership makes the user an ACTIVE member of an organisation with the
+// given role, replacing an existing membership of the same organisation (a
+// removed or suspended one becomes active again).
 func (s *MemoryStore) SetMembership(userID, organisationID uuid.UUID, marketCode, role string) error {
+	return s.SetMembershipWithTitle(userID, organisationID, marketCode, role, "", time.Time{})
+}
+
+// SetMembershipWithTitle is SetMembership with a job title ("" for none) and
+// the time it happened (the zero time keeps the original joining time).
+func (s *MemoryStore) SetMembershipWithTitle(userID, organisationID uuid.UUID, marketCode, role, jobTitle string, at time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.users[userID]; !ok {
@@ -112,11 +119,95 @@ func (s *MemoryStore) SetMembership(userID, organisationID uuid.UUID, marketCode
 	}
 	for i, m := range s.memberships {
 		if m.UserID == userID && m.OrganisationID == organisationID {
-			s.memberships[i].Role, s.memberships[i].MarketCode = role, marketCode
+			if m.Status != MembershipActive && !at.IsZero() {
+				s.memberships[i].JoinedAt = at
+			}
+			s.memberships[i].Role, s.memberships[i].MarketCode, s.memberships[i].Status = role, marketCode, MembershipActive
+			if jobTitle != "" {
+				s.memberships[i].JobTitle = jobTitle
+			}
 			return nil
 		}
 	}
-	s.memberships = append(s.memberships, memoryMembership{UserID: userID, OrganisationID: organisationID, MarketCode: marketCode, Role: role})
+	s.memberships = append(s.memberships, memoryMembership{UserID: userID, OrganisationID: organisationID, MarketCode: marketCode, Role: role,
+		Status: MembershipActive, JobTitle: jobTitle, JoinedAt: at})
+	return nil
+}
+
+// Membership statuses (memberships.status). Only an ACTIVE membership gives
+// access; a SUSPENDED one is kept (it can be reactivated) and a REMOVED one is
+// no longer listed.
+const (
+	MembershipActive    = "ACTIVE"
+	MembershipSuspended = "SUSPENDED"
+	MembershipRemoved   = "REMOVED"
+)
+
+// MemoryMembership is one membership row (for the team store).
+type MemoryMembership struct {
+	UserID         uuid.UUID
+	OrganisationID uuid.UUID
+	MarketCode     string
+	Role           string
+	Status         string
+	JobTitle       string
+	JoinedAt       time.Time
+}
+
+// MembershipOf returns the user's membership of an organisation, in any status.
+func (s *MemoryStore) MembershipOf(organisationID, userID uuid.UUID) (MemoryMembership, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, m := range s.memberships {
+		if m.UserID == userID && m.OrganisationID == organisationID {
+			return MemoryMembership(m), true
+		}
+	}
+	return MemoryMembership{}, false
+}
+
+// OrganisationMemberships returns every membership of an organisation, in any status.
+func (s *MemoryStore) OrganisationMemberships(organisationID uuid.UUID) []MemoryMembership {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []MemoryMembership
+	for _, m := range s.memberships {
+		if m.OrganisationID == organisationID {
+			out = append(out, MemoryMembership(m))
+		}
+	}
+	return out
+}
+
+// UpdateMembership replaces the role, status and job title of an existing
+// membership. ErrNotFound when there is none.
+func (s *MemoryStore) UpdateMembership(m MemoryMembership) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, cur := range s.memberships {
+		if cur.UserID == m.UserID && cur.OrganisationID == m.OrganisationID {
+			s.memberships[i].Role, s.memberships[i].Status, s.memberships[i].JobTitle = m.Role, m.Status, m.JobTitle
+			return nil
+		}
+	}
+	return fmt.Errorf("update membership: %w", ErrNotFound)
+}
+
+// GrantAccountRole sets one of the user's account roles to status, adding the
+// role when the user does not have it.
+func (s *MemoryStore) GrantAccountRole(userID uuid.UUID, role, status string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.users[userID]; !ok {
+		return fmt.Errorf("grant account role: %w", ErrNotFound)
+	}
+	for i, r := range s.accountRoles[userID] {
+		if r.Role == role {
+			s.accountRoles[userID][i].Status = status
+			return nil
+		}
+	}
+	s.accountRoles[userID] = append(s.accountRoles[userID], AccountRole{Role: role, Status: status})
 	return nil
 }
 
@@ -130,6 +221,9 @@ type memoryMembership struct {
 	OrganisationID uuid.UUID
 	MarketCode     string
 	Role           string
+	Status         string
+	JobTitle       string
+	JoinedAt       time.Time
 }
 
 type memoryToken struct {
@@ -293,7 +387,10 @@ func (s *MemoryStore) view(u *memoryUser) User {
 	sortAccountRoles(out.AccountRoles)
 	out.Memberships = nil
 	for _, m := range s.memberships {
-		if m.UserID != u.ID {
+		// Only an ACTIVE membership gives access (and so appears on the
+		// Principal): a suspended or removed member has none, from their
+		// next request on.
+		if m.UserID != u.ID || m.Status != MembershipActive {
 			continue
 		}
 		org := s.organisations[m.OrganisationID]
@@ -575,7 +672,8 @@ func (s *MemoryStore) AddMembership(userID, organisationID uuid.UUID, marketCode
 	if _, ok := s.organisations[organisationID]; !ok {
 		return fmt.Errorf("add membership: organisation %s: %w", organisationID, ErrNotFound)
 	}
-	s.memberships = append(s.memberships, memoryMembership{UserID: userID, OrganisationID: organisationID, MarketCode: marketCode, Role: role})
+	s.memberships = append(s.memberships, memoryMembership{UserID: userID, OrganisationID: organisationID, MarketCode: marketCode, Role: role,
+		Status: MembershipActive, JoinedAt: s.users[userID].CreatedAt})
 	return nil
 }
 
@@ -642,7 +740,7 @@ func (s *MemoryStore) OrganisationManagers(organisationID uuid.UUID) []User {
 	defer s.mu.Unlock()
 	var out []User
 	for _, m := range s.memberships {
-		if m.OrganisationID != organisationID || (m.Role != auth.RoleOwner && m.Role != auth.RoleManager) {
+		if m.OrganisationID != organisationID || m.Status != MembershipActive || (m.Role != auth.RoleOwner && m.Role != auth.RoleManager) {
 			continue
 		}
 		if u, ok := s.users[m.UserID]; ok && u.Status == StatusActive {

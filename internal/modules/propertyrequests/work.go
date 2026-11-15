@@ -301,7 +301,9 @@ type TimelineEntry struct {
 	ActorName   string
 	FromStage   string
 	ToStage     string
-	At          time.Time
+	// AssigneeName is who an ASSIGNED entry gave the request to.
+	AssigneeName string
+	At           time.Time
 }
 
 // Note is an internal note of the receiving side.
@@ -387,6 +389,15 @@ type WorkStore interface {
 	ResolveException(ctx context.Context, id uuid.UUID, res Resolution, allow func(current StoredRequest) error) (StoredRequest, error)
 	// AdminCounts counts requests in the markets (nil: every market).
 	AdminCounts(ctx context.Context, marketIDs []uuid.UUID, now time.Time) (AdminCounts, error)
+	// Assign gives a request to a person or back to the organisation inbox
+	// (see assign.go) after allow accepted the current row: the recipient,
+	// its ASSIGNED / UNASSIGNED timeline entry, the move from NEW_ENQUIRY to
+	// ASSIGNED (with its own timeline entry and event), the
+	// PROPERTY_REQUEST_ASSIGNED event and the audit record, together.
+	Assign(ctx context.Context, id uuid.UUID, a Assignment, allow func(current StoredRequest) error) (StoredRequest, error)
+	// OpenLeads counts, per assignee, the organisation's open requests
+	// (not CONVERTED or CLOSED) assigned to someone.
+	OpenLeads(ctx context.Context, organisationID uuid.UUID) (map[uuid.UUID]int, error)
 }
 
 // stageEventPayload is the body of PROPERTY_REQUEST_STAGE_CHANGED:

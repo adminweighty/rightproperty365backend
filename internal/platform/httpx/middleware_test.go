@@ -152,3 +152,17 @@ func TestRateLimiter(t *testing.T) {
 		t.Fatal("bucket should have refilled after one second")
 	}
 }
+
+func TestLoggedPathHidesInvitationTokens(t *testing.T) {
+	for in, want := range map[string]string{
+		"/v1/invitations/abc":                   "/v1/invitations/{token}",
+		"/v1/invitations/abc/accept":            "/v1/invitations/{token}/accept",
+		"/v1/invitations/":                      "/v1/invitations/",
+		"/v1/agent/organisations/x/invitations": "/v1/agent/organisations/x/invitations",
+		"/v1/listings":                          "/v1/listings",
+	} {
+		if got := LoggedPath(in); got != want {
+			t.Fatalf("LoggedPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

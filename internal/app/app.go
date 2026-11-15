@@ -25,6 +25,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/onboarding"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
+	"rightproperty365.com/backend/internal/modules/teams"
 	"rightproperty365.com/backend/internal/modules/trust"
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/config"
@@ -102,6 +103,17 @@ const (
 	// upload bucket.
 	listingChangesPerMinute = 60
 	listingChangesBurst     = 60
+
+	// Per-IP limit on changing a team (invite, cancel an invitation, decide a
+	// join request, change, suspend or remove a member), its own bucket:
+	// bursts of 30, refilled at 30 per minute.
+	teamChangesPerMinute = 30
+	teamChangesBurst     = 30
+
+	// Per-IP limit on the invitation links (GET /v1/invitations/{token} and
+	// its accept), its own bucket: bursts of 20, refilled at 20 per minute.
+	invitationRequestsPerMinute = 20
+	invitationRequestsBurst     = 20
 )
 
 // uploadPath matches POST /v1/me/onboarding/{role}/documents and logoPath
@@ -152,6 +164,11 @@ type Deps struct {
 	Appointments appointments.Store
 	// Availability holds the calendars of the short stays.
 	Availability availability.Store
+	// Teams holds invitations and the team audit trail, and changes
+	// memberships together with everything a change releases.
+	Teams teams.Store
+	// TeamMailer sends invitation emails; nil means Mailer when it can.
+	TeamMailer teams.Mailer
 
 	// Optional overrides used by tests.
 	Now    func() time.Time
@@ -232,7 +249,10 @@ func NewRouter(d Deps) (http.Handler, error) {
 	if cfg.AuthDemoCode.IsSet() && (cfg.Env == config.EnvDevelopment || cfg.Env == config.EnvStaging) {
 		identityOpts = append(identityOpts, identity.WithDemoCode(cfg.AuthDemoCode.Reveal()))
 	}
-	requestOpts := []propertyrequests.Option{propertyrequests.WithVocabulary(vocab), propertyrequests.WithStayChecker(stayChecker{svc: availabilitySvc})}
+	requestOpts := []propertyrequests.Option{
+		propertyrequests.WithVocabulary(vocab), propertyrequests.WithStayChecker(stayChecker{svc: availabilitySvc}),
+		propertyrequests.WithAssignees(assignees{identity: d.Identity}),
+	}
 	enquiryOpts := []businessenquiries.Option{businessenquiries.WithVocabulary(vocab)}
 	if d.Now != nil {
 		identityOpts = append(identityOpts, identity.WithClock(d.Now))
@@ -279,6 +299,23 @@ func NewRouter(d Deps) (http.Handler, error) {
 		onboardingSvc.SetClock(d.Now)
 	}
 	onboardingH := onboarding.NewHandler(onboardingSvc, logger)
+
+	// Teams: the OWNER and MANAGER of an organisation run its team. Join
+	// requests are onboarding applications, decided through onboardingSvc.
+	if d.Teams == nil {
+		return nil, errors.New("app: no team store")
+	}
+	teamMailer := d.TeamMailer
+	if teamMailer == nil {
+		teamMailer, _ = d.Mailer.(teams.Mailer)
+	}
+	teamsSvc := teams.NewService(d.Teams, teamMailer, logger)
+	if d.Now != nil {
+		teamsSvc.SetClock(d.Now)
+	}
+	teamsH := teams.NewHandler(teamsSvc, onboardingSvc, logger)
+	teamLimiter := httpx.NewRateLimiter(teamChangesPerMinute, teamChangesBurst)
+	invitationLimiter := httpx.NewRateLimiter(invitationRequestsPerMinute, invitationRequestsBurst)
 
 	// Dashboards: one role-aware summary per account, an organisation's
 	// members, and the administrators' overview. Every number is read through
@@ -555,11 +592,32 @@ func NewRouter(d Deps) (http.Handler, error) {
 			// Working a request: move its lead stage, add an internal note.
 			r.With(requestWorkLimiter.Middleware).Patch("/{id}", requestsH.Patch)
 			r.With(requestWorkLimiter.Middleware).Post("/{id}/notes", requestsH.AddNote)
+			// Giving a request to a member, or back to the organisation
+			// inbox: the organisation's OWNER and MANAGER only.
+			r.With(requestWorkLimiter.Middleware).Post("/{id}/assign", requestsH.Assign)
 		})
 
-		// The members of an organisation, read-only, for its OWNER and
-		// MANAGER. The handler answers 404 to anyone who is not a member.
-		r.With(auth.RequireAuth).Get("/agent/organisations/{id}/members", dashboardH.Members)
+		// An organisation's team, for its OWNER and MANAGER (what each may
+		// do to whom: auth.GrantableRoles). The handlers answer 404 to anyone
+		// who is not an active member and 403 to its AGENT and STAFF.
+		r.Route("/agent/organisations/{id}", func(r chi.Router) {
+			r.Use(auth.RequireAuth)
+			r.Get("/members", teamsH.Members)
+			r.With(teamLimiter.Middleware).Patch("/members/{userId}", teamsH.PatchMember)
+			r.With(teamLimiter.Middleware).Delete("/members/{userId}", teamsH.RemoveMember)
+			r.Get("/invitations", teamsH.Invitations)
+			r.With(teamLimiter.Middleware).Post("/invitations", teamsH.Invite)
+			r.With(teamLimiter.Middleware).Delete("/invitations/{invitationId}", teamsH.CancelInvitation)
+			r.Get("/join-requests", teamsH.JoinRequests)
+			r.With(teamLimiter.Middleware).Post("/join-requests/{requestId}/approve", teamsH.ApproveJoinRequest)
+			r.With(teamLimiter.Middleware).Post("/join-requests/{requestId}/decline", teamsH.DeclineJoinRequest)
+			r.Get("/audit", teamsH.Audit)
+		})
+
+		// An invitation link: what it is for (anyone holding the link), and
+		// accepting it (signed in, with the invited address).
+		r.With(invitationLimiter.Middleware).Get("/invitations/{token}", teamsH.PublicInvitation)
+		r.With(auth.RequireAuth, invitationLimiter.Middleware).Post("/invitations/{token}/accept", teamsH.Accept)
 	})
 	return r, nil
 }

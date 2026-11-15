@@ -9,8 +9,17 @@ import (
 	"github.com/google/uuid"
 
 	"rightproperty365.com/backend/internal/modules/markets"
+	"rightproperty365.com/backend/internal/platform/orgaudit"
 	"rightproperty365.com/backend/internal/platform/outbox"
 )
+
+// outboxEventOf turns a recorded event into what the sink receives.
+func outboxEventOf(e MemoryOutboxEvent) outbox.Event {
+	return outbox.Event{
+		ID: uuid.New(), Type: e.EventType, AggregateType: AggregatePropertyRequest, AggregateID: e.AggregateID,
+		Payload: e.Payload, Attempts: 1, CreatedAt: e.CreatedAt,
+	}
+}
 
 // Fixed IDs used by the development seed. Listing IDs match the frontend's
 // sample data.
@@ -44,6 +53,8 @@ type MemoryStore struct {
 	// appointments writes the appointment that belongs to a request; it is
 	// called under the store lock so both are stored or neither is.
 	appointments func(NewRequest) error
+	// audit receives the organisation audit records of assignments.
+	audit orgaudit.Sink
 }
 
 // SetAppointmentWriter registers the function that stores a request's
@@ -74,6 +85,8 @@ type MemoryTimelineEntry struct {
 	ActorName   string
 	FromStage   string
 	ToStage     string
+	// AssigneeName is set for ASSIGNED entries.
+	AssigneeName string
 }
 
 // MemoryActivityEntry mirrors a customer_activity row.

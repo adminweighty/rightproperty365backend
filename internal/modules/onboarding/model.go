@@ -32,6 +32,7 @@ import (
 
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/platform/auth"
+	"rightproperty365.com/backend/internal/platform/orgaudit"
 )
 
 // Application statuses.
@@ -459,6 +460,9 @@ type Transition struct {
 	Event string
 	// AccountRoleStatus, when set, becomes the status of the user's account role.
 	AccountRoleStatus string
+	// Audit, when set, is the organisation audit record written with the
+	// change (a decision on a join request).
+	Audit *orgaudit.Event
 }
 
 // NewOrganisation, NewMembership and NewProfile are what an approval creates.
@@ -473,6 +477,8 @@ type NewMembership struct {
 	OrganisationID uuid.UUID
 	MarketCode     string
 	Role           string
+	// JobTitle is the applicant's job title ("" for none).
+	JobTitle string
 }
 
 type NewProfile struct {
@@ -517,6 +523,9 @@ type Approval struct {
 	// AgencySlug is set for agency-member outcomes: the agency must still be
 	// a verified, public agency when the transaction commits.
 	AgencySlug string
+	// Audit is the agency's audit record of the decision (agency-member
+	// outcomes only).
+	Audit *orgaudit.Event
 }
 
 // ProfileRef is a public profile address.
@@ -539,8 +548,10 @@ type ListFilter struct {
 	Q      string
 	// Markets limits the list to these market codes; nil means every market.
 	Markets []string
-	Limit   int
-	Offset  int
+	// AgencySlug limits the list to the applications to join that agency.
+	AgencySlug string
+	Limit      int
+	Offset     int
 }
 
 // Store persists applications. Reads return the applicant with each

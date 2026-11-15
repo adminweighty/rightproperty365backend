@@ -1,0 +1,19 @@
+{{define "subject"}}Request assigned to you: {{.Reference}}{{end}}
+{{define "heading"}}A request was assigned to you{{end}}
+{{define "button"}}Open your inbox{{end}}
+{{define "why"}}You are receiving this because a request of your organisation was assigned to you on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+{{if .ActorName}}{{.ActorName}} assigned you{{else}}You were assigned{{end}} a property request. It is now in your inbox.
+
+Reference: {{.Reference}}
+{{if .ListingTitle}}Property: {{.ListingTitle}}
+{{end}}{{if .ListingRef}}Listing reference: {{.ListingRef}}
+{{end}}{{if .RequestType}}Request: {{.RequestType}}
+{{end}}Assigned: {{dateTime .When}}
+
+
+{{if .Preview}}Message preview:
+  {{.Preview}}{{end}}
+
+The full message and the customer's contact details are in your inbox. They are not included in this email.{{end}}

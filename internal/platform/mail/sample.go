@@ -41,6 +41,14 @@ func SampleData(name string) Data {
 	case "business-enquiry-new":
 		d.Name, d.Path, d.Reference, d.ProfileName, d.Service = "Sample Plumbers Owner", "/agent/requests", "BE-4H8N2RXT", "Sample Plumbers", "Burst pipes and leaks"
 		d.Preview = SafePreview("The geyser is leaking into the ceiling. Can someone come this week? Call me on +263 77 123 4567 or write to tariro@example.com.", 140)
+	case "team-invitation":
+		d.Name, d.Path = "", "/invitations/"+sampleToken
+		d.OrganisationName, d.RoleName, d.JobTitle, d.ActorName = "Sample Estates", "Estate Agent", "Senior negotiator", "Rudo Moyo"
+		d.ExpiresOn = sampleTime.Add(7 * 24 * time.Hour)
+	case "property-request-assigned":
+		d.Name, d.Path, d.Reference, d.RequestType = "Tendai Ncube", "/agent/requests", "RP-7K2M9Q4D", RequestTypeName("VIEWING_REQUEST")
+		d.ListingTitle, d.ListingRef, d.ActorName = "Four-bedroom family home in Borrowdale", "RP-ZW-10001", "Rudo Moyo"
+		d.Preview = SafePreview(preview, 140)
 	case "onboarding-submitted":
 		d.StatusText = "Under Review"
 		d.Name, d.Path, d.RoleName = "Sample Plumbers Owner", "/onboarding", "Property Service Provider"

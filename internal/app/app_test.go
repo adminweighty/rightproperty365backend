@@ -31,6 +31,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/onboarding"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
+	"rightproperty365.com/backend/internal/modules/teams"
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/httpx"
@@ -53,6 +54,33 @@ type captureMailer struct {
 	accountExists []string
 	// signInCodes are the sign-in codes that would have been emailed.
 	signInCodes []sentCode
+	// invitations are the team invitations that would have been emailed.
+	invitations []sentInvitation
+}
+
+// sentInvitation is one invitation email.
+type sentInvitation struct {
+	to   string
+	mail teams.InvitationMail
+}
+
+func (m *captureMailer) SendInvitation(_ context.Context, to string, inv teams.InvitationMail) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.invitations = append(m.invitations, sentInvitation{to: to, mail: inv})
+	return nil
+}
+
+// lastInvitation returns the most recent invitation email (its token is the
+// link's secret, as a person reads it from their inbox).
+func (m *captureMailer) lastInvitation(t *testing.T) sentInvitation {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.invitations) == 0 {
+		t.Fatal("no invitation was sent")
+	}
+	return m.invitations[len(m.invitations)-1]
 }
 
 // sentCode is one sign-in code email.
@@ -156,6 +184,7 @@ type env struct {
 	// calendars holds the availability of the short stays (empty unless a test fills it).
 	calendars *availability.MemoryStore
 	appts     *appointments.MemoryStore
+	team      *teams.MemoryStore
 	files     *storage.Local
 	mail      *captureMailer
 	logs      *bytes.Buffer
@@ -225,6 +254,14 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		t.Fatal(err)
 	}
 	e.listings.SetAdvertisers(MemoryAdvertisers(e.directory, e.identity))
+	e.team = teams.NewMemoryStore(teams.MemoryDeps{
+		Identity: e.identity, Directory: e.directory, Enquiries: e.enquiries, Requests: e.requests, Appointments: e.appts,
+		Onboarding: e.onboard,
+		MarketID: func(code string) (uuid.UUID, bool) {
+			id := markets.IDFor(code)
+			return id, id != uuid.Nil
+		},
+	})
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	e.marketStore = markets.NewMemoryStore()
 	e.calendars = availability.NewMemoryStore()
@@ -242,6 +279,7 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		Onboarding: e.onboard, Files: e.files,
 		Appointments: e.appts,
 		Availability: e.calendars,
+		Teams:        e.team,
 		Now:          func() time.Time { return e.now },
 		Hasher:       &hasher,
 	})

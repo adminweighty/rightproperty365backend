@@ -188,6 +188,11 @@ onboarding applications (their roles were granted by the seed, not by a review).
 | `pending.provider@example.test` | Pamela Provider | SERVICE_PROVIDER, application **SUBMITTED** with details ("Sample Roofing Repairs") and one tiny generated sample document per required type (a PNG and two PDFs). Sign in as `admin@example.test` at the administrator login to review and decide it |
 | `pending.agent@example.test` | Peter Pending | AGENT, application still a **DRAFT** (nothing filled in) |
 
+**Team samples** (Sample Estates, API 0.23.0): a pending invitation to `invited.agent@example.test`
+(nobody has its link; invite an address yourself to get one in the log) and a pending join request
+from `joining.agent@example.test` (Jamie Joiner, same `DEV_SEED_PASSWORD`), decided by Rudo Moyo or
+Ruvimbo Chari on the team page, or by an administrator. See docs/sample-accounts.md.
+
 Registering a new account in development does not send email: the API **logs** the link, e.g.
 `"msg":"DEV MAIL (not sent): verify-email link", "link":"http://localhost:3000/verify-email?token=..."`.
 
@@ -397,8 +402,7 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
   nobody could receive stays `RECEIVED` to them.
 - **Inbox filters** – `stage`, `type`, `listing_id`, `from`, `to`, `q` (reference, name, email,
   message), `page`, `page_size`; `stage_counts` per stage. Filters never widen the scope.
-- **Team list** – `GET /v1/agent/organisations/{id}/members`, OWNER and MANAGER only (another
-  member `403`, a non-member `404`); name, role label, status, no contact details.
+- **Team** – see "Agency teams" below (API 0.23.0).
 - **Administrators** – `GET /v1/admin/overview` (accounts and recent sign-ups for SUPER_ADMIN,
   PLATFORM_ADMIN, SUPPORT; verifications for whoever reviews them; listings by status for
   SUPER_ADMIN, PLATFORM_ADMIN, MODERATOR; requests by stage and routing exceptions for
@@ -410,9 +414,57 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
   60 per minute.
 
 **Not built** (dashboards and requests): replies to the customer and any email about a stage
-change; assigning a request to a person; follow-up dates and reminders; editing or deleting a
-note; listing analytics, conversion funnels and response-time KPIs (no event data exists);
-seeker favourites, saved searches and alerts; inviting, changing or removing members.
+change; follow-up dates and reminders; editing or deleting a note; listing analytics, conversion
+funnels and response-time KPIs (no event data exists); seeker favourites, saved searches and
+alerts.
+
+## Agency teams (API 0.23.0)
+
+Migration `0021`, module `internal/modules/teams` (assignment is in
+`propertyrequests/assign.go`, join decisions in `onboarding/agency.go`, the audit trail in
+`internal/platform/orgaudit`). An organisation's OWNER and MANAGER run their own team; the rules
+are in `auth/capabilities.go` (`GrantableRoles`, `MayManageTeam`, `RoleHoldsLeads`).
+
+- **Who may do what.** An OWNER invites, changes, suspends and removes MANAGER, AGENT and STAFF
+  members; a MANAGER only AGENT and STAFF. Nobody grants OWNER, nobody changes or removes an
+  OWNER (the last active owner: `409 LAST_OWNER`; another owner: `403 OWNER_PROTECTED`), nobody
+  acts on themselves (`403 SELF_CHANGE_FORBIDDEN`). AGENT and STAFF get `403`, non-members `404`.
+- **Invitations** – `POST /v1/agent/organisations/{id}/invitations` `{email, role, job_title?}`. A
+  single-use link `PUBLIC_WEB_URL/invitations/{token}`, valid for 7 days, emailed from the request
+  (the token is a credential, so it never goes through the outbox; only its SHA-256 is stored).
+  Inviting a pending address again replaces the old link. `GET /v1/invitations/{token}` is public
+  (organisation, role, inviter, masked address, expiry); `POST /v1/invitations/{token}/accept`
+  needs a session of the invited address (`403 INVITATION_EMAIL_MISMATCH`), refuses a property
+  seeker account (`409 SEEKER_ACCOUNT_CANNOT_JOIN`), and creates the membership, the matching
+  account role (in an agency) and, for an AGENT, a verified agent profile linked to the agency.
+- **Join requests** – the AGENT / SALES_AGENT / LETTINGS_AGENT / AGENCY_STAFF / AGENCY_ADMIN
+  applications that name an agency are listed to that agency
+  (`GET .../join-requests`) and can be approved or declined there (`POST .../approve`,
+  `.../decline {reason}`) with exactly the platform reviewer's effects and emails; a MANAGER only
+  for those that become AGENT or STAFF. Whoever decides first wins; the other gets `409`.
+- **Change, suspend, remove** – `PATCH .../members/{userId}` `{role?, status?, job_title?}`,
+  `DELETE .../members/{userId}` (membership `REMOVED`, no longer listed). Access is read from the
+  ACTIVE memberships on every request (nothing is cached in the session), so it is gone from the
+  member's next request on. Their open requests and appointments go back to the organisation
+  inbox (`UNASSIGNED` timeline entries); a member made STAFF gives back their open requests.
+- **Assignment** – `POST /v1/agent/property-requests/{id}/assign` `{user_id | null}`, OWNER and
+  MANAGER only, to an ACTIVE OWNER, MANAGER or AGENT of the receiving organisation. Writes
+  `ASSIGNED` (and `NEW_ENQUIRY` -> `ASSIGNED`), emails the assignee (outbox
+  `PROPERTY_REQUEST_ASSIGNED`). Received requests show `assigned_to`.
+- **Audit trail** – `organisation_audit_events`, written in the same transaction as each change
+  (invites, cancellations, acceptances, join decisions by the agency or the platform, role,
+  status and job title changes, removals with the released counts, assignments), immutable, and
+  listed newest first by `GET .../audit` (OWNER and MANAGER).
+- **Listing review** – a reviewer who is a member of the listing's organisation, or who sells, is
+  the agent of, created or submitted it, gets `403 SELF_REVIEW_FORBIDDEN`.
+- Rate limits: team changes bursts of 30 / 30 per minute; the invitation link and its accept 20 /
+  20 per minute; assignment shares the request-work bucket. Every read is
+  `Cache-Control: private, no-store`.
+
+**Not built** (teams): transferring ownership or adding a second owner through the API (an owner
+is made only by an approved AGENCY_OWNER application or by the seed); a removed agent's public
+profile and their listings' assigned agent are not changed (the listings' requests go to the
+organisation inbox meanwhile); bulk reassignment; resending an invitation without replacing it.
 
 ## Appointments: viewings and consultations
 
@@ -1804,6 +1856,8 @@ The log mailer (development only) sends nothing and writes one line per email, i
 | Appointment confirmed (to the customer) | Confirmed by the professional, or a proposed time accepted | outbox `APPOINTMENT_CONFIRMED` |
 | New time proposed (to the customer) / The customer proposed a new time (to the professional) | A new time proposed by the other party | outbox `APPOINTMENT_RESCHEDULE_REQUESTED` |
 | Appointment cancelled (to the customer) / cancelled by the customer (to the professional) | Cancelled by the other party | outbox `APPOINTMENT_CANCELLED` |
+| Invitation to join a team (to the invited address; the link is single-use, 7 days) | `POST /v1/agent/organisations/{id}/invitations` | request |
+| A request was assigned to you (to the assignee; reference, listing, preview) | `POST /v1/agent/property-requests/{id}/assign` | outbox `PROPERTY_REQUEST_ASSIGNED` |
 
 **Designed, written and tested, but NOT triggered by anything** (the features do not exist yet):
 reply or status update to the customer, listing expiring in 14 / 7 / 1 days, listing expired, relist
@@ -2330,6 +2384,16 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0021_agency_teams` widens `memberships_status_check` to `ACTIVE`, `INVITED`, `SUSPENDED`,
+  `REMOVED` and adds `memberships.job_title` (1-80 characters, nullable); new tables
+  `organisation_invitations` (token stored as its SHA-256, `organisation_invitations_token_hash_key`;
+  at most one `PENDING` invitation per organisation and address, partial unique index
+  `organisation_invitations_one_pending_key`) and `organisation_audit_events` (immutable rows,
+  trigger `organisation_audit_events_no_update`, index `(organisation_id, created_at DESC, id DESC)`);
+  `appointment_timeline_event_check` gains `UNASSIGNED`. Every object is created `IF NOT EXISTS`
+  and no existing row is rewritten. The down migration drops the two tables and the job titles,
+  deletes `UNASSIGNED` timeline rows and turns `SUSPENDED` memberships into `REMOVED` (never back
+  into `ACTIVE`).
 - `0020_listing_management` adds the listing statuses `CHANGES_REQUESTED`, `REJECTED` and
   `ARCHIVED` (`ALTER TYPE ... ADD VALUE`, unused in the same transaction), to `listings`
   `created_by`, `submitted_at`, `submitted_by`, `review_reason` (1-1000 characters),

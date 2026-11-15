@@ -28,7 +28,24 @@ var (
 	ErrForbidden = errors.New("not allowed")
 	// ErrPhotoRequired: the last public photo of a published listing.
 	ErrPhotoRequired = errors.New("a published listing must keep at least one photo")
+	// ErrSelfReview: a reviewer may not decide a listing of their own: one of
+	// an organisation they are a member of, one they sell or let themselves,
+	// are the agent of, created or submitted.
+	ErrSelfReview = errors.New("a reviewer may not review their own listing")
 )
+
+// selfReview reports whether the reviewer has a stake in the listing.
+func selfReview(p *auth.Principal, m ManagedListing) bool {
+	if m.OrganisationID != nil && p.MembershipRole(*m.OrganisationID) != "" {
+		return true
+	}
+	for _, id := range []*uuid.UUID{m.SellerUserID, m.AgentUserID, m.CreatedBy, m.SubmittedBy} {
+		if id != nil && *id == p.UserID {
+			return true
+		}
+	}
+	return false
+}
 
 // StateError is an action the listing's status does not allow (409).
 type StateError struct {
@@ -988,6 +1005,10 @@ func (mg *Manager) Decide(ctx context.Context, p *auth.Principal, id uuid.UUID, 
 	m, err := mg.reviewable(ctx, p, id)
 	if err != nil {
 		return AdminView{}, err
+	}
+	if selfReview(p, m) {
+		mg.audit(ctx, "listing.self_review_refused", p, m.ID, slog.String("decision", decision))
+		return AdminView{}, ErrSelfReview
 	}
 	kind := m.ReviewKind()
 	if kind == "" {

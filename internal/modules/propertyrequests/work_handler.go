@@ -2,6 +2,7 @@ package propertyrequests
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -49,6 +50,8 @@ func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 		httpx.WriteError(w, r, http.StatusNotFound, CodeRequestNotFound, "This request does not exist.", nil)
 	case errors.Is(err, ErrInvalidTransition):
 		httpx.WriteError(w, r, http.StatusConflict, CodeInvalidStageTransition, "This request cannot move to that stage from its current stage.", nil)
+	case errors.Is(err, ErrForbidden):
+		httpx.WriteError(w, r, http.StatusForbidden, httpx.CodeForbidden, "Only the organisation's owner and managers can assign its requests.", nil)
 	case errors.Is(err, ErrAlreadyResolved):
 		httpx.WriteError(w, r, http.StatusConflict, CodeAlreadyResolved, "This routing exception was already resolved.", nil)
 	default:
@@ -229,10 +232,17 @@ func (h *Handler) Items(ctx context.Context, stored []StoredRequest) ([]InboxIte
 	if err != nil {
 		return nil, err
 	}
+	assignees, err := h.svc.AssigneeNames(ctx, stored)
+	if err != nil {
+		return nil, err
+	}
 	items := make([]InboxItem, 0, len(stored))
 	for _, s := range stored {
 		item := ItemOf(s)
 		item.Listing = listingOf(names, s.ListingID)
+		if id := s.AssignedUserID(); id != nil {
+			item.AssignedTo = &AssigneeView{UserID: *id, Name: assignees[*id]}
+		}
 		items = append(items, item)
 	}
 	return items, nil
@@ -311,9 +321,11 @@ type timelineView struct {
 	FromStage *string `json:"from_stage"`
 	ToStage   *string `json:"to_stage"`
 	// Actor is CUSTOMER, PROFESSIONAL, ADMIN or SYSTEM.
-	Actor     string    `json:"actor"`
-	ActorName *string   `json:"actor_name"`
-	At        time.Time `json:"at"`
+	Actor     string  `json:"actor"`
+	ActorName *string `json:"actor_name"`
+	// AssigneeName is who an ASSIGNED entry gave the request to.
+	AssigneeName *string   `json:"assignee_name"`
+	At           time.Time `json:"at"`
 }
 
 type noteView struct {
@@ -328,11 +340,13 @@ type noteView struct {
 // detailView is a request as the receiving side sees it.
 type detailView struct {
 	InboxItem
-	PreferredSlotUTC *time.Time     `json:"preferred_slot_utc"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-	AllowedStages    []StageView    `json:"allowed_stages"`
-	Timeline         []timelineView `json:"timeline"`
-	Notes            []noteView     `json:"notes"`
+	PreferredSlotUTC *time.Time  `json:"preferred_slot_utc"`
+	UpdatedAt        time.Time   `json:"updated_at"`
+	AllowedStages    []StageView `json:"allowed_stages"`
+	// CanAssign: the caller may assign the request (its OWNER or MANAGER).
+	CanAssign bool           `json:"can_assign"`
+	Timeline  []timelineView `json:"timeline"`
+	Notes     []noteView     `json:"notes"`
 }
 
 func optional(s string) *string {
@@ -357,6 +371,14 @@ func professionalTimeline(entries []TimelineEntry) []timelineView {
 			v.FromStage, v.ToStage = optional(e.FromStage), optional(e.ToStage)
 		case TimelineNoteAdded:
 			v.Label = "Note added"
+		case TimelineAssigned:
+			v.Label = "Assigned to " + e.AssigneeName
+			if e.AssigneeName == "" {
+				v.Label = "Assigned"
+			}
+			v.AssigneeName = optional(e.AssigneeName)
+		case TimelineUnassigned:
+			v.Label = "Returned to the organisation inbox"
 		default:
 			continue // nothing else belongs to the receiving side
 		}
@@ -366,6 +388,10 @@ func professionalTimeline(entries []TimelineEntry) []timelineView {
 }
 
 func (h *Handler) writeDetail(w http.ResponseWriter, r *http.Request, p *auth.Principal, status int, req StoredRequest) {
+	h.writeDetailFor(w, r, p, ScopeOf(p), status, req)
+}
+
+func (h *Handler) writeDetailFor(w http.ResponseWriter, r *http.Request, p *auth.Principal, scope InboxScope, status int, req StoredRequest) {
 	entries, notes, err := h.svc.History(r.Context(), req.ID)
 	if err != nil {
 		h.fail(w, r, err)
@@ -379,6 +405,7 @@ func (h *Handler) writeDetail(w http.ResponseWriter, r *http.Request, p *auth.Pr
 	v := detailView{
 		InboxItem: items[0], PreferredSlotUTC: req.PreferredSlot, UpdatedAt: req.UpdatedAt,
 		AllowedStages: []StageView{}, Timeline: professionalTimeline(entries), Notes: make([]noteView, 0, len(notes)),
+		CanAssign: scope.CanAssign(req),
 	}
 	for _, stage := range NextStages(req.Stage) {
 		v.AllowedStages = append(v.AllowedStages, StageView{Stage: stage, Label: StageLabel(stage)})
@@ -435,6 +462,57 @@ func (h *Handler) Patch(w http.ResponseWriter, r *http.Request) {
 	h.logger.InfoContext(r.Context(), "property request stage changed",
 		slog.String("property_request_id", req.ID.String()), slog.String("stage", req.Stage))
 	h.writeDetail(w, r, p, http.StatusOK, req)
+}
+
+// Assign serves POST /v1/agent/property-requests/{id}/assign: {"user_id":
+// "..."} gives the request to a member, {"user_id": null} returns it to the
+// organisation inbox. OWNER and MANAGER of the receiving organisation only.
+func (h *Handler) Assign(w http.ResponseWriter, r *http.Request) {
+	p, scope, ok := h.receiver(w, r)
+	if !ok {
+		return
+	}
+	id, ok := pathID(r)
+	if !ok {
+		h.fail(w, r, ErrNotFound)
+		return
+	}
+	var in struct {
+		// Raw so that a missing key and null can be told apart.
+		UserID json.RawMessage `json:"user_id"`
+	}
+	if !httpx.DecodeJSON(w, r, &in) {
+		return
+	}
+	var to *uuid.UUID
+	switch {
+	case len(in.UserID) == 0:
+		h.fail(w, r, &ValidationError{Fields: map[string]string{"user_id": "is required (null returns the request to the organisation inbox)"}})
+		return
+	case string(in.UserID) != "null":
+		var raw string
+		parsed, err := uuid.Nil, json.Unmarshal(in.UserID, &raw)
+		if err == nil {
+			parsed, err = uuid.Parse(strings.TrimSpace(raw))
+		}
+		if err != nil {
+			h.fail(w, r, &ValidationError{Fields: map[string]string{"user_id": "must be a UUID or null"}})
+			return
+		}
+		to = &parsed
+	}
+	req, err := h.svc.Assign(r.Context(), scope, Actor{UserID: p.UserID, Name: p.Name}, id, to)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	// Identifiers only: no message, no contact details.
+	attrs := []any{slog.String("property_request_id", req.ID.String()), slog.String("actor_user_id", p.UserID.String())}
+	if to != nil {
+		attrs = append(attrs, slog.String("assignee_user_id", to.String()))
+	}
+	h.logger.InfoContext(r.Context(), "property request assigned", attrs...)
+	h.writeDetailFor(w, r, p, scope, http.StatusOK, req)
 }
 
 // AddNote serves POST /v1/agent/property-requests/{id}/notes.

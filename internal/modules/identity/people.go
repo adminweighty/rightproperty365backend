@@ -16,9 +16,11 @@ import (
 
 // Member statuses. A membership that was removed is not listed at all.
 const (
-	MemberActive    = "ACTIVE"
-	MemberInvited   = "INVITED"
-	MemberSuspended = "SUSPENDED" // the member's account is not active
+	MemberActive  = "ACTIVE"
+	MemberInvited = "INVITED"
+	// MemberSuspended: the membership was suspended by the organisation, or
+	// the member's account is not active. Either way the member has no access.
+	MemberSuspended = "SUSPENDED"
 )
 
 // MemberStatusLabel is the wording shown for a member status.
@@ -41,7 +43,8 @@ type Member struct {
 	Role       string // OWNER, MANAGER, AGENT or STAFF
 	MarketCode string
 	Status     string
-	JoinedAt   *time.Time // nil when not recorded (memory store)
+	JobTitle   string     // "" when none
+	JoinedAt   *time.Time // nil when not recorded
 }
 
 // RoleCount is the number of accounts that chose a role, by its status.
@@ -119,12 +122,19 @@ func (s *MemoryStore) OrganisationMembers(_ context.Context, organisationID uuid
 	out := []Member{}
 	for _, m := range s.memberships {
 		u, ok := s.users[m.UserID]
-		if m.OrganisationID != organisationID || !ok {
+		if m.OrganisationID != organisationID || !ok || m.Status == MembershipRemoved {
 			continue
 		}
-		member := Member{UserID: u.ID, Name: u.Name, Role: m.Role, MarketCode: m.MarketCode, Status: MemberActive}
+		member := Member{UserID: u.ID, Name: u.Name, Role: m.Role, MarketCode: m.MarketCode, Status: m.Status, JobTitle: m.JobTitle}
+		if member.Status == "" {
+			member.Status = MemberActive
+		}
 		if u.Status != StatusActive {
 			member.Status = MemberSuspended
+		}
+		if !m.JoinedAt.IsZero() {
+			joined := m.JoinedAt.UTC()
+			member.JoinedAt = &joined
 		}
 		out = append(out, member)
 	}
@@ -185,18 +195,18 @@ func (s *MemoryStore) AccountStats(_ context.Context, now time.Time, recent int)
 func (s *PostgresStore) OrganisationMembers(ctx context.Context, organisationID uuid.UUID) ([]Member, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT u.id, u.full_name, m.role, mk.code,
-		       CASE WHEN u.status <> 'ACTIVE' THEN 'SUSPENDED' ELSE m.status END, m.created_at
+		       CASE WHEN u.status <> 'ACTIVE' THEN 'SUSPENDED' ELSE m.status END, COALESCE(m.job_title, ''), m.created_at
 		FROM memberships m
 		JOIN users u ON u.id = m.user_id
 		JOIN markets mk ON mk.id = m.market_id
-		WHERE m.organisation_id = $1 AND m.status IN ('ACTIVE', 'INVITED') AND u.status <> 'DELETED'`, organisationID)
+		WHERE m.organisation_id = $1 AND m.status IN ('ACTIVE', 'INVITED', 'SUSPENDED') AND u.status <> 'DELETED'`, organisationID)
 	if err != nil {
 		return nil, fmt.Errorf("load members: %w", err)
 	}
 	out, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Member, error) {
 		var m Member
 		var joined time.Time
-		err := row.Scan(&m.UserID, &m.Name, &m.Role, &m.MarketCode, &m.Status, &joined)
+		err := row.Scan(&m.UserID, &m.Name, &m.Role, &m.MarketCode, &m.Status, &m.JobTitle, &joined)
 		joined = joined.UTC()
 		m.JoinedAt = &joined
 		return m, err

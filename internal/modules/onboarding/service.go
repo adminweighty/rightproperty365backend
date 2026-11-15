@@ -22,6 +22,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/logging"
+	"rightproperty365.com/backend/internal/platform/orgaudit"
 	"rightproperty365.com/backend/internal/platform/storage"
 )
 
@@ -56,6 +57,9 @@ type Agencies interface {
 	// VerifiedAgency returns the agency with that slug if it is public and
 	// verified, or nil.
 	VerifiedAgency(ctx context.Context, slug string) (*Agency, error)
+	// AgencyOf returns the public, verified agency profile of an
+	// organisation, or nil when it has none.
+	AgencyOf(ctx context.Context, organisationID uuid.UUID) (*Agency, error)
 }
 
 // Service implements the onboarding use cases.
@@ -1144,10 +1148,14 @@ func (s *Service) decide(ctx context.Context, p *auth.Principal, id uuid.UUID, r
 	if app.Status != StatusSubmitted {
 		return AdminApplication{}, ErrInvalidState
 	}
-	if err := s.store.Transition(ctx, Transition{
+	t := Transition{
 		ApplicationID: id, From: []string{StatusSubmitted}, To: to, ActorID: p.UserID, Reason: text, At: s.clock(),
 		Event: event, AccountRoleStatus: roleStatus,
-	}); err != nil {
+	}
+	if t.Audit, err = s.joinDecisionAudit(ctx, p, app, to, text, t.At); err != nil {
+		return AdminApplication{}, err
+	}
+	if err := s.store.Transition(ctx, t); err != nil {
 		return AdminApplication{}, err
 	}
 	s.audit(ctx, "onboarding.decided", slog.String("application_id", id.String()), slog.String("role", app.Role),
@@ -1186,20 +1194,37 @@ func (s *Service) Approve(ctx context.Context, p *auth.Principal, id uuid.UUID, 
 	if err != nil {
 		return Approved{}, err
 	}
-	note, fields := reason(rawNote, false)
-	if fields != nil {
-		return Approved{}, &ValidationError{Fields: map[string]string{"note": fields["reason"]}}
-	}
-	if app.Status != StatusSubmitted {
-		return Approved{}, ErrInvalidState
-	}
-	c, err := s.catalogue(ctx)
+	created, err := s.approve(ctx, p, app, rawNote)
 	if err != nil {
 		return Approved{}, err
 	}
+	view, err := s.AdminGet(ctx, p, id)
+	if err != nil {
+		return Approved{}, err
+	}
+	return Approved{Application: view, Created: created}, nil
+}
+
+// approve applies an approval decided by p: a platform reviewer, or (for a
+// join request) the OWNER or MANAGER of the agency the applicant asked to
+// join. Whoever acts first wins: the store only approves a SUBMITTED
+// application, the other gets ErrInvalidState.
+func (s *Service) approve(ctx context.Context, p *auth.Principal, app Application, rawNote string) (Created, error) {
+	id := app.ID
+	note, fields := reason(rawNote, false)
+	if fields != nil {
+		return Created{}, &ValidationError{Fields: map[string]string{"note": fields["reason"]}}
+	}
+	if app.Status != StatusSubmitted {
+		return Created{}, ErrInvalidState
+	}
+	c, err := s.catalogue(ctx)
+	if err != nil {
+		return Created{}, err
+	}
 	outcome, ok := c.outcomes[app.Role]
 	if !ok || auth.IsPlatformRole(app.Role) {
-		return Approved{}, ErrInvalidState
+		return Created{}, ErrInvalidState
 	}
 	if m := c.missing(app); len(m.Fields) > 0 || len(m.Documents) > 0 {
 		// Requirements changed since it was submitted: it has to go back first.
@@ -1210,7 +1235,7 @@ func (s *Service) Approve(ctx context.Context, p *auth.Principal, id uuid.UUID, 
 		for _, d := range m.Documents {
 			fields["documents."+d] = "is required; request changes instead"
 		}
-		return Approved{}, &ValidationError{Fields: fields}
+		return Created{}, &ValidationError{Fields: fields}
 	}
 
 	plan := Approval{ApplicationID: id, UserID: app.UserID, Role: app.Role, ActorID: p.UserID, Note: note, At: s.clock()}
@@ -1218,11 +1243,11 @@ func (s *Service) Approve(ctx context.Context, p *auth.Principal, id uuid.UUID, 
 	switch outcome.Outcome {
 	case OutcomeOrganisation:
 		if app.MarketCode == "" {
-			return Approved{}, &ValidationError{Fields: map[string]string{"details.country": "is required; request changes instead"}}
+			return Created{}, &ValidationError{Fields: map[string]string{"details.country": "is required; request changes instead"}}
 		}
 		orgID, err := newID()
 		if err != nil {
-			return Approved{}, err
+			return Created{}, err
 		}
 		name := deref(app.BusinessName)
 		plan.Organisation = &NewOrganisation{ID: orgID, Name: name, Kind: outcome.OrganisationKind, MarketCode: app.MarketCode}
@@ -1230,7 +1255,7 @@ func (s *Service) Approve(ctx context.Context, p *auth.Principal, id uuid.UUID, 
 		if outcome.DirectoryKind != "" {
 			profileID, err := newID()
 			if err != nil {
-				return Approved{}, err
+				return Created{}, err
 			}
 			// Public content only: no phone, no registration number, no documents.
 			plan.Profile = &NewProfile{
@@ -1242,17 +1267,18 @@ func (s *Service) Approve(ctx context.Context, p *auth.Principal, id uuid.UUID, 
 	case OutcomeAgencyMember:
 		agency, err := s.agencies.VerifiedAgency(ctx, deref(app.AgencySlug))
 		if err != nil {
-			return Approved{}, err
+			return Created{}, err
 		}
 		if agency == nil {
-			return Approved{}, ErrAgencyNotVerified
+			return Created{}, ErrAgencyNotVerified
 		}
 		plan.AgencySlug = agency.Slug
-		plan.Membership = &NewMembership{OrganisationID: agency.OrganisationID, MarketCode: agency.MarketCode, Role: outcome.MembershipRole}
+		plan.Membership = &NewMembership{OrganisationID: agency.OrganisationID, MarketCode: agency.MarketCode, Role: outcome.MembershipRole, JobTitle: deref(app.JobTitle)}
+		plan.Audit = joinAudit(p, app, agency.OrganisationID, orgaudit.ActionJoinRequestApproved, StatusApproved, outcome.MembershipRole, note, plan.At)
 		if outcome.DirectoryKind != "" {
 			profileID, err := newID()
 			if err != nil {
-				return Approved{}, err
+				return Created{}, err
 			}
 			user := app.UserID
 			title := deref(app.JobTitle)
@@ -1277,7 +1303,7 @@ func (s *Service) Approve(ctx context.Context, p *auth.Principal, id uuid.UUID, 
 		if plan.Profile != nil && plan.Profile.Logo != nil {
 			s.remove(ctx, plan.Profile.Logo.ObjectKey)
 		}
-		return Approved{}, err
+		return Created{}, err
 	}
 	attrs := []slog.Attr{
 		slog.String("application_id", id.String()), slog.String("role", app.Role), slog.String("from", StatusSubmitted),
@@ -1293,11 +1319,7 @@ func (s *Service) Approve(ctx context.Context, p *auth.Principal, id uuid.UUID, 
 		attrs = append(attrs, slog.String("membership_role", *created.MembershipRole))
 	}
 	s.audit(ctx, "onboarding.decided", attrs...)
-	view, err := s.AdminGet(ctx, p, id)
-	if err != nil {
-		return Approved{}, err
-	}
-	return Approved{Application: view, Created: created}, nil
+	return created, nil
 }
 
 // promoteLogo copies the application's LOGO document, if it has one, to a new

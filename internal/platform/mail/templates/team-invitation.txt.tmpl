@@ -1,0 +1,17 @@
+{{define "subject"}}Invitation to join {{.OrganisationName}} on RightProperty365{{end}}
+{{define "heading"}}You are invited to join a team{{end}}
+{{define "button"}}View the invitation{{end}}
+{{define "why"}}You are receiving this because a member of {{.OrganisationName}} invited this email address to their team on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+{{.ActorName}} invited you to join {{.OrganisationName}} on RightProperty365 as {{.RoleName}}.
+
+Organisation: {{.OrganisationName}}
+Role: {{.RoleName}}
+{{if .JobTitle}}Job title: {{.JobTitle}}
+{{end}}Invited by: {{.ActorName}}
+Link valid until: {{dateTime .ExpiresOn}}
+
+Open the invitation to accept it. Only the account with this email address can accept it: if you do not have an account yet, sign up with this address first, then open the invitation again.
+
+The link can be used once. If you did not expect this invitation, you can ignore this email and nothing will change.{{end}}

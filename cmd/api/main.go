@@ -29,6 +29,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/onboarding"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
+	"rightproperty365.com/backend/internal/modules/teams"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/database"
 	"rightproperty365.com/backend/internal/platform/elastic"
@@ -101,6 +102,8 @@ func run() error {
 		listingSearch     listings.Search
 		directoryStore    directory.Store
 		healthH           *health.Handler
+		// teamStore holds invitations and the team audit trail.
+		teamStore teams.Store
 	)
 	if cfg.UseMemoryStore() {
 		// config.Load guarantees this branch is only reachable in development.
@@ -158,6 +161,25 @@ func run() error {
 			},
 		})
 		onboardingStore = memOnboarding
+		// Teams: invitations, member changes and the audit trail, applied to
+		// the stores above (memberships, profiles, requests, appointments).
+		memTeams := teams.NewMemoryStore(teams.MemoryDeps{
+			Identity: memIdentity, Directory: memDirectory, Enquiries: memEnquiries, Requests: memRequests,
+			Appointments: memAppointments, Onboarding: memOnboarding,
+			MarketID: func(code string) (uuid.UUID, bool) {
+				all, err := marketStore.List(ctx)
+				if err != nil {
+					return uuid.Nil, false
+				}
+				for _, m := range all {
+					if m.Code == code {
+						return m.ID, true
+					}
+				}
+				return uuid.Nil, false
+			},
+		})
+		teamStore = memTeams
 
 		// Without a database there is no outbox table for the worker to poll,
 		// so notification emails are handled in this process, straight from
@@ -210,8 +232,11 @@ func run() error {
 			if err := devseed.SeedMemoryOnboarding(ctx, memIdentity, memOnboarding, files, identity.DefaultHasher(), cfg.DevSeedPassword, time.Now()); err != nil {
 				return fmt.Errorf("seed onboarding demo accounts: %w", err)
 			}
+			if err := devseed.SeedMemoryTeams(ctx, memIdentity, memOnboarding, memTeams, files, identity.DefaultHasher(), cfg.DevSeedPassword, time.Now()); err != nil {
+				return fmt.Errorf("seed the sample team's invitation and join request: %w", err)
+			}
 			logger.Info("development seed users created (password from DEV_SEED_PASSWORD)",
-				slog.Any("emails", append(devseed.Emails(), devseed.PendingProviderEmail, devseed.PendingAgentEmail)))
+				slog.Any("emails", append(devseed.Emails(), devseed.PendingProviderEmail, devseed.PendingAgentEmail, devseed.JoiningAgentEmail)))
 		}
 	} else {
 		if warning := config.DatabaseTLSWarning(cfg.DatabaseURL); warning != "" {
@@ -238,6 +263,7 @@ func run() error {
 		healthH = health.NewHandler(health.StorePostgres, pool.Ping, logger)
 		deliveryLog = mail.NewPostgresDeliveryLog(pool)
 		onboardingStore = onboarding.NewPostgresStore(pool)
+		teamStore = teams.NewPostgresStore(pool)
 	}
 
 	// Search engine. Elasticsearch only proposes listing IDs: every hit is
@@ -282,6 +308,7 @@ func run() error {
 		Onboarding:    onboardingStore,
 		Appointments:  appointmentStore,
 		Availability:  availabilityStore,
+		Teams:         teamStore,
 		Files:         files,
 	})
 	if err != nil {

@@ -227,6 +227,9 @@ const (
 	TimelineCompleted           = "COMPLETED"
 	TimelineNoShow              = "NO_SHOW"
 	TimelineAssigned            = "ASSIGNED"
+	// TimelineUnassigned: the assigned member left the team (removed or
+	// suspended) and the appointment went back to the organisation.
+	TimelineUnassigned = "UNASSIGNED"
 )
 
 // TimelineEntry is one immutable row of appointment_timeline.

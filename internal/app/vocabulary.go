@@ -398,6 +398,17 @@ type agencyDirectory struct {
 	markets   markets.Store
 }
 
+// AgencyOf implements onboarding.Agencies: the organisation's own agency
+// profile, when it is published and verified (the only kind people can ask
+// to join).
+func (a agencyDirectory) AgencyOf(ctx context.Context, organisationID uuid.UUID) (*onboarding.Agency, error) {
+	r, err := a.directory.AgencyOf(ctx, organisationID)
+	if err != nil || r == nil {
+		return nil, err
+	}
+	return a.VerifiedAgency(ctx, r.Slug)
+}
+
 // VerifiedAgency implements onboarding.Agencies.
 func (a agencyDirectory) VerifiedAgency(ctx context.Context, slug string) (*onboarding.Agency, error) {
 	// The directory store only returns published AND verified profiles.
@@ -438,4 +449,35 @@ func (a agencyDirectory) VerifiedAgency(ctx context.Context, slug string) (*onbo
 func OnboardingNotifications(store onboarding.Store, files storage.Storage, ref reference.Store, logger *slog.Logger) func(ctx context.Context, id uuid.UUID) (onboarding.NotificationInfo, error) {
 	svc := onboarding.NewService(store, files, onboardingVocabulary{ref: reference.NewService(ref, nil)}, nil, logger)
 	return svc.Notification
+}
+
+// assignees adapts the accounts to propertyrequests.Assignees: a request can
+// be given to an ACTIVE account with an ACTIVE membership of the receiving
+// organisation whose role holds leads (auth.RoleHoldsLeads: OWNER, MANAGER,
+// AGENT). Read on every call: a member suspended a moment ago is refused.
+type assignees struct{ identity identity.Store }
+
+// Assignable implements propertyrequests.Assignees.
+func (a assignees) Assignable(ctx context.Context, organisationID, userID uuid.UUID) (string, bool, error) {
+	u, err := a.identity.UserByID(ctx, userID)
+	if errors.Is(err, identity.ErrNotFound) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	if u.Status != identity.StatusActive {
+		return "", false, nil
+	}
+	for _, m := range u.Memberships {
+		if m.OrganisationID == organisationID && auth.RoleHoldsLeads(m.Role) {
+			return u.Name, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+// Name implements propertyrequests.Assignees.
+func (a assignees) Name(ctx context.Context, userID uuid.UUID) (string, error) {
+	return people{identity: a.identity}.Name(ctx, userID)
 }

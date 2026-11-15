@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.22.0
+  version: 0.23.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,43 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Agency teams (new in 0.23.0)
+    - **New: an organisation's OWNER and MANAGER run their own team.** New routes under
+      `/v1/agent/organisations/{id}`: `GET|POST /invitations`, `DELETE /invitations/{invitationId}`,
+      `PATCH|DELETE /members/{userId}`, `GET /join-requests`, `POST
+      /join-requests/{requestId}/approve|decline`, `GET /audit`; the public `GET
+      /v1/invitations/{token}` and `POST /v1/invitations/{token}/accept`; and `POST
+      /v1/agent/property-requests/{id}/assign`.
+    - **The rules.** An OWNER invites, changes, suspends and removes MANAGER, AGENT and STAFF
+      members; a MANAGER only AGENT and STAFF (only an owner makes someone a manager). Nobody is
+      made an OWNER, nobody changes or removes an OWNER (the last owner can never go), nobody acts
+      on themselves. AGENT and STAFF manage nothing of the team (`403`); a non-member gets `404
+      ORGANISATION_NOT_FOUND`.
+    - **Immediate effect.** Access is read from the ACTIVE memberships on every request: a member
+      who is suspended or removed gets `403`/`404` on their very next request with the same
+      session. Their open requests and appointments go back to the organisation inbox.
+    - **Invitations** are single-use links `PUBLIC_WEB_URL/invitations/{token}` valid for 7 days,
+      emailed from the request (only the token's SHA-256 is stored). The invited person signs in
+      (or signs up first) with the invited address and accepts. A property seeker account cannot
+      join (`409 SEEKER_ACCOUNT_CANNOT_JOIN`).
+    - **Join requests**: a professional who registered to join an agency (AGENT, SALES_AGENT,
+      LETTINGS_AGENT, AGENCY_STAFF, AGENCY_ADMIN) can now be approved or declined by that agency's
+      OWNER (and MANAGER, for those who become AGENT or STAFF) as well as by the verification team;
+      whoever decides first wins and the other gets `409`.
+    - **Assignment**: OWNER and MANAGER give a received request to an ACTIVE OWNER, MANAGER or
+      AGENT of the organisation (STAFF hold no leads); a `NEW_ENQUIRY` moves to `ASSIGNED` and
+      the assignee is emailed.
+    - **Audit trail**: every invitation, acceptance, join decision, role or status change,
+      removal and assignment is kept in the database and listed by `GET .../audit`.
+    - **Changed response shapes (additive).** `OrganisationMembers.items[]` (now `TeamMember`)
+      gains `job_title`, `joined_at`, `open_leads`, `can_change`, `allowed_roles`,
+      `can_hold_leads`; received requests gain `assigned_to` (and the detail `can_assign`, timeline
+      events `ASSIGNED` / `UNASSIGNED` with `assignee_name`); the dashboard's `organisations[]`
+      gains `can_manage_team`; appointment timelines can show `UNASSIGNED`.
+    - **Listing review:** a reviewer who is a member of the listing's organisation, or who sells,
+      is the agent of, created or submitted the listing, gets `403 SELF_REVIEW_FORBIDDEN` when
+      approving, requesting changes or rejecting it.
 
     Listings by advertisers (changed in 0.22.0)
     - **New: advertisers create and edit their own listings, with photos, and platform
@@ -4384,6 +4421,12 @@ paths:
       operationId: adminApproveOnboarding
       summary: Approve an application
       description: |
+        **Join requests (new in 0.23.0).** An application to join an agency (AGENT, SALES_AGENT,
+        LETTINGS_AGENT, AGENCY_STAFF, AGENCY_ADMIN) can also be decided by that agency's OWNER or
+        MANAGER (`/v1/agent/organisations/{id}/join-requests`). Whoever decides first wins: when the
+        agency already did, this answers `409 INVALID_STATE`. A decision on a join request is also
+        written to the agency's audit trail.
+
         Only from `SUBMITTED`. In **one transaction**: the application becomes `APPROVED`, the
         account role `ACTIVE`, and what the role's outcome says is created:
 
@@ -4738,8 +4781,9 @@ paths:
         | CONVERTED | CLOSED |
         | CLOSED | FOLLOW_UP_REQUIRED |
 
-        Nothing ever returns to `NEW_ENQUIRY`. `ASSIGNED` only records the stage: assigning a
-        request to a person is not built. An unknown stage is `400 VALIDATION_FAILED`
+        Nothing ever returns to `NEW_ENQUIRY`. Moving to `ASSIGNED` only records the stage; to
+        give the request to a person use `POST /v1/agent/property-requests/{id}/assign` (new in
+        0.23.0), which also moves a `NEW_ENQUIRY` to `ASSIGNED`. An unknown stage is `400 VALIDATION_FAILED`
         (`error.fields.stage`). Per-IP rate limit: bursts of 60, refilled at 60 per minute,
         shared with the notes endpoint and resolving routing exceptions.
       security:
@@ -4844,30 +4888,96 @@ paths:
         "504":
           $ref: "#/components/responses/Timeout"
 
-  /v1/agent/organisations/{id}/members:
-    get:
+  /v1/agent/property-requests/{id}/assign:
+    parameters:
+      - $ref: "#/components/parameters/PropertyRequestId"
+    post:
       tags: [organisation-workspace]
-      operationId: listOrganisationMembers
-      summary: The members of an organisation, read-only (new in 0.20.0)
+      operationId: assignPropertyRequest
+      summary: Give a received request to a member, or back to the organisation inbox (new in 0.23.0)
       description: |
-        For the OWNER and MANAGER of that organisation (the people who see all its work; the
-        dashboard's `organisations[].can_see_members`). Another member of the organisation gets
-        `403 FORBIDDEN`; anyone who is not a member gets `404 ORGANISATION_NOT_FOUND`, the same
-        as for an organisation that does not exist. `401` when not signed in.
+        `{"user_id": "<uuid>"}` assigns the request to that member; `{"user_id": null}` returns it
+        to the organisation inbox. The key is required.
 
-        Members whose membership was removed are not listed. No email address or phone
-        number is returned. Ordered by role (OWNER, MANAGER, AGENT, STAFF) then name. Inviting,
-        changing and removing members is not built. `Cache-Control: private, no-store`.
+        **Who.** The OWNER and MANAGER of the organisation that received the request (`403
+        FORBIDDEN` for its AGENT and STAFF, and for a direct seller's own request); a request the
+        caller cannot see is `404 PROPERTY_REQUEST_NOT_FOUND`. **To whom.** An ACTIVE member of
+        that organisation whose role holds leads: AGENT, MANAGER or OWNER (STAFF hold no leads);
+        anyone else is `400 VALIDATION_FAILED` on `user_id`.
+
+        **What happens**, in one transaction: the request's `assigned_to` changes (the assignee,
+        and the organisation's OWNER and MANAGER, see it; the other agents and staff no longer
+        do, until it is returned to the inbox); an `ASSIGNED` timeline entry (who, to whom) or an
+        `UNASSIGNED` one; a request at `NEW_ENQUIRY` moves to `ASSIGNED` (with its
+        `STAGE_CHANGED` entry); the outbox event `PROPERTY_REQUEST_ASSIGNED`, which emails the
+        assignee (reference, listing and a message preview without contact details; nothing is
+        sent for an unassignment); the audit record `REQUEST_ASSIGNED` or `REQUEST_UNASSIGNED`.
+        Assigning to the current assignee changes nothing. The answer is the request as the GET
+        returns it. Same rate limit as the PATCH.
       security:
         - cookieSession: []
         - bearerToken: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [user_id]
+              properties:
+                user_id:
+                  type: [string, "null"]
+                  format: uuid
+      responses:
+        "200":
+          description: The request after the assignment.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReceivedPropertyRequestEnvelope"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: "`FORBIDDEN` (not the organisation's owner or manager) or `CSRF_ORIGIN`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          $ref: "#/components/responses/PropertyRequestNotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/agent/organisations/{id}/members:
+    parameters:
+      - $ref: "#/components/parameters/OrganisationId"
+    get:
+      tags: [organisation-workspace]
+      operationId: listOrganisationMembers
+      summary: The members of an organisation, with what the caller may do to each (changed in 0.23.0)
+      description: |
+        For the OWNER and MANAGER of that organisation (the dashboard's
+        `organisations[].can_manage_team`). Another member of the organisation gets `403
+        FORBIDDEN`; anyone who is not an ACTIVE member gets `404 ORGANISATION_NOT_FOUND`, the same
+        as for an organisation that does not exist (a suspended or removed member included, from
+        their next request on). `401` when not signed in. `Cache-Control: private, no-store`.
+
+        Removed members are not listed; suspended ones are (`status: SUSPENDED`). No email
+        address or phone number is returned. Ordered by role (OWNER, MANAGER, AGENT, STAFF) then
+        name. **Changed in 0.23.0 (additive):** each item gains `job_title`, `joined_at`,
+        `open_leads` (open requests assigned to the member), `can_change` and `allowed_roles`
+        (whether and to which roles the caller may change this member) and `can_hold_leads`.
+        Inviting, changing, suspending and removing members are built (see the operations below).
+      security:
+        - cookieSession: []
+        - bearerToken: []
       responses:
         "200":
           description: The members.
@@ -4880,15 +4990,510 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
-          description: "`ORGANISATION_NOT_FOUND`: no such organisation, or the caller is not a member of it."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
+          $ref: "#/components/responses/OrganisationNotFound"
         "500":
           $ref: "#/components/responses/InternalError"
         "504":
           $ref: "#/components/responses/Timeout"
+
+  /v1/agent/organisations/{id}/members/{userId}:
+    parameters:
+      - $ref: "#/components/parameters/OrganisationId"
+      - name: userId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    patch:
+      tags: [organisation-workspace]
+      operationId: changeOrganisationMember
+      summary: Change a member's role, status or job title (new in 0.23.0)
+      description: |
+        OWNER and MANAGER of the organisation only (`403 FORBIDDEN` for AGENT and STAFF, `404
+        ORGANISATION_NOT_FOUND` for anyone else). Send at least one of the keys; the others stay.
+
+        **The rules.** An OWNER may act on MANAGER, AGENT and STAFF members and give them any of
+        those roles; a MANAGER only on AGENT and STAFF members, and only those roles (`403
+        ROLE_NOT_ALLOWED` otherwise: only an owner makes someone a manager, and nobody makes
+        someone an owner). Nobody changes an OWNER (`403 OWNER_PROTECTED`; `409 LAST_OWNER` when
+        that owner is the organisation's only active owner) and nobody changes their own
+        membership (`403 SELF_CHANGE_FORBIDDEN`). `404 MEMBER_NOT_FOUND` for someone who is not a
+        member (or was removed).
+
+        **Effect is immediate.** `status: SUSPENDED` takes every access to the organisation away
+        from the member's next request on (same session); `ACTIVE` gives it back. When a member
+        is suspended, their open requests (not `CONVERTED` or `CLOSED`) and open appointments go
+        back to the organisation inbox (nobody assigned), each with an `UNASSIGNED` timeline
+        entry. A member who becomes `STAFF` gives back their open requests (STAFF hold no leads).
+        Every change is written to the team's audit trail (`MEMBER_ROLE_CHANGED`,
+        `MEMBER_SUSPENDED`, `MEMBER_REACTIVATED`, `MEMBER_JOB_TITLE_CHANGED`, with the released
+        counts). Rate limit: bursts of 30, refilled at 30 per minute, shared by every team change.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                role:
+                  type: string
+                  enum: [MANAGER, AGENT, STAFF]
+                status:
+                  type: string
+                  enum: [ACTIVE, SUSPENDED]
+                job_title:
+                  type: string
+                  maxLength: 80
+                  description: Plain text, one line; an empty string clears it.
+      responses:
+        "200":
+          description: The member after the change.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [member]
+                properties:
+                  member:
+                    $ref: "#/components/schemas/TeamMember"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/TeamForbidden"
+        "404":
+          $ref: "#/components/responses/TeamNotFound"
+        "409":
+          $ref: "#/components/responses/TeamConflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [organisation-workspace]
+      operationId: removeOrganisationMember
+      summary: Remove a member (new in 0.23.0)
+      description: |
+        The same rules as the PATCH. The membership becomes `REMOVED`: the person is no longer
+        listed and has no access to the organisation from their next request on. Their open
+        requests and open appointments go back to the organisation inbox (`UNASSIGNED` timeline
+        entries). Their public agent profile, if they have one, is not changed. A removed person
+        can be invited again. Audit: `MEMBER_REMOVED` (with the released counts).
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "204":
+          description: Removed.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/TeamForbidden"
+        "404":
+          $ref: "#/components/responses/TeamNotFound"
+        "409":
+          $ref: "#/components/responses/TeamConflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/agent/organisations/{id}/invitations:
+    parameters:
+      - $ref: "#/components/parameters/OrganisationId"
+    get:
+      tags: [organisation-workspace]
+      operationId: listOrganisationInvitations
+      summary: The organisation's pending invitations (new in 0.23.0)
+      description: |
+        OWNER and MANAGER only. The `PENDING` invitations, newest first; an expired one is still
+        listed with `expired: true` (invite the address again to send a new link).
+        `Cache-Control: private, no-store`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The pending invitations.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TeamInvitation"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/OrganisationNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [organisation-workspace]
+      operationId: inviteOrganisationMember
+      summary: Invite someone to the team with a role (new in 0.23.0)
+      description: |
+        An OWNER invites a MANAGER, AGENT or STAFF; a MANAGER an AGENT or STAFF (`403
+        ROLE_NOT_ALLOWED` otherwise; nobody is invited as OWNER). `email` is trimmed and
+        lower-cased. Someone who already belongs to the organisation (active or suspended) is
+        `409 ALREADY_A_MEMBER`.
+
+        The invitation is a single-use link `PUBLIC_WEB_URL/invitations/{token}`, valid for 7
+        days. Only the SHA-256 of the token is stored; the token is in the email and nowhere
+        else (it is not returned here). The email is sent at once from this request (a link that
+        is a credential never goes through the outbox); an address on a reserved test domain
+        (`@example.test` and the like) is not emailed by the real mail provider. Inviting an
+        address that already has a pending invitation **replaces** it: only the newest link
+        works. Audit: `INVITATION_CREATED`. Rate limit: the team bucket (30 per minute).
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email, role]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  maxLength: 254
+                role:
+                  type: string
+                  enum: [MANAGER, AGENT, STAFF]
+                job_title:
+                  type: string
+                  maxLength: 80
+      responses:
+        "201":
+          description: The invitation (without its token).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [invitation]
+                properties:
+                  invitation:
+                    $ref: "#/components/schemas/TeamInvitation"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/TeamForbidden"
+        "404":
+          $ref: "#/components/responses/OrganisationNotFound"
+        "409":
+          $ref: "#/components/responses/TeamConflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/agent/organisations/{id}/invitations/{invitationId}:
+    parameters:
+      - $ref: "#/components/parameters/OrganisationId"
+      - name: invitationId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    delete:
+      tags: [organisation-workspace]
+      operationId: cancelOrganisationInvitation
+      summary: Cancel a pending invitation (new in 0.23.0)
+      description: |
+        OWNER and MANAGER, for the roles they may give (`403 ROLE_NOT_ALLOWED`: a manager cannot
+        cancel a MANAGER invitation). The link stops working at once. `404 INVITATION_NOT_FOUND`
+        for another organisation's invitation; `410 INVITATION_NO_LONGER_VALID` when it was
+        already accepted, cancelled or replaced. Audit: `INVITATION_CANCELLED`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "204":
+          description: Cancelled.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/TeamForbidden"
+        "404":
+          $ref: "#/components/responses/TeamNotFound"
+        "410":
+          $ref: "#/components/responses/InvitationGone"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/agent/organisations/{id}/join-requests:
+    parameters:
+      - $ref: "#/components/parameters/OrganisationId"
+    get:
+      tags: [organisation-workspace]
+      operationId: listJoinRequests
+      summary: People who asked to join the agency (new in 0.23.0)
+      description: |
+        OWNER and MANAGER only. A **join request** is a submitted onboarding application for a
+        role whose approval makes the applicant a member of an agency (`AGENT`, `SALES_AGENT`,
+        `LETTINGS_AGENT` become AGENT, `AGENCY_STAFF` becomes STAFF, `AGENCY_ADMIN` becomes
+        MANAGER) and that names this organisation's verified agency profile. Oldest first, at
+        most 100. `can_decide` is true when the caller may approve or decline it (an OWNER any, a
+        MANAGER only those that become AGENT or STAFF). The applicant's email address is masked
+        and the documents are not shown (they are for the verification team). An organisation
+        without a verified agency profile has none. `Cache-Control: private, no-store`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The pending join requests.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/JoinRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/OrganisationNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/agent/organisations/{id}/join-requests/{requestId}/approve:
+    parameters:
+      - $ref: "#/components/parameters/OrganisationId"
+      - $ref: "#/components/parameters/JoinRequestId"
+    post:
+      tags: [organisation-workspace]
+      operationId: approveJoinRequest
+      summary: Approve a join request on behalf of the agency (new in 0.23.0)
+      description: |
+        No body. Exactly what a platform reviewer's approval does
+        (`POST /v1/admin/onboarding/{id}/approve`): the membership (with the applicant's job
+        title), the public agent profile for an agent, the `ACTIVE` account role, and the
+        `ONBOARDING_APPROVED` email to the applicant. **Whoever decides first wins**: when the
+        verification team (or another manager) decided it already, `409
+        JOIN_REQUEST_ALREADY_DECIDED`; the reviewer coming second gets `409 INVALID_STATE`.
+        `403 ROLE_NOT_ALLOWED` when the caller's role may not grant the membership it asks for;
+        `404 JOIN_REQUEST_NOT_FOUND` for one that is not a join request of this agency. A
+        requirement added since it was submitted is `400 VALIDATION_FAILED`. Audit:
+        `JOIN_REQUEST_APPROVED`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          $ref: "#/components/responses/JoinRequestDecided"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/TeamForbidden"
+        "404":
+          $ref: "#/components/responses/TeamNotFound"
+        "409":
+          $ref: "#/components/responses/TeamConflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/agent/organisations/{id}/join-requests/{requestId}/decline:
+    parameters:
+      - $ref: "#/components/parameters/OrganisationId"
+      - $ref: "#/components/parameters/JoinRequestId"
+    post:
+      tags: [organisation-workspace]
+      operationId: declineJoinRequest
+      summary: Decline a join request on behalf of the agency (new in 0.23.0)
+      description: |
+        `reason` (5 to 500 characters, plain text) is emailed to the applicant
+        (`ONBOARDING_REJECTED`). Like a reviewer's rejection, the account role becomes
+        `REJECTED` and the applicant may apply again. Same rules and answers as the approval.
+        Audit: `JOIN_REQUEST_DECLINED`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+                  minLength: 5
+                  maxLength: 500
+      responses:
+        "200":
+          $ref: "#/components/responses/JoinRequestDecided"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/TeamForbidden"
+        "404":
+          $ref: "#/components/responses/TeamNotFound"
+        "409":
+          $ref: "#/components/responses/TeamConflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/agent/organisations/{id}/audit:
+    parameters:
+      - $ref: "#/components/parameters/OrganisationId"
+    get:
+      tags: [organisation-workspace]
+      operationId: listOrganisationAudit
+      summary: The team's audit trail (new in 0.23.0)
+      description: |
+        OWNER and MANAGER only. Newest first, paged. One record per invitation sent, cancelled
+        or accepted, join request decided (by the agency or by the verification team: `after.decided_by`
+        is `ORGANISATION` or `PLATFORM`), role, status or job title changed, member removed, and
+        request assigned or returned to the organisation inbox: who, on what, the values before
+        and after, and when. Records are kept in the database and cannot be changed. They never
+        carry a token, a document or a customer's contact details. `Cache-Control: private,
+        no-store`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - $ref: "#/components/parameters/RequestPage"
+        - $ref: "#/components/parameters/RequestPageSize"
+      responses:
+        "200":
+          description: One page of the audit trail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeamAuditPage"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/OrganisationNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/invitations/{token}:
+    parameters:
+      - $ref: "#/components/parameters/InvitationToken"
+    get:
+      tags: [organisation-workspace]
+      operationId: getInvitation
+      summary: What an invitation link is for (public, new in 0.23.0)
+      description: |
+        No session needed: anyone holding the link sees the organisation, the role, the inviter's
+        name, the invited address **masked** and the expiry, so the web can show the invitation
+        page before the person signs in or signs up. `404 INVITATION_NOT_FOUND` for an unknown
+        token, `410 INVITATION_EXPIRED` after 7 days, `410 INVITATION_NO_LONGER_VALID` once it
+        was accepted, cancelled or replaced by a newer invitation. Per-IP rate limit: bursts of
+        20, refilled at 20 per minute (shared with the accept). `Cache-Control: private,
+        no-store`.
+      responses:
+        "200":
+          description: The invitation.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [invitation]
+                properties:
+                  invitation:
+                    $ref: "#/components/schemas/PublicInvitation"
+        "404":
+          $ref: "#/components/responses/TeamNotFound"
+        "410":
+          $ref: "#/components/responses/InvitationGone"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/invitations/{token}/accept:
+    parameters:
+      - $ref: "#/components/parameters/InvitationToken"
+    post:
+      tags: [organisation-workspace]
+      operationId: acceptInvitation
+      summary: Accept an invitation (signed in, new in 0.23.0)
+      description: |
+        No body. Signed in with a customer session (`401` otherwise; an administrator session
+        is `403 FORBIDDEN`). The signed-in account's email address must be the invited one (`403
+        INVITATION_EMAIL_MISMATCH`); a person without an account signs up first with the invited
+        address (the normal registration), then accepts. A property seeker account (`CONSUMER`,
+        `TENANT`) cannot hold a professional role: `409 SEEKER_ACCOUNT_CANNOT_JOIN`. Someone who
+        already belongs to the organisation: `409 ALREADY_A_MEMBER`. Unknown, expired, used:
+        as the GET.
+
+        Creates an ACTIVE membership with the invited role and job title (a removed member's
+        membership is reinstated), from the next request on. In an agency the matching account
+        role becomes `ACTIVE` (`AGENCY_ADMIN` for MANAGER, `AGENT`, `AGENCY_STAFF` for STAFF), and
+        an AGENT gets a verified public agent profile linked to the agency (`profile`), as an
+        approved onboarding application gives. The invitation becomes `ACCEPTED` (single use).
+        Audit: `INVITATION_ACCEPTED`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: Accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AcceptedInvitation"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/TeamForbidden"
+        "404":
+          $ref: "#/components/responses/TeamNotFound"
+        "409":
+          $ref: "#/components/responses/TeamConflict"
+        "410":
+          $ref: "#/components/responses/InvitationGone"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/me/dashboard:
     get:
@@ -5139,7 +5744,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthenticated"
         "403":
-          $ref: "#/components/responses/Forbidden"
+          $ref: "#/components/responses/ReviewForbidden"
         "404":
           $ref: "#/components/responses/ListingNotFound"
         "409":
@@ -5172,6 +5777,8 @@ paths:
               schema: { $ref: "#/components/schemas/AdminListingEnvelope" }
         "400":
           $ref: "#/components/responses/ValidationFailed"
+        "403":
+          $ref: "#/components/responses/ReviewForbidden"
         "404":
           $ref: "#/components/responses/ListingNotFound"
         "409":
@@ -5205,6 +5812,8 @@ paths:
               schema: { $ref: "#/components/schemas/AdminListingEnvelope" }
         "400":
           $ref: "#/components/responses/ValidationFailed"
+        "403":
+          $ref: "#/components/responses/ReviewForbidden"
         "404":
           $ref: "#/components/responses/ListingNotFound"
         "409":
@@ -5951,9 +6560,10 @@ paths:
         the appointment is `CONFIRMED` and the new assignee already has a confirmed appointment
         at that time.
 
-        **There is no endpoint that lists an organisation's members yet**, so a client can
-        only offer the user IDs it already knows (for example `assigned_to.user_id` of other
-        appointments).
+        To offer the people to assign, list the organisation's members with
+        `GET /v1/agent/organisations/{id}/members` (any ACTIVE member can hold an appointment).
+        When a member is suspended or removed, their open appointments go back to the
+        organisation (an `UNASSIGNED` timeline entry, not shown to the customer).
       security:
         - cookieSession: []
         - bearerToken: []
@@ -6027,6 +6637,29 @@ paths:
 
 components:
   parameters:
+    OrganisationId:
+      name: id
+      in: path
+      required: true
+      description: The organisation's ID (`memberships[].organisation_id` of `GET /v1/me`).
+      schema:
+        type: string
+        format: uuid
+    JoinRequestId:
+      name: requestId
+      in: path
+      required: true
+      description: The join request's ID (the onboarding application's ID).
+      schema:
+        type: string
+        format: uuid
+    InvitationToken:
+      name: token
+      in: path
+      required: true
+      description: The token from the invitation link (43 URL-safe characters).
+      schema:
+        type: string
     AppointmentId:
       name: id
       in: path
@@ -6267,6 +6900,81 @@ components:
         `LISTING_STATE_CONFLICT` (the status does not allow this), `LISTING_IN_REVIEW` (the
         listing or its changes wait for review) or `LISTING_CHANGED` (changed by someone else
         at the same time: reload and retry).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    OrganisationNotFound:
+      description: "`ORGANISATION_NOT_FOUND`: no such organisation, or the caller is not an active member of it."
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    TeamForbidden:
+      description: |
+        `FORBIDDEN` (the caller is a member but may not manage the team: AGENT, STAFF; or an
+        administrator session accepting an invitation), `ROLE_NOT_ALLOWED` (the caller's role may
+        not give that role or act on that member), `OWNER_PROTECTED`, `SELF_CHANGE_FORBIDDEN`,
+        `INVITATION_EMAIL_MISMATCH`, or `CSRF_ORIGIN`.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    TeamNotFound:
+      description: "`ORGANISATION_NOT_FOUND`, `MEMBER_NOT_FOUND`, `INVITATION_NOT_FOUND` or `JOIN_REQUEST_NOT_FOUND`."
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    TeamConflict:
+      description: |
+        `LAST_OWNER` (the organisation's only active owner can never be changed or removed),
+        `ALREADY_A_MEMBER`, `SEEKER_ACCOUNT_CANNOT_JOIN`, `JOIN_REQUEST_ALREADY_DECIDED` or
+        `AGENCY_NOT_VERIFIED`. Nothing was changed.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    InvitationGone:
+      description: "`INVITATION_EXPIRED` (after 7 days) or `INVITATION_NO_LONGER_VALID` (accepted, cancelled or replaced)."
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    JoinRequestDecided:
+      description: The join request after the decision.
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [join_request]
+            properties:
+              join_request:
+                $ref: "#/components/schemas/JoinRequest"
+    ReviewForbidden:
+      description: |
+        `FORBIDDEN`, or `SELF_REVIEW_FORBIDDEN` (new in 0.23.0): the reviewer is a member of the
+        listing's organisation, or sells, is the agent of, created or submitted the listing.
+        Another reviewer must decide it.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
       content:
         application/json:
           schema:
@@ -8496,9 +9204,25 @@ components:
         - preferred_contact_method
         - contact
         - created_at
+        - assigned_to
       # No additionalProperties: false here (changed in 0.20.0), because
       # ReceivedPropertyRequest extends this schema; list items carry exactly these fields.
       properties:
+        assigned_to:
+          description: |
+            New in 0.23.0. The member of the receiving organisation the request is assigned to;
+            null in the organisation inbox, and for a direct seller's own request.
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [user_id, name]
+              properties:
+                user_id:
+                  type: string
+                  format: uuid
+                name:
+                  type: string
+            - type: "null"
         stage:
           $ref: "#/components/schemas/LeadStage"
         stage_label:
@@ -8610,7 +9334,7 @@ components:
       allOf:
         - $ref: "#/components/schemas/OrganisationPropertyRequest"
         - type: object
-          required: [preferred_slot_utc, updated_at, allowed_stages, timeline, notes]
+          required: [preferred_slot_utc, updated_at, allowed_stages, can_assign, timeline, notes]
           properties:
             preferred_slot_utc:
               type: [string, "null"]
@@ -8630,20 +9354,26 @@ components:
                     $ref: "#/components/schemas/LeadStage"
                   label:
                     type: string
+            can_assign:
+              type: boolean
+              description: New in 0.23.0. The caller may assign the request (its organisation's OWNER or MANAGER).
             timeline:
               type: array
               description: Oldest first.
               items:
                 type: object
                 additionalProperties: false
-                required: [event, label, from_stage, to_stage, actor, actor_name, at]
+                required: [event, label, from_stage, to_stage, actor, actor_name, assignee_name, at]
                 properties:
                   event:
                     type: string
-                    enum: [REQUEST_RECEIVED, STAGE_CHANGED, NOTE_ADDED]
+                    enum: [REQUEST_RECEIVED, STAGE_CHANGED, NOTE_ADDED, ASSIGNED, UNASSIGNED]
                   label:
                     type: string
-                    description: "`Request received`, `Moved to <stage label>` or `Note added`."
+                    description: "`Request received`, `Moved to <stage label>`, `Note added`, `Assigned to <name>` or `Returned to the organisation inbox` (the last two new in 0.23.0)."
+                  assignee_name:
+                    type: [string, "null"]
+                    description: New in 0.23.0. ASSIGNED only - who the request was given to.
                   from_stage:
                     oneOf:
                       - $ref: "#/components/schemas/LeadStage"
@@ -8817,31 +9547,289 @@ components:
         items:
           type: array
           items:
-            type: object
-            additionalProperties: false
-            required: [user_id, name, role, role_label, status, status_label, market_code, is_you]
-            properties:
-              user_id:
-                type: string
-                format: uuid
-              name:
-                type: string
-              role:
-                type: string
-                enum: [OWNER, MANAGER, AGENT, STAFF]
-              role_label:
-                type: string
-                description: In an agency `Agency Principal`, `Agency Administrator`, `Estate Agent`, `Agency Staff`; elsewhere `Principal`, `Manager`, `Estate Agent`, `Staff`.
-              status:
-                type: string
-                enum: [ACTIVE, INVITED, SUSPENDED]
-                description: SUSPENDED when the member's account is not active.
-              status_label:
-                type: string
-              market_code:
-                type: string
-              is_you:
-                type: boolean
+            $ref: "#/components/schemas/TeamMember"
+
+    TeamMember:
+      type: object
+      description: One member of an organisation (changed in 0.23.0). No email address or phone number.
+      additionalProperties: false
+      required: [user_id, name, role, role_label, job_title, status, status_label, market_code, joined_at, open_leads, is_you, can_change, allowed_roles, can_hold_leads]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        role:
+          type: string
+          enum: [OWNER, MANAGER, AGENT, STAFF]
+        role_label:
+          type: string
+          description: In an agency `Agency Principal`, `Agency Administrator`, `Estate Agent`, `Agency Staff`; elsewhere `Principal`, `Manager`, `Estate Agent`, `Staff`.
+        job_title:
+          type: [string, "null"]
+          description: New in 0.23.0.
+        status:
+          type: string
+          enum: [ACTIVE, SUSPENDED]
+          description: SUSPENDED when the organisation suspended the membership or the member's account is not active. (INVITED is no longer used; invitations are listed separately.)
+        status_label:
+          type: string
+        market_code:
+          type: string
+        joined_at:
+          type: [string, "null"]
+          format: date-time
+          description: New in 0.23.0. When the membership started (or was reinstated).
+        open_leads:
+          type: integer
+          description: New in 0.23.0. Open requests (not CONVERTED or CLOSED) of the organisation assigned to the member.
+        is_you:
+          type: boolean
+        can_change:
+          type: boolean
+          description: New in 0.23.0. The caller may change this member's role, status or job title, or remove them.
+        allowed_roles:
+          type: array
+          description: New in 0.23.0. The roles the caller may give this member (empty when `can_change` is false).
+          items:
+            type: string
+            enum: [MANAGER, AGENT, STAFF]
+        can_hold_leads:
+          type: boolean
+          description: New in 0.23.0. Requests can be assigned to this member (an ACTIVE OWNER, MANAGER or AGENT).
+
+    TeamInvitation:
+      type: object
+      description: New in 0.23.0. A pending invitation as the team's managers see it. Never its token.
+      additionalProperties: false
+      required: [id, email, role, role_label, job_title, status, invited_by, created_at, expires_at, expired, can_cancel]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+        role:
+          type: string
+          enum: [MANAGER, AGENT, STAFF]
+        role_label:
+          type: string
+        job_title:
+          type: [string, "null"]
+        status:
+          type: string
+          enum: [PENDING, ACCEPTED, CANCELLED, REPLACED]
+        invited_by:
+          type: object
+          additionalProperties: false
+          required: [user_id, name]
+          properties:
+            user_id:
+              type: [string, "null"]
+              format: uuid
+            name:
+              type: string
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        expired:
+          type: boolean
+        can_cancel:
+          type: boolean
+
+    PublicInvitation:
+      type: object
+      description: New in 0.23.0. What an invitation link shows to anyone holding it.
+      additionalProperties: false
+      required: [organisation, role, role_label, job_title, invited_by_name, email_masked, expires_at]
+      properties:
+        organisation:
+          type: object
+          additionalProperties: false
+          required: [name, kind]
+          properties:
+            name:
+              type: string
+            kind:
+              type: string
+        role:
+          type: string
+          enum: [MANAGER, AGENT, STAFF]
+        role_label:
+          type: string
+        job_title:
+          type: [string, "null"]
+        invited_by_name:
+          type: string
+        email_masked:
+          type: string
+          description: For example `n•••@example.com`.
+        expires_at:
+          type: string
+          format: date-time
+
+    AcceptedInvitation:
+      type: object
+      description: New in 0.23.0.
+      additionalProperties: false
+      required: [organisation, role, role_label, profile]
+      properties:
+        organisation:
+          type: object
+          additionalProperties: false
+          required: [id, name, kind]
+          properties:
+            id:
+              type: string
+              format: uuid
+            name:
+              type: string
+            kind:
+              type: string
+        role:
+          type: string
+          enum: [MANAGER, AGENT, STAFF]
+        role_label:
+          type: string
+        profile:
+          description: The public agent profile created (or reactivated) for an agency's AGENT; null otherwise.
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [kind, slug]
+              properties:
+                kind:
+                  type: string
+                slug:
+                  type: string
+            - type: "null"
+
+    JoinRequest:
+      type: object
+      description: New in 0.23.0. A submitted onboarding application to join the agency, as the agency sees it.
+      additionalProperties: false
+      required: [id, role, role_label, membership_role, membership_role_label, status, status_label, applicant, job_title, document_count, submitted_at, decision_reason, decided_at, can_decide]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The onboarding application's ID (the same as in `/v1/admin/onboarding/{id}`).
+        role:
+          type: string
+          description: The account role applied for, for example `AGENT`, `SALES_AGENT`, `AGENCY_ADMIN`.
+        role_label:
+          type: string
+        membership_role:
+          type: string
+          enum: [MANAGER, AGENT, STAFF]
+        membership_role_label:
+          type: string
+        status:
+          type: string
+          enum: [SUBMITTED, APPROVED, REJECTED, CHANGES_REQUESTED]
+        status_label:
+          type: string
+        applicant:
+          type: object
+          additionalProperties: false
+          required: [user_id, name, email_masked]
+          properties:
+            user_id:
+              type: string
+              format: uuid
+            name:
+              type: string
+            email_masked:
+              type: string
+        job_title:
+          type: [string, "null"]
+        document_count:
+          type: integer
+        submitted_at:
+          type: [string, "null"]
+          format: date-time
+        decision_reason:
+          type: [string, "null"]
+        decided_at:
+          type: [string, "null"]
+          format: date-time
+        can_decide:
+          type: boolean
+
+    TeamAuditEvent:
+      type: object
+      description: New in 0.23.0. One record of a team's audit trail.
+      additionalProperties: false
+      required: [id, action, action_label, actor, target, before, after, at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        action:
+          type: string
+          enum: [INVITATION_CREATED, INVITATION_CANCELLED, INVITATION_ACCEPTED, JOIN_REQUEST_APPROVED, JOIN_REQUEST_DECLINED, JOIN_REQUEST_CHANGES_REQUESTED, MEMBER_ROLE_CHANGED, MEMBER_JOB_TITLE_CHANGED, MEMBER_SUSPENDED, MEMBER_REACTIVATED, MEMBER_REMOVED, REQUEST_ASSIGNED, REQUEST_UNASSIGNED]
+        action_label:
+          type: string
+        actor:
+          type: object
+          additionalProperties: false
+          required: [user_id, name]
+          properties:
+            user_id:
+              type: [string, "null"]
+              format: uuid
+              description: Null when the account was deleted since.
+            name:
+              type: string
+              description: The actor's name at the time.
+        target:
+          type: object
+          additionalProperties: false
+          required: [type, id, label]
+          properties:
+            type:
+              type: string
+              enum: [MEMBER, INVITATION, JOIN_REQUEST, PROPERTY_REQUEST]
+            id:
+              type: string
+              format: uuid
+            label:
+              type: string
+              description: A person's name, the invited email address or a request reference.
+        before:
+          type: [object, "null"]
+          description: "The values before the change (for example `{\"role\": \"AGENT\"}`); null when not applicable."
+        after:
+          type: [object, "null"]
+          description: |
+            The values after the change. Removals and suspensions add `released_requests` and
+            `released_appointments` (work returned to the organisation inbox); join decisions
+            add `decided_by` (`ORGANISATION` or `PLATFORM`).
+        at:
+          type: string
+          format: date-time
+
+    TeamAuditPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, page_size, total, total_pages]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TeamAuditEvent"
+        page:
+          type: integer
+        page_size:
+          type: integer
+        total:
+          type: integer
+        total_pages:
+          type: integer
 
     DashboardCounter:
       type: object
@@ -8961,7 +9949,7 @@ components:
           items:
             type: object
             additionalProperties: false
-            required: [id, name, kind, market_code, role, role_label, can_see_members, can_assign_work, can_manage_listings]
+            required: [id, name, kind, market_code, role, role_label, can_see_members, can_assign_work, can_manage_listings, can_manage_team]
             properties:
               id:
                 type: string
@@ -8979,12 +9967,15 @@ components:
                 type: string
               can_see_members:
                 type: boolean
-                description: "`GET /v1/agent/organisations/{id}/members` is open to the caller."
+                description: "`GET /v1/agent/organisations/{id}/members` is open to the caller (the same as `can_manage_team`)."
               can_assign_work:
                 type: boolean
                 description: The caller sees all of the organisation's requests and appointments.
               can_manage_listings:
                 type: boolean
+              can_manage_team:
+                type: boolean
+                description: New in 0.23.0. The caller may invite people, decide join requests, and change, suspend or remove members (OWNER and MANAGER).
         direct_owner:
           type: boolean
           description: The caller is an approved landlord or property seller.
@@ -9493,8 +10484,8 @@ components:
       properties:
         event:
           type: string
-          enum: [REQUESTED, CONFIRMED, RESCHEDULE_REQUESTED, CANCELLED, COMPLETED, NO_SHOW, ASSIGNED]
-          description: "`ASSIGNED` (an internal assignment; `from` equals `to`) is returned to the professional only."
+          enum: [REQUESTED, CONFIRMED, RESCHEDULE_REQUESTED, CANCELLED, COMPLETED, NO_SHOW, ASSIGNED, UNASSIGNED]
+          description: "`ASSIGNED` (an internal assignment) and `UNASSIGNED` (new in 0.23.0: the assigned member left the team and the appointment went back to the organisation); `from` equals `to` for both, and both are returned to the professional only."
         from:
           type: [string, "null"]
           description: The status before; null for the first entry.

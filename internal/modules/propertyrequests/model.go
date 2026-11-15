@@ -272,6 +272,16 @@ type InboxItem struct {
 	CreatedAt              time.Time    `json:"created_at"`
 	// Stay is the dates, nights and guests of a STAY_REQUEST; null for every other type.
 	Stay *StayDetails `json:"stay"`
+	// AssignedTo is the member of the receiving organisation the request is
+	// assigned to; null in the organisation inbox (and for a direct seller's
+	// own request).
+	AssignedTo *AssigneeView `json:"assigned_to"`
+}
+
+// AssigneeView names the person a request is assigned to.
+type AssigneeView struct {
+	UserID uuid.UUID `json:"user_id"`
+	Name   string    `json:"name"`
 }
 
 // ItemOf builds the inbox view of a stored request (without its listing).

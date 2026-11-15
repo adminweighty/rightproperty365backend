@@ -1,6 +1,7 @@
 // Package dashboard answers "what should this person see first": one
-// role-aware summary for the signed-in account (GET /v1/me/dashboard), the
-// members of an organisation, and the platform administrators' overview.
+// role-aware summary for the signed-in account (GET /v1/me/dashboard) and the
+// platform administrators' overview. (An organisation's members are served by
+// the teams module.)
 //
 // It owns no data. Every number comes from the module that owns it, through
 // the same scoping that module's own endpoints use, so a dashboard can never
@@ -16,7 +17,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
 	"rightproperty365.com/backend/internal/modules/appointments"
@@ -151,6 +151,10 @@ type OrganisationView struct {
 	// CanAssignWork: the caller sees the whole organisation's requests and appointments.
 	CanAssignWork     bool `json:"can_assign_work"`
 	CanManageListings bool `json:"can_manage_listings"`
+	// CanManageTeam: the caller may invite people, decide join requests and
+	// change, suspend or remove members (OWNER and MANAGER; what each may do
+	// to whom is in GET /v1/agent/organisations/{id}/members).
+	CanManageTeam bool `json:"can_manage_team"`
 }
 
 // OnboardingView is the caller's application for one role.
@@ -266,7 +270,7 @@ func (h *Handler) build(ctx context.Context, p *auth.Principal) (Dashboard, erro
 			ID: m.OrganisationID, Name: m.OrganisationName, Kind: m.OrganisationKind, MarketCode: m.MarketCode,
 			Role: m.Role, RoleLabel: auth.MembershipRoleLabel(m.OrganisationKind, m.Role),
 			CanSeeMembers: p.MayAssignWork(m.OrganisationID), CanAssignWork: p.MayAssignWork(m.OrganisationID),
-			CanManageListings: p.MayManageListings(m.OrganisationID),
+			CanManageListings: p.MayManageListings(m.OrganisationID), CanManageTeam: p.MayManageTeam(m.OrganisationID),
 		})
 		d.Capabilities.SeesTeam = d.Capabilities.SeesTeam || p.MayAssignWork(m.OrganisationID)
 	}
@@ -519,84 +523,4 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	}
 	private(w)
 	httpx.WriteJSON(w, http.StatusOK, d)
-}
-
-// ---------------------------------------------------------------------------
-// GET /v1/agent/organisations/{id}/members
-// ---------------------------------------------------------------------------
-
-// CodeOrganisationNotFound: the organisation does not exist, or the caller
-// is not a member of it (the same answer).
-const CodeOrganisationNotFound = "ORGANISATION_NOT_FOUND"
-
-// MemberView is one person in an organisation: who they are and what they
-// are there. No email address or phone number.
-type MemberView struct {
-	UserID      uuid.UUID `json:"user_id"`
-	Name        string    `json:"name"`
-	Role        string    `json:"role"`
-	RoleLabel   string    `json:"role_label"`
-	Status      string    `json:"status"`
-	StatusLabel string    `json:"status_label"`
-	MarketCode  string    `json:"market_code"`
-	// IsYou is true for the caller's own row.
-	IsYou bool `json:"is_you"`
-}
-
-type membersResponse struct {
-	Organisation struct {
-		ID   uuid.UUID `json:"id"`
-		Name string    `json:"name"`
-		Kind string    `json:"kind"`
-	} `json:"organisation"`
-	Items []MemberView `json:"items"`
-}
-
-// Members serves GET /v1/agent/organisations/{id}/members: read-only, for the
-// OWNER and MANAGER of that organisation (auth.MayAssignWork, the people who
-// may assign its work). Another member gets 403; anybody else gets the same
-// 404 as for an organisation that does not exist.
-func (h *Handler) Members(w http.ResponseWriter, r *http.Request) {
-	p := principal(w, r)
-	if p == nil {
-		return
-	}
-	notFound := func() {
-		httpx.WriteError(w, r, http.StatusNotFound, CodeOrganisationNotFound, "This organisation does not exist.", nil)
-	}
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		notFound()
-		return
-	}
-	var membership *auth.Membership
-	for i := range p.Memberships {
-		if p.Memberships[i].OrganisationID == id {
-			membership = &p.Memberships[i]
-		}
-	}
-	if membership == nil {
-		notFound()
-		return
-	}
-	if !p.MayAssignWork(id) {
-		httpx.WriteError(w, r, http.StatusForbidden, httpx.CodeForbidden, "You do not have permission to do this.", nil)
-		return
-	}
-	members, err := h.src.People.OrganisationMembers(r.Context(), id)
-	if err != nil {
-		httpx.WriteInternalError(w, r, h.logger, err)
-		return
-	}
-	var out membersResponse
-	out.Organisation.ID, out.Organisation.Name, out.Organisation.Kind = id, membership.OrganisationName, membership.OrganisationKind
-	out.Items = make([]MemberView, 0, len(members))
-	for _, m := range members {
-		out.Items = append(out.Items, MemberView{
-			UserID: m.UserID, Name: m.Name, Role: m.Role, RoleLabel: auth.MembershipRoleLabel(membership.OrganisationKind, m.Role),
-			Status: m.Status, StatusLabel: identity.MemberStatusLabel(m.Status), MarketCode: m.MarketCode, IsYou: m.UserID == p.UserID,
-		})
-	}
-	private(w)
-	httpx.WriteJSON(w, http.StatusOK, out)
 }

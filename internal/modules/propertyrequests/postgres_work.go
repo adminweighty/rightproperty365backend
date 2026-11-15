@@ -11,6 +11,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"rightproperty365.com/backend/internal/platform/orgaudit"
 )
 
 // The Postgres side of work.go (migration 0018).
@@ -210,14 +212,15 @@ func (s *PostgresStore) ListByCustomer(ctx context.Context, f CustomerFilter) ([
 func (s *PostgresStore) RequestTimeline(ctx context.Context, id uuid.UUID) ([]TimelineEntry, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT event_type, actor_type, actor_user_id,
-		       COALESCE(detail->>'actor_name', ''), COALESCE(detail->>'from', ''), COALESCE(detail->>'to', ''), created_at
+		       COALESCE(detail->>'actor_name', ''), COALESCE(detail->>'from', ''), COALESCE(detail->>'to', ''),
+		       COALESCE(detail->>'assignee_name', ''), created_at
 		FROM request_timeline WHERE request_id = $1 ORDER BY created_at, id`, id)
 	if err != nil {
 		return nil, err
 	}
 	out, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (TimelineEntry, error) {
 		var e TimelineEntry
-		err := row.Scan(&e.EventType, &e.ActorType, &e.ActorUserID, &e.ActorName, &e.FromStage, &e.ToStage, &e.At)
+		err := row.Scan(&e.EventType, &e.ActorType, &e.ActorUserID, &e.ActorName, &e.FromStage, &e.ToStage, &e.AssigneeName, &e.At)
 		e.At = e.At.UTC()
 		return e, err
 	})
@@ -427,4 +430,98 @@ func (s *PostgresStore) AdminCounts(ctx context.Context, marketIDs []uuid.UUID, 
 		}
 	}
 	return c, rows.Err()
+}
+
+// Assign implements Store (assign.go): everything in ONE transaction, with
+// the row locked from the read.
+func (s *PostgresStore) Assign(ctx context.Context, id uuid.UUID, a Assignment, allow func(StoredRequest) error) (StoredRequest, error) {
+	err := s.locked(ctx, id, allow, func(tx pgx.Tx, cur StoredRequest) error {
+		recipientType, event := RecipientOrganisation, TimelineUnassigned
+		if a.To != nil {
+			recipientType, event = RecipientAgent, TimelineAssigned
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE property_requests SET recipient_type = $2, recipient_user_id = $3, updated_at = $4 WHERE id = $1`,
+			id, recipientType, a.To, a.At); err != nil {
+			return fmt.Errorf("assign request: %w", err)
+		}
+		detail := map[string]any{}
+		if a.To != nil {
+			detail["assignee_user_id"], detail["assignee_name"] = a.To.String(), a.ToName
+		}
+		if err := insertTimeline(ctx, tx, id, event, ActorProfessional, a.Actor, detail, a.At); err != nil {
+			return err
+		}
+		if a.To != nil && cur.Stage == StageNewEnquiry {
+			change := StageChange{To: StageAssigned, Actor: a.Actor, At: a.At}
+			if _, err := tx.Exec(ctx, `
+				UPDATE property_requests SET stage = $2, stage_changed_at = $3, stage_changed_by = $4 WHERE id = $1`,
+				id, StageAssigned, a.At, a.Actor.UserID); err != nil {
+				return fmt.Errorf("update stage: %w", err)
+			}
+			if err := insertTimeline(ctx, tx, id, TimelineStageChanged, ActorProfessional, a.Actor,
+				map[string]any{"from": cur.Stage, "to": StageAssigned}, a.At); err != nil {
+				return err
+			}
+			if err := insertOutbox(ctx, tx, EventStageChanged, id, stageEventPayload(cur, cur.Stage, change), a.At); err != nil {
+				return err
+			}
+		}
+		if a.To != nil {
+			if err := insertOutbox(ctx, tx, EventRequestAssigned, id, assignedPayload(cur, a), a.At); err != nil {
+				return err
+			}
+		}
+		return orgaudit.Insert(ctx, tx, a.Audit)
+	})
+	if err != nil {
+		return StoredRequest{}, err
+	}
+	return s.GetRequest(ctx, id)
+}
+
+// OpenLeads implements Store.
+func (s *PostgresStore) OpenLeads(ctx context.Context, organisationID uuid.UUID) (map[uuid.UUID]int, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT recipient_user_id, count(*) FROM property_requests
+		WHERE recipient_organisation_id = $1 AND recipient_user_id IS NOT NULL AND stage NOT IN ('CONVERTED', 'CLOSED')
+		GROUP BY recipient_user_id`, organisationID)
+	if err != nil {
+		return nil, fmt.Errorf("count open leads: %w", err)
+	}
+	defer rows.Close()
+	out := map[uuid.UUID]int{}
+	for rows.Next() {
+		var id uuid.UUID
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
+}
+
+// ReleaseMemberTx returns the organisation's open requests assigned to the
+// user to the organisation inbox, each with an UNASSIGNED timeline entry, in
+// the caller's transaction (removing or suspending a member). It returns how
+// many there were.
+func ReleaseMemberTx(ctx context.Context, tx pgx.Tx, organisationID, userID uuid.UUID, actor Actor, at time.Time) (int, error) {
+	var n int
+	err := tx.QueryRow(ctx, `
+		WITH released AS (
+			UPDATE property_requests SET recipient_type = 'ORGANISATION', recipient_user_id = NULL, updated_at = $3
+			WHERE recipient_organisation_id = $1 AND recipient_user_id = $2 AND stage NOT IN ('CONVERTED', 'CLOSED')
+			RETURNING id
+		), entries AS (
+			INSERT INTO request_timeline (id, request_id, event_type, actor_type, actor_user_id, detail, created_at)
+			SELECT gen_random_uuid(), r.id, $4, $5, $6, jsonb_build_object('actor_name', $7::text), $3 FROM released r
+			RETURNING 1
+		)
+		SELECT count(*) FROM entries`,
+		organisationID, userID, at, TimelineUnassigned, ActorProfessional, actor.UserID, actor.Name).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("release the member's requests: %w", err)
+	}
+	return n, nil
 }

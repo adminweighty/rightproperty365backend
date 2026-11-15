@@ -40,9 +40,9 @@ loses its sample account.
 | `estates.agent2@example.test` | `AGENT`; `AGENT` at Sample Estates | Listings 7, 10 and 17; two viewing requests (one with a new time proposed) |
 | `sales.agent@example.test` | `SALES_AGENT`; `AGENT` at Sample Estates | Professional dashboard of an agent with no assigned listings yet (empty inbox) |
 | `lettings.agent@example.test` | `LETTINGS_AGENT`; `AGENT` at Sample Estates | As above, for a lettings agent |
-| `estates.owner@example.test` | `AGENCY_OWNER`; `OWNER` of Sample Estates | Every request and appointment of the agency; *Team* (members list); profiles `agencies/sample-estates`, `agents/rudo-moyo`; logo upload |
-| `agency.admin@example.test` | `AGENCY_ADMIN`; `MANAGER` at Sample Estates | The agency's requests and appointments (a manager sees them all), *Team*; receives agency enquiries |
-| `agency.staff@example.test` | `AGENCY_STAFF`; `STAFF` at Sample Estates | A staff member's view: little to act on, no team list |
+| `estates.owner@example.test` | `AGENCY_OWNER`; `OWNER` of Sample Estates | Every request and appointment of the agency (and assigning them to members); *Team*: members (change role, suspend, remove), a pending invitation, a pending join request, the audit trail; profiles `agencies/sample-estates`, `agents/rudo-moyo`; logo upload |
+| `agency.admin@example.test` | `AGENCY_ADMIN`; `MANAGER` at Sample Estates | The agency's requests and appointments (a manager sees them all and assigns them), *Team* within a manager's limits (invites and manages agents and staff only, decides their join requests); receives agency enquiries |
+| `agency.staff@example.test` | `AGENCY_STAFF`; `STAFF` at Sample Estates | A staff member's view: little to act on, no team pages (403), cannot be assigned requests |
 | `commercial.agent@example.test` | `AGENCY_OWNER`; `OWNER` of Sample Commercial | Listings 3 and 13 |
 | `land.agent@example.test` | `AGENCY_OWNER`; `OWNER` of Sample Land Agents | Listings 4, 14 and 15 |
 | `realty.agent@example.test` | `AGENCY_OWNER`; `OWNER` of Sample Realty | Listings 8, 9, 16 and 18 |
@@ -78,6 +78,18 @@ Every other business profile has an owner too, at `<profile slug>@example.test` 
 | --- | --- | --- |
 | `pending.provider@example.test` | `SERVICE_PROVIDER`, **pending** | Its onboarding application is **submitted** with sample documents: review it as an administrator |
 | `pending.agent@example.test` | `AGENT`, **pending** | Its onboarding application is still a **draft**: fill it in and submit |
+| `joining.agent@example.test` | `AGENT`, **pending** (Jamie Joiner) | A **join request**: its application to join Sample Estates is **submitted** with sample documents. Sample Estates' owner or manager decides it on the *Team* page (`/v1/agent/organisations/{id}/join-requests`), or an administrator does; whoever is first wins |
+
+## Team samples (Sample Estates)
+
+- **A pending invitation** to `invited.agent@example.test` (no account) as `AGENT`, sent by Rudo
+  Moyo, shown in the *Team* page's invitations. Only the SHA-256 of a random token is stored, so
+  nobody has its link. To try accepting an invitation, invite an address yourself: in development
+  the link is printed by the API log line `DEV MAIL (not sent): team-invitation`; sign up with that
+  address (any non-seeker role), then open the link.
+- **A pending join request** from `joining.agent@example.test` (above).
+- Seeded in memory by the API in development and by `cmd/seed` (needs migration 0021); neither
+  emails anyone.
 
 ## Platform administrators (administrator sign-in only)
 

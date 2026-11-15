@@ -77,8 +77,27 @@ func (s *statusRecorder) Write(b []byte) (int, error) {
 // Unwrap lets http.ResponseController reach the underlying writer.
 func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
+// secretPathPrefixes are the routes whose next path segment is a credential
+// (an invitation token): it is never written to the access log.
+var secretPathPrefixes = []string{"/v1/invitations/"}
+
+// LoggedPath is the request path as the access log writes it: the secret
+// segment of a credential route replaced by "{token}".
+func LoggedPath(path string) string {
+	for _, prefix := range secretPathPrefixes {
+		if rest, ok := strings.CutPrefix(path, prefix); ok && rest != "" {
+			if _, tail, found := strings.Cut(rest, "/"); found {
+				return prefix + "{token}/" + tail
+			}
+			return prefix + "{token}"
+		}
+	}
+	return path
+}
+
 // AccessLog writes one structured line per request. Query strings are not
-// logged because they may carry personal data. It installs the user-ID slot
+// logged because they may carry personal data, and the
+// token of an invitation link is replaced (LoggedPath). It installs the user-ID slot
 // (logging.WithUserIDSlot) so the line carries user_id when the request was
 // authenticated further down the stack.
 func AccessLog(logger *slog.Logger) func(http.Handler) http.Handler {
@@ -99,7 +118,7 @@ func AccessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 			}
 			logger.LogAttrs(r.Context(), level, "http request",
 				slog.String("method", r.Method),
-				slog.String("path", r.URL.Path),
+				slog.String("path", LoggedPath(r.URL.Path)),
 				slog.Int("status", status),
 				slog.Int("bytes", rec.bytes),
 				slog.Float64("duration_ms", float64(time.Since(start).Microseconds())/1000),

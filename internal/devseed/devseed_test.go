@@ -539,7 +539,7 @@ func TestEveryRoleHasASampleAccount(t *testing.T) {
 	}
 	// Emails are unique across every sample account.
 	seen := map[string]bool{}
-	for _, email := range append(Emails(), PendingAgentEmail, PendingProviderEmail) {
+	for _, email := range append(Emails(), PendingAgentEmail, PendingProviderEmail, JoiningAgentEmail, InvitedAgentEmail) {
 		if seen[email] {
 			t.Fatalf("duplicate sample email %s", email)
 		}

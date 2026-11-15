@@ -11,6 +11,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
+	"rightproperty365.com/backend/internal/modules/teams"
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/httpx"
 )
@@ -264,12 +265,12 @@ func TestOrganisationMembers(t *testing.T) {
 		wantError(t, e.get(estates), http.StatusUnauthorized, httpx.CodeUnauthenticated)
 		// Not a member: the same answer as for an organisation that does not exist.
 		for _, email := range []string{identity.SeedConsumerEmail, devseed.PendingAgentEmail, identity.SeedAgentBEmail, devseed.CommercialAgentEmail, devseed.SellerEmail} {
-			wantError(t, e.get(estates, c.as(email)), http.StatusNotFound, dashboard.CodeOrganisationNotFound)
+			wantError(t, e.get(estates, c.as(email)), http.StatusNotFound, teams.CodeOrganisationNotFound)
 		}
-		wantError(t, e.get(estates, withCookie(e.admin())), http.StatusNotFound, dashboard.CodeOrganisationNotFound)
-		wantError(t, e.get("/v1/agent/organisations/nope/members", c.as(devseed.EstatesOwnerEmail)), http.StatusNotFound, dashboard.CodeOrganisationNotFound)
+		wantError(t, e.get(estates, withCookie(e.admin())), http.StatusNotFound, teams.CodeOrganisationNotFound)
+		wantError(t, e.get("/v1/agent/organisations/nope/members", c.as(devseed.EstatesOwnerEmail)), http.StatusNotFound, teams.CodeOrganisationNotFound)
 		wantError(t, e.get("/v1/agent/organisations/"+identity.SeedSecondOrganisationID.String()+"/members", c.as(devseed.EstatesOwnerEmail)),
-			http.StatusNotFound, dashboard.CodeOrganisationNotFound)
+			http.StatusNotFound, teams.CodeOrganisationNotFound)
 		// A member who is neither owner nor manager.
 		wantError(t, e.get(estates, c.as(identity.SeedAgentEmail)), http.StatusForbidden, httpx.CodeForbidden)
 	})

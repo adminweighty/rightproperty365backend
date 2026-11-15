@@ -66,6 +66,54 @@ func (p *Principal) MayAssignWork(organisationID uuid.UUID) bool {
 	return ok && (m.Role == RoleOwner || m.Role == RoleManager)
 }
 
+// MembershipRole returns the caller's role in the organisation, or "" when
+// the caller is not an active member of it.
+func (p *Principal) MembershipRole(organisationID uuid.UUID) string {
+	m, _ := p.membership(organisationID)
+	return m.Role
+}
+
+// MayManageTeam reports whether the caller may manage the organisation's
+// team: see its members, invite people, decide join requests, change roles,
+// suspend and remove members, and read the team's audit trail. OWNER and
+// MANAGER only (the same people who assign work); what each of them may do
+// to whom is MayGrantRole.
+func (p *Principal) MayManageTeam(organisationID uuid.UUID) bool {
+	return p.MayAssignWork(organisationID)
+}
+
+// GrantableRoles returns the membership roles a member with callerRole may
+// give (by invitation, by approving a join request or by changing a member's
+// role), and so the roles of the members they may act on:
+//
+//   - an OWNER: MANAGER, AGENT and STAFF;
+//   - a MANAGER: AGENT and STAFF (only an OWNER makes someone a MANAGER);
+//   - anybody else: none.
+//
+// Nobody can grant OWNER, and nobody can act on an OWNER.
+func GrantableRoles(callerRole string) []string {
+	switch callerRole {
+	case RoleOwner:
+		return []string{RoleManager, RoleAgent, RoleStaff}
+	case RoleManager:
+		return []string{RoleAgent, RoleStaff}
+	}
+	return nil
+}
+
+// MayGrantRole reports whether the caller may give role to someone in the
+// organisation, or act on a member who holds it (see GrantableRoles).
+func (p *Principal) MayGrantRole(organisationID uuid.UUID, role string) bool {
+	return slices.Contains(GrantableRoles(p.MembershipRole(organisationID)), role)
+}
+
+// RoleHoldsLeads reports whether a member with that role can have property
+// requests assigned to them: OWNER, MANAGER and AGENT. STAFF support the
+// others and hold no leads (as they manage no listings).
+func RoleHoldsLeads(role string) bool {
+	return role == RoleOwner || role == RoleManager || role == RoleAgent
+}
+
 // MayManageProfile reports whether the caller may change a directory
 // profile's public presentation (its logo today), given who the profile
 // belongs to:

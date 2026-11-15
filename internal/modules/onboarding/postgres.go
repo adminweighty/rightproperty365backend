@@ -16,6 +16,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/platform/auth"
+	"rightproperty365.com/backend/internal/platform/orgaudit"
 )
 
 // PostgresStore is the Postgres adapter (migrations/0009_onboarding.up.sql).
@@ -371,6 +372,11 @@ func (s *PostgresStore) Transition(ctx context.Context, t Transition) error {
 		if err := insertHistory(ctx, tx, t.ApplicationID, status, t.To, t.ActorID, t.Reason, t.At); err != nil {
 			return err
 		}
+		if t.Audit != nil {
+			if err := orgaudit.Insert(ctx, tx, *t.Audit); err != nil {
+				return err
+			}
+		}
 		return insertOutbox(ctx, tx, t.Event, t.ApplicationID, t.At)
 	})
 }
@@ -428,11 +434,12 @@ func (s *PostgresStore) Approve(ctx context.Context, p Approval) (Created, error
 				return err
 			}
 			if _, err := tx.Exec(ctx, `
-				INSERT INTO memberships (id, organisation_id, user_id, role, status, market_id, created_at, updated_at)
-				VALUES ($1, $2, $3, $4, 'ACTIVE', $5, $6, $6)
+				INSERT INTO memberships (id, organisation_id, user_id, role, status, market_id, created_at, updated_at, job_title)
+				VALUES ($1, $2, $3, $4, 'ACTIVE', $5, $6, $6, NULLIF($7, ''))
 				ON CONFLICT ON CONSTRAINT memberships_org_user_key
-				DO UPDATE SET role = EXCLUDED.role, status = 'ACTIVE', market_id = EXCLUDED.market_id, updated_at = EXCLUDED.updated_at`,
-				uuid.New(), p.Membership.OrganisationID, p.UserID, p.Membership.Role, market, p.At); err != nil {
+				DO UPDATE SET role = EXCLUDED.role, status = 'ACTIVE', market_id = EXCLUDED.market_id, updated_at = EXCLUDED.updated_at,
+				    job_title = COALESCE(EXCLUDED.job_title, memberships.job_title)`,
+				uuid.New(), p.Membership.OrganisationID, p.UserID, p.Membership.Role, market, p.At, p.Membership.JobTitle); err != nil {
 				return fmt.Errorf("insert membership: %w", err)
 			}
 			membership := p.Membership.Role
@@ -514,6 +521,11 @@ func (s *PostgresStore) Approve(ctx context.Context, p Approval) (Created, error
 		if err := insertHistory(ctx, tx, p.ApplicationID, StatusSubmitted, StatusApproved, p.ActorID, p.Note, p.At); err != nil {
 			return err
 		}
+		if p.Audit != nil {
+			if err := orgaudit.Insert(ctx, tx, *p.Audit); err != nil {
+				return err
+			}
+		}
 		return insertOutbox(ctx, tx, EventApproved, p.ApplicationID, p.At)
 	})
 	if err != nil {
@@ -536,6 +548,9 @@ func (s *PostgresStore) List(ctx context.Context, f ListFilter) ([]Application, 
 	}
 	if f.Markets != nil {
 		add(`a.market_code = ANY($%d)`, f.Markets)
+	}
+	if f.AgencySlug != "" {
+		add(`a.agency_slug = $%d`, f.AgencySlug)
 	}
 	if f.Q != "" {
 		add(`(u.full_name || ' ' || u.email || ' ' || COALESCE(a.business_name, '')) ILIKE $%d`, "%"+likeEscaper.Replace(f.Q)+"%")

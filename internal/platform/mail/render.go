@@ -68,6 +68,8 @@ func Templates() []Template {
 		{"listing-approved", "Listing or its changes approved (to the advertiser)", true},
 		{"listing-changes-requested", "Listing needs changes (to the advertiser)", true},
 		{"listing-rejected", "Listing or its changes not approved (to the advertiser)", true},
+		{"team-invitation", "Invitation to join an organisation's team (to the invited address)", true},
+		{"property-request-assigned", "Property request assigned (to the member it was given to)", true},
 
 		{"request-update", "Reply or status update to the customer", false},
 		{"listing-expiring", "Listing expiring in 14, 7 or 1 days", false},
@@ -137,6 +139,12 @@ type Data struct {
 	// Edit is true for a listing review email about the changes to a
 	// published listing (not about the listing itself).
 	Edit bool
+
+	// Team emails: the organisation, the person who acted (the inviter, the
+	// manager who assigned a request) and the invited job title.
+	OrganisationName string
+	ActorName        string
+	JobTitle         string
 
 	// Code is the one-time sign-in code (sign-in-code). It is a credential:
 	// it is only rendered into the message and never stored.

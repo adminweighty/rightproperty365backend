@@ -14,6 +14,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/identity"
+	"rightproperty365.com/backend/internal/platform/orgaudit"
 	"rightproperty365.com/backend/internal/platform/outbox"
 )
 
@@ -40,6 +41,16 @@ type MemoryStore struct {
 	history      map[uuid.UUID][]HistoryEntry
 	outbox       []outbox.Event
 	sink         outbox.Sink
+	// audit receives the organisation audit records of join decisions.
+	audit orgaudit.Sink
+}
+
+// SetAuditSink receives the organisation audit records this store writes
+// (the in-memory team store's log).
+func (s *MemoryStore) SetAuditSink(sink orgaudit.Sink) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.audit = sink
 }
 
 // NewMemoryStore returns a store holding the baseline outcome and
@@ -337,6 +348,9 @@ func (s *MemoryStore) Transition(_ context.Context, t Transition) error {
 	}
 	s.record(a, t.To, t.ActorID, t.Reason, t.At)
 	s.emit(t.Event, a.ID, t.At)
+	if t.Audit != nil && s.audit != nil {
+		s.audit(*t.Audit)
+	}
 	return nil
 }
 
@@ -377,7 +391,7 @@ func (s *MemoryStore) Approve(ctx context.Context, p Approval) (Created, error) 
 		created.OrganisationID = &id
 	}
 	if p.Membership != nil {
-		if err := s.deps.Identity.SetMembership(p.UserID, p.Membership.OrganisationID, marketCode, p.Membership.Role); err != nil {
+		if err := s.deps.Identity.SetMembershipWithTitle(p.UserID, p.Membership.OrganisationID, marketCode, p.Membership.Role, p.Membership.JobTitle, p.At); err != nil {
 			return Created{}, err
 		}
 		role := p.Membership.Role
@@ -409,6 +423,9 @@ func (s *MemoryStore) Approve(ctx context.Context, p Approval) (Created, error) 
 	}
 	s.record(a, StatusApproved, p.ActorID, p.Note, p.At)
 	s.emit(EventApproved, a.ID, p.At)
+	if p.Audit != nil && s.audit != nil {
+		s.audit(*p.Audit)
+	}
 	return created, nil
 }
 
@@ -424,6 +441,9 @@ func (s *MemoryStore) List(_ context.Context, f ListFilter) ([]Application, int,
 			continue
 		}
 		if f.Markets != nil && !slices.Contains(f.Markets, a.MarketCode) {
+			continue
+		}
+		if f.AgencySlug != "" && (a.AgencySlug == nil || *a.AgencySlug != f.AgencySlug) {
 			continue
 		}
 		full := s.copyOf(a)

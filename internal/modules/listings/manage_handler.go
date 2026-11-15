@@ -30,6 +30,9 @@ const (
 	CodePhotoRequired     = "PHOTO_REQUIRED"
 	CodeFileTooLarge      = "FILE_TOO_LARGE"
 	CodeUnsupportedFile   = "UNSUPPORTED_FILE_TYPE"
+	// CodeSelfReviewForbidden: a reviewer tried to decide a listing of their
+	// own organisation, or one they own, are the agent of or submitted.
+	CodeSelfReviewForbidden = "SELF_REVIEW_FORBIDDEN"
 )
 
 // PhotoLimitMessage is the message of PHOTO_LIMIT_REACHED (the owner's words).
@@ -77,6 +80,8 @@ func (h *ManageHandler) fail(w http.ResponseWriter, r *http.Request, err error) 
 		httpx.WriteError(w, r, http.StatusNotFound, CodeListingNotFound, "This listing does not exist.", nil)
 	case errors.Is(err, ErrForbidden):
 		httpx.WriteError(w, r, http.StatusForbidden, httpx.CodeForbidden, "You do not have permission to do this.", nil)
+	case errors.Is(err, ErrSelfReview):
+		httpx.WriteError(w, r, http.StatusForbidden, CodeSelfReviewForbidden, "You cannot review a listing of your own organisation, or one you own, are the agent of or submitted. Another reviewer must decide it.", nil)
 	case errors.Is(err, ErrConflict):
 		httpx.WriteError(w, r, http.StatusConflict, CodeListingChanged, "The listing was changed by someone else. Reload it and try again.", nil)
 	case errors.Is(err, ErrPhotoLimit):

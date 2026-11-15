@@ -55,6 +55,8 @@ type Service struct {
 	store  Store
 	now    func() time.Time
 	newRef func() (string, error)
+	// assignees says who can hold the requests of an organisation (assign.go).
+	assignees Assignees
 }
 
 // Option customises a Service (used by tests).

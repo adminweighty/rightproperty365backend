@@ -196,7 +196,7 @@ func base(a Appointment) baseView {
 func timelineOf(entries []TimelineEntry, forCustomer bool) *[]timelineView {
 	out := []timelineView{}
 	for _, e := range entries {
-		if forCustomer && e.Event == TimelineAssigned {
+		if forCustomer && (e.Event == TimelineAssigned || e.Event == TimelineUnassigned) {
 			continue
 		}
 		out = append(out, timelineView{
