@@ -1,0 +1,14 @@
+{{define "subject"}}Your listing was not approved{{end}}
+{{define "heading"}}Your listing was not approved{{end}}
+{{define "button"}}Manage your listings{{end}}
+{{define "why"}}You are receiving this because you manage this listing on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+Our review team has looked at {{if .Edit}}the changes to your listing{{else}}your listing{{end}} and could not approve {{if .Edit}}them{{else}}it{{end}}.
+
+Listing: {{.ListingTitle}}
+{{if .ListingRef}}Reference: {{.ListingRef}}
+{{end}}Status: {{.StatusText}}
+Reason: {{.Reason}}
+
+{{if .Edit}}Customers still see the listing as it was before your changes.{{else}}The listing will not be shown to customers.{{end}} If you think this is a mistake, reply to this email.{{end}}

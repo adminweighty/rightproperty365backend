@@ -22,6 +22,7 @@ import (
 
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/platform/auth"
+	"rightproperty365.com/backend/internal/platform/imaging"
 	"rightproperty365.com/backend/internal/platform/logging"
 	"rightproperty365.com/backend/internal/platform/storage"
 )
@@ -206,84 +207,12 @@ func PrepareLogo(content []byte) (LogoImage, []byte, error) {
 }
 
 // jpegOrientation returns the EXIF orientation of a JPEG (1 to 8), or 1 when
-// it has none or it cannot be read.
-func jpegOrientation(content []byte) int {
-	const none = 1
-	for at := 2; at+4 <= len(content) && content[at] == 0xff; {
-		marker, length := content[at+1], int(binary.BigEndian.Uint16(content[at+2:at+4]))
-		if marker == 0xda || length < 2 || at+2+length > len(content) { // start of scan: no metadata after it
-			return none
-		}
-		segment := content[at+4 : at+2+length]
-		at += 2 + length
-		if marker != 0xe1 || !bytes.HasPrefix(segment, []byte("Exif\x00\x00")) {
-			continue
-		}
-		tiff := segment[6:]
-		if len(tiff) < 8 {
-			return none
-		}
-		var order binary.ByteOrder = binary.BigEndian
-		if string(tiff[:2]) == "II" {
-			order = binary.LittleEndian
-		}
-		ifd := int(order.Uint32(tiff[4:8]))
-		if ifd < 8 || ifd+2 > len(tiff) {
-			return none
-		}
-		entries := int(order.Uint16(tiff[ifd : ifd+2]))
-		for i := 0; i < entries; i++ {
-			entry := ifd + 2 + 12*i
-			if entry+12 > len(tiff) {
-				return none
-			}
-			if order.Uint16(tiff[entry:entry+2]) == 0x0112 { // the Orientation tag
-				if o := int(order.Uint16(tiff[entry+8 : entry+10])); o >= 1 && o <= 8 {
-					return o
-				}
-				return none
-			}
-		}
-		return none
-	}
-	return none
-}
+// it has none or it cannot be read (imaging.JPEGOrientation).
+func jpegOrientation(content []byte) int { return imaging.JPEGOrientation(content) }
 
 // upright returns img turned the way its EXIF orientation says it is to be
-// shown (orientation 1, or anything unknown, is img itself).
-func upright(img *image.RGBA, orientation int) *image.RGBA {
-	if orientation < 2 || orientation > 8 {
-		return img
-	}
-	w, h := img.Bounds().Dx(), img.Bounds().Dy()
-	out := image.NewRGBA(image.Rect(0, 0, w, h))
-	if orientation >= 5 {
-		out = image.NewRGBA(image.Rect(0, 0, h, w))
-	}
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			tx, ty := x, y
-			switch orientation {
-			case 2:
-				tx = w - 1 - x
-			case 3:
-				tx, ty = w-1-x, h-1-y
-			case 4:
-				ty = h - 1 - y
-			case 5:
-				tx, ty = y, x
-			case 6:
-				tx, ty = h-1-y, x
-			case 7:
-				tx, ty = h-1-y, w-1-x
-			case 8:
-				tx, ty = y, w-1-x
-			}
-			out.SetRGBA(tx, ty, img.RGBAAt(x, y))
-		}
-	}
-	return out
-}
+// shown (imaging.Upright).
+func upright(img *image.RGBA, orientation int) *image.RGBA { return imaging.Upright(img, orientation) }
 
 // StoreLogo validates an image, scales it down when it is larger than a logo
 // needs to be (PrepareLogo) and stores it under a new random key. The Logo

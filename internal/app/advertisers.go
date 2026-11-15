@@ -98,3 +98,19 @@ func (v verifiedListings) GetListing(ctx context.Context, id uuid.UUID) (propert
 	}
 	return l, nil
 }
+
+// ListingRecord returns the function the listing review emails read their
+// listing with (notifications.Handlers.SetListingSource): the stored record,
+// whatever its status, or listings.ErrNotFound.
+func ListingRecord(store listings.Store) func(ctx context.Context, id uuid.UUID) (listings.Record, error) {
+	return func(ctx context.Context, id uuid.UUID) (listings.Record, error) {
+		records, err := store.ByIDs(ctx, []uuid.UUID{id})
+		if err != nil {
+			return listings.Record{}, err
+		}
+		if len(records) == 0 {
+			return listings.Record{}, listings.ErrNotFound
+		}
+		return records[0], nil
+	}
+}

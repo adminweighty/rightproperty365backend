@@ -26,7 +26,7 @@ import (
 // to their defined state (including the shared password). Rows it does not
 // own are never touched. Callers must have passed CheckEnvironment.
 //
-// It requires every migration up to 0016. If a sample email already belongs to a
+// It requires every migration up to 0020. If a sample email already belongs to a
 // different user row the run fails and changes nothing.
 //
 // NOTE: compiled but NEVER run — there is no Postgres on the machine this was
@@ -193,6 +193,12 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 		if l.Advertiser.Type == listings.AdvertiserPrivateSeller {
 			sellerName = &l.Advertiser.Name
 		}
+		// The sample draft and the listing waiting for review were never
+		// published: no publication dates.
+		var publishedAt, expiresAt *time.Time
+		if !l.PublishedAt.IsZero() {
+			publishedAt, expiresAt = &l.PublishedAt, &l.ExpiresAt
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO listings (id, market_id, title, status, price_amount, currency_code,
 			                      organisation_id, agent_user_id, seller_user_id, published_at, expires_at, created_at, updated_at,
@@ -217,9 +223,11 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 			    private_seller_name = EXCLUDED.private_seller_name,
 			    max_guests = EXCLUDED.max_guests, min_nights = EXCLUDED.min_nights,
 			    city_name = EXCLUDED.city_name, region_name = EXCLUDED.region_name,
-			    reviewed_at = EXCLUDED.reviewed_at, reviewed_by = EXCLUDED.reviewed_by`,
+			    reviewed_at = EXCLUDED.reviewed_at, reviewed_by = EXCLUDED.reviewed_by,
+			    -- Listing management (0020): a re-run drops pending changes and reviews.
+			    revision = NULL, revision_status = NULL, review_reason = NULL, submitted_at = NULL, submitted_by = NULL`,
 			l.ID, l.MarketCode, l.Title, l.Status, l.Price.Amount, l.Price.Currency,
-			l.OrganisationID, l.AgentUserID, l.SellerUserID, l.PublishedAt, l.ExpiresAt, l.UpdatedAt,
+			l.OrganisationID, l.AgentUserID, l.SellerUserID, publishedAt, expiresAt, l.UpdatedAt,
 			l.Slug, l.Reference, l.Deal, l.Category, l.PropertyType, period, l.City, l.Suburb,
 			l.Bedrooms, l.Bathrooms, l.FloorArea, l.LandArea, l.Summary, l.Description, l.Featured, sellerName,
 			l.MaxGuests, l.MinNights, l.CityName, l.RegionName, l.ReviewedAt, l.ReviewedBy); err != nil {
@@ -228,6 +236,10 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 				return fmt.Errorf("seed listing %s: its slug or reference already belongs to a different listing in this database", l.Slug)
 			}
 			return fmt.Errorf("seed listing %s: %w", l.Slug, err)
+		}
+		// The listing waiting for review joined the queue when it was last changed.
+		if _, err := tx.Exec(ctx, `UPDATE listings SET submitted_at = updated_at WHERE id = $1 AND status = 'PENDING_REVIEW'`, l.ID); err != nil {
+			return fmt.Errorf("seed listing %s submission: %w", l.Slug, err)
 		}
 		// Tell the search index: the worker turns this into an upsert or a delete.
 		event := listings.EventListingPublished
@@ -252,10 +264,16 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 		if _, err := tx.Exec(ctx, `DELETE FROM listing_photos WHERE listing_id = $1`, l.ID); err != nil {
 			return fmt.Errorf("seed listing %s photos: %w", l.Slug, err)
 		}
+		// The photos of a listing that has been published are approved; those
+		// of the sample draft and the listing waiting for review are not.
+		var approved *time.Time
+		if !l.PublishedAt.IsZero() {
+			approved = &l.PublishedAt
+		}
 		for i, ph := range l.Photos {
 			if _, err := tx.Exec(ctx, `
-				INSERT INTO listing_photos (id, listing_id, position, url, alt, width, height) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-				uuid.New(), l.ID, i, ph.URL, ph.Alt, ph.Width, ph.Height); err != nil {
+				INSERT INTO listing_photos (id, listing_id, position, url, alt, width, height, approved_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+				uuid.New(), l.ID, i, ph.URL, ph.Alt, ph.Width, ph.Height, approved); err != nil {
 				return fmt.Errorf("seed listing %s photo: %w", l.Slug, err)
 			}
 		}

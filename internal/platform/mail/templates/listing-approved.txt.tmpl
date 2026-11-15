@@ -1,0 +1,15 @@
+{{define "subject"}}Your listing is approved{{end}}
+{{define "heading"}}Your listing is approved{{end}}
+{{define "button"}}Manage your listings{{end}}
+{{define "why"}}You are receiving this because you manage this listing on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+Our review team has approved {{if .Edit}}the changes to your listing. Customers now see the new version.{{else}}your listing. It is now shown to customers.{{end}}
+
+Listing: {{.ListingTitle}}
+{{if .ListingRef}}Reference: {{.ListingRef}}
+{{end}}Status: {{.StatusText}}
+{{if not .ExpiresOn.IsZero}}Shown until: {{date .ExpiresOn}}
+{{end}}Approved: {{dateTime .When}}
+
+Requests about the listing will arrive in your inbox.{{end}}

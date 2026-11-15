@@ -184,8 +184,9 @@ func TestAvailabilityAuthorisation(t *testing.T) {
 		t.Fatalf("category=residential: %d", got.Total)
 	}
 	// Every listing of Sample Estates, not only the three assigned to him,
-	// and whatever its status: the expired one is there too.
-	if got := list("agent@example.test", ""); got.Total != 7 {
+	// and whatever its status: the expired one, the sample draft and the
+	// sample listing waiting for review are there too.
+	if got := list("agent@example.test", ""); got.Total != 9 {
 		t.Fatalf("an agency's agent manages %d listings: %s", got.Total, got.slugs())
 	}
 	if got := list("agent@example.test", "?status=EXPIRED"); got.Total != 1 || got.Items[0].Slug != devseed.ExpiredListingSlug || got.Items[0].Status != "EXPIRED" {

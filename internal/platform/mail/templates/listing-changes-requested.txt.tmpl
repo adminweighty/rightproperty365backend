@@ -1,0 +1,14 @@
+{{define "subject"}}Your listing needs changes{{end}}
+{{define "heading"}}Please update your listing{{end}}
+{{define "button"}}Update your listing{{end}}
+{{define "why"}}You are receiving this because you manage this listing on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+Our review team has looked at your listing and needs something changed before it can be shown to customers.
+
+Listing: {{.ListingTitle}}
+{{if .ListingRef}}Reference: {{.ListingRef}}
+{{end}}Status: {{.StatusText}}
+What to change: {{.Reason}}
+
+Please update the listing and submit it again. Everything you entered is saved, so you only need to change what is asked for.{{end}}

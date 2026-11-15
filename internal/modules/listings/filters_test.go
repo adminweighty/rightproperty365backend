@@ -316,7 +316,7 @@ func TestPostgresQueryBuilder(t *testing.T) {
 	for _, want := range []string{
 		`l.city_code = $2`, `mk.code = $3`, `ct.parent_code = $4`, `l.bedrooms >= $`, `l.bedrooms <= $`, `l.bathrooms <= $`,
 		`l.floor_area_m2 >= $`, `l.floor_area_m2 <= $`, `l.land_area_m2 >= $`, `l.land_area_m2 <= $`, `l.published_at >= $`,
-		`l.organisation_id IS NOT NULL`, `upper(l.reference) = upper($`, `EXISTS (SELECT 1 FROM listing_photos lp WHERE lp.listing_id = l.id)`,
+		`l.organisation_id IS NOT NULL`, `upper(l.reference) = upper($`, `EXISTS (SELECT 1 FROM listing_photos lp WHERE lp.listing_id = l.id AND lp.approved_at IS NOT NULL)`,
 	} {
 		if !strings.Contains(sql, want) {
 			t.Errorf("WHERE lacks %q:\n%s", want, sql)

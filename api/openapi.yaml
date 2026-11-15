@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.21.0
+  version: 0.22.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,44 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Listings by advertisers (changed in 0.22.0)
+    - **New: advertisers create and edit their own listings, with photos, and platform
+      reviewers approve them before they are public.** The owner's rule is "a maximum of 20
+      photos per property". New routes: `POST /v1/me/listings`, `GET|PATCH|DELETE
+      /v1/me/listings/{id}`, `POST /v1/me/listings/{id}/submit|archive|relist`,
+      `POST /v1/me/listings/{id}/photos`, `PUT /v1/me/listings/{id}/photos/order`,
+      `PATCH|DELETE /v1/me/listings/{id}/photos/{photoId}`,
+      `GET /v1/listing-photos/{photoId}/{size}`, `GET /v1/admin/listings`,
+      `GET /v1/admin/listings/{id}` and `POST /v1/admin/listings/{id}/approve|request-changes|reject`.
+    - **Who.** Creating: an `OWNER`, `MANAGER` or `AGENT` of an organisation whose kind manages
+      listings (agency, law firm, property manager, developer, host: the dashboard's
+      `can_manage_listings`), and an approved landlord or property seller for themselves.
+      Changing one listing: the organisation's `OWNER` and `MANAGER` (every listing of it), an
+      `AGENT` (only the listings they are the agent of; the others are read-only,
+      `can_edit: false`), the direct owner (their own). `STAFF`, seekers and accounts whose
+      verification is pending manage none. Reviewing: `MODERATOR`, `PLATFORM_ADMIN`,
+      `SUPER_ADMIN` everywhere, `MARKET_ADMIN` in its own countries (as the listings section
+      of `GET /v1/admin/overview`).
+    - **Lifecycle.** `DRAFT` -> `PENDING_REVIEW` (submit) -> `PUBLISHED` (approve, for 90 days)
+      | `CHANGES_REQUESTED` (with a reason; edit and submit again) | `REJECTED` (with a reason;
+      final, the listing can only be deleted). `ARCHIVED` (withdrawn by the advertiser) and
+      `EXPIRED` (a published listing past its period) can be relisted: back to review (a new
+      90-day period starts on approval) when it was published before, to `DRAFT` when it never
+      was. `DELETE` is only for a listing that was never published.
+    - **Editing a published listing** does not take it offline: the changes (and new photos)
+      are kept as `pending_changes` and the public keeps seeing the approved version until a
+      reviewer approves them. A rejection drops them. Reordering photos and deleting a photo
+      apply at once.
+    - **Changed response shapes (additive).** `Photo` gains `variants: [{width, height, url}]`
+      (empty for the bundled sample images, whose `url` is unchanged); `url`, `alt`, `width`
+      and `height` keep their meaning. An uploaded photo's `url` is an API path
+      (`/v1/listing-photos/{id}/large?v=...`, relative to the API origin like a logo URL).
+      Listing statuses gain `CHANGES_REQUESTED`, `REJECTED` and `ARCHIVED`; an archived
+      listing that was public answers `410 LISTING_UNAVAILABLE`, and so does one waiting for
+      review after a relist. `GET /v1/me/dashboard` always has the counters
+      `listings.status.DRAFT`, `.PENDING_REVIEW` and `.CHANGES_REQUESTED` (and the next action
+      `UPDATE_LISTINGS_FOR_REVIEW`); the admin overview counts the new statuses.
 
     Signing in is two steps (changed in 0.21.0). **BREAKING for every client that signs in:
     the web app, the mobile app and the administrator console must be updated together with
@@ -1178,9 +1216,10 @@ paths:
       operationId: listMyListings
       summary: The listings the caller may manage
       description: |
-        The first "my listings" endpoint, and it is **read-only: creating, editing and
-        publishing listings is still not built.** It exists so a lister can find the short
-        stays whose calendar they manage.
+        The lister's list of listings. Since 0.22.0 listings are created with
+        `POST /v1/me/listings` and managed under `/v1/me/listings/{id}`; this list is the
+        same as before (an agent sees every listing of their organisation here; which of them
+        they may change is `can_edit` of `GET /v1/me/listings/{id}`).
 
         Returns the listings, **whatever their status**, that the caller may manage (newest
         first):
@@ -1201,7 +1240,7 @@ paths:
           schema: { type: string }
         - name: status
           in: query
-          description: "A listing status: `PUBLISHED`, `EXPIRED`, `DRAFT`, `PAUSED`, `SOLD`, `LET`, `CLOSED`."
+          description: "A listing status as stored: `DRAFT`, `PENDING_REVIEW`, `CHANGES_REQUESTED`, `REJECTED`, `PUBLISHED`, `EXPIRED`, `ARCHIVED`, `PAUSED`, `SOLD`, `LET`, `CLOSED`."
           schema: { type: string }
         - name: page
           in: query
@@ -1228,6 +1267,451 @@ paths:
           $ref: "#/components/responses/InternalError"
         "504":
           $ref: "#/components/responses/Timeout"
+
+    post:
+      tags: [listings]
+      operationId: createMyListing
+      summary: Create a listing (a DRAFT)
+      description: |
+        New in 0.22.0. Creates a `DRAFT` that only its managers see. The body may carry any
+        field of `ListingContentPatch` (all optional) plus who the listing is for:
+        `organisation_id` (required when the caller manages listings for several
+        organisations, or is also a direct owner) or `as_direct_owner: true`. An `AGENT` becomes
+        the listing's agent; an `OWNER` or `MANAGER` creates a listing without one. `country`
+        defaults to the market of the caller's membership; the price currency defaults to the
+        country's. The `slug` and `reference` (`RP-<country>-<6 digits>`) are generated; the
+        slug follows the title until the listing is first published, then never changes.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/ListingContentPatch"
+                - type: object
+                  properties:
+                    organisation_id: { type: [string, "null"], format: uuid }
+                    as_direct_owner: { type: boolean }
+            example: { title: "Three-bedroom house in Borrowdale", country: ZW }
+      responses:
+        "201":
+          description: The new draft.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagedListingEnvelope" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: "`FORBIDDEN`: the caller manages no listings, or not for that organisation."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /v1/me/listings/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ManagedListingId"
+    get:
+      tags: [listings]
+      operationId: getMyListing
+      summary: One listing as its managers see it
+      description: |
+        New in 0.22.0. The full editable record: status, the reviewer's reason, the pending
+        changes of a published listing, the working copy of the content, every photo (approved
+        or waiting), `completeness` (what is missing before it can be submitted), `can_edit`,
+        the `actions` the caller may take now and the timeline. `404 LISTING_NOT_FOUND` for a
+        listing that does not exist or belongs to another organisation (the same answer);
+        `403 FORBIDDEN` for a member of the listing's organisation who does not manage
+        listings (`STAFF`). An agent may read a colleague's listing (`can_edit: false`).
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The listing.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagedListingEnvelope" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/ListingNotFound"
+    patch:
+      tags: [listings]
+      operationId: updateMyListing
+      summary: Change some fields of a listing
+      description: |
+        New in 0.22.0. A partial update: only the keys sent change; `null` clears a field. Every
+        save is validated against the reference data and must be consistent (missing fields are
+        not errors here; `completeness` lists them). Unknown keys are `400`.
+
+        To keep a listing consistent while it is edited one field at a time, a field the patch
+        does not set itself follows: choosing `category: short-stay` makes it `deal: rent`,
+        `price_period: night`; leaving a short stay clears `max_guests` and `min_nights` (and a
+        nightly period becomes monthly for a rental); choosing `deal: sale` clears
+        `price_period`, `rent` sets `month`; a new `country` clears the city, suburb and
+        free-text places (and sets the country's currency while no amount is entered); a `city`
+        code clears free text and a suburb of another city; a `city_name` clears the codes.
+        Rules: `country` is required; where the country has reference cities
+        (`GET /v1/reference/cities?market=..`) the city is a `city` code, elsewhere free text
+        `city_name` (with an optional `region_name`; plain text, at most 80 characters); a
+        `suburb` needs a `city` of which it is a suburb.
+
+        `DRAFT`, `CHANGES_REQUESTED`, `ARCHIVED` and `EXPIRED` listings change at once. A
+        `PUBLISHED` listing's changes go into `pending_changes` (status `EDITING`) and the
+        public keeps the approved version; its `country` cannot change. `409 LISTING_IN_REVIEW`
+        while the listing or its changes wait for review; `409 LISTING_STATE_CONFLICT` for a
+        `REJECTED` (or paused, sold, let, closed) listing; `409 LISTING_CHANGED` when someone
+        else changed it at the same moment (reload and retry).
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ListingContentPatch" }
+            example: { deal: sale, category: residential, property_type: house, price: { amount: "250000", currency: USD }, city: harare, suburb: borrowdale, bedrooms: 3 }
+      responses:
+        "200":
+          description: The listing after the change.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagedListingEnvelope" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: "`FORBIDDEN`: the caller may see the listing but not change it."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404":
+          $ref: "#/components/responses/ListingNotFound"
+        "409":
+          $ref: "#/components/responses/ListingStateConflict"
+    delete:
+      tags: [listings]
+      operationId: deleteMyListing
+      summary: Delete a listing that was never published
+      description: |
+        New in 0.22.0. Removes the listing, its photos and their stored files. A listing that
+        has been published is `409 LISTING_STATE_CONFLICT`: archive it instead.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "204":
+          description: Deleted.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/ListingNotFound"
+        "409":
+          $ref: "#/components/responses/ListingStateConflict"
+
+  /v1/me/listings/{id}/submit:
+    parameters:
+      - $ref: "#/components/parameters/ManagedListingId"
+    post:
+      tags: [listings]
+      operationId: submitMyListing
+      summary: Send a listing, or the changes of a published one, for review
+      description: |
+        New in 0.22.0. No body. `DRAFT` or `CHANGES_REQUESTED` -> `PENDING_REVIEW`; for a
+        `PUBLISHED` listing, its `pending_changes` (`EDITING` or `CHANGES_REQUESTED`) ->
+        `PENDING_REVIEW`. Requires a complete listing: title (at least 5 characters),
+        description (at least 30), deal, category, property type, a price above 0 with its
+        currency, the price period of a rental, the country and the city, `max_guests` for a
+        short stay, at least **one** photo and a description (`alt`) for every photo; otherwise
+        `422 LISTING_INCOMPLETE` with one message per missing field in `error.fields`.
+        `409 LISTING_STATE_CONFLICT` when there is nothing to submit (a published listing
+        without changes) or the status does not allow it; `409 LISTING_IN_REVIEW` when it
+        already waits.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The listing, waiting for review.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagedListingEnvelope" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/ListingNotFound"
+        "409":
+          $ref: "#/components/responses/ListingStateConflict"
+        "422":
+          description: "`LISTING_INCOMPLETE`: `error.fields` names each missing field (`title`, `description`, `deal`, `category`, `property_type`, `price`, `price_period`, `country`, `city`, `city_name`, `max_guests`, `photos`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/me/listings/{id}/archive:
+    parameters:
+      - $ref: "#/components/parameters/ManagedListingId"
+    post:
+      tags: [listings]
+      operationId: archiveMyListing
+      summary: Withdraw a listing
+      description: |
+        New in 0.22.0. No body. From `DRAFT`, `PENDING_REVIEW` (withdraws the submission),
+        `CHANGES_REQUESTED`, `PUBLISHED`, `EXPIRED` or `PAUSED` to `ARCHIVED`. A public listing
+        leaves the catalogue at once (`410` by slug); its pending changes are kept on it for a
+        relist. `409 LISTING_STATE_CONFLICT` otherwise (a `REJECTED` listing cannot be archived).
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The archived listing.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagedListingEnvelope" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/ListingNotFound"
+        "409":
+          $ref: "#/components/responses/ListingStateConflict"
+
+  /v1/me/listings/{id}/relist:
+    parameters:
+      - $ref: "#/components/parameters/ManagedListingId"
+    post:
+      tags: [listings]
+      operationId: relistMyListing
+      summary: Bring back an archived or expired listing (renew)
+      description: |
+        New in 0.22.0. No body. `ARCHIVED` or `EXPIRED` -> `PENDING_REVIEW` when the listing was
+        published before (it must be complete, else `422 LISTING_INCOMPLETE`; approval starts a
+        new 90-day period), or `DRAFT` when it never was. `409 LISTING_STATE_CONFLICT` for any
+        other status.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The relisted listing.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagedListingEnvelope" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/ListingNotFound"
+        "409":
+          $ref: "#/components/responses/ListingStateConflict"
+        "422":
+          description: "`LISTING_INCOMPLETE`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/me/listings/{id}/photos:
+    parameters:
+      - $ref: "#/components/parameters/ManagedListingId"
+    post:
+      tags: [listings]
+      operationId: addMyListingPhoto
+      summary: Upload one photo
+      description: |
+        New in 0.22.0. `multipart/form-data` with exactly one part `file`. **At most 20 photos per
+        listing**: the 21st is `409 PHOTO_LIMIT_REACHED`, "A property can have up to 20
+        photos." (checked before and, atomically, while storing).
+
+        - JPEG, PNG or WebP, decided by the bytes (never the file name or the part's type);
+          SVG, GIF, animated PNG and anything that does not decode are `415
+          UNSUPPORTED_FILE_TYPE`.
+        - At most 15 MB (`413 FILE_TOO_LARGE`).
+        - At least 800 pixels on the longer side, at most 10000x10000 and 40 megapixels (`400
+          VALIDATION_FAILED`, `error.fields.file`).
+        - The photo is turned upright by its EXIF orientation, transparency is flattened onto
+          white, and it is stored as three new JPEG files (quality 82): `large` (longer side at
+          most 2048), `medium` (at most 1280 wide) and `small` (at most 640 wide), never
+          enlarged. Nothing of the upload's metadata (EXIF, GPS, colour profile) is kept.
+        - It is added at the end, `PENDING_REVIEW` until the listing (or its changes) is
+          approved, with an empty `alt` to fill in. On a `PUBLISHED` listing it is part of the
+          pending changes. Stored in the private object storage; served only by
+          `GET /v1/listing-photos/{photoId}/{size}`.
+
+        Shares the upload rate limit (20 per minute per IP).
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        "201":
+          description: The listing with its new photo last.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagedListingEnvelope" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/ListingNotFound"
+        "409":
+          description: "`PHOTO_LIMIT_REACHED` (\"A property can have up to 20 photos.\"), `LISTING_IN_REVIEW`, `LISTING_STATE_CONFLICT` or `LISTING_CHANGED`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "413":
+          description: "`FILE_TOO_LARGE`: more than 15 MB."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "415":
+          description: "`UNSUPPORTED_FILE_TYPE`: not a JPEG, PNG or WebP image that decodes."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /v1/me/listings/{id}/photos/order:
+    parameters:
+      - $ref: "#/components/parameters/ManagedListingId"
+    put:
+      tags: [listings]
+      operationId: orderMyListingPhotos
+      summary: Put the photos in order
+      description: |
+        New in 0.22.0. `photo_ids` lists every photo of the listing exactly once, first photo
+        first (otherwise `400`, `error.fields.photo_ids`). The order applies at once, also on a
+        published listing.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [photo_ids]
+              additionalProperties: false
+              properties:
+                photo_ids: { type: array, items: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The listing with its photos in the new order.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagedListingEnvelope" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/ListingNotFound"
+        "409":
+          $ref: "#/components/responses/ListingStateConflict"
+
+  /v1/me/listings/{id}/photos/{photoId}:
+    parameters:
+      - $ref: "#/components/parameters/ManagedListingId"
+      - name: photoId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [listings]
+      operationId: updateMyListingPhoto
+      summary: Change a photo's description (alt text)
+      description: |
+        New in 0.22.0. `{"alt": "..."}`: plain text, one line, at most 250 characters (may be
+        empty; a submission needs it). The description of a public photo of a published
+        listing changes with its pending changes. `404 PHOTO_NOT_FOUND`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [alt]
+              additionalProperties: false
+              properties:
+                alt: { type: string, maxLength: 250 }
+      responses:
+        "200":
+          description: The listing.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagedListingEnvelope" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: "`LISTING_NOT_FOUND` or `PHOTO_NOT_FOUND`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          $ref: "#/components/responses/ListingStateConflict"
+    delete:
+      tags: [listings]
+      operationId: deleteMyListingPhoto
+      summary: Delete a photo
+      description: |
+        New in 0.22.0. Removes the photo and its stored files at once (also a public photo of a
+        published listing). The last public photo of a published listing cannot be deleted:
+        `409 PHOTO_REQUIRED`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The listing without the photo.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagedListingEnvelope" }
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: "`LISTING_NOT_FOUND` or `PHOTO_NOT_FOUND`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: "`PHOTO_REQUIRED`, `LISTING_IN_REVIEW` or `LISTING_STATE_CONFLICT`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
 
   /v1/me/listings/{id}/availability:
     parameters:
@@ -1711,6 +2195,55 @@ paths:
           $ref: "#/components/responses/InternalError"
         "504":
           $ref: "#/components/responses/Timeout"
+
+  /v1/listing-photos/{photoId}/{size}:
+    get:
+      tags: [listings]
+      operationId: getListingPhoto
+      summary: One stored size of an uploaded listing photo (the image itself)
+      description: |
+        New in 0.22.0. A JPEG. Use the `url` of a `Photo` (or `variants[].url`, or a
+        `ManagedPhoto`'s) prefixed with the API base URL; it carries `?v=<version>` (the first
+        12 characters of the photo's checksum).
+
+        - **Public** while the listing is public and the photo is approved: no session needed,
+          the same for everyone, `Cache-Control: public, max-age=31536000, immutable` when `v`
+          is the photo's version, `public, max-age=300, stale-while-revalidate=86400` otherwise.
+        - **Otherwise** only for a signed-in manager of the listing or a reviewer of its
+          country (admin session), with `Cache-Control: private, no-store`; everyone else gets
+          `404 PHOTO_NOT_FOUND`. An `<img>` on another origin does not send the session: the
+          editor fetches such a photo with credentials (or a bearer token) and shows the blob.
+        - `ETag`, `If-None-Match` -> `304`; `X-Content-Type-Options: nosniff`,
+          `Cross-Origin-Resource-Policy: cross-origin`. Bundled sample photos
+          (`/assets/images/...`) are not served here.
+      security: []
+      parameters:
+        - name: photoId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: size
+          in: path
+          required: true
+          schema: { type: string, enum: [large, medium, small] }
+        - name: v
+          in: query
+          required: false
+          schema: { type: string }
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: The image.
+          content:
+            image/jpeg:
+              schema: { type: string, format: binary }
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "404":
+          description: "`PHOTO_NOT_FOUND`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
 
   /v1/me/profiles:
     get:
@@ -4507,6 +5040,176 @@ paths:
         "504":
           $ref: "#/components/responses/Timeout"
 
+  /v1/admin/listings:
+    get:
+      tags: [admin, listings]
+      operationId: adminListListings
+      summary: The listing review queue
+      description: |
+        New in 0.22.0. Requires an **admin-scope** session and one of SUPER_ADMIN,
+        PLATFORM_ADMIN, MODERATOR or MARKET_ADMIN (only its own countries). One page, **oldest
+        submission first**, of the listings whose status **or** whose pending changes' status is
+        `status` (default `PENDING_REVIEW`, so new listings and edits of published ones are one
+        queue; `kind` narrows to `NEW` or `EDIT`). `q` matches the title (also the proposed one)
+        or the exact reference.
+      security:
+        - cookieSession: []
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/ListingStatus" }
+        - name: kind
+          in: query
+          schema: { type: string, enum: [NEW, EDIT] }
+        - name: country
+          in: query
+          schema: { type: string, pattern: "^[A-Za-z]{2}$" }
+        - name: q
+          in: query
+          schema: { type: string, maxLength: 100 }
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 48, default: 12 }
+      responses:
+        "200":
+          description: One page of the queue.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ListingQueuePage" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /v1/admin/listings/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ManagedListingId"
+    get:
+      tags: [admin, listings]
+      operationId: adminGetListing
+      summary: A listing as its reviewer sees it
+      description: |
+        New in 0.22.0. `ManagedListing` (photos included: their URLs work with the reviewer's
+        session) plus `review_kind`, `live` (the public content while an edit waits), `changes`
+        (the fields an edit changes, before and after), `photo_changes`, `decisions` and the
+        timeline with `actor_user_id`. A listing of another country for a MARKET_ADMIN is `404`.
+      security:
+        - cookieSession: []
+      responses:
+        "200":
+          description: The listing.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminListingEnvelope" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/ListingNotFound"
+
+  /v1/admin/listings/{id}/approve:
+    parameters:
+      - $ref: "#/components/parameters/ManagedListingId"
+    post:
+      tags: [admin, listings]
+      operationId: adminApproveListing
+      summary: Approve a listing, or the changes of a published one
+      description: |
+        New in 0.22.0. No body (or `{}`). A new listing (`review_kind: NEW`) becomes `PUBLISHED`
+        for 90 days from now (a new publication cycle); pending changes (`EDIT`) are written
+        onto the published listing, whose dates stay. Every photo of the listing becomes
+        approved. Records the reviewer and the time (`review.reviewed_at`,
+        `verification.listing_reviewed`), a timeline entry and the outbox events
+        `LISTING_PUBLISHED` / `LISTING_UPDATED` (search index) and `LISTING_APPROVED` (email to
+        the advertiser). `409 LISTING_STATE_CONFLICT` when nothing waits for review.
+      security:
+        - cookieSession: []
+      responses:
+        "200":
+          description: The listing after the decision.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminListingEnvelope" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/ListingNotFound"
+        "409":
+          $ref: "#/components/responses/ListingStateConflict"
+
+  /v1/admin/listings/{id}/request-changes:
+    parameters:
+      - $ref: "#/components/parameters/ManagedListingId"
+    post:
+      tags: [admin, listings]
+      operationId: adminRequestListingChanges
+      summary: Ask the advertiser for changes
+      description: |
+        New in 0.22.0. `{"reason": "..."}` (required, plain text, at most 1000 characters). A new
+        listing becomes `CHANGES_REQUESTED`; pending changes become `CHANGES_REQUESTED` (the
+        published version stays public). The advertiser is emailed the reason
+        (`LISTING_CHANGES_REQUESTED`).
+      security:
+        - cookieSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReviewReason" }
+      responses:
+        "200":
+          description: The listing after the decision.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminListingEnvelope" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "404":
+          $ref: "#/components/responses/ListingNotFound"
+        "409":
+          $ref: "#/components/responses/ListingStateConflict"
+
+  /v1/admin/listings/{id}/reject:
+    parameters:
+      - $ref: "#/components/parameters/ManagedListingId"
+    post:
+      tags: [admin, listings]
+      operationId: adminRejectListing
+      summary: Reject a listing, or the changes of a published one
+      description: |
+        New in 0.22.0. `{"reason": "..."}` (required). A new listing becomes `REJECTED` (final;
+        its advertiser may only delete it). Rejected pending changes are dropped with their new
+        photos (and the photos' files); the published version stays and `pending_changes` shows
+        `REJECTED` with the reason until the next edit. The advertiser is emailed the reason
+        (`LISTING_REJECTED`).
+      security:
+        - cookieSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReviewReason" }
+      responses:
+        "200":
+          description: The listing after the decision.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminListingEnvelope" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "404":
+          $ref: "#/components/responses/ListingNotFound"
+        "409":
+          $ref: "#/components/responses/ListingStateConflict"
+
   /v1/admin/overview:
     get:
       tags: [admin]
@@ -5393,6 +6096,12 @@ components:
         type: string
         pattern: "^[A-Za-z]{2}$"
       example: ZW
+    ManagedListingId:
+      name: id
+      in: path
+      required: true
+      description: The listing's `id` (not its slug). A value that is not a UUID is `404 LISTING_NOT_FOUND`.
+      schema: { type: string, format: uuid }
     IfNoneMatch:
       name: If-None-Match
       in: header
@@ -5543,6 +6252,21 @@ components:
       headers:
         X-Request-Id:
           $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    ListingNotFound:
+      description: "`LISTING_NOT_FOUND`: no such listing, or it belongs to someone else (the same answer)."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    ListingStateConflict:
+      description: |
+        `LISTING_STATE_CONFLICT` (the status does not allow this), `LISTING_IN_REVIEW` (the
+        listing or its changes wait for review) or `LISTING_CHANGED` (changed by someone else
+        at the same time: reload and retry).
       content:
         application/json:
           schema:
@@ -5707,19 +6431,300 @@ components:
 
     Photo:
       type: object
-      required: [url, alt, width, height]
+      required: [url, alt, width, height, variants]
       additionalProperties: false
       properties:
         url:
           type: string
           description: |
-            Today a site-relative path served by the web app (`/assets/images/<file>.jpg`),
-            returned exactly as stored. Object storage and uploads are not built; when they are,
-            this becomes an absolute URL.
-          examples: [/assets/images/listing-house-borrowdale.jpg]
+            The largest size. A bundled sample image is a site-relative path served by the web
+            app (`/assets/images/<file>.jpg`), returned exactly as stored. **Since 0.22.0** an
+            uploaded photo is an API path, `/v1/listing-photos/{id}/large?v=<version>`, relative
+            to the API origin like `Logo.url` (prefix the API base URL); it may be cached for a
+            year. Only approved photos of public listings appear here.
+          examples: [/assets/images/listing-house-borrowdale.jpg, "/v1/listing-photos/0b7c2f4e-1d5a-4c1e-9f0e-2a6d3c4b5e6f/large?v=3f2a9c0d1b7e"]
         alt: { type: string }
-        width: { type: integer, minimum: 1, description: Pixel width of the image file. }
+        width: { type: integer, minimum: 1, description: Pixel width of the image (the largest size). }
         height: { type: integer, minimum: 1 }
+        variants:
+          type: array
+          description: New in 0.22.0. Every stored size of an uploaded photo, widest first (at most 2048, 1280 and 640 wide); empty for a bundled sample image.
+          items: { $ref: "#/components/schemas/PhotoVariant" }
+
+    PhotoVariant:
+      type: object
+      description: New in 0.22.0. One stored size of an uploaded photo, for a `srcset`.
+      required: [width, height, url]
+      additionalProperties: false
+      properties:
+        width: { type: integer, minimum: 1 }
+        height: { type: integer, minimum: 1 }
+        url: { type: string, examples: ["/v1/listing-photos/0b7c.../small?v=3f2a9c0d1b7e"] }
+
+    ListingStatus:
+      type: string
+      description: |
+        A listing's status. `CHANGES_REQUESTED`, `REJECTED` and `ARCHIVED` are new in 0.22.0.
+        To its managers a `PUBLISHED` listing past its publication period is `EXPIRED`.
+      enum: [DRAFT, PENDING_REVIEW, CHANGES_REQUESTED, REJECTED, PUBLISHED, EXPIRED, ARCHIVED, PAUSED, SOLD, LET, CLOSED]
+
+    ListingContentPatch:
+      type: object
+      description: |
+        New in 0.22.0. The editable fields of a listing; every key is optional and `null`
+        clears it. Codes are reference-data codes (`GET /v1/reference/{set}`): `deal`
+        (`deal_types`), `category` (`property_categories`), `property_type` (`property_types`),
+        `city` / `suburb` (`cities` / `suburbs`), `features` (`listing_features`). `featured`
+        is not editable by an advertiser.
+      additionalProperties: false
+      properties:
+        title: { type: [string, "null"], maxLength: 120, description: "Plain text, one line. A submission needs at least 5 characters." }
+        summary: { type: [string, "null"], maxLength: 300, description: Plain text, one line. }
+        description: { type: [string, "null"], maxLength: 8000, description: "Plain text (line breaks allowed, no HTML). A submission needs at least 30 characters." }
+        deal: { type: [string, "null"], examples: [sale] }
+        category: { type: [string, "null"], examples: [residential] }
+        property_type: { type: [string, "null"], examples: [house] }
+        price:
+          type: [object, "null"]
+          additionalProperties: false
+          properties:
+            amount: { type: [string, "null"], description: "A decimal amount with at most two decimal places, such as 385000 or 950.50.", examples: ["385000"] }
+            currency: { type: string, pattern: "^[A-Z]{3}$", description: "ISO 4217; the currency of a country (`GET /v1/countries`)." }
+        price_period: { type: [string, "null"], enum: [month, night, null], description: "`month` or `night` for a rental (night only for a short stay); null for a sale." }
+        country: { type: string, pattern: "^[A-Za-z]{2}$", description: "Required. Cannot change once the listing has been published." }
+        city: { type: [string, "null"], description: "A `cities` code of the country, where it has any." }
+        suburb: { type: [string, "null"], description: "A `suburbs` code of the city." }
+        city_name: { type: [string, "null"], maxLength: 80, description: "Free text, only in a country without reference cities." }
+        region_name: { type: [string, "null"], maxLength: 80, description: "Free text, with `city_name` only." }
+        bedrooms: { type: [integer, "null"], minimum: 0, maximum: 50 }
+        bathrooms: { type: [integer, "null"], minimum: 0, maximum: 50 }
+        floor_area: { type: [integer, "null"], minimum: 0, description: Square metres. }
+        land_area: { type: [integer, "null"], minimum: 0, description: Square metres. }
+        features: { type: [array, "null"], maxItems: 30, items: { type: string } }
+        max_guests: { type: [integer, "null"], minimum: 1, maximum: 100, description: Short stays only; required to submit one. }
+        min_nights: { type: [integer, "null"], minimum: 1, maximum: 365, description: Short stays only. }
+
+    ListingContent:
+      type: object
+      description: New in 0.22.0. The content in the shape a PATCH sends it back (codes, not labels).
+      required: [title, summary, description, deal, category, property_type, price, price_period, country, city, suburb,
+                 city_name, region_name, bedrooms, bathrooms, floor_area, land_area, features, max_guests, min_nights]
+      properties:
+        title: { type: string }
+        summary: { type: string }
+        description: { type: string }
+        deal: { type: [string, "null"] }
+        category: { type: [string, "null"] }
+        property_type: { type: [string, "null"] }
+        price:
+          type: object
+          required: [amount, currency]
+          properties:
+            amount: { type: [string, "null"] }
+            currency: { type: [string, "null"] }
+        price_period: { type: [string, "null"] }
+        country: { type: [string, "null"] }
+        city: { type: [string, "null"] }
+        suburb: { type: [string, "null"] }
+        city_name: { type: [string, "null"] }
+        region_name: { type: [string, "null"] }
+        bedrooms: { type: [integer, "null"] }
+        bathrooms: { type: [integer, "null"] }
+        floor_area: { type: [integer, "null"] }
+        land_area: { type: [integer, "null"] }
+        features: { type: array, items: { type: string } }
+        max_guests: { type: [integer, "null"] }
+        min_nights: { type: [integer, "null"] }
+
+    ManagedPhoto:
+      type: object
+      description: New in 0.22.0. A photo as its managers and reviewers see it.
+      required: [id, position, alt, width, height, status, url, variants, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        position: { type: integer, minimum: 0 }
+        alt: { type: string, description: "The description; for a public photo of a published listing, the pending one if it changed." }
+        width: { type: integer }
+        height: { type: integer }
+        status: { type: string, enum: [APPROVED, PENDING_REVIEW] }
+        url: { type: string, description: "The large size: `/v1/listing-photos/{id}/large?v=...` for an upload, `/assets/images/...` for a bundled sample." }
+        variants:
+          type: array
+          items:
+            type: object
+            required: [size, width, height, url]
+            properties:
+              size: { type: string, enum: [large, medium, small] }
+              width: { type: integer }
+              height: { type: integer }
+              url: { type: string }
+        created_at: { type: string, format: date-time }
+
+    ListingTimelineEntry:
+      type: object
+      required: [action, from_status, to_status, review_kind, reason, actor, at]
+      properties:
+        action: { type: string, enum: [CREATED, SUBMITTED, APPROVED, CHANGES_REQUESTED, REJECTED, ARCHIVED, RELISTED] }
+        from_status: { type: [string, "null"] }
+        to_status: { type: [string, "null"] }
+        review_kind: { type: [string, "null"], enum: [NEW, EDIT, null] }
+        reason: { type: [string, "null"] }
+        actor: { type: string, enum: [ADVERTISER, REVIEWER] }
+        at: { type: string, format: date-time }
+        actor_user_id: { type: string, format: uuid, description: Reviewers' view only. }
+
+    ManagedListing:
+      type: object
+      description: New in 0.22.0. A listing as its managers see it (`GET /v1/me/listings/{id}`).
+      required: [id, slug, reference, status, status_label, public, review, pending_changes, content, photos, photo_limit,
+                 completeness, owner, advertiser, can_edit, actions, published_at, expires_at, created_at, updated_at, timeline]
+      properties:
+        id: { type: string, format: uuid }
+        slug: { type: string }
+        reference: { type: string, examples: [RP-ZW-482913] }
+        status: { $ref: "#/components/schemas/ListingStatus" }
+        status_label: { type: string, examples: ["Pending review"] }
+        public: { type: boolean, description: True while the public sees the listing. }
+        review:
+          type: object
+          required: [submitted_at, reviewed_at, reason]
+          properties:
+            submitted_at: { type: [string, "null"], format: date-time }
+            reviewed_at: { type: [string, "null"], format: date-time, description: The last approval. }
+            reason: { type: [string, "null"], description: The reviewer's reason of a request for changes or a rejection of the listing. }
+        pending_changes:
+          type: [object, "null"]
+          description: The changes of a PUBLISHED listing that are not public yet; null when there are none.
+          required: [status, status_label, reason, submitted_at, updated_at, new_photos]
+          properties:
+            status: { type: string, enum: [EDITING, PENDING_REVIEW, CHANGES_REQUESTED, REJECTED] }
+            status_label: { type: string }
+            reason: { type: [string, "null"] }
+            submitted_at: { type: [string, "null"], format: date-time }
+            updated_at: { type: string, format: date-time }
+            new_photos: { type: integer }
+        content: { $ref: "#/components/schemas/ListingContent" }
+        photos: { type: array, maxItems: 20, items: { $ref: "#/components/schemas/ManagedPhoto" } }
+        photo_limit: { type: integer, const: 20 }
+        completeness:
+          type: object
+          required: [ready, missing]
+          properties:
+            ready: { type: boolean, description: True when the listing can be submitted. }
+            missing:
+              type: array
+              items:
+                type: object
+                required: [field, message]
+                properties:
+                  field: { type: string, examples: [photos] }
+                  message: { type: string, examples: ["Describe every photo (alternative text)."] }
+        owner:
+          type: object
+          required: [type, organisation_id, agent_user_id]
+          properties:
+            type: { type: string, enum: [organisation, direct_owner] }
+            organisation_id: { type: [string, "null"], format: uuid }
+            agent_user_id: { type: [string, "null"], format: uuid }
+        advertiser: { $ref: "#/components/schemas/ListingAdvertiser" }
+        can_edit: { type: boolean }
+        actions:
+          type: array
+          description: What the caller may do now.
+          items: { type: string, enum: [edit, submit, archive, relist, delete] }
+        published_at: { type: [string, "null"], format: date-time }
+        expires_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        timeline: { type: array, items: { $ref: "#/components/schemas/ListingTimelineEntry" } }
+
+    ManagedListingEnvelope:
+      type: object
+      required: [listing]
+      properties:
+        listing: { $ref: "#/components/schemas/ManagedListing" }
+
+    AdminListing:
+      allOf:
+        - $ref: "#/components/schemas/ManagedListing"
+        - type: object
+          required: [review_kind, live, changes, photo_changes, decisions]
+          properties:
+            review_kind: { type: [string, "null"], enum: [NEW, EDIT, null] }
+            live:
+              description: The public content while an edit waits (EDIT); null otherwise.
+              oneOf:
+                - $ref: "#/components/schemas/ListingContent"
+                - type: "null"
+            changes:
+              type: array
+              items:
+                type: object
+                required: [field, before, after]
+                properties:
+                  field: { type: string, examples: [title] }
+                  before: {}
+                  after: {}
+            photo_changes:
+              type: object
+              required: [added, alt_changed]
+              properties:
+                added: { type: integer }
+                alt_changed: { type: integer }
+            decisions:
+              type: array
+              items: { type: string, enum: [approve, request_changes, reject] }
+
+    AdminListingEnvelope:
+      type: object
+      required: [listing]
+      properties:
+        listing: { $ref: "#/components/schemas/AdminListing" }
+
+    ReviewReason:
+      type: object
+      required: [reason]
+      additionalProperties: false
+      properties:
+        reason: { type: string, minLength: 1, maxLength: 1000, description: "Plain text, shown to the advertiser and emailed to them." }
+
+    ListingQueuePage:
+      type: object
+      required: [items, page, page_size, total, total_pages]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [id, reference, title, status, revision_status, review_kind, country, submitted_at, updated_at, advertiser, photo_count, pending_photo_count]
+            properties:
+              id: { type: string, format: uuid }
+              reference: { type: string }
+              title: { type: string, description: The proposed title. }
+              status: { $ref: "#/components/schemas/ListingStatus" }
+              revision_status: { type: [string, "null"] }
+              review_kind: { type: [string, "null"], enum: [NEW, EDIT, null] }
+              country:
+                type: object
+                required: [code, name]
+                properties:
+                  code: { type: string }
+                  name: { type: string }
+              submitted_at: { type: [string, "null"], format: date-time }
+              updated_at: { type: string, format: date-time }
+              advertiser:
+                type: object
+                required: [type, name, verified]
+                properties:
+                  type: { type: string, enum: [agency, private_seller] }
+                  name: { type: string }
+                  verified: { type: boolean }
+              photo_count: { type: integer }
+              pending_photo_count: { type: integer }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer }
+        total_pages: { type: integer }
 
     Logo:
       type: object

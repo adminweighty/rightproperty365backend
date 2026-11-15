@@ -95,6 +95,9 @@ func run() error {
 	handlers.SetAppointmentSource(appointments.NewPostgresStore(pool).Get)
 
 	listingStore := listings.NewPostgresStore(pool)
+	// Listing review emails (approved, changes requested, rejected) read the
+	// listing at send time.
+	handlers.SetListingSource(app.ListingRecord(listingStore))
 	handlers.SetListingLookup(func(ctx context.Context, id uuid.UUID) (string, string, bool) {
 		records, err := listingStore.ByIDs(ctx, []uuid.UUID{id})
 		if err != nil || len(records) == 0 {

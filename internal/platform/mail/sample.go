@@ -80,6 +80,17 @@ func SampleData(name string) Data {
 			d.Path, d.StatusText, d.WithName = "/account/appointments", "Cancelled", "Tendai Ncube"
 			d.Reason = "The property is no longer available for viewing on that day."
 		}
+	case "listing-approved":
+		d.Name, d.Path, d.StatusText = "Tendai Ncube", "/agent/listings", "Published"
+		d.ListingTitle, d.ListingRef, d.ExpiresOn = "Four-bedroom family home with garden", "RP-ZW-482913", sampleTime.AddDate(0, 0, 90)
+	case "listing-changes-requested":
+		d.Name, d.Path, d.StatusText = "Tendai Ncube", "/agent/listings", "Changes requested"
+		d.ListingTitle, d.ListingRef = "Four-bedroom family home with garden", "RP-ZW-482913"
+		d.Reason = "The second photo shows a different property. Please replace it and describe every photo."
+	case "listing-rejected":
+		d.Name, d.Path, d.StatusText = "Tendai Ncube", "/agent/listings", "Rejected"
+		d.ListingTitle, d.ListingRef = "Four-bedroom family home with garden", "RP-ZW-482913"
+		d.Reason = "The same property is already listed by your agency (RP-ZW-10001)."
 	case "request-update":
 		d.Path, d.Reference, d.StatusText = "/account", "RP-7K2M9Q4D", "The agent has replied"
 	case "listing-expiring":

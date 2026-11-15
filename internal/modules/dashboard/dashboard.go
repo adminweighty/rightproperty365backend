@@ -386,17 +386,23 @@ func (h *Handler) professional(ctx context.Context, p *auth.Principal, d *Dashbo
 			return err
 		}
 		d.Counters = append(d.Counters, Counter{Key: "listings.total", Label: "Listings", Value: counts.Total, Group: GroupListings, Target: target(TargetListings)})
-		statuses := []string{"PUBLISHED"}
+		// PUBLISHED and the review statuses always, then any other status
+		// the caller has listings in.
+		fixed := []string{"PUBLISHED", "DRAFT", "PENDING_REVIEW", "CHANGES_REQUESTED"}
+		statuses := append([]string{}, fixed...)
 		for status := range counts.ByStatus {
 			if !slices.Contains(statuses, status) {
 				statuses = append(statuses, status)
 			}
 		}
-		slices.Sort(statuses[1:])
+		slices.Sort(statuses[len(fixed):])
 		for _, status := range statuses {
 			d.Counters = append(d.Counters, Counter{
 				Key: "listings.status." + status, Label: listingStatusLabel(status), Value: counts.ByStatus[status], Group: GroupListings, Target: target(TargetListings),
 			})
+		}
+		if n := counts.ByStatus["CHANGES_REQUESTED"]; n > 0 {
+			d.NextActions = append(d.NextActions, Action{Code: "UPDATE_LISTINGS_FOR_REVIEW", Text: plural(n, "listing needs changes before it can be published", "listings need changes before they can be published"), Target: TargetListings, Count: count(n)})
 		}
 		if counts.ShortStays > 0 {
 			d.Counters = append(d.Counters, Counter{Key: "short_stays.calendar_stale", Label: "Short stays needing a calendar update", Value: counts.StaleCalendars, Group: GroupListings, Target: target(TargetListings)})

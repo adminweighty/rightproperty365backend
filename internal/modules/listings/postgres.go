@@ -2,7 +2,6 @@ package listings
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math/big"
 	"strings"
@@ -47,14 +46,15 @@ const publicCondition = publishedCondition + ` AND ` + advertiserVerifiedConditi
 
 const recordColumns = `
 	l.id, l.slug, COALESCE(l.reference, ''), l.title, COALESCE(l.deal, ''), COALESCE(l.category, ''), COALESCE(l.property_type, ''),
-	l.price_amount::text, l.currency_code, COALESCE(l.price_period, ''), COALESCE(l.suburb_code, ''), COALESCE(l.city_code, ''), m.code,
+	COALESCE(l.price_amount::text, ''), l.currency_code, COALESCE(l.price_period, ''), COALESCE(l.suburb_code, ''), COALESCE(l.city_code, ''), m.code,
 	l.bedrooms, l.bathrooms, l.floor_area_m2, l.land_area_m2, l.max_guests, l.min_nights, COALESCE(l.summary, ''), COALESCE(l.description, ''), l.featured,
 	l.status::text, l.published_at, l.expires_at, l.updated_at, l.organisation_id, l.agent_user_id, l.seller_user_id,
 	COALESCE(l.private_seller_name, '` + DefaultSellerName + `'), COALESCE(l.city_name, ''), COALESCE(l.region_name, ''),
 	ag.kind, ag.slug, ag.name, ag.verified, at.slug, at.name, at.verified,
 	COALESCE((SELECT array_agg(f.feature_code ORDER BY f.position) FROM listing_features f WHERE f.listing_id = l.id), '{}'),
-	COALESCE((SELECT jsonb_agg(jsonb_build_object('url', p.url, 'alt', p.alt, 'width', p.width, 'height', p.height) ORDER BY p.position)
-	          FROM listing_photos p WHERE p.listing_id = l.id), '[]'::jsonb)::text,
+	COALESCE((SELECT jsonb_agg(jsonb_build_object('id', p.id, 'url', p.url, 'alt', p.alt, 'width', p.width, 'height', p.height,
+	                                              'checksum', p.checksum, 'variants', p.variants) ORDER BY p.position, p.created_at)
+	          FROM listing_photos p WHERE p.listing_id = l.id AND p.approved_at IS NOT NULL), '[]'::jsonb)::text,
 	o.name, COALESCE(o.kind::text, ''), COALESCE(o.status = 'ACTIVE', false),
 	ag.verified_at, COALESCE(ag.logo_checksum, ''), COALESCE(ag.logo_width, 0), COALESCE(ag.logo_height, 0),
 	COALESCE(at.specialism, ''), COALESCE(at.logo_checksum, ''), COALESCE(at.logo_width, 0), COALESCE(at.logo_height, 0),
@@ -101,8 +101,9 @@ func scanRecord(row pgx.CollectableRow) (Record, error) {
 		orgActive                          bool
 		agVerifiedAt, ownerApprovedAt      *time.Time
 		agWidth, agHeight, atWidth, atHigh int
+		err                                error
 	)
-	if err := row.Scan(&r.ID, &r.Slug, &r.Reference, &r.Title, &r.Deal, &r.Category, &r.PropertyType,
+	if err = row.Scan(&r.ID, &r.Slug, &r.Reference, &r.Title, &r.Deal, &r.Category, &r.PropertyType,
 		&priceText, &r.Price.Currency, &r.PricePeriod, &r.Suburb, &r.City, &r.MarketCode,
 		&r.Bedrooms, &r.Bathrooms, &r.FloorArea, &r.LandArea, &r.MaxGuests, &r.MinNights, &r.Summary, &r.Description, &r.Featured,
 		&r.Status, &publishedAt, &expiresAt, &r.UpdatedAt, &r.OrganisationID, &r.AgentUserID, &r.SellerUserID,
@@ -111,7 +112,7 @@ func scanRecord(row pgx.CollectableRow) (Record, error) {
 		&atSpecialism, &atChecksum, &atWidth, &atHigh, &ownerName, &ownerApprovedAt, &r.ReviewedAt, &r.ReviewedBy); err != nil {
 		return Record{}, err
 	}
-	if v, ok := new(big.Rat).SetString(priceText); ok {
+	if v, ok := new(big.Rat).SetString(priceText); priceText != "" && ok {
 		r.Price.Amount = FormatAmount(v)
 	}
 	if publishedAt != nil {
@@ -120,8 +121,8 @@ func scanRecord(row pgx.CollectableRow) (Record, error) {
 	if expiresAt != nil {
 		r.ExpiresAt = expiresAt.UTC()
 	}
-	if err := json.Unmarshal([]byte(photos), &r.Photos); err != nil {
-		return Record{}, fmt.Errorf("decode photos: %w", err)
+	if r.Photos, err = decodePublicPhotos(photos); err != nil {
+		return Record{}, err
 	}
 	var agent *ProfileRef
 	if atSlug != nil && atNm != nil {
@@ -411,7 +412,7 @@ func where(q Query, now time.Time, skip string) *builder {
 		b.add(`l.max_guests >= %s`, *q.GuestsMin)
 	}
 	if q.HasPhotos {
-		b.conds = append(b.conds, `EXISTS (SELECT 1 FROM listing_photos lp WHERE lp.listing_id = l.id)`)
+		b.conds = append(b.conds, `EXISTS (SELECT 1 FROM listing_photos lp WHERE lp.listing_id = l.id AND lp.approved_at IS NOT NULL)`)
 	}
 	if q.Featured != nil {
 		b.add(`l.featured = %s`, *q.Featured)

@@ -5,6 +5,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -94,6 +95,13 @@ const (
 	UploadRequestsBurst     = 20
 	// Uploads get longer than other requests: 10 MB over a slow connection.
 	uploadTimeout = 2 * time.Minute
+
+	// Per-IP limit on changing listings (create, PATCH, submit, archive,
+	// relist, delete, photo text and order) and on review decisions, its own
+	// bucket: bursts of 60, refilled at 60 per minute. Photo uploads share the
+	// upload bucket.
+	listingChangesPerMinute = 60
+	listingChangesBurst     = 60
 )
 
 // uploadPath matches POST /v1/me/onboarding/{role}/documents and logoPath
@@ -102,14 +110,20 @@ const (
 var (
 	uploadPath = regexp.MustCompile(`^/v1/me/onboarding/[^/]+/documents$`)
 	logoPath   = regexp.MustCompile(`^/v1/me/profiles/[^/]+/[^/]+/logo$`)
+	// photoPath is POST /v1/me/listings/{id}/photos: a listing photo upload.
+	photoPath = regexp.MustCompile(`^/v1/me/listings/[^/]+/photos$`)
 )
+
+func isPhotoUpload(r *http.Request) bool {
+	return r.Method == http.MethodPost && photoPath.MatchString(r.URL.Path)
+}
 
 func isLogoUpload(r *http.Request) bool {
 	return r.Method == http.MethodPut && logoPath.MatchString(r.URL.Path)
 }
 
 func isUpload(r *http.Request) bool {
-	return (r.Method == http.MethodPost && uploadPath.MatchString(r.URL.Path)) || isLogoUpload(r)
+	return (r.Method == http.MethodPost && uploadPath.MatchString(r.URL.Path)) || isLogoUpload(r) || isPhotoUpload(r)
 }
 
 // Deps is everything the router needs.
@@ -183,6 +197,15 @@ func NewRouter(d Deps) (http.Handler, error) {
 	availabilityH := availability.NewHandler(availabilitySvc, logger)
 	calendarLimiter := httpx.NewRateLimiter(calendarChangesPerMinute, calendarChangesBurst)
 	listingsH := listings.NewHandler(listingsSvc, logger)
+	// Listing management: advertisers create and edit their listings and
+	// photos; platform reviewers approve them. Photos are kept in the same
+	// private object storage as the documents and logos.
+	manageStore, ok := d.Listings.(listings.ManageStore)
+	if !ok {
+		return nil, errors.New("app: the listing store does not implement listing management")
+	}
+	manageH := listings.NewManageHandler(listings.NewManager(listingsSvc, manageStore, d.Files, logger), logger)
+	listingLimiter := httpx.NewRateLimiter(listingChangesPerMinute, listingChangesBurst)
 	directorySvc := directory.NewService(d.Directory, vocab, listingsSvc)
 	directorySvc.SetPlaces(geography)
 	// Logos are kept in the object storage and served by the API itself.
@@ -294,6 +317,8 @@ func NewRouter(d Deps) (http.Handler, error) {
 			switch {
 			case isLogoUpload(r):
 				return directory.MaxLogoBodyBytes
+			case isPhotoUpload(r):
+				return listings.MaxPhotoBodyBytes
 			case isUpload(r):
 				return onboarding.MaxUploadBodyBytes
 			}
@@ -343,6 +368,10 @@ func NewRouter(d Deps) (http.Handler, error) {
 		r.Get("/directory/{kind}/{slug}", directoryH.Get)
 		// A public profile's logo: an image, no session, no cookie.
 		r.Get("/directory/{kind}/{slug}/logo", directoryH.Logo)
+		// A listing photo: public (and cacheable for a year with its ?v=) while
+		// the listing and the photo are public; otherwise only for the
+		// listing's managers and reviewers (404 for everyone else).
+		r.Get("/listing-photos/{photoId}/{size}", manageH.Photo)
 		r.Get("/sitemap", directoryH.Sitemap)
 		// How many advertisers are verified and how many listings are public.
 		r.Get("/trust/summary", trustH.Summary)
@@ -390,14 +419,26 @@ func NewRouter(d Deps) (http.Handler, error) {
 			r.Get("/{id}", requestsH.MineOne)
 		})
 
-		// The lister's side: the listings the caller may manage (read-only;
-		// creating and editing listings is not built) and the availability
-		// calendar and stay rules of the short stays among them. The handler
-		// decides who may enter (auth/capabilities.go): 403 for a caller who
-		// manages no listings, 404 for a listing that is not theirs.
+		// The lister's side: the listings the caller may manage, creating and
+		// editing them with their photos and sending them for review, and the
+		// availability calendar and stay rules of the short stays among them.
+		// The handlers decide who may do what (auth/capabilities.go): 403 for a
+		// caller who manages no listings (or may only read this one), 404 for
+		// a listing that is not theirs.
 		r.Route("/me/listings", func(r chi.Router) {
 			r.Use(auth.RequireAuth)
 			r.Get("/", availabilityH.MyListings)
+			r.With(listingLimiter.Middleware).Post("/", manageH.Create)
+			r.Get("/{id}", manageH.Get)
+			r.With(listingLimiter.Middleware).Patch("/{id}", manageH.Patch)
+			r.With(listingLimiter.Middleware).Delete("/{id}", manageH.Delete)
+			r.With(listingLimiter.Middleware).Post("/{id}/submit", manageH.Submit)
+			r.With(listingLimiter.Middleware).Post("/{id}/archive", manageH.Archive)
+			r.With(listingLimiter.Middleware).Post("/{id}/relist", manageH.Relist)
+			r.With(uploadLimiter.Middleware).Post("/{id}/photos", manageH.AddPhoto)
+			r.With(listingLimiter.Middleware).Put("/{id}/photos/order", manageH.OrderPhotos)
+			r.With(listingLimiter.Middleware).Patch("/{id}/photos/{photoId}", manageH.PatchPhoto)
+			r.With(listingLimiter.Middleware).Delete("/{id}/photos/{photoId}", manageH.DeletePhoto)
 			r.Get("/{id}/availability", availabilityH.Calendar)
 			r.With(calendarLimiter.Middleware).Put("/{id}/availability", availabilityH.Change)
 			r.With(calendarLimiter.Middleware).Patch("/{id}/stay-rules", availabilityH.StayRules)
@@ -475,6 +516,18 @@ func NewRouter(d Deps) (http.Handler, error) {
 				r.Post("/{id}/approve", onboardingH.AdminApprove)
 				r.Post("/{id}/reject", onboardingH.AdminReject)
 				r.Post("/{id}/request-changes", onboardingH.AdminRequestChanges)
+			})
+
+			// Reviewing listings: SUPER_ADMIN, PLATFORM_ADMIN, MODERATOR, and
+			// MARKET_ADMIN for its own markets (the service limits it; another
+			// country's listing is 404).
+			r.Route("/listings", func(r chi.Router) {
+				r.Use(auth.RequirePlatformRole(auth.ListingReviewRoles()...))
+				r.Get("/", manageH.AdminList)
+				r.Get("/{id}", manageH.AdminGet)
+				r.With(listingLimiter.Middleware).Post("/{id}/approve", manageH.Approve)
+				r.With(listingLimiter.Middleware).Post("/{id}/request-changes", manageH.RequestChanges)
+				r.With(listingLimiter.Middleware).Post("/{id}/reject", manageH.Reject)
 			})
 
 			// The counts an administrator starts from. Every platform role

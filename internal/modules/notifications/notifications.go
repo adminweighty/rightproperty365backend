@@ -32,6 +32,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/identity"
+	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/onboarding"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/platform/config"
@@ -51,6 +52,8 @@ const (
 	// Where the appointment emails send the professional and the customer.
 	PathAppointmentsInbox = "/agent/appointments"
 	PathMyAppointments    = "/account/appointments"
+	// Where the listing review emails send the advertiser.
+	PathMyListings = "/agent/listings"
 )
 
 // previewLength is the size of the message preview in emails to recipients.
@@ -212,6 +215,66 @@ type Handlers struct {
 	onboarding func(ctx context.Context, applicationID uuid.UUID) (onboarding.NotificationInfo, error)
 	// appointment loads the appointment behind an appointment event.
 	appointment func(ctx context.Context, id uuid.UUID) (appointments.Appointment, error)
+	// listingRecord loads the listing behind a listing review event.
+	listingRecord func(ctx context.Context, id uuid.UUID) (listings.Record, error)
+}
+
+// SetListingSource supplies the listing behind a listing review event (the
+// listing store's record, whatever its status). Without it those events are
+// dead-lettered.
+func (h *Handlers) SetListingSource(source func(ctx context.Context, id uuid.UUID) (listings.Record, error)) {
+	h.listingRecord = source
+}
+
+// listingReviewTemplates maps a review event to its template and status text.
+var listingReviewTemplates = map[string]struct{ template, status string }{
+	listings.EventListingApproved:         {"listing-approved", "Published"},
+	listings.EventListingChangesRequested: {"listing-changes-requested", "Changes requested"},
+	listings.EventListingRejected:         {"listing-rejected", "Rejected"},
+}
+
+// listingReviewNotes builds the email of a listing review decision. It goes
+// to the advertiser only: the listing's assigned agent, else the
+// organisation's owners and managers, or the direct owner. Nobody else.
+func (h *Handlers) listingReviewNotes(ctx context.Context, ev outbox.Event, add func(template, recipient string, to Person, d mail.Data) error) error {
+	if h.listingRecord == nil {
+		return outbox.Permanent(fmt.Errorf("notifications: no listing source for event type %q", ev.Type))
+	}
+	var payload listings.ReviewEventPayload
+	if err := json.Unmarshal(ev.Payload, &payload); err != nil {
+		return outbox.Permanent(fmt.Errorf("notifications: unreadable %s payload: %w", ev.Type, err))
+	}
+	r, err := h.listingRecord(ctx, ev.AggregateID)
+	if errors.Is(err, listings.ErrNotFound) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	var people []Person
+	switch {
+	case r.OrganisationID != nil:
+		people, err = h.source.Recipients(ctx, r.AgentUserID, r.OrganisationID)
+	case r.SellerUserID != nil:
+		people, err = h.source.Recipients(ctx, r.SellerUserID, nil)
+	}
+	if err != nil {
+		return err
+	}
+	t := listingReviewTemplates[ev.Type]
+	d := mail.Data{Path: PathMyListings, ListingTitle: r.Title, ListingRef: r.Reference, StatusText: t.status,
+		Reason: mail.SafePreview(payload.Reason, listings.MaxReasonLength), Edit: payload.ReviewKind == listings.ReviewKindEdit, When: occurredAt(ev)}
+	if ev.Type == listings.EventListingApproved && !d.Edit {
+		d.ExpiresOn = r.ExpiresAt
+	}
+	for _, p := range people {
+		d := d
+		d.Name = p.Name
+		if err := add(t.template, recipientKey(p), p, d); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // SetAppointmentSource supplies the appointment behind an appointment event
@@ -346,7 +409,7 @@ func EventTypes() []string {
 		identity.EventUserEmailVerified,
 		identity.EventPasswordChanged,
 		identity.EventAdminSignedIn,
-	}, onboarding.EventTypes()...), appointments.EventTypes()...)
+	}, onboarding.EventTypes()...), append(appointments.EventTypes(), listings.ReviewEventTypes()...)...)
 }
 
 // PathOnboarding is the web page where an applicant fills in an application.
@@ -557,6 +620,11 @@ func (h *Handlers) build(ctx context.Context, ev outbox.Event) ([]mail.Notificat
 	case appointments.EventRequested, appointments.EventConfirmed, appointments.EventRescheduleRequested,
 		appointments.EventCancelled, appointments.EventCompleted, appointments.EventNoShow, appointments.EventAssigned:
 		if err := h.appointmentNotes(ctx, ev, add); err != nil {
+			return nil, err
+		}
+
+	case listings.EventListingApproved, listings.EventListingChangesRequested, listings.EventListingRejected:
+		if err := h.listingReviewNotes(ctx, ev, add); err != nil {
 			return nil, err
 		}
 

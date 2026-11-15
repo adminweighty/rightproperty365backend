@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
 	"time"
 
@@ -177,6 +178,7 @@ func run() error {
 		})
 		handlers.SetOnboardingSource(app.OnboardingNotifications(memOnboarding, files, referenceStore, logger))
 		handlers.SetAppointmentSource(memAppointments.Get)
+		handlers.SetListingSource(app.ListingRecord(memListings))
 		sink := func(ev outbox.Event) {
 			go func() {
 				hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
@@ -192,6 +194,13 @@ func run() error {
 		memEnquiries.SetOutboxSink(sink)
 		memOnboarding.SetOutboxSink(sink)
 		memAppointments.SetOutboxSink(sink)
+		// The listing store also writes search-index events; without a worker
+		// only the review emails are handled.
+		memListings.SetOutboxSink(func(ev outbox.Event) {
+			if slices.Contains(listings.ReviewEventTypes(), ev.Type) {
+				sink(ev)
+			}
+		})
 		if cfg.DevSeedPassword == "" {
 			logger.Warn("DEV_SEED_PASSWORD is not set: development seed users were NOT created (copy .env.example to .env to get them)")
 		} else {

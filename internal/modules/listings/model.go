@@ -213,12 +213,25 @@ type Money struct {
 	Currency string `json:"currency"`
 }
 
-// Photo is one image of a listing.
+// Photo is one image of a listing. URL, Width and Height are the largest
+// size (what clients read since the first version). For an uploaded photo
+// URL is an API path such as "/v1/listing-photos/{id}/large?v=3f2a9c0d1b7e"
+// (relative to the API origin, like a logo URL) and Variants lists every
+// stored size, widest first, for a srcset; a bundled sample image
+// ("/assets/images/...", served by the web app) has no variants.
 type Photo struct {
-	URL    string `json:"url"`
-	Alt    string `json:"alt"`
+	URL      string         `json:"url"`
+	Alt      string         `json:"alt"`
+	Width    int            `json:"width"`
+	Height   int            `json:"height"`
+	Variants []PhotoVariant `json:"variants"`
+}
+
+// PhotoVariant is one stored size of an uploaded photo.
+type PhotoVariant struct {
 	Width  int    `json:"width"`
 	Height int    `json:"height"`
+	URL    string `json:"url"`
 }
 
 // Logo is the public logo (or, for an agent, photo) of a directory profile.
@@ -501,9 +514,8 @@ type Record struct {
 	AgentUserID    *uuid.UUID
 	SellerUserID   *uuid.UUID
 
-	// ReviewedAt and ReviewedBy record that a platform administrator or
-	// moderator reviewed the listing itself. Only the sample-data seed sets
-	// them today: there is no review workflow yet.
+	// ReviewedAt and ReviewedBy record the last approval of the listing
+	// by a platform reviewer (listing management), or the sample-data seed.
 	ReviewedAt *time.Time
 	ReviewedBy *uuid.UUID
 }
@@ -533,7 +545,10 @@ func (r Record) Public(now time.Time) bool {
 // that saying "no longer available" about it reveals nothing new.
 func (r Record) EverPublished() bool {
 	switch r.Status {
-	case StatusPublished, "EXPIRED", "PAUSED", "SOLD", "LET", "CLOSED":
+	// A listing that waits for review, or was archived, after it was public
+	// (a relist) is "no longer available" too; one that never was public
+	// has no publication time and stays unknown.
+	case StatusPublished, "EXPIRED", "PAUSED", "SOLD", "LET", "CLOSED", StatusArchived, StatusPendingReview, StatusChangesRequested:
 		return !r.PublishedAt.IsZero()
 	}
 	return false

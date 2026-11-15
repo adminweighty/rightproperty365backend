@@ -46,7 +46,7 @@ accounts, 24 listings and 34 directory profiles (the web's 29, three solicitors,
 Kingdom's agency and host). Listing IDs are
 `0195c0de-0000-7000-8000-000000000001` … `…000000000018`: the web's 18 **PUBLISHED** listings in
 market ZW, each with an organisation **and** a named assigned agent, or a direct seller. Listing
-`…000000000099` is **EXPIRED** (requests get `410`).
+`…000000000099` is **EXPIRED** (requests get `410`). Two more are not public: the sample `DRAFT` and `PENDING_REVIEW` listings of "Listing management" (`…00000000e101`, `…00000000e102`).
 
 Six more PUBLISHED listings exist only on the backend (`internal/devseed/backend_samples.go`;
 the web's sample files do not have them):
@@ -279,7 +279,12 @@ All configuration comes from environment variables. For local development you ma
 | GET, POST | `/v1/inbox/appointments`, `/{id}`, `/{id}/confirm`, `/reschedule`, `/cancel`, `/complete`, `/no-show`, `/assign` | Appointments received by a professional (list, calendar and actions) |
 | GET | `/v1/inbox/summary` | Badge counts: new requests, new enquiries, appointments |
 | GET | `/v1/listings/{slug}/availability` | A short stay's calendar as the public sees it: available or not per night |
-| GET | `/v1/me/listings` | The listings the caller may manage (read-only summaries) |
+| GET | `/v1/me/listings` | The listings the caller may manage (summaries) |
+| POST, GET, PATCH, DELETE | `/v1/me/listings`, `/v1/me/listings/{id}` | Create a draft, read, edit, delete a listing (see "Listing management") |
+| POST | `/v1/me/listings/{id}/submit`, `/archive`, `/relist` | Send for review, withdraw, bring back |
+| POST, PUT, PATCH, DELETE | `/v1/me/listings/{id}/photos`, `/photos/order`, `/photos/{photoId}` | Upload (at most 20), order, describe and delete photos |
+| GET | `/v1/listing-photos/{photoId}/{size}` | A listing photo: public while the listing is, else managers and reviewers only |
+| GET, POST | `/v1/admin/listings`, `/{id}`, `/{id}/approve`, `/request-changes`, `/reject` | Listing review queue and decisions |
 | GET, PUT | `/v1/me/listings/{id}/availability` | The lister's calendar of a short stay: read it, mark nights available, blocked or booked |
 | PATCH | `/v1/me/listings/{id}/stay-rules` | A short stay's `min_nights` and `max_guests` |
 
@@ -700,7 +705,7 @@ holds.** A guest *asks* to stay; the lister answers and marks the nights themsel
 
 | Method | Path | Who | What |
 | --- | --- | --- | --- |
-| GET | `/v1/me/listings?category=&status=&page=&page_size=` | lister | The listings the caller may manage, as summaries. **Read-only: creating and editing listings is still not built** |
+| GET | `/v1/me/listings?category=&status=&page=&page_size=` | lister | The listings the caller may manage, as summaries. Creating and editing them: see "Listing management" (0.22.0) |
 | GET | `/v1/me/listings/{id}/availability?from=&to=` | lister | The calendar with reasons, notes and the stored ranges (default today .. +90 days; at most 366 nights) |
 | PUT | `/v1/me/listings/{id}/availability` | lister | `{"changes":[{"from","to","status":"AVAILABLE"\|"BLOCKED"\|"BOOKED","note"?}]}`: 1–50 changes, applied in order, atomically |
 | PATCH | `/v1/me/listings/{id}/stay-rules` | lister | `{min_nights?, max_guests?}` (1–365 / 1–50) |
@@ -844,9 +849,10 @@ re-checks status and expiry, so an index that is behind cannot bring back an exp
   verified, sponsored, since, `agency` (for agents), `listing_count`; the detail adds an agency's
   `agents` and the profile's public `listings`. `logo` is `{url, width, height}` or null (see
   "Logos").
-- **Photos are not uploaded anywhere.** `photos[].url` is a site-relative path
+- **Photos.** The sample listings' `photos[].url` is a site-relative path
   (`/assets/images/<file>.jpg`) naming the web app's own sample image files, returned exactly as
-  stored. **Object storage (MinIO) and uploads are not built.**
+  stored. Since 0.22.0 advertisers upload photos (see "Listing management"); an uploaded photo's
+  `url` is an API path, and every photo has `variants` (empty for the sample images).
 
 The dev seed (memory store and `cmd/seed`) holds the web's 18 listings and 29 profiles with their
 real titles, prices, descriptions, features, photos, slugs and references
@@ -907,13 +913,10 @@ generated_at}`. `listings_from_verified_advertisers` is counted on its own and e
 
 ### What is NOT true yet: read before writing "all listings are verified"
 
-- **The listing itself is not reviewed.** `listing_reviewed` exists (`listings.reviewed_at`,
-  `reviewed_by`) but **only the sample-data seed sets it**: there are still no endpoints to
-  create, submit, review or publish a listing. The **listing moderation workflow** (an advertiser
-  submits -> `PENDING_REVIEW` -> a Moderator approves or rejects with a reason, with an audit
-  trail) is specified and not built. Until it exists, **the only verified claim that is enforced
-  end to end is ADVERTISER verification**. A real listing created by any future endpoint will say
-  `listing_reviewed: false` until that workflow sets it.
+- **Listings are reviewed since 0.22.0.** A listing created by an advertiser is public only
+  after a reviewer approved it, and so are its photos and every later change (see "Listing
+  management"); approvals set `listings.reviewed_at` / `reviewed_by` (`listing_reviewed`). The
+  sample listings count as reviewed by the seed. Logos are still not reviewed.
 - **No administrator endpoint to unverify or re-verify.** Requested and **not started**:
   `POST /v1/admin/organisations/{id}/unverify` / `verify` and
   `POST /v1/admin/users/{id}/roles/{role}/suspend` / `reinstate`, with a required reason, an
@@ -1042,6 +1045,179 @@ uploads it, with no review); EXIF / metadata stripping for images that are not s
 one is encoded again, which drops its metadata and any colour profile);
 a CDN or any cache in front of the API; cleaning up the old object if deleting it fails (it is
 logged); malware scanning (as for the documents).
+
+## Listing management: advertisers' listings, photos and review (API 0.22.0)
+
+> "Listings by advertisers: max of 20 photos per property." (the project owner)
+
+Advertisers create and edit their own listings, with up to **20 photos each**, and platform
+reviewers approve them before they are public. Code: `internal/modules/listings/manage_*.go`
+and `photos.go`; rules in `internal/platform/auth/capabilities.go`; migration `0020`.
+
+| Method | Path | What |
+| --- | --- | --- |
+| POST | `/v1/me/listings` | Create a `DRAFT` (any editable field, plus `organisation_id` / `as_direct_owner`) |
+| GET, PATCH, DELETE | `/v1/me/listings/{id}` | The full editable record; partial update; delete a never-published listing |
+| POST | `/v1/me/listings/{id}/submit`, `/archive`, `/relist` | Send for review; withdraw; bring back (renew) |
+| POST | `/v1/me/listings/{id}/photos` | Upload one photo (multipart `file`) |
+| PUT | `/v1/me/listings/{id}/photos/order` | `{"photo_ids": [...]}`, every photo once |
+| PATCH, DELETE | `/v1/me/listings/{id}/photos/{photoId}` | `{"alt": "..."}`; delete (and its files) |
+| GET | `/v1/listing-photos/{photoId}/{size}` | The image (`large`, `medium`, `small`) |
+| GET | `/v1/admin/listings`, `/v1/admin/listings/{id}` | Review queue (`status`, `kind`, `country`, `q`, paged) and one listing |
+| POST | `/v1/admin/listings/{id}/approve`, `/request-changes`, `/reject` | Decide (`{"reason"}` required for the last two) |
+
+### Who may (auth/capabilities.go)
+
+| Caller | Create | See | Change (content, photos, submit, archive, relist, delete) |
+| --- | --- | --- | --- |
+| OWNER, MANAGER of an agency, law firm, property manager, developer or host | yes, for the organisation (no agent) | every listing of the organisation | every listing of the organisation |
+| AGENT of such an organisation | yes, becomes its agent | every listing of the organisation (as `GET /v1/me/listings`) | only the listings they are the agent of (`can_edit: false` on the others, `403` if tried) |
+| STAFF | no (`403`) | no (`403` for the organisation's listings) | no |
+| Approved landlord or property seller | yes, for themselves | their own | their own |
+| Seeker, professional whose verification is pending, service provider | no (`403`) | no (`404`) | no |
+| Another organisation | - | `404 LISTING_NOT_FOUND`, the same as an unknown listing | `404` |
+
+Creating follows `MayManageListings`, which is `can_manage_listings` of `GET /v1/me/dashboard`,
+so the two always agree. A membership only exists once an onboarding application was approved,
+so "verified professional" is enforced by having a membership; the public rule (the
+organisation's own profile verified) still decides whether a listing is shown.
+
+**Reviewers:** an admin-scope session with SUPER_ADMIN, PLATFORM_ADMIN or MODERATOR (every
+country) or MARKET_ADMIN (its own countries; another country's listing is `404`). The overview's
+listings section now uses the same function (`Principal.ListingReviewMarkets`).
+
+### Lifecycle
+
+```
+DRAFT ──submit──> PENDING_REVIEW ──approve──> PUBLISHED ──(90 days)──> EXPIRED (at query time)
+                       │  └──request changes (reason)──> CHANGES_REQUESTED ──edit, submit──> PENDING_REVIEW
+                       └──reject (reason)──> REJECTED (final: delete only)
+DRAFT | PENDING_REVIEW | CHANGES_REQUESTED | PUBLISHED | EXPIRED | PAUSED ──archive──> ARCHIVED
+ARCHIVED | EXPIRED ──relist──> PENDING_REVIEW (published before; a new 90-day period on approval)
+                            └─> DRAFT (never published)
+```
+
+- The statuses that existed (`DRAFT`, `PENDING_REVIEW`, `PUBLISHED`, `EXPIRED`, `PAUSED`, `SOLD`,
+  `LET`, `CLOSED`) are reused; `CHANGES_REQUESTED`, `REJECTED` and `ARCHIVED` are added to the
+  enum. `EXPIRED` stays what it was: a `PUBLISHED` listing past `expires_at` is expired at query
+  time (shown as `EXPIRED` to its managers); nothing rewrites the status.
+- **Editing a published listing (the design chosen).** The listing stays `PUBLISHED` with its
+  approved content. The advertiser's changes go into a **revision** (`listings.revision`,
+  `pending_changes` in the JSON: `EDITING` -> submit -> `PENDING_REVIEW` -> approved (written
+  onto the listing; dates unchanged), `CHANGES_REQUESTED`, or `REJECTED` (dropped, with the new
+  photos and their files)). New photos are `PENDING_REVIEW` and not public until the approval; a
+  new description of a public photo waits with the revision. Two things apply at once because
+  they publish nothing new: **reordering** photos and **deleting** a photo (the last public
+  photo of a published listing cannot be deleted, `409 PHOTO_REQUIRED`). The country of a
+  published listing cannot change. Archiving or relisting a published listing writes its
+  revision onto it (it is not public then) for the next review.
+- **Submit** needs a complete listing (`completeness` in every response): title (5+ characters),
+  description (30+), deal, category, property type, a price above 0 and its currency, the rental
+  period, the country and the city (a code where the country has reference cities, else free
+  text), `max_guests` for a short stay, **at least one photo** (one rather than three: small
+  advertisers and land plots must not be blocked) and a description for every photo.
+  `422 LISTING_INCOMPLETE` lists the missing fields.
+- `DELETE` only for a listing that was never published (any status); otherwise archive it.
+- A listing waiting for review, or a rejected one, cannot be changed (`409 LISTING_IN_REVIEW`,
+  `409 LISTING_STATE_CONFLICT`). Two writers at the same moment: the second gets
+  `409 LISTING_CHANGED` (every write is checked against the `updated_at` it was based on).
+- Slug and reference are generated: `RP-<country>-<6 digits>`, slug `<title>-<country>-<digits>`.
+  The slug follows the title until the first publication, then never changes.
+- Every step is a row of `listing_timeline` (immutable, like `appointment_timeline`) and an
+  audit log line; approvals set `reviewed_at` / `reviewed_by`, so `listing_reviewed` is now true
+  for real listings too. Public answers: an archived listing that was public, and one waiting
+  for review after a relist, are `410`; a listing that was never public stays `404`.
+
+### Validation of the fields
+
+Every save is checked against the reference data (`deal_types`, `property_categories`,
+`property_types`, `cities`, `suburbs`, `listing_features`, the countries and their currencies),
+the free-text place rules of "Places" and the consistency the database enforces (a short stay is
+`rent` per `night`; only a short stay has `max_guests` / `min_nights`; a sale has no period; a
+city code and free text never together; a suburb belongs to its city). So that a form can be
+saved one field at a time, a field the PATCH does not set itself follows the one it does (a short
+stay becomes `rent` / `night`; a new country clears the old country's places; and so on, see the
+PATCH operation). Text is plain (no HTML, no control characters); a price has at most two
+decimals.
+
+### Photos
+
+- **Limit: 20 per listing.** The 21st upload is `409 PHOTO_LIMIT_REACHED`, "A property can have
+  up to 20 photos." It is checked before the image is processed and again, atomically, when the
+  photo is added (the Postgres store locks the listing row).
+- **Accepted:** JPEG, PNG and **WebP** (decoded with the standard library and
+  `golang.org/x/image/webp`), decided by the bytes; SVG, GIF, animated PNG and anything that does
+  not decode are `415 UNSUPPORTED_FILE_TYPE`. At most **15 MB** (`413 FILE_TOO_LARGE`). At least
+  **800 pixels** on the longer side, at most 10000x10000 and 40 megapixels (checked on the header
+  before decoding; `400 VALIDATION_FAILED` on `file`).
+- **Stored:** the EXIF orientation of a JPEG is applied, transparency is flattened onto white, and
+  three new JPEGs (quality 82) are written: `large` (longer side at most 2048), `medium` (at most
+  1280 wide), `small` (at most 640 wide); never enlarged. Encoding again drops every piece of
+  metadata (EXIF, GPS, colour profile). Keys `listingphotos/<32 hex>` in the same **private**
+  object storage as the documents and logos (Amazon S3 in staging and production); no storage
+  URL ever leaves the API. Deleting a photo, a listing or a rejected revision deletes the files
+  (a failure is logged, as for logos).
+- **Served** by `GET /v1/listing-photos/{photoId}/{size}?v=<12 hex of the checksum>`: to anyone
+  while the listing is public and the photo approved (`Cache-Control: public, max-age=31536000,
+  immutable` with the current `v`, five minutes without), otherwise only to the listing's
+  managers and its reviewers (`private, no-store`) and `404 PHOTO_NOT_FOUND` to everyone else.
+  Like logos, the URL is relative to the API origin. An `<img>` on the web's origin does not send
+  the API session, so the editor shows a photo that is not public yet by fetching it with
+  credentials (or the bearer token) and displaying the blob.
+- **Public JSON (compatible).** `Listing.photos[]` keeps `url`, `alt`, `width`, `height` (the
+  large size) and gains `variants: [{width, height, url}]`, widest first, for a `srcset`; a
+  bundled sample photo (`/assets/images/...`) keeps its URL and has `variants: []`. Only approved
+  photos appear; `has_photos` counts them.
+
+### Side effects
+
+- **Emails** through the outbox and the mail templates, to the advertiser only (the listing's
+  agent, else the organisation's owners and managers, or the direct owner): `listing-approved`,
+  `listing-changes-requested` (with the reason), `listing-rejected` (with the reason), for a new
+  listing and for changes to a published one. Events `LISTING_APPROVED`,
+  `LISTING_CHANGES_REQUESTED`, `LISTING_REJECTED`; the worker and the development server (in
+  memory) handle them.
+- **Search index:** `LISTING_PUBLISHED` on approval, `LISTING_UPDATED` when approved changes,
+  a reordering or a deleted public photo change what is public, `LISTING_UNPUBLISHED` on archive
+  and relist. The index document is unchanged (it already had `has_photos`), so
+  **`MappingVersion` stays 5** and no reindex is required by this release; running `/app/reindex`
+  after the deploy is harmless and makes `has_photos` count approved photos only for documents
+  written before.
+- **Dashboards:** the lister's counters always include `listings.status.PUBLISHED`, `.DRAFT`,
+  `.PENDING_REVIEW` and `.CHANGES_REQUESTED`, with the next action `UPDATE_LISTINGS_FOR_REVIEW`;
+  the admin overview counts `CHANGES_REQUESTED`, `REJECTED` and `ARCHIVED` too. The trust summary
+  is unchanged (it counts public listings; `listings_reviewed` now includes real reviews).
+
+### Sample data
+
+Two Sample Estates listings that are not public, so the screens have data (memory store and
+`cmd/seed`; the seed stays idempotent: a re-run resets them, and drops pending changes and review
+reasons of the sample listings):
+
+| ID | Reference | Status | Agent | Note |
+| --- | --- | --- | --- | --- |
+| `0195c0de-0000-7000-8000-00000000e101` | `RP-ZW-200101` | `DRAFT` | Tendai Ncube (`agent@example.test`) | Two bundled photos, the second without a description: `completeness` asks for it |
+| `0195c0de-0000-7000-8000-00000000e102` | `RP-ZW-200102` | `PENDING_REVIEW` | Chipo Dube (`estates.agent2@example.test`) | In the review queue with one bundled photo |
+
+**Not built** (listing management): assigning or changing the agent of a listing (an owner's or
+manager's listing has none; there is no member picker yet); duplicating a listing; pausing,
+marking sold or let, and closing (the statuses exist, nothing sets them); package limits on the
+number of active listings; a scheduled expiry job and the expiry reminder emails (expiry is still
+decided at query time); presigned direct-to-S3 uploads (photos go through the API, 15 MB each);
+cropping, a chosen cover photo other than the first, captions other than `alt`; AVIF / WebP
+output; malware scanning of uploads; YouTube links and floor plans; moderation of a reviewer's own
+organisation's listings (nothing stops a reviewer from approving a listing of an organisation
+they belong to); a per-field change history (the timeline records steps, `changes` shows the
+pending diff only); a diff for a resubmission after "changes requested" (only edits of published
+listings are diffed); notifying reviewers of new submissions; in-memory development: a listing
+created through the API and published cannot take property requests (the in-memory request store
+has its own listing table; Postgres reads one table).
+
+**Not verified:** migration `0020` (including `ALTER TYPE ... ADD VALUE` inside the migration's
+transaction, which needs PostgreSQL 12 or later), every query of
+`internal/modules/listings/manage_postgres.go`, the photo approval filter of the public queries
+and the seed changes have never run against a database; uploads have never been written to real
+Amazon S3. Everything above is tested on the in-memory stores and the local file storage.
 
 ## Search: Elasticsearch behind a port, the database underneath
 
@@ -1295,8 +1471,8 @@ manage listings or appointments": `internal/platform/auth/capabilities.go`.
 So a verified solicitor in a law firm has the same rights as an agent, and a `LAW_FIRM` can own
 listings on the same terms as an agency: property requests for such a listing reach the firm's
 inbox (tested). Appointments (viewings and consultations) are built on these rules: see
-"Appointments". **But there are no endpoints to create or publish a listing, and no venue or
-short-stay bookings, for any role yet.**
+"Appointments"; listings are created, edited and sent for review through `/v1/me/listings` (see
+"Listing management"). **There are no venue or short-stay bookings, for any role yet.**
 
 ### Specified but not built
 
@@ -1314,12 +1490,9 @@ So that nobody assumes these exist. They are in the updated functional specifica
 - short-stay **bookings**: payments, instant booking, holds, iCal sync, seasonal and per-night
   pricing (the availability calendar itself is built: see "Availability calendar for short
   stays");
-- creating, editing and publishing listings (only a short stay's calendar and stay rules can
-  be changed through the API);
-- the **listing moderation workflow**: submit -> `PENDING_REVIEW` -> approve or reject by a
-  Moderator, with reasons and an audit trail. Until it exists `listing_reviewed` is set by the
-  sample-data seed only, and the only verified claim enforced end to end is ADVERTISER
-  verification (see "Verified advertisers");
+- assigning an agent to a listing, duplicating, pausing and marking a listing sold or let,
+  package limits and expiry reminders (creating, editing, photos and the review workflow are
+  built: see "Listing management");
 - administrator endpoints to unverify / re-verify an organisation and to suspend / reinstate a
   direct owner's role (requested, not started);
 - a display name a direct owner can choose (their account name is shown on their listings);
@@ -2157,6 +2330,18 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0020_listing_management` adds the listing statuses `CHANGES_REQUESTED`, `REJECTED` and
+  `ARCHIVED` (`ALTER TYPE ... ADD VALUE`, unused in the same transaction), to `listings`
+  `created_by`, `submitted_at`, `submitted_by`, `review_reason` (1-1000 characters),
+  `revision` (jsonb, the pending changes of a published listing) and `revision_status`
+  (`EDITING`, `PENDING_REVIEW`, `CHANGES_REQUESTED`, `REJECTED`; present exactly when
+  `revision` is), makes `price_amount` nullable (a draft without a price), and adds the partial
+  index `listings_review_queue_idx`. `listing_photos` gets `checksum`, `variants` (jsonb:
+  size, object key, width, height, bytes), `approved_at` (every existing photo is approved) and
+  `uploaded_by`; `url` becomes nullable (an upload has variants instead, exactly one of the
+  two). New table `listing_timeline` (immutable rows, trigger `listing_timeline_no_update`).
+  The down migration deletes uploaded photo rows (their files stay in the bucket), sets the new
+  statuses back to `DRAFT` and cannot remove the enum values.
 - `0018_request_work` adds to `property_requests` the lead `stage` (text, NOT NULL, default
   `NEW_ENQUIRY`, CHECK on the eight stages; every existing row becomes `NEW_ENQUIRY`),
   `stage_changed_at`, `stage_changed_by`, `exception_resolved_at`, `exception_resolved_by`,

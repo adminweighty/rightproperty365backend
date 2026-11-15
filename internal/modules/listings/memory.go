@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"rightproperty365.com/backend/internal/platform/outbox"
 )
 
 // MemoryStore is the in-memory Store and Search adapter for development and
@@ -23,6 +25,14 @@ type MemoryStore struct {
 	// as the Postgres adapter does with its joins. nil keeps the advertiser
 	// stored on the record (unit tests).
 	advertisers func(Record) Advertiser
+
+	// Listing management (manage_memory.go): every photo of a listing, the
+	// management fields, the timelines and the outbox events.
+	photos   map[uuid.UUID][]StoredPhoto
+	meta     map[uuid.UUID]*memoryMeta
+	timeline []TimelineEntry
+	outbox   []outbox.Event
+	sink     outbox.Sink
 }
 
 // SetAdvertisers makes the store resolve the advertiser of every record it
@@ -39,17 +49,24 @@ func (s *MemoryStore) resolved(r Record) Record {
 	if s.advertisers != nil {
 		r.Advertiser = s.advertisers(r)
 	}
+	// The public photos are the approved ones, always derived from all of them.
+	r.Photos = PublicPhotos(s.photos[r.ID])
+	r.Features = append([]string(nil), r.Features...)
 	return r
 }
 
 // NewMemoryStore returns an empty store. labels supplies the suburb, city and
 // property-type labels that free-text search matches against.
-func NewMemoryStore(labels Labels) *MemoryStore { return &MemoryStore{labels: labels} }
+func NewMemoryStore(labels Labels) *MemoryStore {
+	return &MemoryStore{labels: labels, photos: map[uuid.UUID][]StoredPhoto{}, meta: map[uuid.UUID]*memoryMeta{}}
+}
 
-// Put adds or replaces a listing (seed and test helper).
+// Put adds or replaces a listing (seed and test helper). Its photos become
+// the listing's photos, approved when the listing has been published.
 func (s *MemoryStore) Put(r Record) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.photos[r.ID] = storedFromPublic(r)
 	for i := range s.records {
 		if s.records[i].ID == r.ID {
 			s.records[i] = r

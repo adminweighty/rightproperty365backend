@@ -123,17 +123,8 @@ type Overview struct {
 // listingMarkets returns the countries whose listings an administrator may
 // count: all for the global roles, its own for a MARKET_ADMIN.
 func listingMarkets(p *auth.Principal) (codes []string, all, ok bool) {
-	for _, r := range p.PlatformRoles {
-		switch r.Role {
-		case auth.PlatformSuperAdmin, auth.PlatformAdmin, auth.PlatformModerator:
-			return nil, true, true
-		case auth.PlatformMarketAdmin:
-			if r.MarketCode != "" && !slices.Contains(codes, r.MarketCode) {
-				codes = append(codes, r.MarketCode)
-			}
-		}
-	}
-	return codes, false, len(codes) > 0
+	// The same scope as the listing review queue (GET /v1/admin/listings).
+	return p.ListingReviewMarkets()
 }
 
 func holds(p *auth.Principal, roles ...string) bool {
@@ -249,7 +240,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s := &listingsSection{MarketCodes: codes, ByStatus: []statusCount{}}
-		statuses := []string{"DRAFT", "PENDING_REVIEW", "PUBLISHED", "PAUSED", "EXPIRED", "SOLD", "LET", "CLOSED"}
+		statuses := []string{"DRAFT", "PENDING_REVIEW", "CHANGES_REQUESTED", "REJECTED", "PUBLISHED", "PAUSED", "EXPIRED", "ARCHIVED", "SOLD", "LET", "CLOSED"}
 		for status := range counts {
 			if !slices.Contains(statuses, status) {
 				statuses = append(statuses, status)

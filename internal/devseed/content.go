@@ -109,7 +109,61 @@ func ListingRecords(now time.Time) []listings.Record {
 		OrganisationID: expired.OrganisationID,
 		Advertiser:     listings.Advertiser{Type: listings.AdvertiserAgency, Name: agency.Name, Verified: agency.Verified, Agency: &agency},
 	})
-	return out
+	return append(out, WorkflowListings(now)...)
+}
+
+// IDs of the two sample listings of the listing management screens.
+var (
+	// DraftListingID is Tendai Ncube's DRAFT (agent@example.test).
+	DraftListingID = id("e101")
+	// PendingListingID is Chipo Dube's listing waiting for review
+	// (estates.agent2@example.test).
+	PendingListingID = id("e102")
+)
+
+// WorkflowListings are two Sample Estates listings that are not public, so
+// that the editor and the review queue have data: a DRAFT of Tendai Ncube
+// and a PENDING_REVIEW listing of Chipo Dube, both with bundled photos that
+// are not approved yet. Neither has a publication date or a review.
+func WorkflowListings(now time.Time) []listings.Record {
+	now = now.UTC().Truncate(time.Hour)
+	org, tendai, chipo := SampleEstates.ID, identity.SeedAgentUserID, EstatesAgent2ID
+	four, three, two := 4, 3, 2
+	area, plot := 320, 2000
+	photo := func(file, alt string, w, h int) listings.Photo {
+		return listings.Photo{URL: PhotoPathPrefix + file, Alt: alt, Width: w, Height: h}
+	}
+	agency := listings.ProfileRef{Kind: "agencies", Slug: "sample-estates", Name: SampleEstates.Name, Verified: true}
+	advertiser := listings.Advertiser{Type: listings.AdvertiserAgency, Name: agency.Name, Verified: true, Agency: &agency}
+	return []listings.Record{
+		{
+			ID: DraftListingID, Slug: "four-bedroom-house-with-a-pool-in-highlands-zw-200101", Reference: "RP-ZW-200101",
+			Title: "Four-bedroom house with a pool in Highlands", Deal: "sale", Category: "residential", PropertyType: "house",
+			Price: listings.Money{Amount: "410000.00", Currency: "USD"}, Suburb: "highlands", City: "harare", MarketCode: MarketCode,
+			Bedrooms: &four, Bathrooms: &three, FloorArea: &area, LandArea: &plot,
+			Summary:     "Family home with a pool, being written by the agent.",
+			Description: "Sample draft: a family home with four bedrooms, a pool and a large garden. The agent is still writing it.",
+			Features:    []string{},
+			// The second photo has no description yet: the draft cannot be
+			// submitted until it has one.
+			Photos: []listings.Photo{photo("listing-house-highlands.jpg", "White and grey house beside a swimming pool", 1200, 800),
+				photo("listing-house-glen-lorne.jpg", "", 1200, 800)},
+			Status: listings.StatusDraft, UpdatedAt: now.Add(-2 * time.Hour),
+			OrganisationID: &org, AgentUserID: &tendai, Advertiser: advertiser,
+		},
+		{
+			ID: PendingListingID, Slug: "three-bedroom-townhouse-near-greendale-shops-zw-200102", Reference: "RP-ZW-200102",
+			Title: "Three-bedroom townhouse near Greendale shops", Deal: "rent", Category: "residential", PropertyType: "townhouse",
+			Price: listings.Money{Amount: "1100.00", Currency: "USD"}, PricePeriod: "month", Suburb: "greendale", City: "harare", MarketCode: MarketCode,
+			Bedrooms: &three, Bathrooms: &two,
+			Summary:     "Secure townhouse close to the shops, waiting for review.",
+			Description: "Sample listing waiting for review: a three-bedroom townhouse in a secure complex, a short walk from the Greendale shops.",
+			Features:    []string{},
+			Photos:      []listings.Photo{photo("listing-townhouse-greendale.jpg", "White modern townhouse in daylight", 1200, 813)},
+			Status:      listings.StatusPendingReview, UpdatedAt: now.Add(-1 * time.Hour),
+			OrganisationID: &org, AgentUserID: &chipo, Advertiser: advertiser,
+		},
+	}
 }
 
 // ProfileRecords returns the 29 sample profiles with the web's content.

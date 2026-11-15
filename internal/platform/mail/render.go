@@ -65,6 +65,9 @@ func Templates() []Template {
 		{"appointment-confirmed", "Appointment confirmed (to the customer)", true},
 		{"appointment-new-time-proposed", "New time proposed (to the customer)", true},
 		{"appointment-cancelled", "Appointment cancelled (to the customer)", true},
+		{"listing-approved", "Listing or its changes approved (to the advertiser)", true},
+		{"listing-changes-requested", "Listing needs changes (to the advertiser)", true},
+		{"listing-rejected", "Listing or its changes not approved (to the advertiser)", true},
 
 		{"request-update", "Reply or status update to the customer", false},
 		{"listing-expiring", "Listing expiring in 14, 7 or 1 days", false},
@@ -130,6 +133,10 @@ type Data struct {
 	ProposedTime    string
 	WithName        string
 	Location        string
+
+	// Edit is true for a listing review email about the changes to a
+	// published listing (not about the listing itself).
+	Edit bool
 
 	// Code is the one-time sign-in code (sign-in-code). It is a credential:
 	// it is only rendered into the message and never stored.
