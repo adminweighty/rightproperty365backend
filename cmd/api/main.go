@@ -23,6 +23,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/health"
 	"rightproperty365.com/backend/internal/modules/identity"
+	"rightproperty365.com/backend/internal/modules/leases"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/modules/notifications"
@@ -104,6 +105,8 @@ func run() error {
 		healthH           *health.Handler
 		// teamStore holds invitations and the team audit trail.
 		teamStore teams.Store
+		// leaseStore holds the lease templates and the leases.
+		leaseStore leases.Store
 	)
 	if cfg.UseMemoryStore() {
 		// config.Load guarantees this branch is only reachable in development.
@@ -180,6 +183,12 @@ func run() error {
 			},
 		})
 		teamStore = memTeams
+		memLeases := leases.NewMemoryStore()
+		leaseStore = memLeases
+		// The sample templates (approved) and a draft lease, with its PDF.
+		if err := devseed.SeedMemoryLeases(ctx, memLeases, files, time.Now()); err != nil {
+			return fmt.Errorf("seed sample leases: %w", err)
+		}
 
 		// Without a database there is no outbox table for the worker to poll,
 		// so notification emails are handled in this process, straight from
@@ -264,6 +273,7 @@ func run() error {
 		deliveryLog = mail.NewPostgresDeliveryLog(pool)
 		onboardingStore = onboarding.NewPostgresStore(pool)
 		teamStore = teams.NewPostgresStore(pool)
+		leaseStore = leases.NewPostgresStore(pool)
 	}
 
 	// Search engine. Elasticsearch only proposes listing IDs: every hit is
@@ -309,6 +319,7 @@ func run() error {
 		Appointments:  appointmentStore,
 		Availability:  availabilityStore,
 		Teams:         teamStore,
+		Leases:        leaseStore,
 		Files:         files,
 	})
 	if err != nil {

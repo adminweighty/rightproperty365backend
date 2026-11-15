@@ -58,6 +58,7 @@ const (
 	TargetBusinessEnquiries = "business_enquiries"
 	TargetAppointments      = "appointments"
 	TargetListings          = "listings"
+	TargetLeases            = "leases"
 	TargetTeam              = "team"
 	TargetAdminOverview     = "admin_overview"
 )
@@ -70,6 +71,7 @@ const (
 	GroupEnquiries       = "business_enquiries"
 	GroupAppointments    = "appointments"
 	GroupListings        = "listings"
+	GroupLeases          = "leases"
 )
 
 // recentItems is how many requests and appointments a dashboard lists.
@@ -89,6 +91,16 @@ type Sources struct {
 	ListingCounts func(ctx context.Context, marketCodes []string) (map[string]int, error)
 	MarketIDs     propertyrequests.MarketIDs
 	Now           func() time.Time
+	// Leases counts the caller's leases (nil: no lease counters);
+	// MayCreateLeases is leases.MayCreateLeases.
+	Leases          func(ctx context.Context, p *auth.Principal) (LeaseCounts, error)
+	MayCreateLeases func(p *auth.Principal) bool
+}
+
+// LeaseCounts are the lease numbers of a professional's dashboard.
+type LeaseCounts struct {
+	Drafts             int
+	AwaitingSignatures int
 }
 
 // Handler serves the endpoints of this package.
@@ -155,6 +167,9 @@ type OrganisationView struct {
 	// change, suspend or remove members (OWNER and MANAGER; what each may do
 	// to whom is in GET /v1/agent/organisations/{id}/members).
 	CanManageTeam bool `json:"can_manage_team"`
+	// CanCreateLeases: the caller may draft leases for the organisation
+	// (POST /v1/me/leases): exactly can_manage_listings.
+	CanCreateLeases bool `json:"can_create_leases"`
 }
 
 // OnboardingView is the caller's application for one role.
@@ -179,6 +194,8 @@ type Capabilities struct {
 	ManagesAppointments       bool `json:"manages_appointments"`
 	ManagesListings           bool `json:"manages_listings"`
 	SeesTeam                  bool `json:"sees_team"`
+	// CreatesLeases: /v1/me/leases is open to the caller.
+	CreatesLeases bool `json:"creates_leases"`
 }
 
 // Recent holds the short lists of a dashboard. Every array is always present.
@@ -271,6 +288,7 @@ func (h *Handler) build(ctx context.Context, p *auth.Principal) (Dashboard, erro
 			Role: m.Role, RoleLabel: auth.MembershipRoleLabel(m.OrganisationKind, m.Role),
 			CanSeeMembers: p.MayAssignWork(m.OrganisationID), CanAssignWork: p.MayAssignWork(m.OrganisationID),
 			CanManageListings: p.MayManageListings(m.OrganisationID), CanManageTeam: p.MayManageTeam(m.OrganisationID),
+			CanCreateLeases: p.MayManageListings(m.OrganisationID),
 		})
 		d.Capabilities.SeesTeam = d.Capabilities.SeesTeam || p.MayAssignWork(m.OrganisationID)
 	}
@@ -381,6 +399,20 @@ func (h *Handler) professional(ctx context.Context, p *auth.Principal, d *Dashbo
 			return err
 		}
 		d.Recent.Appointments = append(d.Recent.Appointments, next...)
+	}
+
+	// Leases: GET /v1/me/leases.
+	if h.src.MayCreateLeases != nil && h.src.Leases != nil {
+		if d.Capabilities.CreatesLeases = h.src.MayCreateLeases(p); d.Capabilities.CreatesLeases {
+			c, err := h.src.Leases(ctx, p)
+			if err != nil {
+				return err
+			}
+			d.Counters = append(d.Counters,
+				Counter{Key: "leases.awaiting_signatures", Label: "Leases waiting for signatures", Value: c.AwaitingSignatures, Group: GroupLeases, Target: target(TargetLeases)},
+				Counter{Key: "leases.drafts", Label: "Draft leases", Value: c.Drafts, Group: GroupLeases, Target: target(TargetLeases)},
+			)
+		}
 	}
 
 	// Listings: GET /v1/me/listings.

@@ -91,6 +91,17 @@ Every other business profile has an owner too, at `<profile slug>@example.test` 
 - Seeded in memory by the API in development and by `cmd/seed` (needs migration 0021); neither
   emails anyone.
 
+## Lease samples
+
+- **Approved sample templates** "Sample residential lease (Zimbabwe)" and "... (United Kingdom)". Their legal
+  review reads "SAMPLE — not reviewed by a lawyer; for demonstration on staging only": they exist to try the
+  screens and must never be offered to real customers. Manage them as `admin.content@example.test` (or
+  `admin@example.test`) under `/v1/admin/lease-templates`.
+- **A draft lease** `RPL-2026-900001` by `agent@example.test` (Tendai Ncube) on listing 2 (Two-bedroom garden
+  apartment), landlord `landlord@example.test`, tenant `tenant@example.test`: open it under *Leases*, edit it,
+  download its PDF. Its agency's owner and manager see it too; another agent of the agency does not.
+- Seeded in memory by the API in development and by `cmd/seed` (needs migration 0022).
+
 ## Platform administrators (administrator sign-in only)
 
 | Email | Platform role | What to look at when signed in |
@@ -99,9 +110,9 @@ Every other business profile has an owner too, at `<profile slug>@example.test` 
 | `admin.platform@example.test` | `PLATFORM_ADMIN` | Admin overview; onboarding review; routing exceptions |
 | `admin.market@example.test` | `MARKET_ADMIN` for market **ZW** | The same, limited to Zimbabwe |
 | `admin.moderator@example.test` | `MODERATOR` | Onboarding review (approve, reject, request changes) |
-| `admin.support@example.test` | `SUPPORT` | Routing exceptions; the overview sections support covers |
+| `admin.support@example.test` | `SUPPORT` | Routing exceptions; every lease, read-only (`/v1/admin/leases`); the overview sections support covers |
 | `admin.finance@example.test` | `FINANCE_ADMIN` | The overview sections finance covers (no finance screens are built yet) |
-| `admin.content@example.test` | `CONTENT_ADMIN` | The overview sections content covers (no content screens are built yet) |
+| `admin.content@example.test` | `CONTENT_ADMIN` | The lease template library (`/v1/admin/lease-templates`); the overview sections content covers |
 
 Administrators cannot reset their password by email; on a database use
 `go run ./cmd/adminctl set-password --email ...`.

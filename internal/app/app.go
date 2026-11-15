@@ -20,6 +20,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/health"
 	"rightproperty365.com/backend/internal/modules/identity"
+	"rightproperty365.com/backend/internal/modules/leases"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/modules/onboarding"
@@ -114,6 +115,12 @@ const (
 	// its accept), its own bucket: bursts of 20, refilled at 20 per minute.
 	invitationRequestsPerMinute = 20
 	invitationRequestsBurst     = 20
+
+	// Per-IP limit on changing leases and lease templates (create, PATCH,
+	// delete, send, cancel, approve, retire), its own bucket: bursts of 30,
+	// refilled at 30 per minute. Each save renders a PDF.
+	leaseChangesPerMinute = 30
+	leaseChangesBurst     = 30
 )
 
 // uploadPath matches POST /v1/me/onboarding/{role}/documents and logoPath
@@ -169,6 +176,9 @@ type Deps struct {
 	Teams teams.Store
 	// TeamMailer sends invitation emails; nil means Mailer when it can.
 	TeamMailer teams.Mailer
+	// Leases holds the lease templates and the leases; their PDFs are kept
+	// in Files.
+	Leases leases.Store
 
 	// Optional overrides used by tests.
 	Now    func() time.Time
@@ -317,6 +327,18 @@ func NewRouter(d Deps) (http.Handler, error) {
 	teamLimiter := httpx.NewRateLimiter(teamChangesPerMinute, teamChangesBurst)
 	invitationLimiter := httpx.NewRateLimiter(invitationRequestsPerMinute, invitationRequestsBurst)
 
+	// Leases: the template library (content administrators) and lease
+	// drafting by whoever manages listings.
+	if d.Leases == nil {
+		return nil, errors.New("app: no lease store")
+	}
+	leasesSvc := leases.NewService(leases.Deps{
+		Store: d.Leases, Files: d.Files, Listings: leaseListings{svc: listingsSvc},
+		CountryName: countryNames(d.Markets), Person: personOf(d.Identity), Logger: logger, Now: d.Now,
+	})
+	leasesH := leases.NewHandler(leasesSvc, logger)
+	leaseLimiter := httpx.NewRateLimiter(leaseChangesPerMinute, leaseChangesBurst)
+
 	// Dashboards: one role-aware summary per account, an organisation's
 	// members, and the administrators' overview. Every number is read through
 	// the module that owns it, with that module's own scoping.
@@ -332,6 +354,11 @@ func NewRouter(d Deps) (http.Handler, error) {
 			return d.Listings.CountByStatus(ctx, marketCodes, now.UTC())
 		},
 		MarketIDs: marketIDs(d.Markets), Now: d.Now,
+		Leases: func(ctx context.Context, p *auth.Principal) (dashboard.LeaseCounts, error) {
+			c, err := leasesSvc.DashboardCounts(ctx, p)
+			return dashboard.LeaseCounts{Drafts: c.Drafts, AwaitingSignatures: c.AwaitingSignatures}, err
+		},
+		MayCreateLeases: leases.MayCreateLeases,
 	}, logger)
 	uploadLimiter := httpx.NewRateLimiter(UploadRequestsPerMinute, UploadRequestsBurst)
 
@@ -481,6 +508,22 @@ func NewRouter(d Deps) (http.Handler, error) {
 			r.With(calendarLimiter.Middleware).Patch("/{id}/stay-rules", availabilityH.StayRules)
 		})
 
+		// Leases: the approved templates on offer, and drafting. The service
+		// decides who may (leases.MayCreateLeases: whoever manages listings;
+		// 403 otherwise) and which leases each sees (404 for the others).
+		r.With(auth.RequireAuth).Get("/me/lease-templates", leasesH.OfferedTemplates)
+		r.Route("/me/leases", func(r chi.Router) {
+			r.Use(auth.RequireAuth)
+			r.Get("/", leasesH.List)
+			r.With(leaseLimiter.Middleware).Post("/", leasesH.Create)
+			r.Get("/{id}", leasesH.Get)
+			r.With(leaseLimiter.Middleware).Patch("/{id}", leasesH.Patch)
+			r.With(leaseLimiter.Middleware).Delete("/{id}", leasesH.Delete)
+			r.Get("/{id}/pdf", leasesH.PDF)
+			r.With(leaseLimiter.Middleware).Post("/{id}/cancel", leasesH.Cancel)
+			r.Get("/{id}/events", leasesH.Events)
+		})
+
 		// The directory profiles the caller may manage, and their logos. The
 		// service decides who may change which (auth/capabilities.go): 404 for
 		// another organisation's profile, 403 for a member whose role may not.
@@ -566,6 +609,19 @@ func NewRouter(d Deps) (http.Handler, error) {
 				r.With(listingLimiter.Middleware).Post("/{id}/request-changes", manageH.RequestChanges)
 				r.With(listingLimiter.Middleware).Post("/{id}/reject", manageH.Reject)
 			})
+
+			// The lease template library: SUPER_ADMIN and CONTENT_ADMIN.
+			r.Route("/lease-templates", func(r chi.Router) {
+				r.Use(auth.RequirePlatformRole(leases.TemplateAdminRoles()...))
+				r.Get("/", leasesH.AdminTemplates)
+				r.With(leaseLimiter.Middleware).Post("/", leasesH.AdminCreateTemplate)
+				r.Get("/{id}", leasesH.AdminTemplate)
+				r.With(leaseLimiter.Middleware).Patch("/{id}", leasesH.AdminEditTemplate)
+				r.With(leaseLimiter.Middleware).Post("/{id}/approve", leasesH.AdminApproveTemplate)
+				r.With(leaseLimiter.Middleware).Post("/{id}/retire", leasesH.AdminRetireTemplate)
+			})
+			// Every lease, read-only: SUPER_ADMIN and SUPPORT.
+			r.With(auth.RequirePlatformRole(leases.LeaseAdminRoles()...)).Get("/leases", leasesH.AdminLeases)
 
 			// The counts an administrator starts from. Every platform role
 			// may ask; the handler returns only the sections its role covers.

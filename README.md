@@ -292,6 +292,10 @@ All configuration comes from environment variables. For local development you ma
 | GET, POST | `/v1/admin/listings`, `/{id}`, `/{id}/approve`, `/request-changes`, `/reject` | Listing review queue and decisions |
 | GET, PUT | `/v1/me/listings/{id}/availability` | The lister's calendar of a short stay: read it, mark nights available, blocked or booked |
 | PATCH | `/v1/me/listings/{id}/stay-rules` | A short stay's `min_nights` and `max_guests` |
+| GET, POST, PATCH | `/v1/admin/lease-templates`, `/{id}`, `/{id}/approve`, `/{id}/retire` | The lease template library (SUPER_ADMIN, CONTENT_ADMIN) |
+| GET | `/v1/admin/leases` | Every lease, read-only (SUPER_ADMIN, SUPPORT) |
+| GET | `/v1/me/lease-templates` | The approved templates a lease can be made from |
+| GET, POST, PATCH, DELETE | `/v1/me/leases`, `/{id}`, `/{id}/pdf`, `/{id}/cancel`, `/{id}/events` | Draft leases (see "Leases") |
 
 Every error uses one envelope, and `trace_id` equals the `X-Request-Id` response header:
 
@@ -417,6 +421,69 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 change; follow-up dates and reminders; editing or deleting a note; listing analytics, conversion
 funnels and response-time KPIs (no event data exists); seeker favourites, saved searches and
 alerts.
+
+## Leases: templates and drafting (API 0.24.0)
+
+Migration `0022`, module `internal/modules/leases` (BR-011, FR-030, FR-031). Signing is the
+agreements module (see "Agreements"); a lease that is sent for signing follows its agreement.
+
+- **Template library (FR-030)** – `/v1/admin/lease-templates` for SUPER_ADMIN and CONTENT_ADMIN
+  (admin-scope session). A template is one version of a family: `market_code` (the jurisdiction),
+  `name`, `lease_kind` (`RESIDENTIAL` | `COMMERCIAL`), ordered `sections` (`heading`, `text`) and
+  `optional_clauses` (`code`, `title`, `text`). Text uses `{{variable}}` placeholders from a fixed
+  list (`leases.Variables()`, returned as `variables` with every template list): `reference`,
+  `agreement_date`, `landlord_names`, `tenant_names`, `landlord_details`, `tenant_details`,
+  `property_address`, `country_name`, `lease_kind`, `start_date`, `end_date`, `term`,
+  `rent_amount`, `rent_currency`, `rent_period`, `payment_day`, `deposit_amount`,
+  `notice_period_days`, `special_conditions`. Any other placeholder (or a stray `{{`) is
+  `400 VALIDATION_FAILED`.
+- **Lifecycle** – `DRAFT` (edited in place) -> `POST .../approve {legal_review: {reviewer_name,
+  organisation, reviewed_on, note?}}` -> `APPROVED` -> `POST .../retire` -> `RETIRED`. PATCH on an
+  approved template creates the family's next `DRAFT` version (`201`, at most one draft per family:
+  `409 LEASE_TEMPLATE_DRAFT_EXISTS`); approving a version retires the family's previous approved
+  version. Leases keep the version they were made from. Every step is in
+  `lease_template_events` (immutable).
+- **Offered templates** – `GET /v1/me/lease-templates?market=` returns only `APPROVED` templates;
+  a draft, retired or other-country template is refused on create (`422
+  LEASE_TEMPLATE_NOT_AVAILABLE`, `422 LEASE_MARKET_MISMATCH`).
+- **Drafting (FR-031)** – `/v1/me/leases` (list, create, get, PATCH, DELETE while `DRAFT`, `pdf`,
+  `cancel`, `events`). Who may: `leases.MayCreateLeases` = `Principal.ManagesListings` on a customer
+  session (the dashboard's `can_manage_listings`): OWNER, MANAGER and AGENT of a listing kind of
+  organisation, approved landlords and sellers; STAFF, seekers and pending professionals `403`.
+  OWNER and MANAGER see and act on every lease of their organisation; an AGENT the leases they
+  created; a direct owner their own; anyone else `404`. A `listing_id` must be a listing the
+  caller may edit (`MayEditListing`) and gives the organisation, the country and the address
+  (suburb, city, region, country: listings have no street address). Every mandatory field is
+  validated on every save (see the OpenAPI operation). References `RPL-<year>-<6 digits>` come
+  from `lease_reference_seq`.
+- **PDF** – `github.com/go-pdf/fpdf` (MIT, pure Go) with the Go fonts
+  (`golang.org/x/image/font/gofont`, BSD-3-Clause, embedded TTF; accents such as "Zoë
+  Müller-Śmiałek" print as typed). Drafts carry a diagonal DRAFT watermark on every page; every
+  page has a footer (reference, template name and version, page x of y) and a row of initials
+  boxes (one per party); the end has a signature block per party (signature, name, date). The
+  renderer reports where those boxes are (`leases.Layout`, PDF points from the top-left), so the
+  agreement's fields are placed on them. Rendering is deterministic (sorted catalogue, fixed
+  dates). Stored privately under `leases/<32 hex>`; `lease_documents` keeps per kind the input
+  snapshot, the template version, the object key and the SHA-256. **Only the newest draft PDF is
+  kept** (each save replaces the object; the audit trail keeps each version's SHA-256); the
+  signing copy and the signed PDF are kept.
+- Rate limit: lease and template changes 30 / 30 per minute. Every read and PDF is
+  `Cache-Control: private, no-store`.
+- **Dashboard** – `organisations[].can_create_leases`, `capabilities.creates_leases`, counters
+  `leases.awaiting_signatures` and `leases.drafts`.
+
+**Sample data** (memory store and `cmd/seed`, idempotent): an APPROVED "Sample residential lease"
+for Zimbabwe (`...e301`) and for the United Kingdom (`...e302`) whose legal review says "SAMPLE —
+not reviewed by a lawyer; for demonstration on staging only", and a DRAFT lease
+`RPL-2026-900001` by `agent@example.test` on listing 2 with `tenant@example.test` as tenant and
+`landlord@example.test` as landlord.
+
+**Not built** (leases): deleting templates; per-country variable sets; Word import; renewals,
+rent reviews and inventories; a currency check against the country (any ISO 4217 code is
+accepted).
+
+**Not verified:** migration `0022` and `internal/modules/leases/postgres.go` have not run against a
+database here (`RP365_TEST_DATABASE_URL` tests are skipped without one).
 
 ## Agency teams (API 0.23.0)
 
@@ -2384,6 +2451,13 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0022_leases` adds only new objects, each `IF NOT EXISTS`: the sequence `lease_reference_seq`;
+  `lease_templates` (unique `(family_id, version)` `lease_templates_family_version_key`, at most one
+  `DRAFT` and one `APPROVED` per family: partial unique indexes `lease_templates_one_draft_key`,
+  `lease_templates_one_approved_key`); `lease_template_events` and `lease_events` (immutable rows,
+  triggers `*_no_update`); `leases` (unique `reference`, `agreement_id` without a foreign key until
+  0023); `lease_documents` (one row per lease and kind, `lease_documents_lease_kind_key`). The down
+  migration drops them all (it does not delete the PDF objects in the bucket).
 - `0021_agency_teams` widens `memberships_status_check` to `ACTIVE`, `INVITED`, `SUSPENDED`,
   `REMOVED` and adds `memberships.job_title` (1-80 characters, nullable); new tables
   `organisation_invitations` (token stored as its SHA-256, `organisation_invitations_token_hash_key`;

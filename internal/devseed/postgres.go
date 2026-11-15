@@ -26,7 +26,7 @@ import (
 // to their defined state (including the shared password). Rows it does not
 // own are never touched. Callers must have passed CheckEnvironment.
 //
-// It requires every migration up to 0021. If a sample email already belongs to a
+// It requires every migration up to 0022. If a sample email already belongs to a
 // different user row the run fails and changes nothing.
 //
 // NOTE: compiled but NEVER run — there is no Postgres on the machine this was
@@ -388,6 +388,11 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 
 	// The sample team's pending invitation and join request (needs migration 0021).
 	if err := seedPostgresTeams(ctx, tx, files, hash, now); err != nil {
+		return err
+	}
+
+	// The sample lease templates and leases (needs migration 0022).
+	if err := seedPostgresLeases(ctx, tx, files, now); err != nil {
 		return err
 	}
 

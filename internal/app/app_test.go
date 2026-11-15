@@ -26,6 +26,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/health"
 	"rightproperty365.com/backend/internal/modules/identity"
+	"rightproperty365.com/backend/internal/modules/leases"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/modules/onboarding"
@@ -185,6 +186,7 @@ type env struct {
 	calendars *availability.MemoryStore
 	appts     *appointments.MemoryStore
 	team      *teams.MemoryStore
+	leases    *leases.MemoryStore
 	files     *storage.Local
 	mail      *captureMailer
 	logs      *bytes.Buffer
@@ -262,6 +264,10 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 			return id, id != uuid.Nil
 		},
 	})
+	e.leases = leases.NewMemoryStore()
+	if err := devseed.SeedMemoryLeases(context.Background(), e.leases, e.files, e.now); err != nil {
+		t.Fatal(err)
+	}
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	e.marketStore = markets.NewMemoryStore()
 	e.calendars = availability.NewMemoryStore()
@@ -280,6 +286,7 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		Appointments: e.appts,
 		Availability: e.calendars,
 		Teams:        e.team,
+		Leases:       e.leases,
 		Now:          func() time.Time { return e.now },
 		Hasher:       &hasher,
 	})

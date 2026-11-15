@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.23.0
+  version: 0.24.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,26 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Leases (new in 0.24.0)
+    - **New: a lease template library and lease drafting.** Content administrators (SUPER_ADMIN,
+      CONTENT_ADMIN) keep templates per country under `/v1/admin/lease-templates`: ordered
+      sections with `{{variable}}` placeholders from a fixed list (`variables` in every template
+      list; an unknown placeholder is `400`), optional clauses, `DRAFT` -> `APPROVED` (with a
+      recorded legal review) -> `RETIRED`. Editing an approved template creates its next draft
+      version; approving a version retires the previous one. Only approved templates of the
+      property's country are offered (`GET /v1/me/lease-templates`) or accepted.
+    - Whoever may manage listings (`can_manage_listings`; never STAFF) drafts leases with
+      `/v1/me/leases`; an organisation's OWNER and MANAGER see every lease of it, an agent their
+      own. Every save renders a private PDF (DRAFT watermark, footer with reference, template
+      version and page x of y, room for every party's initials and signature);
+      `GET /v1/me/leases/{id}/pdf` streams it. Every lease has an immutable audit trail and a
+      reference `RPL-<year>-<6 digits>`. `GET /v1/admin/leases` lists every lease (SUPER_ADMIN,
+      SUPPORT, read-only).
+    - **Changed response shapes (additive).** `GET /v1/me/dashboard`: `organisations[]` gains
+      `can_create_leases`, `capabilities` gains `creates_leases`, and the counters
+      `leases.awaiting_signatures` and `leases.drafts` (group `leases`) appear for those who may
+      create leases.
 
     Agency teams (new in 0.23.0)
     - **New: an organisation's OWNER and MANAGER run their own team.** New routes under
@@ -337,6 +357,18 @@ tags:
       Status flow: `DRAFT` -> `SUBMITTED` -> `APPROVED` | `REJECTED` | `CHANGES_REQUESTED`;
       `CHANGES_REQUESTED` -> `SUBMITTED`. `REJECTED` is final for that application; saving
       details again starts a new one.
+  - name: leases
+    description: |
+      Lease templates (content administrators) and lease drafting (whoever manages listings).
+      A lease is rendered to a private PDF on every save; sending it for signing creates an
+      agreement (see `agreements`), whose status the lease then follows.
+
+      Lease status flow: `DRAFT` -> `SENT_FOR_SIGNING` -> `SIGNED` | `DECLINED` | `CANCELLED` |
+      `EXPIRED`; `DRAFT` -> `CANCELLED`. Template status flow: `DRAFT` -> `APPROVED` ->
+      `RETIRED`.
+
+      Not built: deleting templates, importing templates from Word, per-country variable sets,
+      clause libraries shared between templates, renewals and rent reviews.
   - name: admin
 
 paths:
@@ -6635,8 +6667,598 @@ paths:
         "504":
           $ref: "#/components/responses/Timeout"
 
+  /v1/admin/lease-templates:
+    get:
+      tags: [leases]
+      operationId: adminListLeaseTemplates
+      summary: The lease template library, every version (new in 0.24.0)
+      description: |
+        Admin-scope session with SUPER_ADMIN or CONTENT_ADMIN (`403` otherwise). Filters:
+        `market` (country code), `status` (`DRAFT`, `APPROVED`, `RETIRED`). Ordered by country,
+        name, newest version first. `variables` is the fixed list of placeholders a template may
+        use. `Cache-Control: private, no-store`.
+      security:
+        - cookieSession: []
+      parameters:
+        - name: market
+          in: query
+          schema: {type: string, pattern: "^[A-Za-z]{2}$"}
+        - name: status
+          in: query
+          schema: {type: string, enum: [DRAFT, APPROVED, RETIRED]}
+      responses:
+        "200":
+          description: The templates.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeaseTemplateList"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [leases]
+      operationId: adminCreateLeaseTemplate
+      summary: Create a lease template (version 1, DRAFT)
+      description: |
+        `market_code`, `name`, `lease_kind` and `sections` are required. Every `{{placeholder}}` in
+        a heading, a section text or an optional clause must be one of `variables` (`400
+        VALIDATION_FAILED` naming the unknown ones, also for a stray `{{` or `}}`). Text is plain
+        (no `<` or `>`). Audited (`CREATED`). Rate limit: the lease bucket (30 / 30 per minute).
+      security:
+        - cookieSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LeaseTemplateInput"
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeaseTemplateEnvelope"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/admin/lease-templates/{id}:
+    parameters:
+      - $ref: "#/components/parameters/LeaseTemplateId"
+    get:
+      tags: [leases]
+      operationId: adminGetLeaseTemplate
+      summary: One template version with its audit trail
+      security:
+        - cookieSession: []
+      responses:
+        "200":
+          description: The template, its audit trail (oldest first) and the variables.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [template, events, variables]
+                properties:
+                  template:
+                    $ref: "#/components/schemas/LeaseTemplate"
+                  events:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/LeaseTemplateEvent"
+                  variables:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/LeaseVariable"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/LeaseNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    patch:
+      tags: [leases]
+      operationId: adminEditLeaseTemplate
+      summary: Edit a DRAFT, or start the next version of an APPROVED template
+      description: |
+        The keys sent replace the saved values (`market_code` cannot change). A `DRAFT` is
+        changed in place: `200`, `new_version: false`. An `APPROVED` template is never changed:
+        its family's next version is created as a `DRAFT` with the changes (`201`,
+        `new_version: true`, audit `NEW_VERSION`); `409 LEASE_TEMPLATE_DRAFT_EXISTS` when the
+        family already has a draft. A `RETIRED` template: `409 LEASE_TEMPLATE_NOT_EDITABLE`.
+      security:
+        - cookieSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LeaseTemplateInput"
+      responses:
+        "200":
+          description: The edited draft.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeaseTemplateEnvelope"
+        "201":
+          description: The new draft version.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeaseTemplateEnvelope"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/LeaseNotFound"
+        "409":
+          $ref: "#/components/responses/LeaseConflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/admin/lease-templates/{id}/approve:
+    parameters:
+      - $ref: "#/components/parameters/LeaseTemplateId"
+    post:
+      tags: [leases]
+      operationId: adminApproveLeaseTemplate
+      summary: Approve a DRAFT with its legal review
+      description: |
+        `legal_review` is required (`reviewed_on` a date, not in the future). The family's
+        earlier `APPROVED` version becomes `RETIRED` at the same time (leases made from it keep
+        it). Audited (`APPROVED`, and `RETIRED` for the replaced version). Only a `DRAFT`: `409
+        LEASE_TEMPLATE_STATE_CONFLICT` otherwise.
+      security:
+        - cookieSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [legal_review]
+              properties:
+                legal_review:
+                  $ref: "#/components/schemas/LegalReview"
+      responses:
+        "200":
+          description: Approved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeaseTemplateEnvelope"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/LeaseNotFound"
+        "409":
+          $ref: "#/components/responses/LeaseConflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/admin/lease-templates/{id}/retire:
+    parameters:
+      - $ref: "#/components/parameters/LeaseTemplateId"
+    post:
+      tags: [leases]
+      operationId: adminRetireLeaseTemplate
+      summary: Retire an APPROVED template
+      description: No body. It is no longer offered or accepted for new leases; existing leases keep their version.
+      security:
+        - cookieSession: []
+      responses:
+        "200":
+          description: Retired.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeaseTemplateEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/LeaseNotFound"
+        "409":
+          $ref: "#/components/responses/LeaseConflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/admin/leases:
+    get:
+      tags: [leases]
+      operationId: adminListLeases
+      summary: Every lease, read-only (SUPER_ADMIN, SUPPORT)
+      security:
+        - cookieSession: []
+      parameters:
+        - $ref: "#/components/parameters/LeaseStatusFilter"
+        - $ref: "#/components/parameters/RequestPage"
+        - $ref: "#/components/parameters/RequestPageSize"
+      responses:
+        "200":
+          description: One page, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeasePage"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/me/lease-templates:
+    get:
+      tags: [leases]
+      operationId: listOfferedLeaseTemplates
+      summary: The approved templates a lease can be made from
+      description: |
+        Only `APPROVED` templates, of `market` when given (every country otherwise): a draft,
+        retired or other-country template is never offered, and is refused when used (`422
+        LEASE_TEMPLATE_NOT_AVAILABLE`, `422 LEASE_MARKET_MISMATCH`). For whoever may create leases
+        (`403` otherwise). The legal review is shown: a sample template says it is a sample.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - name: market
+          in: query
+          schema: {type: string, pattern: "^[A-Za-z]{2}$"}
+      responses:
+        "200":
+          description: The templates and the variables.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeaseTemplateList"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/me/leases:
+    get:
+      tags: [leases]
+      operationId: listMyLeases
+      summary: The leases the caller sees
+      description: |
+        Who may (`403 FORBIDDEN` otherwise): whoever may manage listings (`can_manage_listings`:
+        OWNER, MANAGER or AGENT of an agency, law firm, property manager, developer or host, and
+        approved landlords and property sellers); never STAFF, seekers or pending professionals.
+        An organisation's OWNER and MANAGER see (and act on) every lease of the organisation;
+        an AGENT the leases they created; a direct owner their own. Newest first.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - $ref: "#/components/parameters/LeaseStatusFilter"
+        - $ref: "#/components/parameters/RequestPage"
+        - $ref: "#/components/parameters/RequestPageSize"
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeasePage"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [leases]
+      operationId: createLease
+      summary: Draft a lease from an approved template
+      description: |
+        `template_id` must be an `APPROVED` template (`422 LEASE_TEMPLATE_NOT_AVAILABLE`).
+        `listing_id` (optional) must be a listing the caller may edit (`404 LISTING_NOT_FOUND`
+        otherwise, as for an unknown one); it gives the organisation, the country (which must be
+        the template's: `422 LEASE_MARKET_MISMATCH`) and, unless one is sent, the address (the
+        listing's suburb, city, region and country: listings have no street address). Without a
+        listing `property_address` is required, and `organisation_id` when the caller manages
+        listings for more than one organisation.
+
+        Every mandatory field is checked on every save: 1 to 5 landlords and 1 to 5 tenants
+        (name, email, optional phone; each party a different email address), `start_date`,
+        `end_date` after it unless `periodic: true` (then no `end_date`), `rent_amount` (a
+        decimal string above 0, at most two decimals), `rent_currency` (ISO 4217), `rent_period`,
+        `payment_day` (1-31, or 1-7 = Monday-Sunday for `WEEKLY`), `deposit_amount` (optional),
+        `notice_period_days` (1-365), `optional_clauses` (codes of the template's clauses).
+
+        The lease gets a reference `RPL-<year>-<6 digits>` and its draft PDF is rendered (a
+        diagonal DRAFT watermark on every page; a footer with the reference, the template name
+        and version, and page x of y; a row for every party's initials above it; a signature
+        block per party at the end) into private storage. Audited (`CREATED`, `PDF_GENERATED`).
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LeaseInput"
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeaseEnvelope"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/LeaseNotFound"
+        "422":
+          $ref: "#/components/responses/LeaseUnprocessable"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/me/leases/{id}:
+    parameters:
+      - $ref: "#/components/parameters/LeaseId"
+    get:
+      tags: [leases]
+      operationId: getMyLease
+      summary: One lease
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The lease.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeaseEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/LeaseNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    patch:
+      tags: [leases]
+      operationId: patchLease
+      summary: Change a DRAFT lease
+      description: |
+        The keys sent replace the saved values; the whole lease is validated again (as on
+        create). `listing_id` and `organisation_id` cannot change (`400`). A new `template_id`
+        must be approved and of the lease's country. The draft PDF is rendered again: **only the
+        newest draft PDF is kept** (the previous object is deleted; the audit trail keeps every
+        version's SHA-256). Not a draft: `409 LEASE_NOT_EDITABLE`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LeaseInput"
+      responses:
+        "200":
+          description: Changed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeaseEnvelope"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/LeaseNotFound"
+        "409":
+          $ref: "#/components/responses/LeaseConflict"
+        "422":
+          $ref: "#/components/responses/LeaseUnprocessable"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [leases]
+      operationId: deleteLease
+      summary: Delete a DRAFT lease (its audit trail and PDF too)
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "204":
+          description: Deleted.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/LeaseNotFound"
+        "409":
+          $ref: "#/components/responses/LeaseConflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/me/leases/{id}/pdf:
+    parameters:
+      - $ref: "#/components/parameters/LeaseId"
+    get:
+      tags: [leases]
+      operationId: getMyLeasePdf
+      summary: The lease's current PDF
+      description: |
+        The draft (`DRAFT`), the signing copy (sent, declined, expired) or the signed document
+        (`SIGNED`). Streamed from private storage, `Cache-Control: private, no-store`,
+        `Content-Disposition: inline`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The PDF.
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/LeaseNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/me/leases/{id}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/LeaseId"
+    post:
+      tags: [leases]
+      operationId: cancelLease
+      summary: Cancel a lease before it is signed
+      description: Optional body `{"reason"}`. A `DRAFT` or a lease waiting for signatures becomes `CANCELLED`; otherwise `409 LEASE_STATE_CONFLICT`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                reason:
+                  type: string
+                  maxLength: 1000
+      responses:
+        "200":
+          description: Cancelled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeaseEnvelope"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/LeaseNotFound"
+        "409":
+          $ref: "#/components/responses/LeaseConflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/me/leases/{id}/events:
+    parameters:
+      - $ref: "#/components/parameters/LeaseId"
+    get:
+      tags: [leases]
+      operationId: listLeaseEvents
+      summary: The lease's audit trail, oldest first
+      description: |
+        Immutable records: `CREATED`, `EDITED` (`detail.fields`), `PDF_GENERATED` (`detail.kind`,
+        `sha256`), `SENT`, `SIGNED`, `DECLINED`, `CANCELLED`, `EXPIRED`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The audit trail.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/LeaseEvent"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/LeaseNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
 components:
   parameters:
+    LeaseTemplateId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    LeaseId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    LeaseStatusFilter:
+      name: status
+      in: query
+      schema:
+        type: string
+        enum: [DRAFT, SENT_FOR_SIGNING, SIGNED, DECLINED, CANCELLED, EXPIRED]
     OrganisationId:
       name: id
       in: path
@@ -7034,6 +7656,33 @@ components:
             sent_to: "c•••@example.test"
             expires_at: "2026-11-14T09:15:00Z"
             code_length: 6
+    LeaseNotFound:
+      description: "`LEASE_NOT_FOUND`, `LEASE_TEMPLATE_NOT_FOUND`, `LISTING_NOT_FOUND` (unknown, or not one the caller may edit) or `LEASE_DOCUMENT_UNAVAILABLE`."
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    LeaseConflict:
+      description: "`LEASE_NOT_EDITABLE`, `LEASE_STATE_CONFLICT`, `LEASE_TEMPLATE_DRAFT_EXISTS`, `LEASE_TEMPLATE_NOT_EDITABLE` or `LEASE_TEMPLATE_STATE_CONFLICT`. Nothing was changed."
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    LeaseUnprocessable:
+      description: "`LEASE_TEMPLATE_NOT_AVAILABLE` (not approved, retired or unknown) or `LEASE_MARKET_MISMATCH` (the template's country is not the property's)."
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
     RateLimited:
       description: Too many requests from this IP (`RATE_LIMITED`).
       headers:
@@ -9949,7 +10598,7 @@ components:
           items:
             type: object
             additionalProperties: false
-            required: [id, name, kind, market_code, role, role_label, can_see_members, can_assign_work, can_manage_listings, can_manage_team]
+            required: [id, name, kind, market_code, role, role_label, can_see_members, can_assign_work, can_manage_listings, can_manage_team, can_create_leases]
             properties:
               id:
                 type: string
@@ -9976,13 +10625,16 @@ components:
               can_manage_team:
                 type: boolean
                 description: New in 0.23.0. The caller may invite people, decide join requests, and change, suspend or remove members (OWNER and MANAGER).
+              can_create_leases:
+                type: boolean
+                description: New in 0.24.0. The caller may draft leases for the organisation (POST /v1/me/leases); the same as can_manage_listings.
         direct_owner:
           type: boolean
           description: The caller is an approved landlord or property seller.
         capabilities:
           type: object
           additionalProperties: false
-          required: [receives_requests, receives_business_enquiries, manages_appointments, manages_listings, sees_team]
+          required: [receives_requests, receives_business_enquiries, manages_appointments, manages_listings, sees_team, creates_leases]
           properties:
             receives_requests:
               type: boolean
@@ -9994,6 +10646,9 @@ components:
               type: boolean
             sees_team:
               type: boolean
+            creates_leases:
+              type: boolean
+              description: New in 0.24.0. /v1/me/leases is open to the caller.
         onboarding:
           type: array
           description: One entry per role with an onboarding application.
@@ -10882,3 +11537,484 @@ components:
               type: integer
             upcoming_confirmed:
               type: integer
+    LeaseVariable:
+      type: object
+      additionalProperties: false
+      required: [name, description, example]
+      properties:
+        name:
+          type: string
+          enum: [reference, agreement_date, landlord_names, tenant_names, landlord_details, tenant_details, property_address,
+            country_name, lease_kind, start_date, end_date, term, rent_amount, rent_currency, rent_period, payment_day,
+            deposit_amount, notice_period_days, special_conditions]
+        description:
+          type: string
+        example:
+          type: string
+    LeaseSection:
+      type: object
+      additionalProperties: false
+      required: [heading, text]
+      properties:
+        heading:
+          type: string
+          maxLength: 200
+        text:
+          type: string
+          maxLength: 10000
+          description: Plain text with `{{variable}}` placeholders; line breaks are kept.
+    LeaseClause:
+      type: object
+      additionalProperties: false
+      required: [code, title, text]
+      properties:
+        code:
+          type: string
+          pattern: "^[A-Z][A-Z0-9_]{1,39}$"
+        title:
+          type: string
+        text:
+          type: string
+    LegalReview:
+      type: object
+      additionalProperties: false
+      required: [reviewer_name, organisation, reviewed_on]
+      properties:
+        reviewer_name:
+          type: string
+        organisation:
+          type: string
+        reviewed_on:
+          type: string
+          format: date
+        note:
+          type: string
+          maxLength: 2000
+    LeaseTemplateInput:
+      type: object
+      additionalProperties: false
+      properties:
+        market_code:
+          type: string
+          pattern: "^[A-Za-z]{2}$"
+        name:
+          type: string
+          maxLength: 120
+        lease_kind:
+          type: string
+          enum: [RESIDENTIAL, COMMERCIAL]
+        description:
+          type: string
+          maxLength: 1000
+        sections:
+          type: array
+          minItems: 1
+          maxItems: 60
+          items:
+            $ref: "#/components/schemas/LeaseSection"
+        optional_clauses:
+          type: array
+          maxItems: 30
+          items:
+            $ref: "#/components/schemas/LeaseClause"
+    LeaseTemplate:
+      type: object
+      additionalProperties: false
+      required: [id, family_id, version, market_code, name, lease_kind, description, sections, optional_clauses, status,
+        legal_review, created_by_name, approved_at, approved_by_name, retired_at, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        family_id:
+          type: string
+          format: uuid
+          description: Groups the versions of one template (the first version's ID).
+        version:
+          type: integer
+          minimum: 1
+        market_code:
+          type: string
+        name:
+          type: string
+        lease_kind:
+          type: string
+          enum: [RESIDENTIAL, COMMERCIAL]
+        description:
+          type: [string, "null"]
+        sections:
+          type: array
+          items:
+            $ref: "#/components/schemas/LeaseSection"
+        optional_clauses:
+          type: array
+          items:
+            $ref: "#/components/schemas/LeaseClause"
+        status:
+          type: string
+          enum: [DRAFT, APPROVED, RETIRED]
+        legal_review:
+          oneOf:
+            - $ref: "#/components/schemas/LegalReview"
+            - type: "null"
+        created_by_name:
+          type: string
+        approved_at:
+          type: [string, "null"]
+          format: date-time
+        approved_by_name:
+          type: [string, "null"]
+        retired_at:
+          type: [string, "null"]
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    LeaseTemplateEnvelope:
+      type: object
+      additionalProperties: false
+      required: [template]
+      properties:
+        template:
+          $ref: "#/components/schemas/LeaseTemplate"
+        new_version:
+          type: boolean
+          description: PATCH only. True when an approved template's next version was created.
+    LeaseTemplateList:
+      type: object
+      additionalProperties: false
+      required: [items, variables]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/LeaseTemplate"
+        variables:
+          type: array
+          items:
+            $ref: "#/components/schemas/LeaseVariable"
+    LeaseTemplateEvent:
+      type: object
+      additionalProperties: false
+      required: [id, action, actor, detail, at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        action:
+          type: string
+          enum: [CREATED, EDITED, NEW_VERSION, APPROVED, RETIRED]
+        actor:
+          $ref: "#/components/schemas/LeaseActor"
+        detail:
+          type: [object, "null"]
+        at:
+          type: string
+          format: date-time
+    LeaseActor:
+      type: object
+      additionalProperties: false
+      required: [type, user_id, name]
+      properties:
+        type:
+          type: string
+          enum: [USER, SYSTEM, RECIPIENT]
+        user_id:
+          type: [string, "null"]
+          format: uuid
+        name:
+          type: string
+    LeaseParty:
+      type: object
+      additionalProperties: false
+      required: [name, email]
+      properties:
+        name:
+          type: string
+          maxLength: 120
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+    LeaseInput:
+      type: object
+      additionalProperties: false
+      properties:
+        template_id:
+          type: string
+          format: uuid
+        listing_id:
+          type: string
+          format: uuid
+          description: Create only.
+        organisation_id:
+          type: string
+          format: uuid
+          description: Create only, without a listing.
+        property_address:
+          type: string
+          maxLength: 300
+        landlords:
+          type: array
+          minItems: 1
+          maxItems: 5
+          items:
+            $ref: "#/components/schemas/LeaseParty"
+        tenants:
+          type: array
+          minItems: 1
+          maxItems: 5
+          items:
+            $ref: "#/components/schemas/LeaseParty"
+        start_date:
+          type: string
+          format: date
+        end_date:
+          type: string
+          format: date
+        periodic:
+          type: boolean
+        rent_amount:
+          type: string
+          pattern: "^\\d{1,12}(\\.\\d{1,2})?$"
+        rent_currency:
+          type: string
+          pattern: "^[A-Z]{3}$"
+        rent_period:
+          type: string
+          enum: [MONTHLY, WEEKLY, ANNUALLY]
+        payment_day:
+          type: integer
+          minimum: 1
+          maximum: 31
+        deposit_amount:
+          type: string
+        notice_period_days:
+          type: integer
+          minimum: 1
+          maximum: 365
+        optional_clauses:
+          type: array
+          items:
+            type: string
+        special_conditions:
+          type: string
+          maxLength: 4000
+    LeaseDocument:
+      type: object
+      additionalProperties: false
+      required: [kind, sha256, size_bytes, template_version, generated_at]
+      properties:
+        kind:
+          type: string
+          enum: [DRAFT, SIGNING, FINAL]
+        sha256:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+        size_bytes:
+          type: integer
+        template_version:
+          type: integer
+        generated_at:
+          type: string
+          format: date-time
+    Lease:
+      type: object
+      additionalProperties: false
+      required: [id, reference, status, template, organisation, listing, created_by, property_address, landlords, tenants,
+        start_date, end_date, periodic, rent_amount, rent_currency, rent_period, payment_day, deposit_amount,
+        notice_period_days, optional_clauses, special_conditions, document, signing_copy, agreement_id, can_edit, can_send,
+        can_cancel, can_delete, created_at, updated_at, sent_at, completed_at, declined_at, cancelled_at, cancel_reason]
+      properties:
+        id:
+          type: string
+          format: uuid
+        reference:
+          type: string
+          pattern: "^RPL-\\d{4}-\\d{6,}$"
+        status:
+          type: string
+          enum: [DRAFT, SENT_FOR_SIGNING, SIGNED, DECLINED, CANCELLED, EXPIRED]
+        template:
+          type: object
+          additionalProperties: false
+          required: [id, name, version, market_code, lease_kind]
+          properties:
+            id:
+              type: string
+              format: uuid
+            name:
+              type: string
+            version:
+              type: integer
+            market_code:
+              type: string
+            lease_kind:
+              type: string
+        organisation:
+          type: [object, "null"]
+          additionalProperties: false
+          properties:
+            id:
+              type: string
+              format: uuid
+            name:
+              type: string
+        listing:
+          type: [object, "null"]
+          additionalProperties: false
+          properties:
+            id:
+              type: string
+              format: uuid
+            reference:
+              type: string
+            title:
+              type: string
+        created_by:
+          type: object
+          additionalProperties: false
+          properties:
+            user_id:
+              type: string
+              format: uuid
+            name:
+              type: string
+        property_address:
+          type: string
+        landlords:
+          type: array
+          items:
+            $ref: "#/components/schemas/LeasePartyView"
+        tenants:
+          type: array
+          items:
+            $ref: "#/components/schemas/LeasePartyView"
+        start_date:
+          type: string
+          format: date
+        end_date:
+          type: [string, "null"]
+          format: date
+        periodic:
+          type: boolean
+        rent_amount:
+          type: string
+        rent_currency:
+          type: string
+        rent_period:
+          type: string
+          enum: [MONTHLY, WEEKLY, ANNUALLY]
+        payment_day:
+          type: integer
+        deposit_amount:
+          type: [string, "null"]
+        notice_period_days:
+          type: integer
+        optional_clauses:
+          type: array
+          items:
+            type: string
+        special_conditions:
+          type: [string, "null"]
+        document:
+          description: The PDF `GET .../pdf` returns now.
+          oneOf:
+            - $ref: "#/components/schemas/LeaseDocument"
+            - type: "null"
+        signing_copy:
+          description: The frozen copy sent for signing.
+          oneOf:
+            - $ref: "#/components/schemas/LeaseDocument"
+            - type: "null"
+        agreement_id:
+          type: [string, "null"]
+          format: uuid
+          description: The agreement the lease was sent with (`GET /v1/me/agreements/{id}`).
+        can_edit:
+          type: boolean
+        can_send:
+          type: boolean
+        can_cancel:
+          type: boolean
+        can_delete:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        sent_at:
+          type: [string, "null"]
+          format: date-time
+        completed_at:
+          type: [string, "null"]
+          format: date-time
+        declined_at:
+          type: [string, "null"]
+          format: date-time
+        cancelled_at:
+          type: [string, "null"]
+          format: date-time
+        cancel_reason:
+          type: [string, "null"]
+    LeasePartyView:
+      type: object
+      additionalProperties: false
+      required: [role, name, email, phone]
+      properties:
+        role:
+          type: string
+          enum: [LANDLORD, TENANT]
+        name:
+          type: string
+        email:
+          type: string
+        phone:
+          type: [string, "null"]
+    LeaseEnvelope:
+      type: object
+      additionalProperties: false
+      required: [lease]
+      properties:
+        lease:
+          $ref: "#/components/schemas/Lease"
+    LeasePage:
+      type: object
+      additionalProperties: false
+      required: [items, page, page_size, total, total_pages]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Lease"
+        page:
+          type: integer
+        page_size:
+          type: integer
+        total:
+          type: integer
+        total_pages:
+          type: integer
+    LeaseEvent:
+      type: object
+      additionalProperties: false
+      required: [id, action, actor, detail, at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        action:
+          type: string
+        actor:
+          $ref: "#/components/schemas/LeaseActor"
+        detail:
+          type: object
+        at:
+          type: string
+          format: date-time
