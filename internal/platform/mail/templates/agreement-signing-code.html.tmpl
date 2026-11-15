@@ -1,0 +1,13 @@
+{{define "preheader"}}Your code to sign a document. It is valid for 10 minutes.{{end}}
+{{define "heading"}}Your code to sign{{end}}
+{{define "button"}}Open RightProperty365{{end}}
+{{define "why"}}You are receiving this because a code was asked for on the signing page of a document sent to this email address.{{end}}
+{{define "body"}}
+<p class="ink" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;color:#131722;">{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}</p>
+<p class="ink" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;color:#131722;">Enter this code on the signing page of {{.Reference}} to confirm this email address:</p>
+<table role="presentation" class="facts" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 20px;background-color:#f8f9fc;border:1px solid #e6e9f0;border-radius:10px;"><tr><td align="center" style="padding:20px 16px;">
+<p class="ink" style="margin:0;font-family:'SFMono-Regular',Menlo,Consolas,'Liberation Mono',monospace;font-size:34px;line-height:42px;font-weight:700;letter-spacing:8px;color:#131722;">{{.Code}}</p>
+</td></tr></table>
+<p class="ink" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;color:#131722;">The code is valid for 10 minutes. RightProperty365 will never ask you for it by phone or message, so do not share it.</p>
+<p class="muted" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:14px;line-height:21px;color:#4f586a;">If you did not ask for a code, you can ignore this email: nobody can sign in your name without it.</p>
+{{end}}

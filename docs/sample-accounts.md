@@ -100,7 +100,14 @@ Every other business profile has an owner too, at `<profile slug>@example.test` 
 - **A draft lease** `RPL-2026-900001` by `agent@example.test` (Tendai Ncube) on listing 2 (Two-bedroom garden
   apartment), landlord `landlord@example.test`, tenant `tenant@example.test`: open it under *Leases*, edit it,
   download its PDF. Its agency's owner and manager see it too; another agent of the agency does not.
-- Seeded in memory by the API in development and by `cmd/seed` (needs migration 0022).
+- **Documents out for signature** (sent by `agent@example.test`): the uploaded "Sample inventory and condition
+  report" (`RPA-2026-900001`: `tenant@example.test` signs first, then `landlord@example.test` approves,
+  `estates.owner@example.test` in copy) and the lease `RPL-2026-900002` on listing 5 (`RPA-2026-900002`: landlord
+  and tenant sign in any order). Nobody has the seeded links: sign in as the tenant or the landlord, open
+  *Documents to sign* (`GET /v1/me/signing-requests`, then `POST /v1/me/signing-requests/{id}/link`), ask for the
+  code and enter the **demo code** on staging (in development, the code is in the API log line
+  `DEV MAIL (not sent): agreement-signing-code`, or set `AUTH_DEMO_CODE`).
+- Seeded in memory by the API in development and by `cmd/seed` (needs migrations 0022 and 0023).
 
 ## Platform administrators (administrator sign-in only)
 

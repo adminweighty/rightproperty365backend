@@ -1,0 +1,13 @@
+{{define "subject"}}Your RightProperty365 code to sign {{.Reference}}{{end}}
+{{define "heading"}}Your code to sign{{end}}
+{{define "button"}}Open RightProperty365{{end}}
+{{define "why"}}You are receiving this because a code was asked for on the signing page of a document sent to this email address.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+Enter this code on the signing page of {{.Reference}} to confirm this email address:
+
+    {{.Code}}
+
+The code is valid for 10 minutes. RightProperty365 will never ask you for it by phone or message, so do not share it.
+
+If you did not ask for a code, you can ignore this email: nobody can sign in your name without it.{{end}}

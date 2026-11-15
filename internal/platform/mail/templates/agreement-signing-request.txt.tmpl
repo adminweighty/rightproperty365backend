@@ -1,0 +1,19 @@
+{{define "subject"}}{{.ActorName}} sent you {{.DocumentName}} to sign{{end}}
+{{define "heading"}}A document is waiting for you{{end}}
+{{define "button"}}Review the document{{end}}
+{{define "why"}}You are receiving this because {{.ActorName}} sent this document to this email address on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+{{.ActorName}} sent you {{.DocumentName}} on RightProperty365.
+{{if .Message}}
+Message from {{.ActorName}}: {{.Message}}
+{{end}}
+Document: {{.DocumentName}}
+Reference: {{.Reference}}
+From: {{.ActorName}}
+Your part: {{.RoleName}}
+Link valid until: {{dateTime .ExpiresOn}}
+
+Open the document to read it. You will be asked for a code that we email to this address, then you can sign it, or decline it with a reason.
+
+This link is for you only: do not forward this email. If you did not expect this document, you can ignore it.{{end}}

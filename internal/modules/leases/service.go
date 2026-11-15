@@ -1181,7 +1181,11 @@ func (s *Service) Follow(ctx context.Context, leaseID uuid.UUID, agreementStatus
 			cur.CompletedAt = &at
 			if final != nil {
 				d := *final
-				d.Kind = DocumentFinal
+				d.Kind, d.TemplateID, d.TemplateVersion = DocumentFinal, cur.TemplateID, cur.TemplateVersion
+				d.Snapshot = cur.Documents[DocumentSigning].Snapshot
+				if len(d.Snapshot) == 0 {
+					d.Snapshot = []byte(`{}`)
+				}
 				cur.Documents[DocumentFinal] = d
 				detail["signed_document_sha256"] = d.SHA256
 			}

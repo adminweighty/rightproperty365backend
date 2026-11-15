@@ -1,0 +1,23 @@
+Subject: Reminder: Lease RPL-2026-900002 is waiting for you
+
+A reminder about a document
+
+Hello Tariro Tenant,
+
+Lease RPL-2026-900002 from Tendai Ncube is still waiting for you.
+
+Document: Lease RPL-2026-900002
+Reference: RPA-2026-000042
+From: Tendai Ncube
+Your part: Tenant 1
+Link valid until: 14 December 2026, 09:05 UTC
+
+This link is for you only: do not forward this email. Your earlier links keep working until the date above.
+
+Review the document:
+https://rightproperty365.com/sign/SAMPLE-TOKEN-not-a-real-credential
+
+--
+You are receiving this because Tendai Ncube sent this document to this email address on RightProperty365 and it still waits for you.
+Sent by RightProperty365.
+https://rightproperty365.com

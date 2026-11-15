@@ -1,0 +1,15 @@
+{{define "subject"}}Reminder: {{.DocumentName}} is waiting for you{{end}}
+{{define "heading"}}A reminder about a document{{end}}
+{{define "button"}}Review the document{{end}}
+{{define "why"}}You are receiving this because {{.ActorName}} sent this document to this email address on RightProperty365 and it still waits for you.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+{{.DocumentName}} from {{.ActorName}} is still waiting for you.
+
+Document: {{.DocumentName}}
+Reference: {{.Reference}}
+From: {{.ActorName}}
+Your part: {{.RoleName}}
+Link valid until: {{dateTime .ExpiresOn}}
+
+This link is for you only: do not forward this email. Your earlier links keep working until the date above.{{end}}

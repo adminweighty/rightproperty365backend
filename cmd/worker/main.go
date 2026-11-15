@@ -14,7 +14,9 @@ import (
 	"github.com/google/uuid"
 
 	"rightproperty365.com/backend/internal/app"
+	"rightproperty365.com/backend/internal/modules/agreements"
 	"rightproperty365.com/backend/internal/modules/appointments"
+	"rightproperty365.com/backend/internal/modules/leases"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/modules/notifications"
@@ -137,6 +139,16 @@ func run() error {
 		logger.Info("search driver selected: database (listing events are acknowledged; there is no search index)",
 			slog.String("search_driver", config.SearchDriverDatabase))
 	}
+
+	// Agreements: expiry and the reminders that are due, every few minutes
+	// (each reminder is recorded under a job key, so it is sent once). Their
+	// emails carry signing links, so they are sent from here, not through
+	// the outbox. A lease follows its agreement.
+	agreementSvc := agreements.NewService(agreements.Deps{Store: agreements.NewPostgresStore(pool),
+		Mailer: notifications.NewAccountMailer(mail.NewService(sender, mail.NewPostgresDeliveryLog(pool), logger), renderer),
+		Logger: logger, PublicWebURL: cfg.PublicWebURL})
+	leaseSvc := leases.NewService(leases.Deps{Store: leases.NewPostgresStore(pool), Logger: logger})
+	go app.RunAgreementSweeps(ctx, agreementSvc, leaseSvc, logger)
 
 	err = dispatcher.Run(ctx)
 	logger.Info("worker stopped")

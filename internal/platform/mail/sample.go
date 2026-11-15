@@ -45,6 +45,18 @@ func SampleData(name string) Data {
 		d.Name, d.Path = "", "/invitations/"+sampleToken
 		d.OrganisationName, d.RoleName, d.JobTitle, d.ActorName = "Sample Estates", "Estate Agent", "Senior negotiator", "Rudo Moyo"
 		d.ExpiresOn = sampleTime.Add(7 * 24 * time.Hour)
+	case "agreement-signing-request", "agreement-reminder":
+		d.Name, d.Path = "Tariro Tenant", "/sign/"+sampleToken
+		d.DocumentName, d.Reference, d.ActorName, d.RoleName = "Lease RPL-2026-900002", "RPA-2026-000042", "Tendai Ncube", "Tenant 1"
+		d.Message, d.ExpiresOn = "Please read the lease and sign it this week.", sampleTime.AddDate(0, 0, 30)
+	case "agreement-signing-code":
+		d.Name, d.Path, d.Code, d.Reference = "Tariro Tenant", "/", "000000", "RPA-2026-000042"
+	case "agreement-completed":
+		d.Name, d.Path, d.DocumentName, d.Reference = "Tariro Tenant", "/sign/"+sampleToken, "Lease RPL-2026-900002", "RPA-2026-000042"
+		d.ExpiresOn = sampleTime.AddDate(0, 0, 90)
+	case "agreement-declined":
+		d.Name, d.Path, d.DocumentName, d.Reference = "Tendai Ncube", "/agent/agreements/0195c0de-0000-7000-8000-00000000e401", "Lease RPL-2026-900002", "RPA-2026-000042"
+		d.ActorName, d.Reason = "Tariro Tenant", "The start date should be the first of January."
 	case "property-request-assigned":
 		d.Name, d.Path, d.Reference, d.RequestType = "Tendai Ncube", "/agent/requests", "RP-7K2M9Q4D", RequestTypeName("VIEWING_REQUEST")
 		d.ListingTitle, d.ListingRef, d.ActorName = "Four-bedroom family home in Borrowdale", "RP-ZW-10001", "Rudo Moyo"

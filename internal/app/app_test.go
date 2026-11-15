@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 
 	"rightproperty365.com/backend/internal/devseed"
+	"rightproperty365.com/backend/internal/modules/agreements"
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/availability"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
@@ -57,6 +58,70 @@ type captureMailer struct {
 	signInCodes []sentCode
 	// invitations are the team invitations that would have been emailed.
 	invitations []sentInvitation
+	// signings, agreementCodes, completions and declines are the agreement emails.
+	signings       []sentSigning
+	agreementCodes []sentCode
+	completions    []sentSigning
+	declines       []string
+}
+
+// sentSigning is one agreement email with a link.
+type sentSigning struct {
+	to       string
+	token    string
+	reminder bool
+}
+
+func (m *captureMailer) SendSigning(_ context.Context, to string, s agreements.SigningMail) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.signings = append(m.signings, sentSigning{to: to, token: s.Token, reminder: s.Reminder})
+	return nil
+}
+
+func (m *captureMailer) SendCode(_ context.Context, to string, c agreements.CodeMail) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.agreementCodes = append(m.agreementCodes, sentCode{to: to, code: c.Code})
+	return nil
+}
+
+func (m *captureMailer) SendCompleted(_ context.Context, to string, c agreements.CompletedMail) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.completions = append(m.completions, sentSigning{to: to, token: c.Token})
+	return nil
+}
+
+func (m *captureMailer) SendDeclined(_ context.Context, to string, _ agreements.DeclinedMail) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.declines = append(m.declines, to)
+	return nil
+}
+
+// signingFor returns the newest signing link emailed to an address ("" when none).
+func (m *captureMailer) signingFor(to string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := len(m.signings) - 1; i >= 0; i-- {
+		if m.signings[i].to == to {
+			return m.signings[i].token
+		}
+	}
+	return ""
+}
+
+// codeFor returns the newest agreement code emailed to an address.
+func (m *captureMailer) codeFor(to string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := len(m.agreementCodes) - 1; i >= 0; i-- {
+		if m.agreementCodes[i].to == to {
+			return m.agreementCodes[i].code
+		}
+	}
+	return ""
 }
 
 // sentInvitation is one invitation email.
@@ -187,6 +252,7 @@ type env struct {
 	appts     *appointments.MemoryStore
 	team      *teams.MemoryStore
 	leases    *leases.MemoryStore
+	agree     *agreements.MemoryStore
 	files     *storage.Local
 	mail      *captureMailer
 	logs      *bytes.Buffer
@@ -268,6 +334,10 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 	if err := devseed.SeedMemoryLeases(context.Background(), e.leases, e.files, e.now); err != nil {
 		t.Fatal(err)
 	}
+	e.agree = agreements.NewMemoryStore()
+	if err := devseed.SeedMemoryAgreements(context.Background(), e.agree, e.leases, e.files, e.now); err != nil {
+		t.Fatal(err)
+	}
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	e.marketStore = markets.NewMemoryStore()
 	e.calendars = availability.NewMemoryStore()
@@ -287,6 +357,7 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		Availability: e.calendars,
 		Teams:        e.team,
 		Leases:       e.leases,
+		Agreements:   e.agree,
 		Now:          func() time.Time { return e.now },
 		Hasher:       &hasher,
 	})

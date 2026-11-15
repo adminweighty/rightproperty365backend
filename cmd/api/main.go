@@ -17,6 +17,7 @@ import (
 
 	"rightproperty365.com/backend/internal/app"
 	"rightproperty365.com/backend/internal/devseed"
+	"rightproperty365.com/backend/internal/modules/agreements"
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/availability"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
@@ -107,6 +108,8 @@ func run() error {
 		teamStore teams.Store
 		// leaseStore holds the lease templates and the leases.
 		leaseStore leases.Store
+		// agreementStore holds the agreements (signing).
+		agreementStore agreements.Store
 	)
 	if cfg.UseMemoryStore() {
 		// config.Load guarantees this branch is only reachable in development.
@@ -188,6 +191,11 @@ func run() error {
 		// The sample templates (approved) and a draft lease, with its PDF.
 		if err := devseed.SeedMemoryLeases(ctx, memLeases, files, time.Now()); err != nil {
 			return fmt.Errorf("seed sample leases: %w", err)
+		}
+		memAgreements := agreements.NewMemoryStore()
+		agreementStore = memAgreements
+		if err := devseed.SeedMemoryAgreements(ctx, memAgreements, memLeases, files, time.Now()); err != nil {
+			return fmt.Errorf("seed sample agreements: %w", err)
 		}
 
 		// Without a database there is no outbox table for the worker to poll,
@@ -274,6 +282,7 @@ func run() error {
 		onboardingStore = onboarding.NewPostgresStore(pool)
 		teamStore = teams.NewPostgresStore(pool)
 		leaseStore = leases.NewPostgresStore(pool)
+		agreementStore = agreements.NewPostgresStore(pool)
 	}
 
 	// Search engine. Elasticsearch only proposes listing IDs: every hit is
@@ -320,10 +329,18 @@ func run() error {
 		Availability:  availabilityStore,
 		Teams:         teamStore,
 		Leases:        leaseStore,
+		Agreements:    agreementStore,
 		Files:         files,
 	})
 	if err != nil {
 		return err
+	}
+
+	// Without a database there is no worker: this process expires
+	// agreements and sends their reminders (development only).
+	if cfg.UseMemoryStore() {
+		go app.RunAgreementSweeps(ctx, agreements.NewService(agreements.Deps{Store: agreementStore, Files: files, Mailer: mailer, Logger: logger,
+			PublicWebURL: cfg.PublicWebURL}), nil, logger)
 	}
 
 	srv := &http.Server{

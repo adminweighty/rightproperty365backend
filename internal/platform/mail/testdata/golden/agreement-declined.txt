@@ -1,0 +1,22 @@
+Subject: Tariro Tenant declined Lease RPL-2026-900002
+
+A document was declined
+
+Hello Tendai Ncube,
+
+Tariro Tenant declined Lease RPL-2026-900002. Nobody else can sign it now.
+
+Document: Lease RPL-2026-900002
+Reference: RPA-2026-000042
+Declined by: Tariro Tenant
+Reason: The start date should be the first of January.
+
+To try again, change what is needed and send a new document.
+
+Open the document:
+https://rightproperty365.com/agent/agreements/0195c0de-0000-7000-8000-00000000e401
+
+--
+You are receiving this because you sent this document on RightProperty365.
+Sent by RightProperty365.
+https://rightproperty365.com

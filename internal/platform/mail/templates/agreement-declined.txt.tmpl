@@ -1,0 +1,14 @@
+{{define "subject"}}{{.ActorName}} declined {{.DocumentName}}{{end}}
+{{define "heading"}}A document was declined{{end}}
+{{define "button"}}Open the document{{end}}
+{{define "why"}}You are receiving this because you sent this document on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+{{.ActorName}} declined {{.DocumentName}}. Nobody else can sign it now.
+
+Document: {{.DocumentName}}
+Reference: {{.Reference}}
+Declined by: {{.ActorName}}
+Reason: {{.Reason}}
+
+To try again, change what is needed and send a new document.{{end}}

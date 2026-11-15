@@ -29,6 +29,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"rightproperty365.com/backend/internal/modules/agreements"
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/identity"
@@ -57,6 +58,10 @@ const (
 	PathMyListings = "/agent/listings"
 	// PathInvitation is followed by the invitation token.
 	PathInvitation = "/invitations/"
+	// PathSigning is followed by a recipient's signing token;
+	// PathMyAgreements by an agreement's ID (the sender's page).
+	PathSigning      = "/sign/"
+	PathMyAgreements = "/agent/agreements/"
 )
 
 // previewLength is the size of the message preview in emails to recipients.
@@ -196,6 +201,40 @@ func (m *AccountMailer) SendInvitation(ctx context.Context, to string, inv teams
 		Path: PathInvitation + url.PathEscape(inv.Token), OrganisationName: inv.OrganisationName, RoleName: inv.RoleLabel,
 		JobTitle: inv.JobTitle, ActorName: inv.InviterName, ExpiresOn: inv.ExpiresAt,
 	})
+}
+
+// SendSigning implements agreements.Mailer: a recipient's signing link
+// (a request, or a reminder with a new link). The token is only rendered
+// into the message.
+func (m *AccountMailer) SendSigning(ctx context.Context, to string, s agreements.SigningMail) error {
+	template := "agreement-signing-request"
+	if s.Reminder {
+		template = "agreement-reminder"
+	}
+	return m.send(ctx, template, to, mail.Data{Name: s.Name, Path: PathSigning + url.PathEscape(s.Token), DocumentName: s.AgreementName,
+		Reference: s.Reference, ActorName: s.SenderName, RoleName: s.RoleLabel, Message: mail.SafePreview(s.Message, 400), ExpiresOn: s.ExpiresAt})
+}
+
+// SendCode implements agreements.Mailer (the code is a credential).
+func (m *AccountMailer) SendCode(ctx context.Context, to string, c agreements.CodeMail) error {
+	return m.send(ctx, "agreement-signing-code", to, mail.Data{Name: c.Name, Path: PathHome, Code: c.Code, Reference: c.Reference})
+}
+
+// SendCompleted implements agreements.Mailer: a recipient's read-only link,
+// or the sender's agreement page.
+func (m *AccountMailer) SendCompleted(ctx context.Context, to string, c agreements.CompletedMail) error {
+	path := PathMyAgreements + c.AgreementID.String()
+	if c.Token != "" {
+		path = PathSigning + url.PathEscape(c.Token)
+	}
+	return m.send(ctx, "agreement-completed", to, mail.Data{Name: c.Name, Path: path, DocumentName: c.AgreementName, Reference: c.Reference,
+		When: c.CompletedAt, ExpiresOn: c.AvailableUntil})
+}
+
+// SendDeclined implements agreements.Mailer.
+func (m *AccountMailer) SendDeclined(ctx context.Context, to string, d agreements.DeclinedMail) error {
+	return m.send(ctx, "agreement-declined", to, mail.Data{Name: d.Name, Path: PathMyAgreements + d.AgreementID.String(), DocumentName: d.AgreementName,
+		Reference: d.Reference, ActorName: d.RecipientName, Reason: mail.SafePreview(d.Reason, 400)})
 }
 
 // SendSignInCode implements identity.Mailer. The code is rendered into the

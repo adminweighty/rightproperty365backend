@@ -59,6 +59,8 @@ const (
 	TargetAppointments      = "appointments"
 	TargetListings          = "listings"
 	TargetLeases            = "leases"
+	TargetAgreements        = "agreements"
+	TargetSigning           = "signing_requests"
 	TargetTeam              = "team"
 	TargetAdminOverview     = "admin_overview"
 )
@@ -95,6 +97,9 @@ type Sources struct {
 	// MayCreateLeases is leases.MayCreateLeases.
 	Leases          func(ctx context.Context, p *auth.Principal) (LeaseCounts, error)
 	MayCreateLeases func(p *auth.Principal) bool
+	// Signing counts the documents waiting for the caller's signature and,
+	// for a sender, the ones waiting for others (nil: none).
+	Signing func(ctx context.Context, p *auth.Principal) (waitingForYou, waitingForOthers int, err error)
 }
 
 // LeaseCounts are the lease numbers of a professional's dashboard.
@@ -312,6 +317,21 @@ func (h *Handler) build(ctx context.Context, p *auth.Principal) (Dashboard, erro
 	}
 	if err := h.customer(ctx, p, &d); err != nil {
 		return Dashboard{}, err
+	}
+	if h.src.Signing != nil {
+		you, others, err := h.src.Signing(ctx, p)
+		if err != nil {
+			return Dashboard{}, err
+		}
+		if you > 0 || d.Kind == KindSeeker {
+			d.Counters = append(d.Counters, Counter{Key: "agreements.waiting_for_you", Label: "Documents waiting for your signature", Value: you, Group: GroupMyActivity, Target: target(TargetSigning)})
+		}
+		if you > 0 {
+			d.NextActions = append(d.NextActions, Action{Code: "SIGN_DOCUMENTS", Text: plural(you, "document is waiting for your signature", "documents are waiting for your signature"), Target: TargetSigning, Count: count(you)})
+		}
+		if d.Capabilities.CreatesLeases {
+			d.Counters = append(d.Counters, Counter{Key: "agreements.waiting_for_others", Label: "Documents waiting for others", Value: others, Group: GroupLeases, Target: target(TargetAgreements)})
+		}
 	}
 	h.onboardingActions(&d)
 	if d.Kind == KindSeeker {

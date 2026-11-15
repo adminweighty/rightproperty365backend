@@ -160,6 +160,8 @@ func TestLoggedPathHidesInvitationTokens(t *testing.T) {
 		"/v1/invitations/":                      "/v1/invitations/",
 		"/v1/agent/organisations/x/invitations": "/v1/agent/organisations/x/invitations",
 		"/v1/listings":                          "/v1/listings",
+		"/v1/signing/abc/submit":                "/v1/signing/{token}/submit",
+		"/v1/signing/abc":                       "/v1/signing/{token}",
 	} {
 		if got := LoggedPath(in); got != want {
 			t.Fatalf("LoggedPath(%q) = %q, want %q", in, got, want)

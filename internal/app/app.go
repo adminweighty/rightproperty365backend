@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"rightproperty365.com/backend/internal/modules/agreements"
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/availability"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
@@ -121,6 +122,20 @@ const (
 	// refilled at 30 per minute. Each save renders a PDF.
 	leaseChangesPerMinute = 30
 	leaseChangesBurst     = 30
+
+	// Per-IP limit on the public signing links (GET and POST
+	// /v1/signing/{token}/...), its own bucket: bursts of 20, refilled at 20
+	// per minute. Sending a code has a stricter bucket of its own (5 / 5 per
+	// minute) on top of the per-recipient rules (one every 30 seconds, 10 in
+	// all).
+	signingRequestsPerMinute = 20
+	signingRequestsBurst     = 20
+	signingCodesPerMinute    = 5
+	signingCodesBurst        = 5
+	// Per-IP limit on the public verification (GET /v1/verify/{reference},
+	// POST /v1/verify): bursts of 10, refilled at 10 per minute.
+	verifyRequestsPerMinute = 10
+	verifyRequestsBurst     = 10
 )
 
 // uploadPath matches POST /v1/me/onboarding/{role}/documents and logoPath
@@ -131,7 +146,16 @@ var (
 	logoPath   = regexp.MustCompile(`^/v1/me/profiles/[^/]+/[^/]+/logo$`)
 	// photoPath is POST /v1/me/listings/{id}/photos: a listing photo upload.
 	photoPath = regexp.MustCompile(`^/v1/me/listings/[^/]+/photos$`)
+	// agreementDocumentPath is PUT /v1/me/agreements/{id}/document and
+	// verifyPath POST /v1/verify: a PDF of up to 20 MB.
+	agreementDocumentPath = regexp.MustCompile(`^/v1/me/agreements/[^/]+/document$`)
+	// submitPath is POST /v1/signing/{token}/submit (adopted images).
+	submitPath = regexp.MustCompile(`^/v1/signing/[^/]+/submit$`)
 )
+
+func isPDFUpload(r *http.Request) bool {
+	return (r.Method == http.MethodPut && agreementDocumentPath.MatchString(r.URL.Path)) || (r.Method == http.MethodPost && r.URL.Path == "/v1/verify")
+}
 
 func isPhotoUpload(r *http.Request) bool {
 	return r.Method == http.MethodPost && photoPath.MatchString(r.URL.Path)
@@ -142,7 +166,7 @@ func isLogoUpload(r *http.Request) bool {
 }
 
 func isUpload(r *http.Request) bool {
-	return (r.Method == http.MethodPost && uploadPath.MatchString(r.URL.Path)) || isLogoUpload(r) || isPhotoUpload(r)
+	return (r.Method == http.MethodPost && uploadPath.MatchString(r.URL.Path)) || isLogoUpload(r) || isPhotoUpload(r) || isPDFUpload(r)
 }
 
 // Deps is everything the router needs.
@@ -179,6 +203,10 @@ type Deps struct {
 	// Leases holds the lease templates and the leases; their PDFs are kept
 	// in Files.
 	Leases leases.Store
+	// Agreements holds the agreements (signing); AgreementMailer sends
+	// their emails (nil means Mailer when it can).
+	Agreements      agreements.Store
+	AgreementMailer agreements.Mailer
 
 	// Optional overrides used by tests.
 	Now    func() time.Time
@@ -329,14 +357,30 @@ func NewRouter(d Deps) (http.Handler, error) {
 
 	// Leases: the template library (content administrators) and lease
 	// drafting by whoever manages listings.
-	if d.Leases == nil {
-		return nil, errors.New("app: no lease store")
+	if d.Leases == nil || d.Agreements == nil {
+		return nil, errors.New("app: no lease or agreement store")
 	}
+	agreementMailer := d.AgreementMailer
+	if agreementMailer == nil {
+		agreementMailer, _ = d.Mailer.(agreements.Mailer)
+	}
+	agreementDeps := agreements.Deps{Store: d.Agreements, Files: d.Files, Mailer: agreementMailer, Logger: logger, Now: d.Now, PublicWebURL: cfg.PublicWebURL}
+	// AUTH_DEMO_CODE is honoured exactly as for signing in.
+	if cfg.AuthDemoCode.IsSet() && (cfg.Env == config.EnvDevelopment || cfg.Env == config.EnvStaging) {
+		agreementDeps.DemoCode = cfg.AuthDemoCode.Reveal()
+	}
+	agreementsSvc := agreements.NewService(agreementDeps)
+	agreementsH := agreements.NewHandler(agreementsSvc, logger)
+	signingLimiter := httpx.NewRateLimiter(signingRequestsPerMinute, signingRequestsBurst)
+	signingCodeLimiter := httpx.NewRateLimiter(signingCodesPerMinute, signingCodesBurst)
+	verifyLimiter := httpx.NewRateLimiter(verifyRequestsPerMinute, verifyRequestsBurst)
 	leasesSvc := leases.NewService(leases.Deps{
-		Store: d.Leases, Files: d.Files, Listings: leaseListings{svc: listingsSvc},
+		Agreements: leaseAgreements{svc: agreementsSvc},
+		Store:      d.Leases, Files: d.Files, Listings: leaseListings{svc: listingsSvc},
 		CountryName: countryNames(d.Markets), Person: personOf(d.Identity), Logger: logger, Now: d.Now,
 	})
 	leasesH := leases.NewHandler(leasesSvc, logger)
+	agreementsSvc.SetOnFinished(FollowLeases(leasesSvc, logger))
 	leaseLimiter := httpx.NewRateLimiter(leaseChangesPerMinute, leaseChangesBurst)
 
 	// Dashboards: one role-aware summary per account, an organisation's
@@ -359,6 +403,10 @@ func NewRouter(d Deps) (http.Handler, error) {
 			return dashboard.LeaseCounts{Drafts: c.Drafts, AwaitingSignatures: c.AwaitingSignatures}, err
 		},
 		MayCreateLeases: leases.MayCreateLeases,
+		Signing: func(ctx context.Context, p *auth.Principal) (int, int, error) {
+			c, err := agreementsSvc.DashboardCounts(ctx, p)
+			return c.WaitingForYou, c.WaitingForOthers, err
+		},
 	}, logger)
 	uploadLimiter := httpx.NewRateLimiter(UploadRequestsPerMinute, UploadRequestsBurst)
 
@@ -383,6 +431,12 @@ func NewRouter(d Deps) (http.Handler, error) {
 				return directory.MaxLogoBodyBytes
 			case isPhotoUpload(r):
 				return listings.MaxPhotoBodyBytes
+			case isPDFUpload(r):
+				return agreements.MaxDocumentBodyBytes
+			case r.Method == http.MethodPost && submitPath.MatchString(r.URL.Path):
+				return agreements.MaxSubmitBodyBytes
+			case r.Method == http.MethodPut && r.URL.Path == "/v1/me/signature":
+				return agreements.MaxSignatureBodyBytes
 			case isUpload(r):
 				return onboarding.MaxUploadBodyBytes
 			}
@@ -520,9 +574,49 @@ func NewRouter(d Deps) (http.Handler, error) {
 			r.With(leaseLimiter.Middleware).Patch("/{id}", leasesH.Patch)
 			r.With(leaseLimiter.Middleware).Delete("/{id}", leasesH.Delete)
 			r.Get("/{id}/pdf", leasesH.PDF)
+			r.With(leaseLimiter.Middleware).Post("/{id}/send", leasesH.Send)
 			r.With(leaseLimiter.Middleware).Post("/{id}/cancel", leasesH.Cancel)
 			r.Get("/{id}/events", leasesH.Events)
 		})
+
+		// Agreements (signing): a sender's documents, recipients and fields.
+		// The service decides who may (agreements.MaySend; 403 otherwise)
+		// and which each sees (404 for the others).
+		r.Route("/me/agreements", func(r chi.Router) {
+			r.Use(auth.RequireAuth)
+			r.Get("/", agreementsH.List)
+			r.With(leaseLimiter.Middleware).Post("/", agreementsH.Create)
+			r.Get("/{id}", agreementsH.Get)
+			r.With(leaseLimiter.Middleware).Patch("/{id}", agreementsH.Patch)
+			r.With(leaseLimiter.Middleware).Delete("/{id}", agreementsH.Delete)
+			r.With(uploadLimiter.Middleware).Put("/{id}/document", agreementsH.Document)
+			r.With(leaseLimiter.Middleware).Put("/{id}/fields", agreementsH.Fields)
+			r.Get("/{id}/pdf", agreementsH.PDF)
+			r.With(leaseLimiter.Middleware).Post("/{id}/send", agreementsH.Send)
+			r.With(leaseLimiter.Middleware).Post("/{id}/cancel", agreementsH.Cancel)
+			r.With(leaseLimiter.Middleware).Post("/{id}/recipients/{recipientId}/replace", agreementsH.Replace)
+			r.With(leaseLimiter.Middleware).Post("/{id}/recipients/{recipientId}/remind", agreementsH.Remind)
+			r.Get("/{id}/events", agreementsH.Events)
+		})
+		// The documents waiting on the signed-in person's email address, and
+		// their saved signature.
+		r.With(auth.RequireAuth).Get("/me/signing-requests", agreementsH.SigningRequests)
+		r.With(auth.RequireAuth, signingLimiter.Middleware).Post("/me/signing-requests/{recipientId}/link", agreementsH.OwnLink)
+		r.With(auth.RequireAuth).Get("/me/signature", agreementsH.MySignature)
+		r.With(auth.RequireAuth, leaseLimiter.Middleware).Put("/me/signature", agreementsH.SaveMySignature)
+		// Signing by link: no session; the token is a credential (never in
+		// the access log, see httpx.LoggedPath).
+		r.Route("/signing/{token}", func(r chi.Router) {
+			r.Use(signingLimiter.Middleware)
+			r.Get("/", agreementsH.Signing)
+			r.Get("/pdf", agreementsH.SigningPDF)
+			r.With(signingCodeLimiter.Middleware).Post("/code", agreementsH.SendCode)
+			r.Post("/submit", agreementsH.Submit)
+			r.Post("/decline", agreementsH.Decline)
+		})
+		// Public verification of a completed document.
+		r.With(verifyLimiter.Middleware).Get("/verify/{reference}", agreementsH.VerifyReference)
+		r.With(verifyLimiter.Middleware).Post("/verify", agreementsH.VerifyFile)
 
 		// The directory profiles the caller may manage, and their logos. The
 		// service decides who may change which (auth/capabilities.go): 404 for
@@ -622,6 +716,8 @@ func NewRouter(d Deps) (http.Handler, error) {
 			})
 			// Every lease, read-only: SUPER_ADMIN and SUPPORT.
 			r.With(auth.RequirePlatformRole(leases.LeaseAdminRoles()...)).Get("/leases", leasesH.AdminLeases)
+			// Every agreement, read-only: SUPER_ADMIN and SUPPORT.
+			r.With(auth.RequirePlatformRole(agreements.AdminRoles()...)).Get("/agreements", agreementsH.AdminList)
 
 			// The counts an administrator starts from. Every platform role
 			// may ask; the handler returns only the sections its role covers.

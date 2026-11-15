@@ -70,6 +70,11 @@ func Templates() []Template {
 		{"listing-rejected", "Listing or its changes not approved (to the advertiser)", true},
 		{"team-invitation", "Invitation to join an organisation's team (to the invited address)", true},
 		{"property-request-assigned", "Property request assigned (to the member it was given to)", true},
+		{"agreement-signing-request", "A document to sign or approve (to a recipient, with their link)", true},
+		{"agreement-reminder", "Reminder of a document waiting (to a recipient, with a new link)", true},
+		{"agreement-signing-code", "Code to confirm the email address before signing (to a recipient)", true},
+		{"agreement-completed", "Everybody signed (to every recipient, the CCs and the sender)", true},
+		{"agreement-declined", "A recipient declined (to the sender)", true},
 
 		{"request-update", "Reply or status update to the customer", false},
 		{"listing-expiring", "Listing expiring in 14, 7 or 1 days", false},
@@ -149,6 +154,10 @@ type Data struct {
 	// Code is the one-time sign-in code (sign-in-code). It is a credential:
 	// it is only rendered into the message and never stored.
 	Code string
+
+	// Agreement emails: the document's name and the sender's message.
+	DocumentName string
+	Message      string
 }
 
 // LocalDateTime writes an instant in an IANA time zone and names the zone,

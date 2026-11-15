@@ -295,7 +295,12 @@ All configuration comes from environment variables. For local development you ma
 | GET, POST, PATCH | `/v1/admin/lease-templates`, `/{id}`, `/{id}/approve`, `/{id}/retire` | The lease template library (SUPER_ADMIN, CONTENT_ADMIN) |
 | GET | `/v1/admin/leases` | Every lease, read-only (SUPER_ADMIN, SUPPORT) |
 | GET | `/v1/me/lease-templates` | The approved templates a lease can be made from |
-| GET, POST, PATCH, DELETE | `/v1/me/leases`, `/{id}`, `/{id}/pdf`, `/{id}/cancel`, `/{id}/events` | Draft leases (see "Leases") |
+| GET, POST, PATCH, DELETE | `/v1/me/leases`, `/{id}`, `/{id}/pdf`, `/{id}/send`, `/{id}/cancel`, `/{id}/events` | Draft leases and send them for signing (see "Leases") |
+| GET, POST, PATCH, PUT, DELETE | `/v1/me/agreements`, `/{id}`, `/{id}/document`, `/{id}/fields`, `/{id}/pdf`, `/{id}/send`, `/{id}/cancel`, `/{id}/recipients/{rid}/replace`, `/remind`, `/{id}/events` | Documents sent for signature (see "Agreements") |
+| GET, POST | `/v1/me/signing-requests`, `/{recipientId}/link`; GET, PUT `/v1/me/signature` | Documents waiting for the signed-in person; their saved signature |
+| GET, POST | `/v1/signing/{token}`, `/pdf`, `/code`, `/submit`, `/decline` | Signing by link (no session) |
+| GET, POST | `/v1/verify/{reference}`, `/v1/verify` | Check a completed document (public) |
+| GET | `/v1/admin/agreements` | Every agreement, read-only (SUPER_ADMIN, SUPPORT) |
 
 Every error uses one envelope, and `trace_id` equals the `X-Request-Id` response header:
 
@@ -425,7 +430,8 @@ alerts.
 ## Leases: templates and drafting (API 0.24.0)
 
 Migration `0022`, module `internal/modules/leases` (BR-011, FR-030, FR-031). Signing is the
-agreements module (see "Agreements"); a lease that is sent for signing follows its agreement.
+agreements module (see "Agreements"): `POST /v1/me/leases/{id}/send` freezes the lease, renders
+its signing copy (no watermark) and sends it as an agreement; the lease then follows it.
 
 - **Template library (FR-030)** – `/v1/admin/lease-templates` for SUPER_ADMIN and CONTENT_ADMIN
   (admin-scope session). A template is one version of a family: `market_code` (the jurisdiction),
@@ -484,6 +490,79 @@ accepted).
 
 **Not verified:** migration `0022` and `internal/modules/leases/postgres.go` have not run against a
 database here (`RP365_TEST_DATABASE_URL` tests are skipped without one).
+
+## Agreements: electronic signing (API 0.24.0)
+
+Migration `0023`, module `internal/modules/agreements` (FR-032), modelled on Adobe Acrobat Sign.
+An agreement wraps one PDF: a lease's frozen signing copy (`POST /v1/me/leases/{id}/send`) or a
+PDF the sender uploads (`PUT /v1/me/agreements/{id}/document`: at most 20 MB and 50 pages, must
+open without a password and import page by page). Who may send: as for leases (whoever manages
+listings; the organisation's OWNER and MANAGER see every agreement of it).
+
+- **Lifecycle** – `DRAFT` -> `OUT_FOR_SIGNATURE` -> `COMPLETED` | `DECLINED` | `CANCELLED` |
+  `EXPIRED` (default expiry 30 days; an agreement past it is expired on the next read or by the
+  worker's sweep). A lease follows its agreement (`SIGNED`, `DECLINED`, `CANCELLED`, `EXPIRED`;
+  its PDF becomes the signed one; its events list the agreement's as `AGREEMENT_*`).
+- **Recipients** – `{name, email, role: SIGNER | APPROVER | CC, order}`. Same order = parallel;
+  order n is emailed only once every earlier SIGNER and APPROVER finished; a CC is never asked to
+  act and gets the completed copy. The sender can replace a pending recipient's address (their
+  links die, a new one is sent) and remind them (a new link; earlier ones keep working).
+- **Fields** – `PUT .../fields` while `DRAFT`: SIGNATURE, INITIALS, DATE_SIGNED (filled when they
+  sign), NAME (filled), TEXT, CHECKBOX, each for a SIGNER or APPROVER, on a page, inside it, in PDF
+  points from the top-left; every SIGNER needs a SIGNATURE (`422 AGREEMENT_FIELDS_INCOMPLETE`).
+  `document.pages` gives every page's width and height for pdf.js. A lease's fields are placed
+  automatically: each party's INITIALS on every page's footer row, SIGNATURE, NAME and DATE_SIGNED
+  in the signature section (the lease renderer reports where).
+- **Signing by link** – `PUBLIC_WEB_URL/sign/{token}`; `GET /v1/signing/{token}` (agreement,
+  recipient, their fields with the values so far, the others' names and status, page sizes),
+  `/pdf`, `POST /code` (six digits, 10 minutes, 5 tries, one every 30 s, 10 per recipient; HMAC
+  keyed with the link token is stored, never the code), `POST /submit` (`code`, `consent: true`,
+  `field_values`, the adopted `signature` and `initials`: TYPED in one of three embedded styles,
+  DRAWN PNG up to 200 KB, UPLOADED PNG/JPEG up to 500 KB, re-encoded), `POST /decline {reason}`.
+  `AUTH_DEMO_CODE` is accepted in development and staging only, as for signing in, and is
+  recorded as `DEMO_CODE` (the audit report says it is not a real verification). Links: one per
+  recipient, only the SHA-256 stored, valid until the expiry, read-only for 90 days after
+  completion; the token never reaches the access log (`httpx.LoggedPath`). Signed-in recipients:
+  `GET /v1/me/signing-requests` (matched on the verified email) and
+  `POST /v1/me/signing-requests/{recipientId}/link`; a saved signature: `GET/PUT /v1/me/signature`.
+- **Completion** – the original pages are imported (`github.com/phpdave11/gofpdi`, MIT) into fpdf,
+  every value is drawn at its place (signature images, typed signatures in the chosen style,
+  initials, dates, text, ticks), and an **Audit report** page is appended (name, reference, sender,
+  dates, original SHA-256, the history: created, emailed, viewed with IP and device, email
+  verified, signed or approved, completed). The final PDF's SHA-256 is recorded (a file cannot
+  print its own); `GET /v1/verify/{reference}` (fingerprints only, no names) and `POST /v1/verify`
+  (upload a copy: `match`) check it. Everybody, CCs and the sender included, is emailed.
+- **Digital seal: not applied.** `github.com/digitorus/pdfsign` was not added: it was not
+  evaluated or tested here without a certificate, so no `SIGNING_SEAL_*` setting exists and the
+  audit report states that no seal is applied. Tamper evidence is the recorded SHA-256.
+- **Reminders and expiry** – the worker runs `agreements.Service.Sweep` every 5 minutes
+  (`app.RunAgreementSweeps`; the API does it itself on in-memory stores): one reminder per
+  recipient and interval (`DAILY`, `EVERY_3_DAYS`, `WEEKLY`) since they were emailed, claimed once
+  in `agreement_jobs` (`reminder:<agreement>:<recipient>:<n>`), so several runs or processes send
+  it once.
+- **Emails** – `agreement-signing-request`, `agreement-reminder`, `agreement-signing-code`,
+  `agreement-completed`, `agreement-declined`: sent from the request path (they carry links or
+  codes), never through the outbox; a failure is logged.
+- Rate limits: signing links 20 / 20 per minute per IP, code sending 5 / 5 per minute per IP,
+  verification 10 / 10 per minute; agreement changes share the lease bucket, uploads the upload
+  bucket. Every read and PDF is `Cache-Control: private, no-store`.
+- Wording: "Signed electronically on RightProperty365"; never "legally executed"; enforceability,
+  witnessing, stamping and registration depend on the jurisdiction and are not provided.
+
+**Sample data**: an uploaded "Sample inventory and condition report" (`RPA-2026-900001`, drawn by
+the seed) out for signature to `tenant@example.test` (SIGNER, order 1), then
+`landlord@example.test` (APPROVER, order 2), `estates.owner@example.test` in copy; and the lease
+`RPL-2026-900002` on listing 5 out for signature (`RPA-2026-900002`) to the landlord and the
+tenant. Both sent by `agent@example.test`. Nobody holds the seeded links: a signed-in recipient
+opens the document from *Documents to sign* (`POST /v1/me/signing-requests/{id}/link`).
+
+**Not built** (agreements): a digital seal; true script fonts (the three styles are the Go italic
+faces; an OFL script font can be vendored into `pdfdoc.go`); SMS, ID or knowledge-based
+verification; delegation; in-person signing; bulk send; reusable field layouts; reading the
+uploaded PDF's own form fields; rotated pages (fields assume an unrotated MediaBox).
+
+**Not verified:** migration `0023` and `internal/modules/agreements/postgres.go` have not run
+against a database here.
 
 ## Agency teams (API 0.23.0)
 
@@ -2451,6 +2530,13 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0023_agreements` adds only new objects, each `IF NOT EXISTS`: `agreement_reference_seq`;
+  `agreements` (unique `reference`, partial indexes on both SHA-256 for verification),
+  `agreement_recipients` (unique `(agreement_id, email)`), `agreement_fields`, `agreement_links`
+  (`agreement_links_token_hash_key`), `agreement_events` (immutable, trigger
+  `agreement_events_no_update`), `agreement_jobs` (reminder idempotency), `user_signatures`; and
+  the foreign key `leases_agreement_id_fkey` (added in a `DO` block only when missing). The down
+  migration drops them (not the objects in the bucket).
 - `0022_leases` adds only new objects, each `IF NOT EXISTS`: the sequence `lease_reference_seq`;
   `lease_templates` (unique `(family_id, version)` `lease_templates_family_version_key`, at most one
   `DRAFT` and one `APPROVED` per family: partial unique indexes `lease_templates_one_draft_key`,

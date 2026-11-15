@@ -86,6 +86,10 @@ func run() error {
 	if err := devseed.SeedPostgres(ctx, pool, files, identity.DefaultHasher(), password, time.Now()); err != nil {
 		return err
 	}
+	// The agreement samples (needs migration 0023), after the main seed.
+	if err := devseed.SeedPostgresAgreements(ctx, pool, files, time.Now()); err != nil {
+		return err
+	}
 	fmt.Printf("seeded %d organisations, %d accounts, %d listings and %d directory profiles (password: DEV_SEED_PASSWORD)\n",
 		len(devseed.Organisations()), len(devseed.Accounts()), len(devseed.Listings()), len(devseed.Profiles()))
 	return nil

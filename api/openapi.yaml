@@ -114,6 +114,31 @@ info:
       `leases.awaiting_signatures` and `leases.drafts` (group `leases`) appear for those who may
       create leases.
 
+    Agreements: electronic signing (new in 0.24.0)
+    - **New: an Adobe-Sign-style signing workflow** for generated leases and any uploaded PDF
+      (`/v1/me/agreements`). Recipients are SIGNER, APPROVER or CC with an order: the same order
+      acts in parallel, order n is emailed only when the earlier orders have finished, a CC only
+      gets the completed copy. Fields (SIGNATURE, INITIALS, DATE_SIGNED, NAME, TEXT, CHECKBOX) are
+      placed per recipient in PDF points from the page's top-left (`document.pages` gives every
+      page's size for pdf.js). A lease is sent with `POST /v1/me/leases/{id}/send`, its fields
+      placed automatically, and the lease follows its agreement.
+    - **Signing by link** (`/sign/{token}`; `/v1/signing/{token}`, `/pdf`, `/code`, `/submit`,
+      `/decline`): one link per recipient (only its SHA-256 is stored), valid until the agreement
+      expires and read-only for 90 days after completion; a six-digit emailed code proves the
+      address before each submit (`AUTH_DEMO_CODE` in development and staging only). Signatures
+      are typed (three embedded styles), drawn or uploaded, and can be saved to the account
+      (`/v1/me/signature`). Signed-in recipients list their documents with
+      `GET /v1/me/signing-requests`.
+    - **Completion**: every value is drawn onto the original pages, an audit report page is
+      appended (dates, SHA-256 of the original, the history with IP addresses and devices), the
+      final SHA-256 is recorded, and everybody is emailed. `GET /v1/verify/{reference}` and
+      `POST /v1/verify` check a copy. No digital seal (PDF signature) is applied, and the audit
+      report says so. Wording: "Signed electronically on RightProperty365"; enforceability,
+      witnessing, stamping and registration depend on the jurisdiction.
+    - **Changed response shapes (additive).** `GET /v1/me/dashboard`: counters
+      `agreements.waiting_for_you` (group `my_activity`, next action `SIGN_DOCUMENTS`) and
+      `agreements.waiting_for_others` (group `leases`).
+
     Agency teams (new in 0.23.0)
     - **New: an organisation's OWNER and MANAGER run their own team.** New routes under
       `/v1/agent/organisations/{id}`: `GET|POST /invitations`, `DELETE /invitations/{invitationId}`,
@@ -369,6 +394,18 @@ tags:
 
       Not built: deleting templates, importing templates from Word, per-country variable sets,
       clause libraries shared between templates, renewals and rent reviews.
+  - name: agreements
+    description: |
+      Electronic signing of generated leases and uploaded PDFs.
+
+      Agreement status flow: `DRAFT` -> `OUT_FOR_SIGNATURE` -> `COMPLETED` | `DECLINED` |
+      `CANCELLED` | `EXPIRED`; `DRAFT` -> `CANCELLED`. Recipient status: `WAITING` -> `ACTIVE`
+      (emailed) -> `SIGNED` | `APPROVED` | `DECLINED`; a CC is `CC`.
+
+      Not built: a PDF digital seal with a platform certificate; true script fonts (three Go
+      italic styles are used); SMS or ID verification; delegation to another signer; in-person
+      signing; bulk sending; templates of field layouts; form fields of the uploaded PDF itself
+      (AcroForm) are not read.
   - name: admin
 
 paths:
@@ -7237,8 +7274,996 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/me/leases/{id}/send:
+    parameters:
+      - $ref: "#/components/parameters/LeaseId"
+    post:
+      tags: [leases]
+      operationId: sendLease
+      summary: Send a DRAFT lease for signing
+      description: |
+        Optional body. The lease is frozen: its signing copy is rendered (no watermark) with its
+        SHA-256, and an agreement is created and sent (see `agreements`): every landlord and tenant
+        is a SIGNER of order 1 (any order), with INITIALS on every page and SIGNATURE, NAME and
+        DATE_SIGNED in the signature section, placed where the renderer left room. The lease becomes
+        `SENT_FOR_SIGNING` and follows the agreement: `SIGNED` (its PDF is then the signed one),
+        `DECLINED`, `CANCELLED`, `EXPIRED`. A lease whose template was retired since can still be
+        sent (it keeps its version). Not a draft: `409 LEASE_STATE_CONFLICT`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                message:
+                  type: string
+                  maxLength: 2000
+                expires_at:
+                  type: string
+                  format: date-time
+                  description: Default 30 days from now; at least an hour, at most a year.
+                reminder_frequency:
+                  $ref: "#/components/schemas/ReminderFrequency"
+      responses:
+        "200":
+          description: Sent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeaseEnvelope"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/LeaseNotFound"
+        "409":
+          $ref: "#/components/responses/LeaseConflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/me/agreements:
+    get:
+      tags: [agreements]
+      operationId: listMyAgreements
+      summary: The agreements the caller sent or sees (Adobe's Manage page)
+      description: |
+        Who may (`403` otherwise): whoever may manage listings, as for leases; OWNER and MANAGER see
+        every agreement of their organisation. `view`: `WAITING_FOR_YOU` (out for signature and an
+        ACTIVE recipient has the caller's address), `WAITING_FOR_OTHERS`, `COMPLETED`, `DRAFTS`.
+        An agreement whose expiry passed is `EXPIRED` from the first read on.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - name: view
+          in: query
+          schema: {type: string, enum: [WAITING_FOR_YOU, WAITING_FOR_OTHERS, COMPLETED, DRAFTS]}
+        - $ref: "#/components/parameters/AgreementStatusFilter"
+        - $ref: "#/components/parameters/RequestPage"
+        - $ref: "#/components/parameters/RequestPageSize"
+      responses:
+        "200":
+          description: One page, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgreementPage"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [agreements]
+      operationId: createAgreement
+      summary: Prepare an agreement for a PDF to upload (DRAFT)
+      description: |
+        `name` is required; `recipients` (at most 20): `name`, `email` (each a different address),
+        `role` (`SIGNER` | `APPROVER` | `CC`) and `order` (1-20; the same order acts in parallel,
+        order n is emailed once every earlier order finished; a CC is never asked to act and gets
+        the completed copy). The sender may add themselves. `expires_at` defaults to 30 days;
+        `reminder_frequency` to `NONE`. Then upload the PDF (`PUT .../document`), place the fields
+        (`PUT .../fields`) and send.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgreementInput"
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgreementEnvelope"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/me/agreements/{id}:
+    parameters:
+      - $ref: "#/components/parameters/AgreementId"
+    get:
+      tags: [agreements]
+      operationId: getMyAgreement
+      summary: One agreement with its recipients, fields and pages
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The agreement.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgreementEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/AgreementNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    patch:
+      tags: [agreements]
+      operationId: patchAgreement
+      summary: Change a DRAFT (name, message, expiry, reminders, recipients)
+      description: |
+        The keys sent replace the saved values. `recipients` replaces the list: send `id` to keep
+        a recipient (and their fields); fields of a recipient no longer listed are dropped.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgreementInput"
+      responses:
+        "200":
+          description: Changed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgreementEnvelope"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/AgreementNotFound"
+        "409":
+          $ref: "#/components/responses/AgreementConflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [agreements]
+      operationId: deleteAgreement
+      summary: Delete a DRAFT (and its uploaded PDF)
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "204":
+          description: Deleted.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/AgreementNotFound"
+        "409":
+          $ref: "#/components/responses/AgreementConflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/me/agreements/{id}/document:
+    parameters:
+      - $ref: "#/components/parameters/AgreementId"
+    put:
+      tags: [agreements]
+      operationId: putAgreementDocument
+      summary: Upload the PDF to be signed (DRAFT, uploaded agreements)
+      description: |
+        `multipart/form-data` with one part `file`: a PDF of at most 20 MB (`413 FILE_TOO_LARGE`)
+        and 50 pages (`422 UNSUPPORTED_FILE_TYPE` with `fields.file`), that opens without a password
+        and whose every page can be imported (`415 UNSUPPORTED_FILE_TYPE` otherwise). Stored privately;
+        `document.pages` gives every page's width and height in PDF points, for pdf.js. A new PDF
+        drops the fields placed on the previous one. Rate limit: the upload bucket.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Stored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgreementEnvelope"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/AgreementNotFound"
+        "409":
+          $ref: "#/components/responses/AgreementConflict"
+        "413":
+          $ref: "#/components/responses/AgreementFile"
+        "415":
+          $ref: "#/components/responses/AgreementFile"
+        "422":
+          $ref: "#/components/responses/AgreementFile"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/me/agreements/{id}/fields:
+    parameters:
+      - $ref: "#/components/parameters/AgreementId"
+    put:
+      tags: [agreements]
+      operationId: putAgreementFields
+      summary: Replace the fields placed on the document (DRAFT)
+      description: |
+        Each field: `recipient_id` (a SIGNER or APPROVER; never a CC), `type` (`SIGNATURE`,
+        `INITIALS`, `DATE_SIGNED` filled when they sign, `NAME` filled, `TEXT`, `CHECKBOX`),
+        `page`, and `x`, `y`, `w`, `h` in PDF points from the page's top-left corner, inside the
+        page and at least 6 x 6. An APPROVER has no SIGNATURE or INITIALS. TEXT and CHECKBOX take
+        `required` (default true) and `label`; the others are always required. Every SIGNER needs
+        at least one SIGNATURE field. Problems: `422 AGREEMENT_FIELDS_INCOMPLETE` with
+        `error.fields`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [fields]
+              properties:
+                fields:
+                  type: array
+                  maxItems: 500
+                  items:
+                    $ref: "#/components/schemas/AgreementFieldInput"
+      responses:
+        "200":
+          description: Stored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgreementEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/AgreementNotFound"
+        "409":
+          $ref: "#/components/responses/AgreementConflict"
+        "422":
+          $ref: "#/components/responses/AgreementFile"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/me/agreements/{id}/pdf:
+    parameters:
+      - $ref: "#/components/parameters/AgreementId"
+    get:
+      tags: [agreements]
+      operationId: getMyAgreementPdf
+      summary: The original PDF, or the completed one (private, no-store)
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The PDF.
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/AgreementNotFound"
+        "409":
+          $ref: "#/components/responses/AgreementConflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/me/agreements/{id}/send:
+    parameters:
+      - $ref: "#/components/parameters/AgreementId"
+    post:
+      tags: [agreements]
+      operationId: sendAgreement
+      summary: Send a DRAFT for signature
+      description: |
+        No body. Needs the document (`409 AGREEMENT_DOCUMENT_REQUIRED`), a SIGNER or APPROVER, and
+        a SIGNATURE field for every SIGNER (`422 AGREEMENT_FIELDS_INCOMPLETE`). The recipients of the
+        first order are emailed their own link `PUBLIC_WEB_URL/sign/{token}` (only its SHA-256 is
+        stored), valid until the agreement expires; the others wait.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: Out for signature.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgreementEnvelope"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/AgreementNotFound"
+        "409":
+          $ref: "#/components/responses/AgreementConflict"
+        "422":
+          $ref: "#/components/responses/AgreementFile"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/me/agreements/{id}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/AgreementId"
+    post:
+      tags: [agreements]
+      operationId: cancelAgreement
+      summary: Cancel a DRAFT or an agreement out for signature (every link stops)
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                reason:
+                  type: string
+                  maxLength: 1000
+      responses:
+        "200":
+          description: Cancelled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgreementEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/AgreementNotFound"
+        "409":
+          $ref: "#/components/responses/AgreementConflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/me/agreements/{id}/recipients/{recipientId}/replace:
+    parameters:
+      - $ref: "#/components/parameters/AgreementId"
+      - $ref: "#/components/parameters/RecipientId"
+    post:
+      tags: [agreements]
+      operationId: replaceAgreementRecipient
+      summary: Change a pending recipient's email address (and name)
+      description: |
+        `{email, name?}`. Only while out for signature and for a recipient who has not finished. Their
+        links stop working (`410`); an ACTIVE recipient is emailed a new link at the new address.
+        Audited (`RECIPIENT_REPLACED`).
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+                name:
+                  type: string
+      responses:
+        "200":
+          description: Replaced.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgreementEnvelope"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/AgreementNotFound"
+        "409":
+          $ref: "#/components/responses/AgreementConflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/me/agreements/{id}/recipients/{recipientId}/remind:
+    parameters:
+      - $ref: "#/components/parameters/AgreementId"
+      - $ref: "#/components/parameters/RecipientId"
+    post:
+      tags: [agreements]
+      operationId: remindAgreementRecipient
+      summary: Email an ACTIVE recipient a reminder with a new link
+      description: No body. Their earlier links keep working. A recipient whose turn has not come is `409 NOT_OPEN_FOR_SIGNING`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: Reminded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgreementEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/AgreementNotFound"
+        "409":
+          $ref: "#/components/responses/AgreementConflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/me/agreements/{id}/events:
+    parameters:
+      - $ref: "#/components/parameters/AgreementId"
+    get:
+      tags: [agreements]
+      operationId: listAgreementEvents
+      summary: The agreement's audit trail, oldest first
+      description: |
+        Immutable: `CREATED`, `DOCUMENT_ADDED`, `FIELDS_CHANGED`, `SENT`, `EMAILED`, `VIEWED` (first
+        view, with IP and user agent), `CODE_SENT`, `EMAIL_VERIFIED` (`detail.method` `EMAIL_CODE` or
+        `DEMO_CODE`), `SIGNED`, `APPROVED`, `DECLINED`, `REMINDED`, `RECIPIENT_REPLACED`, `CANCELLED`,
+        `EXPIRED`, `COMPLETED` (both SHA-256), `COPY_SENT`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The audit trail.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AgreementEvent"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/AgreementNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/admin/agreements:
+    get:
+      tags: [agreements]
+      operationId: adminListAgreements
+      summary: Every agreement, read-only (SUPER_ADMIN, SUPPORT)
+      security:
+        - cookieSession: []
+      parameters:
+        - $ref: "#/components/parameters/AgreementStatusFilter"
+        - $ref: "#/components/parameters/RequestPage"
+        - $ref: "#/components/parameters/RequestPageSize"
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgreementPage"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/me/signing-requests:
+    get:
+      tags: [agreements]
+      operationId: listMySigningRequests
+      summary: Documents in which the signed-in person is a recipient
+      description: |
+        Matched on the account's email address (signing in proved it). Never a draft or a
+        cancelled agreement. `can_sign`: it waits for this person now; open it with `POST .../link`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The documents, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SigningRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/me/signing-requests/{recipientId}/link:
+    parameters:
+      - $ref: "#/components/parameters/RecipientId"
+    post:
+      tags: [agreements]
+      operationId: createMySigningLink
+      summary: A new signing link for a signed-in recipient
+      description: |
+        No body. Returns a token for `/sign/{token}` (the emailed links keep working): while it is
+        their turn (until the agreement expires), or read-only for 90 days after completion or a
+        decline. A recipient whose turn has not come: `409 NOT_OPEN_FOR_SIGNING`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The link's token.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [token, expires_at]
+                properties:
+                  token:
+                    type: string
+                  expires_at:
+                    type: string
+                    format: date-time
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/AgreementNotFound"
+        "409":
+          $ref: "#/components/responses/AgreementConflict"
+        "410":
+          $ref: "#/components/responses/SigningGone"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/me/signature:
+    get:
+      tags: [agreements]
+      operationId: getMySignature
+      summary: The signed-in user's saved signature and initials
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The saved signature (null when none) and the typed signature styles.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SavedSignature"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      tags: [agreements]
+      operationId: putMySignature
+      summary: Save a signature and initials to reuse
+      description: |
+        `{signature?, initials?}`, each an adopted signature (see `AdoptedSignatureInput`); a missing
+        one is cleared. Nothing is applied automatically: the web sends the saved one with a submit.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                signature:
+                  $ref: "#/components/schemas/AdoptedSignatureInput"
+                initials:
+                  $ref: "#/components/schemas/AdoptedSignatureInput"
+      responses:
+        "200":
+          description: Saved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SavedSignature"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/signing/{token}:
+    parameters:
+      - $ref: "#/components/parameters/SigningToken"
+    get:
+      tags: [agreements]
+      operationId: getSigning
+      summary: What a signing link shows (public)
+      description: |
+        No session. The agreement (name, reference, status, sender, expiry, page sizes, the
+        original's SHA-256), the recipient (masked address), their fields with the values filled so
+        far, the other recipients (name, role, order and status only), `can_act` and the consent
+        text. The first view is audited with IP and user agent. Unknown: `404
+        SIGNING_LINK_NOT_FOUND`; replaced or cancelled: `410 SIGNING_LINK_NO_LONGER_VALID`; expired:
+        `410 SIGNING_LINK_EXPIRED`. Rate limit: 20 / 20 per minute per IP. The token is never
+        written to the access log.
+      responses:
+        "200":
+          description: The signing page.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [signing]
+                properties:
+                  signing:
+                    $ref: "#/components/schemas/SigningView"
+        "404":
+          $ref: "#/components/responses/AgreementNotFound"
+        "410":
+          $ref: "#/components/responses/SigningGone"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/signing/{token}/pdf:
+    parameters:
+      - $ref: "#/components/parameters/SigningToken"
+    get:
+      tags: [agreements]
+      operationId: getSigningPdf
+      summary: The document behind a link (the completed one once everybody finished)
+      responses:
+        "200":
+          description: The PDF (private, no-store).
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        "404":
+          $ref: "#/components/responses/AgreementNotFound"
+        "410":
+          $ref: "#/components/responses/SigningGone"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/signing/{token}/code:
+    parameters:
+      - $ref: "#/components/parameters/SigningToken"
+    post:
+      tags: [agreements]
+      operationId: sendSigningCode
+      summary: Email the recipient a six-digit code
+      description: |
+        No body. Valid 10 minutes, 5 tries, bound to this link; a new code replaces the last. At
+        most one every 30 seconds and 10 per recipient (`429` with `Retry-After`), and 5 / 5 per
+        minute per IP. Not the recipient's turn: `409 NOT_OPEN_FOR_SIGNING`; finished: `409
+        ALREADY_SIGNED`.
+      responses:
+        "200":
+          description: Sent.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [sent_to, expires_at, code_length]
+                properties:
+                  sent_to:
+                    type: string
+                  expires_at:
+                    type: string
+                    format: date-time
+                  code_length:
+                    type: integer
+        "404":
+          $ref: "#/components/responses/AgreementNotFound"
+        "409":
+          $ref: "#/components/responses/AgreementConflict"
+        "410":
+          $ref: "#/components/responses/SigningGone"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/signing/{token}/submit:
+    parameters:
+      - $ref: "#/components/parameters/SigningToken"
+    post:
+      tags: [agreements]
+      operationId: submitSigning
+      summary: Sign (a SIGNER) or approve (an APPROVER)
+      description: |
+        Requires `consent: true`, the code from `POST .../code` (or, in development and staging
+        only, `AUTH_DEMO_CODE`, recorded as `DEMO_CODE`; a wrong code is `400 VALIDATION_FAILED`,
+        a dead or missing one `400 CODE_EXPIRED`), every required TEXT (non-empty) and CHECKBOX
+        (`"true"`) value in `field_values`, and for a SIGNER the adopted `signature` (and
+        `initials` when they have INITIALS fields; typed initials default to the initials of a
+        typed signature). NAME and DATE_SIGNED are filled in. Records IP, user agent, time and the
+        verification. The next order is then emailed, or after the last recipient the agreement is
+        completed: every value is drawn onto the pages, an audit report page is appended, its
+        SHA-256 recorded, and everybody (CCs and the sender too) is emailed. Body limit 2 MB.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubmitInput"
+      responses:
+        "200":
+          description: Recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [recipient_status, agreement_status, completed_at]
+                properties:
+                  recipient_status:
+                    type: string
+                    enum: [SIGNED, APPROVED]
+                  agreement_status:
+                    type: string
+                  completed_at:
+                    type: [string, "null"]
+                    format: date-time
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "404":
+          $ref: "#/components/responses/AgreementNotFound"
+        "409":
+          $ref: "#/components/responses/AgreementConflict"
+        "410":
+          $ref: "#/components/responses/SigningGone"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/signing/{token}/decline:
+    parameters:
+      - $ref: "#/components/parameters/SigningToken"
+    post:
+      tags: [agreements]
+      operationId: declineSigning
+      summary: Decline (with a reason); the agreement becomes DECLINED
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+                  minLength: 1
+                  maxLength: 1000
+      responses:
+        "200":
+          description: Declined; the sender is emailed.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [signing]
+                properties:
+                  signing:
+                    $ref: "#/components/schemas/SigningView"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "404":
+          $ref: "#/components/responses/AgreementNotFound"
+        "409":
+          $ref: "#/components/responses/AgreementConflict"
+        "410":
+          $ref: "#/components/responses/SigningGone"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/verify/{reference}:
+    parameters:
+      - name: reference
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: "^RPA-\\d{4}-\\d{6,}$"
+    get:
+      tags: [agreements]
+      operationId: verifyAgreementReference
+      summary: The fingerprints of a completed agreement (public)
+      description: |
+        Only a `COMPLETED` agreement (`404 AGREEMENT_NOT_FOUND` otherwise). Never a name, an email
+        address or the document: the status, completion time, the original's and the final
+        document's SHA-256 and the number of signatures. Rate limit: 10 / 10 per minute per IP.
+      responses:
+        "200":
+          description: The fingerprints.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Verification"
+        "404":
+          $ref: "#/components/responses/AgreementNotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/verify:
+    post:
+      tags: [agreements]
+      operationId: verifyAgreementFile
+      summary: Is this PDF, byte for byte, a completed agreement's document? (public)
+      description: |
+        `multipart/form-data` part `file` (at most 20 MB). `match: true` with `document` `FINAL`
+        or `ORIGINAL` when its SHA-256 is a completed agreement's; `match: false` otherwise. The file
+        is not stored.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: The answer.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Verification"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "413":
+          $ref: "#/components/responses/AgreementFile"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
 components:
   parameters:
+    AgreementId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    RecipientId:
+      name: recipientId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    SigningToken:
+      name: token
+      in: path
+      required: true
+      description: The token of a signing link (43 URL-safe characters).
+      schema:
+        type: string
+    AgreementStatusFilter:
+      name: status
+      in: query
+      schema:
+        type: string
+        enum: [DRAFT, OUT_FOR_SIGNATURE, COMPLETED, DECLINED, CANCELLED, EXPIRED]
     LeaseTemplateId:
       name: id
       in: path
@@ -7676,6 +8701,42 @@ components:
             $ref: "#/components/schemas/ErrorEnvelope"
     LeaseUnprocessable:
       description: "`LEASE_TEMPLATE_NOT_AVAILABLE` (not approved, retired or unknown) or `LEASE_MARKET_MISMATCH` (the template's country is not the property's)."
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    AgreementNotFound:
+      description: "`AGREEMENT_NOT_FOUND`, `RECIPIENT_NOT_FOUND` or `SIGNING_LINK_NOT_FOUND`."
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    AgreementConflict:
+      description: "`AGREEMENT_STATE_CONFLICT`, `AGREEMENT_DOCUMENT_REQUIRED`, `NOT_OPEN_FOR_SIGNING` (not this recipient's turn, or the agreement is no longer out for signature) or `ALREADY_SIGNED`."
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    AgreementFile:
+      description: "`FILE_TOO_LARGE` (413), `UNSUPPORTED_FILE_TYPE` (415: not a readable PDF; 422: too many pages) or `AGREEMENT_FIELDS_INCOMPLETE` (422, per-field messages)."
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    SigningGone:
+      description: "`SIGNING_LINK_EXPIRED` or `SIGNING_LINK_NO_LONGER_VALID` (a newer link was sent to the recipient, their address was replaced, or the agreement was cancelled)."
       headers:
         X-Request-Id:
           $ref: "#/components/headers/X-Request-Id"
@@ -12018,3 +13079,564 @@ components:
         at:
           type: string
           format: date-time
+    ReminderFrequency:
+      type: string
+      enum: [NONE, DAILY, EVERY_3_DAYS, WEEKLY]
+      description: Reminders to the recipients whose turn it is, counted from when they were emailed; each is sent once (the worker records it).
+    AgreementRecipientInput:
+      type: object
+      additionalProperties: false
+      required: [name, email, role, order]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: PATCH only, to keep an existing recipient and their fields.
+        name:
+          type: string
+          maxLength: 120
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          enum: [SIGNER, APPROVER, CC]
+        order:
+          type: integer
+          minimum: 1
+          maximum: 20
+    AgreementInput:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          maxLength: 200
+        message:
+          type: string
+          maxLength: 2000
+        expires_at:
+          type: string
+          format: date-time
+        reminder_frequency:
+          $ref: "#/components/schemas/ReminderFrequency"
+        recipients:
+          type: array
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/AgreementRecipientInput"
+        organisation_id:
+          type: string
+          format: uuid
+          description: Create only; required when the caller manages listings for several organisations.
+    AgreementFieldInput:
+      type: object
+      additionalProperties: false
+      required: [recipient_id, type, page, x, y, w, h]
+      properties:
+        recipient_id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [SIGNATURE, INITIALS, DATE_SIGNED, NAME, TEXT, CHECKBOX]
+        page:
+          type: integer
+          minimum: 1
+        x:
+          type: number
+        y:
+          type: number
+        w:
+          type: number
+        h:
+          type: number
+        required:
+          type: boolean
+        label:
+          type: string
+          maxLength: 80
+    AgreementField:
+      type: object
+      additionalProperties: false
+      required: [id, recipient_id, type, page, x, y, w, h, required, label, value]
+      properties:
+        id:
+          type: string
+          format: uuid
+        recipient_id:
+          type: string
+          format: uuid
+        type:
+          type: string
+        page:
+          type: integer
+        x:
+          type: number
+        y:
+          type: number
+        w:
+          type: number
+        h:
+          type: number
+        required:
+          type: boolean
+        label:
+          type: [string, "null"]
+        value:
+          type: [string, "null"]
+          description: A TEXT value or "true"/"false" for a CHECKBOX, once filled.
+    AgreementRecipient:
+      type: object
+      additionalProperties: false
+      required: [id, order, role, name, email, label, status, activated_at, first_viewed_at, completed_at, declined_at, decline_reason, verification]
+      properties:
+        id:
+          type: string
+          format: uuid
+        order:
+          type: integer
+        role:
+          type: string
+          enum: [SIGNER, APPROVER, CC]
+        name:
+          type: string
+        email:
+          type: string
+        label:
+          type: [string, "null"]
+          description: How a generated document names them, e.g. "Tenant 1".
+        status:
+          type: string
+          enum: [WAITING, ACTIVE, SIGNED, APPROVED, DECLINED, CC]
+        activated_at:
+          type: [string, "null"]
+          format: date-time
+        first_viewed_at:
+          type: [string, "null"]
+          format: date-time
+        completed_at:
+          type: [string, "null"]
+          format: date-time
+        declined_at:
+          type: [string, "null"]
+          format: date-time
+        decline_reason:
+          type: [string, "null"]
+        verification:
+          type: [string, "null"]
+          enum: [EMAIL_CODE, DEMO_CODE, null]
+    PageSize:
+      type: object
+      additionalProperties: false
+      required: [width, height]
+      properties:
+        width:
+          type: number
+          description: PDF points.
+        height:
+          type: number
+    AgreementDocument:
+      type: object
+      additionalProperties: false
+      required: [sha256, size_bytes, file_name]
+      properties:
+        sha256:
+          type: string
+        size_bytes:
+          type: integer
+        file_name:
+          type: string
+        pages:
+          type: array
+          items:
+            $ref: "#/components/schemas/PageSize"
+    Agreement:
+      type: object
+      additionalProperties: false
+      required: [id, reference, name, message, status, source, lease_id, sender, organisation, expires_at, reminder_frequency, document,
+        final_document, recipients, fields, waiting_for_you, can_edit, can_send, can_cancel, created_at, updated_at, sent_at, completed_at,
+        declined_at, cancelled_at, expired_at, cancel_reason]
+      properties:
+        id:
+          type: string
+          format: uuid
+        reference:
+          type: string
+          pattern: "^RPA-\\d{4}-\\d{6,}$"
+        name:
+          type: string
+        message:
+          type: [string, "null"]
+        status:
+          type: string
+          enum: [DRAFT, OUT_FOR_SIGNATURE, COMPLETED, DECLINED, CANCELLED, EXPIRED]
+        source:
+          type: string
+          enum: [UPLOAD, LEASE]
+        lease_id:
+          type: [string, "null"]
+          format: uuid
+        sender:
+          type: object
+          additionalProperties: false
+          properties:
+            user_id:
+              type: string
+              format: uuid
+            name:
+              type: string
+            email:
+              type: string
+        organisation:
+          type: [object, "null"]
+          additionalProperties: false
+          properties:
+            id:
+              type: string
+              format: uuid
+            name:
+              type: string
+        expires_at:
+          type: string
+          format: date-time
+        reminder_frequency:
+          $ref: "#/components/schemas/ReminderFrequency"
+        document:
+          oneOf:
+            - $ref: "#/components/schemas/AgreementDocument"
+            - type: "null"
+        final_document:
+          oneOf:
+            - $ref: "#/components/schemas/AgreementDocument"
+            - type: "null"
+        recipients:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgreementRecipient"
+        fields:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgreementField"
+        waiting_for_you:
+          type: boolean
+        can_edit:
+          type: boolean
+        can_send:
+          type: boolean
+        can_cancel:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        sent_at:
+          type: [string, "null"]
+          format: date-time
+        completed_at:
+          type: [string, "null"]
+          format: date-time
+        declined_at:
+          type: [string, "null"]
+          format: date-time
+        cancelled_at:
+          type: [string, "null"]
+          format: date-time
+        expired_at:
+          type: [string, "null"]
+          format: date-time
+        cancel_reason:
+          type: [string, "null"]
+    AgreementEnvelope:
+      type: object
+      additionalProperties: false
+      required: [agreement]
+      properties:
+        agreement:
+          $ref: "#/components/schemas/Agreement"
+    AgreementPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, page_size, total, total_pages]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Agreement"
+        page:
+          type: integer
+        page_size:
+          type: integer
+        total:
+          type: integer
+        total_pages:
+          type: integer
+    AgreementEvent:
+      type: object
+      additionalProperties: false
+      required: [id, action, actor_type, actor_user_id, actor_name, recipient_id, ip, user_agent, detail, at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        action:
+          type: string
+        actor_type:
+          type: string
+          enum: [USER, RECIPIENT, SYSTEM]
+        actor_user_id:
+          type: [string, "null"]
+          format: uuid
+        actor_name:
+          type: string
+        recipient_id:
+          type: [string, "null"]
+          format: uuid
+        ip:
+          type: [string, "null"]
+        user_agent:
+          type: [string, "null"]
+        detail:
+          type: object
+        at:
+          type: string
+          format: date-time
+    SignatureFont:
+      type: object
+      additionalProperties: false
+      required: [key, label]
+      properties:
+        key:
+          type: string
+          enum: [FLOWING, BOLD, CLASSIC]
+        label:
+          type: string
+    AdoptedSignatureInput:
+      type: object
+      additionalProperties: false
+      required: [kind]
+      description: |
+        `TYPED`: `text` (at most 120 characters) and `font` (a `SignatureFont` key, default
+        `FLOWING`). `DRAWN`: `image_base64`, a PNG of at most 200 KB. `UPLOADED`: `image_base64`, a
+        PNG or JPEG of at most 500 KB. Images: 20 x 10 to 2000 x 1000 pixels, re-encoded as PNG on
+        white (metadata dropped). A `data:image/...;base64,` prefix is accepted.
+      properties:
+        kind:
+          type: string
+          enum: [TYPED, DRAWN, UPLOADED]
+        text:
+          type: string
+        font:
+          type: string
+        image_base64:
+          type: string
+    SubmitInput:
+      type: object
+      additionalProperties: false
+      required: [code, consent]
+      properties:
+        code:
+          type: [string, integer]
+        consent:
+          type: boolean
+          description: Must be true (the `consent_text` of the signing page).
+        field_values:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [field_id, value]
+            properties:
+              field_id:
+                type: string
+                format: uuid
+              value:
+                type: string
+        signature:
+          $ref: "#/components/schemas/AdoptedSignatureInput"
+        initials:
+          $ref: "#/components/schemas/AdoptedSignatureInput"
+    SigningView:
+      type: object
+      additionalProperties: false
+      required: [agreement, recipient, fields, other_recipients, can_act, read_only, code_length, consent_text, statement, signature_fonts, link_expires_at]
+      properties:
+        agreement:
+          type: object
+          additionalProperties: false
+          properties:
+            reference:
+              type: string
+            name:
+              type: string
+            message:
+              type: [string, "null"]
+            status:
+              type: string
+            sender_name:
+              type: string
+            organisation_name:
+              type: [string, "null"]
+            expires_at:
+              type: string
+              format: date-time
+            document_sha256:
+              type: string
+            final_sha256:
+              type: [string, "null"]
+            pages:
+              type: array
+              items:
+                $ref: "#/components/schemas/PageSize"
+            completed_at:
+              type: [string, "null"]
+              format: date-time
+        recipient:
+          type: object
+          additionalProperties: false
+          properties:
+            id:
+              type: string
+              format: uuid
+            name:
+              type: string
+            role:
+              type: string
+            label:
+              type: [string, "null"]
+            status:
+              type: string
+            email_masked:
+              type: string
+            completed_at:
+              type: [string, "null"]
+              format: date-time
+        fields:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgreementField"
+        other_recipients:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              name:
+                type: string
+              role:
+                type: string
+              order:
+                type: integer
+              status:
+                type: string
+        can_act:
+          type: boolean
+        read_only:
+          type: boolean
+        code_length:
+          type: integer
+        consent_text:
+          type: string
+        statement:
+          type: string
+        signature_fonts:
+          type: array
+          items:
+            $ref: "#/components/schemas/SignatureFont"
+        link_expires_at:
+          type: string
+          format: date-time
+    SigningRequest:
+      type: object
+      additionalProperties: false
+      required: [agreement_id, recipient_id, reference, name, agreement_status, role, recipient_status, sender_name, sent_at, expires_at, completed_at, can_sign]
+      properties:
+        agreement_id:
+          type: string
+          format: uuid
+        recipient_id:
+          type: string
+          format: uuid
+        reference:
+          type: string
+        name:
+          type: string
+        agreement_status:
+          type: string
+        role:
+          type: string
+        recipient_status:
+          type: string
+        sender_name:
+          type: string
+        sent_at:
+          type: [string, "null"]
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: [string, "null"]
+          format: date-time
+        can_sign:
+          type: boolean
+    SavedSignature:
+      type: object
+      additionalProperties: false
+      required: [signature, initials, signature_fonts]
+      properties:
+        signature:
+          oneOf:
+            - $ref: "#/components/schemas/SavedAdopted"
+            - type: "null"
+        initials:
+          oneOf:
+            - $ref: "#/components/schemas/SavedAdopted"
+            - type: "null"
+        signature_fonts:
+          type: array
+          items:
+            $ref: "#/components/schemas/SignatureFont"
+    SavedAdopted:
+      type: object
+      additionalProperties: false
+      required: [kind, text, font, image_base64]
+      properties:
+        kind:
+          type: string
+          enum: [TYPED, DRAWN, UPLOADED]
+        text:
+          type: [string, "null"]
+        font:
+          type: [string, "null"]
+        image_base64:
+          type: [string, "null"]
+    Verification:
+      type: object
+      additionalProperties: false
+      required: [reference, status, completed_at, original_sha256, final_sha256, signatures, statement]
+      properties:
+        match:
+          type: boolean
+          description: POST only.
+        document:
+          type: string
+          enum: [FINAL, ORIGINAL]
+          description: POST only, when it matches.
+        reference:
+          type: string
+        status:
+          type: string
+        completed_at:
+          type: [string, "null"]
+          format: date-time
+        original_sha256:
+          type: string
+        final_sha256:
+          type: string
+        signatures:
+          type: integer
+        statement:
+          type: string

@@ -78,8 +78,8 @@ func (s *statusRecorder) Write(b []byte) (int, error) {
 func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
 // secretPathPrefixes are the routes whose next path segment is a credential
-// (an invitation token): it is never written to the access log.
-var secretPathPrefixes = []string{"/v1/invitations/"}
+// (an invitation or signing token): it is never written to the access log.
+var secretPathPrefixes = []string{"/v1/invitations/", "/v1/signing/"}
 
 // LoggedPath is the request path as the access log writes it: the secret
 // segment of a credential route replaced by "{token}".
