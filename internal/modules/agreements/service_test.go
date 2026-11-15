@@ -2,10 +2,13 @@ package agreements
 
 import (
 	"bytes"
+	"compress/zlib"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
+	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -201,5 +204,64 @@ func TestCompletionRendersFinalDocument(t *testing.T) {
 	verified, err := h.svc.VerifyFile(ctx, content)
 	if err != nil || verified.Match == nil || !*verified.Match {
 		t.Fatalf("verify %+v %v", verified, err)
+	}
+}
+
+// pageTexts returns the decompressed content stream of every page, in order.
+func pageTexts(t *testing.T, content []byte) []string {
+	t.Helper()
+	objects := map[string][]byte{}
+	for _, m := range regexp.MustCompile(`(?s)(\d+) 0 obj(.*?)endobj`).FindAllSubmatch(content, -1) {
+		objects[string(m[1])] = m[2]
+	}
+	var out []string
+	for _, m := range regexp.MustCompile(`(?s)\d+ 0 obj\s*<<[^>]*?/Type /Page\b.*?endobj`).FindAll(content, -1) {
+		ref := regexp.MustCompile(`/Contents (\d+) 0 R`).FindSubmatch(m)
+		if ref == nil {
+			t.Fatal("a page without contents")
+		}
+		obj := objects[string(ref[1])]
+		s := regexp.MustCompile(`(?s)stream\r?\n(.*?)\r?\nendstream`).FindSubmatch(obj)
+		if s == nil {
+			t.Fatal("contents without a stream")
+		}
+		r, err := zlib.NewReader(bytes.NewReader(s[1]))
+		if err != nil {
+			out = append(out, string(s[1]))
+			continue
+		}
+		raw, _ := io.ReadAll(r)
+		out = append(out, string(raw))
+	}
+	return out
+}
+
+// The audit report's footer is on its own pages only, never on the
+// original pages (including the last one), whatever their number.
+func TestAuditFooterOnlyOnAuditPages(t *testing.T) {
+	for _, n := range []int{1, 2, 3} {
+		original := testPDF(t, n)
+		pages, err := InspectPDF(original)
+		if err != nil {
+			t.Fatal(err)
+		}
+		content, err := RenderFinal(FinalInput{Original: original, Pages: pages, Recipients: map[string]Recipient{},
+			Audit: AuditReport{Name: "Contract", Reference: "RPA-2026-000002", CompletedAt: time.Now(), Pages: n}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		texts := pageTexts(t, content)
+		if len(texts) != n+1 {
+			t.Fatalf("%d pages: %d page streams, want %d", n, len(texts), n+1)
+		}
+		for i, text := range texts {
+			has := strings.Contains(text, "(Audit report  RPA-2026-000002  page ")
+			if i < n && has {
+				t.Fatalf("%d-page document: the audit footer is drawn on original page %d", n, i+1)
+			}
+			if i >= n && !strings.Contains(text, "(Audit report  RPA-2026-000002  page 1)Tj") {
+				t.Fatalf("%d-page document: the audit page lacks its footer (page 1 of the report)", n)
+			}
+		}
 	}
 }

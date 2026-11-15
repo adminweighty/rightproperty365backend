@@ -290,14 +290,22 @@ func RenderFinal(in FinalInput) ([]byte, error) {
 	const margin = 42.0
 	f.SetMargins(margin, margin, margin)
 	f.SetAutoPageBreak(true, margin+14)
+	// The footer is set before the audit report's first page, so AddPage
+	// would also draw it on the last original page while closing it: it is
+	// drawn only once the audit report has started, numbered within it.
+	auditStarted, firstAuditPage := false, 0
 	f.SetFooterFunc(func() {
+		if !auditStarted {
+			return
+		}
 		f.SetY(-margin + 6)
 		f.SetFont("Helvetica", "", 8)
 		f.SetTextColor(90, 90, 90)
-		f.CellFormat(0, 10, fmt.Sprintf("Audit report  %s  page %d", a.Reference, f.PageNo()), "", 0, "L", false, 0, "")
+		f.CellFormat(0, 10, fmt.Sprintf("Audit report  %s  page %d", a.Reference, f.PageNo()-firstAuditPage+1), "", 0, "L", false, 0, "")
 		f.SetTextColor(0, 0, 0)
 	})
 	f.AddPageFormat("P", fpdf.SizeType{Wd: 595.28, Ht: 841.89})
+	auditStarted, firstAuditPage = true, f.PageNo()
 	f.SetFont("gotext", "B", 18)
 	f.MultiCell(0, 22, "Audit report", "", "L", false)
 	f.Ln(4)
