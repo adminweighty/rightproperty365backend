@@ -41,7 +41,7 @@ Invoke-RestMethod -Method Post -Uri http://localhost:8080/v1/property-requests -
 ### Development sample data
 
 In development without a database the API seeds its in-memory stores with the data below (defined
-once in `internal/devseed`; the web app's sample data uses the same names): 28 organisations, 33
+once in `internal/devseed`; the web app's sample data uses the same names): 28 organisations, 47
 accounts, 24 listings and 34 directory profiles (the web's 29, three solicitors, and the United
 Kingdom's agency and host). Listing IDs are
 `0195c0de-0000-7000-8000-000000000001` … `…000000000018`: the web's 18 **PUBLISHED** listings in
@@ -78,6 +78,13 @@ seeded).
 | `bulawayo.agent@example.test` | Sipho Nkomo | Sample Homes Bulawayo | `AGENCY` | `OWNER` | listings 11, 12; `agents/sipho-nkomo`; `agencies/sample-homes-bulawayo` |
 | `seller@example.test` | Grace Mhlanga | — | — | direct seller | listings 6 |
 | `agent-b@example.test` | Blake Agent | Second Street Realty | `AGENCY` | `AGENT` | — |
+| `tenant@example.test` | Tariro Tenant | — | — | account role `TENANT` | three sample consultations as the customer |
+| `sales.agent@example.test` | Simba Sales | Sample Estates | `AGENCY` | `AGENT` (account role `SALES_AGENT`) | — |
+| `lettings.agent@example.test` | Lindiwe Lettings | Sample Estates | `AGENCY` | `AGENT` (account role `LETTINGS_AGENT`) | — |
+| `agency.admin@example.test` | Ruvimbo Chari | Sample Estates | `AGENCY` | `MANAGER` (account role `AGENCY_ADMIN`) | sees the agency's requests and appointments |
+| `agency.staff@example.test` | Kuda Staff | Sample Estates | `AGENCY` | `STAFF` (account role `AGENCY_STAFF`) | — |
+| `landlord@example.test` | Lloyd Landlord | — | — | account role `LANDLORD` (approved direct owner) | — |
+| `admin.platform@example.test`, `admin.market@example.test` (market ZW), `admin.moderator@example.test`, `admin.support@example.test`, `admin.finance@example.test`, `admin.content@example.test` | | — | — | platform `PLATFORM_ADMIN`, `MARKET_ADMIN`, `MODERATOR`, `SUPPORT`, `FINANCE_ADMIN`, `CONTENT_ADMIN` (admin login only) | — |
 | `sample-developments@example.test` | Sample Developments Owner | Sample Developments | `DEVELOPER` | `OWNER` | `developers/sample-developments` |
 | `sample-urban-builders@example.test` | Sample Urban Builders Owner | Sample Urban Builders | `DEVELOPER` | `OWNER` | `developers/sample-urban-builders` |
 | `sample-heights@example.test` | Sample Heights Owner | Sample Heights | `DEVELOPER` | `OWNER` | `developers/sample-heights` |
@@ -218,6 +225,7 @@ All configuration comes from environment variables. For local development you ma
 | `PUBLIC_WEB_URL` | `http://localhost:3000` | Public origin of the web app; every link and image in an email is built from it (`WEB_BASE_URL` is a deprecated alias) |
 | `RESEND_API_KEY`, `MAIL_DRIVER`, `EMAIL_FROM`, `EMAIL_REPLY_TO` | | Email settings: see "Email". **A key in `.env` makes local runs send real email unless `MAIL_DRIVER=log`** |
 | `DEV_SEED_PASSWORD` | _(empty)_ | Development only: shared password of the seed users. Ignored outside `APP_ENV=development`; never logged |
+| `AUTH_DEMO_CODE` | _(empty)_ | A demo sign-in code (4–6 digits) accepted for every sign-in besides the emailed one. **Development and staging only: set with `APP_ENV=production` the API and the worker refuse to start.** Never logged; the API logs a warning while it is active. See "Sign-in code" |
 | `ADMIN_SESSION_TTL` | `12h` | Absolute lifetime of an administrator session (Go duration, 1m–24h) |
 | `ADMIN_SESSION_IDLE_TTL` | `30m` | Administrator inactivity timeout (Go duration; must not exceed `ADMIN_SESSION_TTL`) |
 | `STORAGE_DRIVER`, `STORAGE_LOCAL_DIR`, `S3_*` | | Private file storage for onboarding documents: see "File storage". **Staging and production must use `STORAGE_DRIVER=s3`** |
@@ -1324,7 +1332,7 @@ So that nobody assumes these exist. They are in the updated functional specifica
 - account deletion;
 - adaptive bot protection (registration has a simple built-in arithmetic captcha, see
   "Registration captcha"; nothing stronger), and duplicate or spam detection;
-- administrator MFA;
+- administrator MFA beyond the emailed sign-in code (an authenticator app or hardware key);
 - account suspension (including the "Suspended" onboarding status) and abuse reporting;
 - push notifications.
 
@@ -1700,11 +1708,15 @@ fake of the API only.
   only place a person chooses roles (a repeated registration of a still-unverified email goes
   through the same check); see "Role model" for the paths that were checked.
 - **Captcha at registration** – `captcha` is required; see "Registration captcha" below.
+- **Signing in is two steps** – the password, then a six-digit code sent by email; see "Sign-in
+  code" below.
 - **One-time tokens** – email verification (24 h) and password reset (1 h) are single-use and
   stored as SHA-256. A successful reset also marks the email verified, because the link proves
   control of the mailbox.
 - **Rate limit** – all `POST /v1/auth/*` routes share one per-IP bucket (burst 20, refill 20/min),
-  separate from the property-request bucket. `GET /v1/auth/captcha` has its own (burst 30,
+  separate from the property-request bucket, except the sign-in code routes
+  (`/v1/auth/login/verify`, `/v1/auth/login/resend`), which have their own (burst 20, refill
+  20/min; the administrator ones another of the same size). `GET /v1/auth/captcha` has its own (burst 30,
   refill 30/min).
 - **Email delivery** – through Resend; see "Email". Verification and reset emails are sent from
   the request with a bounded retry (their link is a credential and is never written to the
@@ -1713,6 +1725,73 @@ fake of the API only.
   (`http://localhost:3000/verify-email?token=...`, `.../reset-password?token=...`).
 - Logs carry `user_id` on every line of an authenticated request. Passwords, tokens and cookie
   values are never logged (except the development mail link described above).
+
+### Sign-in code (two-step sign-in, API 0.21.0)
+
+Signing in is two steps for everyone, customers and administrators. The product owner asked for
+a one-time code at sign-in; the specification requires MFA for administrators and allows it as an
+option for users, and this emailed code is the first step towards that (it proves control of the
+mailbox; there is no authenticator app).
+
+```
+POST /v1/auth/login            {"email": "...", "password": "...", "token_delivery": "cookie"}
+200 {"status":"CODE_REQUIRED","challenge_id":"<opaque>","sent_to":"c•••@example.test",
+     "expires_at":"2026-11-14T09:10:00Z","code_length":6}         (no cookie, no token)
+
+POST /v1/auth/login/verify     {"challenge_id": "<opaque>", "code": "123456"}
+200 exactly what POST /v1/auth/login answered before 0.21.0 (cookie set, or access_token)
+
+POST /v1/auth/login/resend     {"challenge_id": "<opaque>"}
+200 the same shape as the login answer, with a new expires_at
+```
+
+The administrator sign-in is the same under `/v1/admin/auth/login`, `/login/verify` and
+`/login/resend` (the verify answer is the admin-scope cookie session).
+
+- **The code** – 6 digits from `crypto/rand`, valid for **10 minutes**, usable **once**. It is
+  emailed with the `sign-in-code` template ("Your sign-in code"; the code large; "If this wasn't
+  you, ..."), from the request path like the verification and reset links: a code is a credential
+  and is never written to the outbox, a log line or the delivery record.
+- **Failures** – `400 VALIDATION_FAILED` with `fields.code` = "Enter the code we sent you."
+  (missing, blank, not digits) or "That code is not right." (wrong, attempts left).
+  `400 CODE_EXPIRED` ("That code has expired or was used too many times. Sign in again.") when
+  the challenge expired, is unknown, was used, had **5 wrong codes** (it is then dead), or belongs
+  to the other sign-in: a customer challenge is refused by the administrator verify endpoint and
+  the reverse.
+- **Resend** – at most once every **30 seconds** and **5 times** per challenge, otherwise
+  `429 RATE_LIMITED` with `Retry-After`. The earlier code stops working; wrong codes already
+  entered still count.
+- **Unchanged** – a wrong email or password is the same `401 INVALID_CREDENTIALS` as before (same
+  body, same Argon2 timing protection, no hint whether the account exists), and an unverified
+  address is still `403 EMAIL_NOT_VERIFIED`; neither starts a challenge or sends a code.
+  `POST /v1/auth/verify-email` still signs the customer in directly (the link already proves the
+  mailbox).
+- **Storage** – `sign_in_challenges` (migration `0019`): the SHA-256 of the challenge id, the
+  account, the scope, the token delivery, an HMAC-SHA256 of the code keyed with the raw challenge
+  id (so the table alone cannot be used to test codes), the expiry, wrong attempts, resends, when
+  the last code was sent and when it was used. Expired rows are deleted whenever a new challenge
+  starts.
+- **Audit (log-only)** – `admin_sign_in` is logged with `outcome` `code_sent` at the password
+  step and `success` at the code step; wrong codes are logged as `sign_in_code` / `failure`
+  with the attempt count.
+- **Demo code: `AUTH_DEMO_CODE`** (development and staging only). When set (for example
+  `1234`), that exact code is also accepted for any live challenge, which is how testers sign in
+  to the sample accounts on staging (their `@example.test` addresses are never emailed). A code
+  of another length than 6 digits is accepted only when it is the demo code. **If it is set while
+  `APP_ENV=production`, the API and the worker refuse to start.** The API logs one warning at
+  startup while it is active, never the code. There is no other bypass.
+- **Development** – with the log mailer, the code is printed on the `DEV MAIL (not sent):
+  sign-in-code` line (`code` attribute).
+- **Reserved test domains are never emailed.** With the Resend transport, any email to
+  `example.com`, `example.org`, `example.net`, any `*.example.*` domain, or a domain ending in
+  `.test`, `.example`, `.invalid` or `.localhost` is skipped with an info log line that does
+  not name the address (`mail.IsReservedTestAddress`; applies to every template). The log
+  transport still prints them.
+- **Tests** sign in through both steps: the router test helper reads the code from the captured
+  email and calls the verify endpoint, exactly as a person would.
+- **Clients** – the web app, the mobile app and the administrator console must show a code step
+  after the password and accept 4 to 6 digits (the demo code may be shorter than
+  `code_length`).
 
 ### Registration captcha
 
@@ -1757,13 +1836,14 @@ Platform administrators have their own login, and every session has a **scope**:
 
 | | `customer` | `admin` |
 | --- | --- | --- |
-| Issued by | `POST /v1/auth/login`, `POST /v1/auth/verify-email` | `POST /v1/admin/auth/login` only |
+| Issued by | `POST /v1/auth/login/verify` (after `POST /v1/auth/login`), `POST /v1/auth/verify-email` | `POST /v1/admin/auth/login/verify` (after `POST /v1/admin/auth/login`) only |
 | Who | any verified account **without** a platform role | verified accounts **with** a platform role |
 | Delivery | cookie or bearer | cookie only — never a bearer token, and an admin token sent as `Authorization: Bearer` does not authenticate |
 | Lifetime | 30 days absolute, 14 days idle | 12 h absolute, 30 min idle (`ADMIN_SESSION_TTL`, `ADMIN_SESSION_IDLE_TTL`) |
 | Rate limit (per IP) | burst 20, 20/min across `/v1/auth/*` | burst 5, 5/min, separate bucket |
 
-- `POST /v1/admin/auth/login` takes `{email, password}` and answers
+- `POST /v1/admin/auth/login` takes `{email, password}` and answers `CODE_REQUIRED` (see
+  "Sign-in code"); `POST /v1/admin/auth/login/verify` then answers
   `{"user": {...}, "session": {"scope":"admin","expires_at":"..."}}`. `token_delivery` is not
   accepted (strict JSON → `400 INVALID_JSON`) and `access_token` is never returned.
 - **It does not reveal who is an administrator.** Unknown email, wrong password, a consumer, a
@@ -1797,8 +1877,9 @@ Platform administrators have their own login, and every session has a **scope**:
   `429`, malformed body `400`) are in the access log but have no audit line.
 
 > **The administrator login is not production-ready.** The specification requires MFA for
-> administrator roles and MFA is not built. Until it is, an administrator account is protected by
-> a password, a per-IP rate limit and a short session only.
+> administrator roles. An administrator account is protected by a password, the emailed sign-in
+> code (which proves control of the mailbox, not of a separate device), a per-IP rate limit and a
+> short session. There is no authenticator app or hardware key yet.
 
 #### Creating administrators: `adminctl`
 
@@ -1912,9 +1993,9 @@ their data with `Principal.OrganisationIDs(...)` (and `PlatformRole.MarketCode` 
 
 ### Not built yet
 
-- **MFA for administrators** – the specification requires it for admin roles and it is **not
-  built**; platform administrators sign in with a password only, so the administrator login must
-  not be treated as production-ready.
+- **MFA for administrators** – the specification requires it for admin roles. Only the emailed
+  sign-in code exists (see "Sign-in code"); there is no second factor on a separate device, so the
+  administrator login must not be treated as production-ready.
 - **Durable audit trail** – administrator sign-ins are only written to the process log.
 - **Admin endpoints for reference data** – rows are served and enforced, but can only be changed
   in the database.

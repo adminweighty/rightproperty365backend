@@ -553,3 +553,39 @@ func TestSearchDriverSelection(t *testing.T) {
 		t.Fatalf("search defaults: %+v", def)
 	}
 }
+
+// AUTH_DEMO_CODE is honoured in development and staging only; set anywhere
+// else, startup (the API and the worker both call Load) fails.
+func TestAuthDemoCode(t *testing.T) {
+	const db = "postgres://user:pw@db.example.internal/db"
+	demo := "12" + "34" // built at run time: no code-shaped literal
+
+	staging, err := FromLookup(lookup(map[string]string{"APP_ENV": "staging", "DATABASE_URL": db, "RESEND_API_KEY": "test-key-not-real", "AUTH_DEMO_CODE": demo}))
+	if err != nil || staging.AuthDemoCode.Reveal() != demo {
+		t.Fatalf("staging must accept the demo code: %v", err)
+	}
+	if s := fmt.Sprintf("%v %+v", staging.AuthDemoCode, staging); strings.Contains(s, "AuthDemoCode:"+demo) {
+		t.Fatal("the demo code must format as [redacted]")
+	}
+	dev, err := FromLookup(lookup(map[string]string{"AUTH_DEMO_CODE": demo}))
+	if err != nil || dev.AuthDemoCode.Reveal() != demo {
+		t.Fatalf("development must accept the demo code: %v", err)
+	}
+	none, err := FromLookup(lookup(map[string]string{}))
+	if err != nil || none.AuthDemoCode.IsSet() {
+		t.Fatalf("no demo code unless set: %v", err)
+	}
+
+	_, err = FromLookup(lookup(map[string]string{"APP_ENV": "production", "DATABASE_URL": db, "RESEND_API_KEY": "test-key-not-real", "AUTH_DEMO_CODE": demo}))
+	if err == nil || !strings.Contains(err.Error(), "AUTH_DEMO_CODE is set but APP_ENV=production") {
+		t.Fatalf("production must refuse to start with a demo code, got %v", err)
+	}
+	if strings.Contains(err.Error(), demo) {
+		t.Fatal("the error must not echo the code")
+	}
+	for _, bad := range []string{"12a4", "123", "1234567"} {
+		if _, err := FromLookup(lookup(map[string]string{"AUTH_DEMO_CODE": bad})); err == nil || !strings.Contains(err.Error(), "AUTH_DEMO_CODE must be") {
+			t.Fatalf("%q must be refused, got %v", bad, err)
+		}
+	}
+}

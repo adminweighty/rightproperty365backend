@@ -1,9 +1,12 @@
 package identity
 
 import (
+	"encoding/json"
 	"errors"
 	"log/slog"
+	"math"
 	"net/http"
+	"strconv"
 	"time"
 
 	"rightproperty365.com/backend/internal/platform/auth"
@@ -71,7 +74,15 @@ func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 		httpx.WriteError(w, r, http.StatusForbidden, CodeEmailNotVerified, "Please verify your email address before signing in.", nil)
 	case errors.Is(err, ErrInvalidToken):
 		httpx.WriteError(w, r, http.StatusBadRequest, CodeInvalidToken, "This link is invalid, has expired or has already been used.", nil)
+	case errors.Is(err, ErrCodeExpired):
+		httpx.WriteError(w, r, http.StatusBadRequest, CodeCodeExpired, msgCodeExpired, nil)
 	default:
+		var later *ResendLaterError
+		if errors.As(err, &later) {
+			w.Header().Set("Retry-After", strconv.Itoa(max(1, int(math.Ceil(later.After.Seconds())))))
+			httpx.WriteError(w, r, http.StatusTooManyRequests, httpx.CodeRateLimited, later.Message(), nil)
+			return
+		}
 		httpx.WriteInternalError(w, r, h.logger, err)
 	}
 }
@@ -174,7 +185,16 @@ func (h *Handler) ResendVerification(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusAccepted, statusResponse{Status: statusVerificationSent})
 }
 
-// Login handles POST /v1/auth/login.
+// writeChallenge answers the password step: 200 CODE_REQUIRED, no session.
+func (h *Handler) writeChallenge(w http.ResponseWriter, c CodeChallenge) {
+	c.ExpiresAt = c.ExpiresAt.UTC()
+	w.Header().Set("Cache-Control", "no-store")
+	httpx.WriteJSON(w, http.StatusOK, c)
+}
+
+// Login handles POST /v1/auth/login: the password step. When the password is
+// right the answer is 200 CODE_REQUIRED and a code is emailed; the session is
+// started by LoginVerify.
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Email         string `json:"email"`
@@ -184,17 +204,18 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	if !httpx.DecodeJSON(w, r, &in) {
 		return
 	}
-	res, err := h.svc.Login(r.Context(), in.Email, in.Password, in.TokenDelivery)
+	c, err := h.svc.Login(r.Context(), in.Email, in.Password, in.TokenDelivery)
 	if err != nil {
 		h.fail(w, r, err)
 		return
 	}
-	h.writeAuth(w, res)
+	h.writeChallenge(w, c)
 }
 
 // AdminLogin handles POST /v1/admin/auth/login. The body is {email, password}
-// only: strict JSON decoding rejects token_delivery (400 INVALID_JSON), and
-// the response never carries access_token.
+// only: strict JSON decoding rejects token_delivery (400 INVALID_JSON). When
+// the password is right the answer is 200 CODE_REQUIRED; the session is
+// started by AdminLoginVerify and never carries access_token.
 func (h *Handler) AdminLogin(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Email    string `json:"email"`
@@ -203,7 +224,44 @@ func (h *Handler) AdminLogin(w http.ResponseWriter, r *http.Request) {
 	if !httpx.DecodeJSON(w, r, &in) {
 		return
 	}
-	res, err := h.svc.AdminLogin(r.Context(), in.Email, in.Password, httpx.ClientIP(r))
+	c, err := h.svc.AdminLogin(r.Context(), in.Email, in.Password, httpx.ClientIP(r))
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	h.writeChallenge(w, c)
+}
+
+// verifyInput is the body of POST .../login/verify. The code may be sent as
+// a string (preferred) or a number.
+type verifyInput struct {
+	ChallengeID string          `json:"challenge_id"`
+	Code        json.RawMessage `json:"code"`
+}
+
+// LoginVerify handles POST /v1/auth/login/verify: on the right code, exactly
+// what the login used to answer (cookie set, or access_token for bearer).
+func (h *Handler) LoginVerify(w http.ResponseWriter, r *http.Request) {
+	var in verifyInput
+	if !httpx.DecodeJSON(w, r, &in) {
+		return
+	}
+	res, err := h.svc.VerifyCode(r.Context(), auth.ScopeCustomer, in.ChallengeID, ParseCodeInput(in.Code), httpx.ClientIP(r))
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	h.writeAuth(w, res)
+}
+
+// AdminLoginVerify handles POST /v1/admin/auth/login/verify: on the right
+// code, an admin-scope cookie session.
+func (h *Handler) AdminLoginVerify(w http.ResponseWriter, r *http.Request) {
+	var in verifyInput
+	if !httpx.DecodeJSON(w, r, &in) {
+		return
+	}
+	res, err := h.svc.VerifyCode(r.Context(), auth.ScopeAdmin, in.ChallengeID, ParseCodeInput(in.Code), httpx.ClientIP(r))
 	if err != nil {
 		h.fail(w, r, err)
 		return
@@ -213,6 +271,33 @@ func (h *Handler) AdminLogin(w http.ResponseWriter, r *http.Request) {
 		User:    res.User.View(),
 		Session: &sessionView{Scope: res.Scope, ExpiresAt: res.ExpiresAt.UTC()},
 	})
+}
+
+func (h *Handler) resend(scope string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			ChallengeID string `json:"challenge_id"`
+		}
+		if !httpx.DecodeJSON(w, r, &in) {
+			return
+		}
+		c, err := h.svc.ResendCode(r.Context(), scope, in.ChallengeID)
+		if err != nil {
+			h.fail(w, r, err)
+			return
+		}
+		h.writeChallenge(w, c)
+	}
+}
+
+// LoginResend handles POST /v1/auth/login/resend.
+func (h *Handler) LoginResend(w http.ResponseWriter, r *http.Request) {
+	h.resend(auth.ScopeCustomer)(w, r)
+}
+
+// AdminLoginResend handles POST /v1/admin/auth/login/resend.
+func (h *Handler) AdminLoginResend(w http.ResponseWriter, r *http.Request) {
+	h.resend(auth.ScopeAdmin)(w, r)
 }
 
 // Logout handles POST /v1/auth/logout: revokes the current session (cookie or

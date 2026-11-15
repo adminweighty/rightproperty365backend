@@ -101,6 +101,10 @@ type Config struct {
 	// DevSeedPassword is the shared password of the development seed users.
 	// It is only ever populated when Env is development and must never be logged.
 	DevSeedPassword string
+	// AuthDemoCode is AUTH_DEMO_CODE: a fixed sign-in code accepted, besides
+	// the emailed one, for every sign-in. Only allowed when Env is development
+	// or staging (Load fails otherwise). It formats as "[redacted]".
+	AuthDemoCode Secret
 	// AdminSessionTTL and AdminSessionIdleTTL bound administrator sessions
 	// (absolute lifetime and inactivity timeout).
 	AdminSessionTTL     time.Duration
@@ -390,6 +394,20 @@ func FromLookup(get func(string) string) (Config, error) {
 		cfg.DevSeedPassword = get("DEV_SEED_PASSWORD")
 	}
 
+	// The demo sign-in code. Refused (startup fails) anywhere but development
+	// and staging, so a stray value can never weaken a production sign-in.
+	// The value is never echoed.
+	if code := val("AUTH_DEMO_CODE", ""); code != "" {
+		switch {
+		case cfg.Env != EnvDevelopment && cfg.Env != EnvStaging:
+			errs = append(errs, fmt.Errorf("AUTH_DEMO_CODE is set but APP_ENV=%s: a demo sign-in code is only allowed in development or staging; remove AUTH_DEMO_CODE", cfg.Env))
+		case !validDemoCode(code):
+			errs = append(errs, fmt.Errorf("AUTH_DEMO_CODE must be %d to %d digits", minDemoCodeDigits, maxDemoCodeDigits))
+		default:
+			cfg.AuthDemoCode = Secret(code)
+		}
+	}
+
 	cfg.AdminSessionTTL, cfg.AdminSessionIdleTTL = defaultAdminSessionTTL, defaultAdminSessionIdleTTL
 	for _, d := range []struct {
 		key string
@@ -463,6 +481,28 @@ func FromLookup(get func(string) string) (Config, error) {
 	}
 	return cfg, nil
 }
+
+// Length bounds of AUTH_DEMO_CODE. Real sign-in codes have 6 digits.
+const (
+	minDemoCodeDigits = 4
+	maxDemoCodeDigits = 6
+)
+
+func validDemoCode(code string) bool {
+	if len(code) < minDemoCodeDigits || len(code) > maxDemoCodeDigits {
+		return false
+	}
+	for i := 0; i < len(code); i++ {
+		if code[i] < '0' || code[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// DemoCodeWarning is the startup warning logged once when a demo sign-in code
+// is active. It never contains the code.
+const DemoCodeWarning = "AUTH_DEMO_CODE is set: a DEMO sign-in code is accepted for every sign-in in this environment (development/staging only; never in production)"
 
 func parseOrigins(raw string) ([]string, error) {
 	var out []string

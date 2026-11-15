@@ -28,7 +28,8 @@ type MemoryStore struct {
 	sessions      map[string]*Session // key: hex token hash
 	verifications map[string]*memoryToken
 	resets        map[string]*memoryToken
-	captchas      map[string]*memoryCaptcha // key: captcha id
+	captchas      map[string]*memoryCaptcha  // key: captcha id
+	challenges    map[string]*LoginChallenge // key: hex id hash
 	consents      []MemoryConsent
 	outbox        []outbox.Event
 	sink          outbox.Sink
@@ -165,6 +166,7 @@ func NewMemoryStore() *MemoryStore {
 		verifications: make(map[string]*memoryToken),
 		resets:        make(map[string]*memoryToken),
 		captchas:      make(map[string]*memoryCaptcha),
+		challenges:    make(map[string]*LoginChallenge),
 	}
 }
 
@@ -197,6 +199,77 @@ func (s *MemoryStore) ConsumeCaptcha(_ context.Context, id string, now time.Time
 	}
 	c.UsedAt = &now
 	return c.Captcha, nil
+}
+
+// CreateLoginChallenge implements Store.
+func (s *MemoryStore) CreateLoginChallenge(_ context.Context, c LoginChallenge) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, old := range s.challenges {
+		if old.ExpiresAt.Before(c.CreatedAt) {
+			delete(s.challenges, k)
+		}
+	}
+	c.IDHash, c.CodeHash = slices.Clone(c.IDHash), slices.Clone(c.CodeHash)
+	s.challenges[key(c.IDHash)] = &c
+	return nil
+}
+
+// LoginChallenge implements Store.
+func (s *MemoryStore) LoginChallenge(_ context.Context, idHash []byte) (LoginChallenge, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.challenges[key(idHash)]
+	if !ok {
+		return LoginChallenge{}, ErrNotFound
+	}
+	out := *c
+	out.CodeHash = slices.Clone(c.CodeHash)
+	return out, nil
+}
+
+// FailLoginChallenge implements Store.
+func (s *MemoryStore) FailLoginChallenge(_ context.Context, idHash []byte, _ time.Time) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.challenges[key(idHash)]
+	if !ok || c.ConsumedAt != nil {
+		return 0, ErrNotFound
+	}
+	c.Attempts++
+	return c.Attempts, nil
+}
+
+// ConsumeLoginChallenge implements Store.
+func (s *MemoryStore) ConsumeLoginChallenge(_ context.Context, idHash []byte, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.challenges[key(idHash)]
+	if !ok || !c.usable(now) {
+		return ErrNotFound
+	}
+	c.ConsumedAt = &now
+	return nil
+}
+
+// ResendLoginChallenge implements Store.
+func (s *MemoryStore) ResendLoginChallenge(_ context.Context, idHash, codeHash []byte, expiresAt, now, sentBefore time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.challenges[key(idHash)]
+	if !ok || !c.usable(now) || c.ResendCount >= SignInCodeMaxResends || c.LastSentAt.After(sentBefore) {
+		return ErrNotFound
+	}
+	c.CodeHash, c.ExpiresAt, c.LastSentAt = slices.Clone(codeHash), expiresAt, now
+	c.ResendCount++
+	return nil
+}
+
+// LoginChallengeCount returns how many sign-in challenges are held (tests).
+func (s *MemoryStore) LoginChallengeCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.challenges)
 }
 
 // CaptchaCount returns how many captchas are held, used or not (tests).

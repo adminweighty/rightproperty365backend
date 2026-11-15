@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.20.0
+  version: 0.21.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,36 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Signing in is two steps (changed in 0.21.0). **BREAKING for every client that signs in:
+    the web app, the mobile app and the administrator console must be updated together with
+    this release.**
+    - **The password alone no longer signs anyone in.** `POST /v1/auth/login` and
+      `POST /v1/admin/auth/login` keep their request bodies, but when the password is right
+      they now answer `200` with `SignInChallenge`
+      (`{"status":"CODE_REQUIRED","challenge_id":"...","sent_to":"u•••@example.com","expires_at":"...","code_length":6}`),
+      set **no** cookie and return **no** `access_token` or `user`. A six-digit code is
+      emailed to the account's address.
+    - **New:** `POST /v1/auth/login/verify` and `POST /v1/admin/auth/login/verify` with
+      `{challenge_id, code}` answer exactly what the login endpoints answered before 0.21.0
+      (the session: cookie, or `access_token` when the customer login asked for
+      `token_delivery: bearer`). `POST /v1/auth/login/resend` and
+      `POST /v1/admin/auth/login/resend` with `{challenge_id}` email a fresh code.
+    - **Rules.** The code is valid for 10 minutes and works once. Five wrong codes end the
+      challenge. A new code can be asked for every 30 seconds, five times per challenge; the
+      earlier code then stops working. A challenge belongs to one account and one scope: a
+      customer challenge is refused by the administrator verify endpoint and the reverse.
+      Failures: `400 VALIDATION_FAILED` with `error.fields.code` = `Enter the code we sent
+      you.` (missing, blank or not digits) or `That code is not right.` (wrong, attempts left);
+      `400 CODE_EXPIRED` (`That code has expired or was used too many times. Sign in again.`)
+      when the challenge is expired, unknown, used, ended by wrong codes or of the other scope;
+      `429 RATE_LIMITED` with `Retry-After` for a resend that comes too soon.
+    - **Unchanged:** a wrong email or password is still `401 INVALID_CREDENTIALS` with the same
+      body, and an unverified address still `403 EMAIL_NOT_VERIFIED` (both before any code).
+    - **Demo code (development and staging only).** When the server sets `AUTH_DEMO_CODE`
+      (for example a four-digit value), that code is also accepted for any challenge; it is
+      refused at startup in production. Clients must therefore accept a code of 4 to 6 digits in
+      their input; `code_length` is the length of the emailed code.
 
     Dashboards and working a request (changed in 0.20.0)
     - **New:** `GET /v1/me/dashboard` (one role-aware summary for the signed-in account),
@@ -2615,9 +2645,14 @@ paths:
     post:
       tags: [auth]
       operationId: login
-      summary: Sign in
+      summary: Sign in, step 1 of 2 (password)
       description: |
-        `token_delivery` selects how the session token is returned:
+        **Changed in 0.21.0 (breaking): this no longer signs the caller in.** When the email
+        and password are right, the answer is `200` with a `SignInChallenge` and a six-digit
+        code is emailed to the account's address; no session exists yet, no cookie is set and
+        no token is returned. Send the code to `POST /v1/auth/login/verify` to get the session.
+
+        `token_delivery` selects how the session token will be returned by the verify step:
         - `cookie` (default): sets the HttpOnly `rp_session` cookie; no token in the body.
         - `bearer`: returns `access_token` in the body and sets **no** cookie.
 
@@ -2646,7 +2681,7 @@ paths:
                   $ref: "#/components/schemas/TokenDelivery"
       responses:
         "200":
-          $ref: "#/components/responses/Authenticated"
+          $ref: "#/components/responses/CodeRequired"
         "400":
           $ref: "#/components/responses/ValidationFailed"
         "401":
@@ -2662,6 +2697,123 @@ paths:
           description: |
             `EMAIL_NOT_VERIFIED` (correct password, email not verified yet), or `CSRF_ORIGIN`
             when a valid session cookie was sent without an allowlisted `Origin`.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/auth/login/verify:
+    post:
+      tags: [auth]
+      operationId: loginVerify
+      summary: Sign in, step 2 of 2 (the emailed code)
+      description: |
+        New in 0.21.0. Exchanges the code emailed by `/v1/auth/login` for the session. On success
+        the answer is exactly what `/v1/auth/login` answered before 0.21.0.
+        That is: the session in the HttpOnly `rp_session` cookie, or `access_token` in the body
+        when the password step asked for `token_delivery: bearer`.
+
+        - The code is valid for 10 minutes after it was sent and works **once**.
+        - `code` is a string of digits (a JSON number is accepted too). Missing, blank or not
+          digits: `400 VALIDATION_FAILED`, `error.fields.code` = `Enter the code we sent you.`
+          A wrong code: `400 VALIDATION_FAILED`, `error.fields.code` = `That code is not
+          right.` A code of another length than `code_length` is only ever the demo code
+          (development and staging, `AUTH_DEMO_CODE`) and otherwise gets the first message
+          without using up an attempt.
+        - The fifth wrong code, and any code for a challenge that has expired, is unknown, was
+          already used or belongs to the other sign-in (`POST /v1/admin/auth/login`), is
+          `400 CODE_EXPIRED`: sign in again.
+        - **Rate limit.** Its own per-IP bucket (shared with the resend endpoint): bursts of 20,
+          refilled at 20 per minute; and five wrong codes per challenge.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifySignInCodeRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Authenticated"
+        "400":
+          description: |
+            `VALIDATION_FAILED` with `error.fields.code`, or `CODE_EXPIRED` (`That code has
+            expired or was used too many times. Sign in again.`).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+              examples:
+                wrong:
+                  value:
+                    error:
+                      code: VALIDATION_FAILED
+                      message: Some fields need your attention.
+                      fields:
+                        code: That code is not right.
+                    trace_id: 01HZX5K3Q4TQ7J2W8Y4V6N9B1C
+                expired:
+                  value:
+                    error:
+                      code: CODE_EXPIRED
+                      message: That code has expired or was used too many times. Sign in again.
+                    trace_id: 01HZX5K3Q4TQ7J2W8Y4V6N9B1C
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/auth/login/resend:
+    post:
+      tags: [auth]
+      operationId: loginResend
+      summary: Email a new sign-in code
+      description: |
+        New in 0.21.0. Emails a fresh code for a live challenge to the same address and answers
+        the same `SignInChallenge` as `/v1/auth/login` (same `challenge_id`, new `expires_at`).
+        The earlier code stops working; wrong codes already entered still count.
+
+        At most one code every 30 seconds and five new codes per challenge: otherwise
+        `429 RATE_LIMITED` with `Retry-After` (seconds until a new code may be asked for; when
+        all five were used, until the challenge expires). An expired, unknown, used or ended
+        challenge, or one of the other sign-in, is `400 CODE_EXPIRED`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [challenge_id]
+              properties:
+                challenge_id:
+                  type: string
+      responses:
+        "200":
+          $ref: "#/components/responses/CodeRequired"
+        "400":
+          description: "`CODE_EXPIRED`."
           headers:
             X-Request-Id:
               $ref: "#/components/headers/X-Request-Id"
@@ -2860,12 +3012,16 @@ paths:
     post:
       tags: [admin]
       operationId: adminLogin
-      summary: Sign in as a platform administrator
+      summary: Sign in as a platform administrator, step 1 of 2 (password)
       description: |
+        **Changed in 0.21.0 (breaking): this no longer signs the administrator in.** When the
+        password is right the answer is `200` with a `SignInChallenge` and a six-digit code is
+        emailed; `POST /v1/admin/auth/login/verify` with that code issues the session.
+
         Succeeds only for a verified account that holds at least one platform role
         (`SUPER_ADMIN`, `PLATFORM_ADMIN`, `MARKET_ADMIN`, `FINANCE_ADMIN`, `CONTENT_ADMIN`,
-        `MODERATOR`, `SUPPORT`). It issues an **admin-scope** session in the same `rp_session`
-        cookie (12 hours absolute, 30 minutes idle by default).
+        `MODERATOR`, `SUPPORT`). The verify step issues an **admin-scope** session in the same
+        `rp_session` cookie (12 hours absolute, 30 minutes idle by default).
 
         Every other outcome — unknown email, wrong password, an ordinary customer, a
         self-registered professional, an unverified account — is the same
@@ -2880,7 +3036,8 @@ paths:
         **Rate limit.** Its own per-IP bucket: bursts of 5, refilled at 5 per minute.
 
         Sign out with `POST /v1/auth/logout`. Sign-in attempts are written to the server log as
-        audit lines (log-only; not a durable audit record). **MFA is not implemented.**
+        audit lines (log-only; not a durable audit record). The emailed code is the second
+        factor (it proves control of the mailbox); there is no authenticator app yet.
       requestBody:
         required: true
         content:
@@ -2895,6 +3052,63 @@ paths:
                   format: email
                 password:
                   type: string
+      responses:
+        "200":
+          $ref: "#/components/responses/CodeRequired"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          description: |
+            `INVALID_CREDENTIALS`: unknown email, wrong password, or an account that is not a
+            verified platform administrator. The body is the same in every case.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          $ref: "#/components/responses/CsrfOrigin"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/admin/auth/login/verify:
+    post:
+      tags: [admin]
+      operationId: adminLoginVerify
+      summary: Sign in, step 2 of 2 (the emailed code)
+      description: |
+        New in 0.21.0. Exchanges the code emailed by `/v1/admin/auth/login` for the session. On success
+        the answer is exactly what `/v1/admin/auth/login` answered before 0.21.0.
+        That is: an admin-scope session in the `rp_session` cookie; never `access_token`.
+
+        - The code is valid for 10 minutes after it was sent and works **once**.
+        - `code` is a string of digits (a JSON number is accepted too). Missing, blank or not
+          digits: `400 VALIDATION_FAILED`, `error.fields.code` = `Enter the code we sent you.`
+          A wrong code: `400 VALIDATION_FAILED`, `error.fields.code` = `That code is not
+          right.` A code of another length than `code_length` is only ever the demo code
+          (development and staging, `AUTH_DEMO_CODE`) and otherwise gets the first message
+          without using up an attempt.
+        - The fifth wrong code, and any code for a challenge that has expired, is unknown, was
+          already used or belongs to the other sign-in (`POST /v1/auth/login`), is
+          `400 CODE_EXPIRED`: sign in again.
+        - **Rate limit.** Its own per-IP bucket (shared with the resend endpoint): bursts of 20,
+          refilled at 20 per minute; and five wrong codes per challenge.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifySignInCodeRequest"
       responses:
         "200":
           description: Signed in. Sets the `rp_session` cookie (admin scope). Never contains `access_token`.
@@ -2924,11 +3138,9 @@ paths:
                   scope: admin
                   expires_at: "2026-11-14T21:00:00Z"
         "400":
-          $ref: "#/components/responses/ValidationFailed"
-        "401":
           description: |
-            `INVALID_CREDENTIALS`: unknown email, wrong password, or an account that is not a
-            verified platform administrator. The body is the same in every case.
+            `VALIDATION_FAILED` with `error.fields.code`, or `CODE_EXPIRED` (`That code has
+            expired or was used too many times. Sign in again.`).
           headers:
             X-Request-Id:
               $ref: "#/components/headers/X-Request-Id"
@@ -2936,8 +3148,69 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
-        "403":
-          $ref: "#/components/responses/CsrfOrigin"
+              examples:
+                wrong:
+                  value:
+                    error:
+                      code: VALIDATION_FAILED
+                      message: Some fields need your attention.
+                      fields:
+                        code: That code is not right.
+                    trace_id: 01HZX5K3Q4TQ7J2W8Y4V6N9B1C
+                expired:
+                  value:
+                    error:
+                      code: CODE_EXPIRED
+                      message: That code has expired or was used too many times. Sign in again.
+                    trace_id: 01HZX5K3Q4TQ7J2W8Y4V6N9B1C
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/admin/auth/login/resend:
+    post:
+      tags: [admin]
+      operationId: adminLoginResend
+      summary: Email a new sign-in code
+      description: |
+        New in 0.21.0. Emails a fresh code for a live challenge to the same address and answers
+        the same `SignInChallenge` as `/v1/admin/auth/login` (same `challenge_id`, new `expires_at`).
+        The earlier code stops working; wrong codes already entered still count.
+
+        At most one code every 30 seconds and five new codes per challenge: otherwise
+        `429 RATE_LIMITED` with `Retry-After` (seconds until a new code may be asked for; when
+        all five were used, until the challenge expires). An expired, unknown, used or ended
+        challenge, or one of the other sign-in, is `400 CODE_EXPIRED`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [challenge_id]
+              properties:
+                challenge_id:
+                  type: string
+      responses:
+        "200":
+          $ref: "#/components/responses/CodeRequired"
+        "400":
+          description: "`CODE_EXPIRED`."
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
         "415":
@@ -5312,6 +5585,23 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
+    CodeRequired:
+      description: |
+        The password was right (or a new code was asked for): a six-digit code was emailed to
+        the account's address. No session exists yet, no cookie is set and no token is returned.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/SignInChallenge"
+          example:
+            status: CODE_REQUIRED
+            challenge_id: 8Qm3m3e0vT2b6dW0qZ2kq0c9yJx3n1rS5pLw4uYh7aE
+            sent_to: "c•••@example.test"
+            expires_at: "2026-11-14T09:15:00Z"
+            code_length: 6
     RateLimited:
       description: Too many requests from this IP (`RATE_LIMITED`).
       headers:
@@ -6869,6 +7159,43 @@ components:
         access_token:
           type: string
           description: Opaque session token. Present only when `token_delivery` is `bearer`.
+
+    SignInChallenge:
+      type: object
+      description: The first step of signing in succeeded; enter the emailed code next.
+      required: [status, challenge_id, sent_to, expires_at, code_length]
+      properties:
+        status:
+          type: string
+          enum: [CODE_REQUIRED]
+        challenge_id:
+          type: string
+          description: Opaque. Send it back to the verify and resend endpoints of the same sign-in.
+        sent_to:
+          type: string
+          description: The address the code was sent to, masked (first character and domain), for example `u•••@example.com`.
+        expires_at:
+          type: string
+          format: date-time
+          description: When the code stops working (10 minutes after it was sent).
+        code_length:
+          type: integer
+          description: Digits in the emailed code (6). The demo code of development and staging may be shorter.
+          example: 6
+
+    VerifySignInCodeRequest:
+      type: object
+      additionalProperties: false
+      required: [challenge_id, code]
+      properties:
+        challenge_id:
+          type: string
+        code:
+          description: The emailed code, as a string of digits. A JSON number is also accepted.
+          oneOf:
+            - type: string
+              example: "123456"
+            - type: integer
 
     TokenDelivery:
       type: string

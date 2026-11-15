@@ -148,3 +148,53 @@ func TestLogSender(t *testing.T) {
 		t.Fatalf("unexpected log lines: %s", out.String())
 	}
 }
+
+// namedSender is a scriptedSender that calls itself by another name.
+type namedSender struct {
+	scriptedSender
+	name string
+}
+
+func (s *namedSender) Name() string { return s.name }
+
+// The real transport never emails a reserved test domain (the sample
+// accounts are @example.test); the development log transport still prints.
+func TestReservedTestDomainsAreNeverSent(t *testing.T) {
+	for _, tt := range []struct {
+		address  string
+		reserved bool
+	}{
+		{"a@example.com", true}, {"a@EXAMPLE.org", true}, {"a@example.net", true}, {"a@mail.example.co.uk", true},
+		{"admin@example.test", true}, {"x@foo.test", true}, {"x@foo.example", true}, {"x@foo.invalid", true},
+		{"x@foo.localhost", true}, {"x@localhost", true}, {"no-domain", true}, {"Name <a@example.test>", true},
+		{"a@rightproperty365.com", false}, {"a@gmail.com", false}, {"a@examples.com", false}, {"a@myexample.com", false},
+		{"a@test.co.zw", false}, {"a@example", true},
+	} {
+		if got := IsReservedTestAddress(tt.address); got != tt.reserved {
+			t.Fatalf("IsReservedTestAddress(%q) = %v, want %v", tt.address, got, tt.reserved)
+		}
+	}
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	resend := &namedSender{name: "resend"}
+	deliveries := NewMemoryDeliveryLog()
+	svc := NewService(resend, deliveries, logger)
+	if err := svc.Deliver(context.Background(), Notification{Key: "sign-in-code/1", Message: Message{To: "consumer@example.test", Kind: "sign-in-code"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(resend.keys) != 0 || len(deliveries.Records()) != 0 {
+		t.Fatalf("a reserved address must not be sent or recorded: sent %v", resend.keys)
+	}
+	if !strings.Contains(logs.String(), "reserved test domain") || strings.Contains(logs.String(), "consumer@example.test") {
+		t.Fatalf("the skip is logged without the address: %s", logs.String())
+	}
+	if err := svc.Deliver(context.Background(), Notification{Key: "sign-in-code/2", Message: Message{To: "someone@rightproperty365.com", Kind: "sign-in-code"}}); err != nil || len(resend.keys) != 1 {
+		t.Fatalf("a real address is sent: %v %v", err, resend.keys)
+	}
+
+	logSvc := NewService(NewLogSender(quietLogger()), NewMemoryDeliveryLog(), quietLogger())
+	if err := logSvc.Deliver(context.Background(), Notification{Key: "sign-in-code/3", Message: Message{To: "consumer@example.test", Kind: "sign-in-code", DevCode: "000000"}}); err != nil {
+		t.Fatal(err)
+	}
+}

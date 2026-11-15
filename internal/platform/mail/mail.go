@@ -37,6 +37,9 @@ type Message struct {
 	// DevLink is the email's action link. It exists only so the development
 	// LogSender can print it; real transports ignore it and it is never stored.
 	DevLink string
+	// DevCode is the sign-in code of a sign-in-code email, for the same
+	// development LogSender only; never stored, ignored by real transports.
+	DevCode string
 }
 
 // Sender is an email transport.

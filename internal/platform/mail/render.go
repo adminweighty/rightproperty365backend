@@ -50,6 +50,7 @@ func Templates() []Template {
 		{"welcome", "Welcome, after verification", true},
 		{"admin-sign-in", "Administrator sign-in notice", true},
 		{"account-exists", "Sign-up attempted with an existing address", true},
+		{"sign-in-code", "Sign-in code (second step of signing in)", true},
 		{"property-request-received", "Property request received (to the customer)", true},
 		{"property-request-new", "New property request (to the agent or seller)", true},
 		{"business-enquiry-received", "Business enquiry received (to the customer)", true},
@@ -129,6 +130,10 @@ type Data struct {
 	ProposedTime    string
 	WithName        string
 	Location        string
+
+	// Code is the one-time sign-in code (sign-in-code). It is a credential:
+	// it is only rendered into the message and never stored.
+	Code string
 }
 
 // LocalDateTime writes an instant in an IANA time zone and names the zone,
@@ -263,7 +268,7 @@ func (r *Renderer) Render(name, to string, d Data) (Message, error) {
 	subject := strings.Join(strings.Fields(subjectBuf.String()), " ")
 	text := strings.TrimSpace(blankLines.ReplaceAllString(strings.ReplaceAll(textBuf.String(), "\r\n", "\n"), "\n\n")) + "\n"
 
-	return Message{To: to, Subject: subject, HTML: htmlBuf.String(), Text: text, Kind: name, DevLink: v.ActionURL}, nil
+	return Message{To: to, Subject: subject, HTML: htmlBuf.String(), Text: text, Kind: name, DevLink: v.ActionURL, DevCode: d.Code}, nil
 }
 
 var (

@@ -63,6 +63,26 @@ type Store interface {
 	// unknown or the captcha was already used: a captcha is presented once.
 	ConsumeCaptcha(ctx context.Context, id string, now time.Time) (Captcha, error)
 
+	// Sign-in challenges (signincode.go), keyed by the SHA-256 of their id.
+	//
+	// CreateLoginChallenge stores a new challenge and takes the opportunity
+	// to delete challenges that expired before c.CreatedAt.
+	CreateLoginChallenge(ctx context.Context, c LoginChallenge) error
+	// LoginChallenge returns a challenge in any state, or ErrNotFound.
+	LoginChallenge(ctx context.Context, idHash []byte) (LoginChallenge, error)
+	// FailLoginChallenge counts one wrong code against an unconsumed
+	// challenge and returns the new count. ErrNotFound when it is gone or used.
+	FailLoginChallenge(ctx context.Context, idHash []byte, now time.Time) (int, error)
+	// ConsumeLoginChallenge atomically marks a usable challenge (unconsumed,
+	// not expired at now, fewer than SignInCodeMaxAttempts wrong codes) used.
+	// ErrNotFound when no usable challenge matched: only one caller wins.
+	ConsumeLoginChallenge(ctx context.Context, idHash []byte, now time.Time) error
+	// ResendLoginChallenge replaces the code of a usable challenge whose last
+	// code was sent at or before sentBefore and that has had fewer than
+	// SignInCodeMaxResends resends: new hash and expiry, resend_count + 1,
+	// last_sent_at = now. ErrNotFound when no such challenge matched.
+	ResendLoginChallenge(ctx context.Context, idHash, codeHash []byte, expiresAt, now, sentBefore time.Time) error
+
 	// ApprovedDirectOwners returns the number of ACTIVE accounts whose
 	// PRIVATE_SELLER or LANDLORD role is approved (GET /v1/trust/summary).
 	ApprovedDirectOwners(ctx context.Context) (int, error)

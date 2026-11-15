@@ -17,4 +17,8 @@ type Mailer interface {
 	// SendAccountExists tells the owner of an already-verified account that
 	// someone tried to register with their address (no token).
 	SendAccountExists(ctx context.Context, to, name string) error
+	// SendSignInCode sends the six-digit sign-in code (the second step of
+	// signing in). admin is true for the administrator sign-in, whose email
+	// links to the administrator sign-in page.
+	SendSignInCode(ctx context.Context, to, name, code string, admin bool) error
 }

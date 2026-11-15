@@ -105,7 +105,8 @@ func TestEveryPublicListingHasAVerifiedAdvertiser(t *testing.T) {
 		}
 	}
 	if s.PublicListings != page.Total || s.ListingsFromVerifiedAdvertisers != s.PublicListings || s.ListingsReviewed != page.Total-1 ||
-		s.VerifiedAdvertisers.Organisations != len(organisations) || s.VerifiedAdvertisers.DirectOwners != 1 || s.GeneratedAt.IsZero() {
+		s.VerifiedAdvertisers.Organisations != len(organisations) || s.VerifiedAdvertisers.DirectOwners != 2 || // the seller and the landlord
+		s.GeneratedAt.IsZero() {
 		t.Fatalf("summary = %+v (want %d listings, %d organisations)", s, page.Total, len(organisations))
 	}
 }

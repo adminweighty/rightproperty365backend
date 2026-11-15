@@ -37,6 +37,9 @@ func (s *LogSender) Send(ctx context.Context, _ string, m Message) (string, erro
 	if m.DevLink != "" {
 		attrs = append(attrs, slog.String("link", m.DevLink))
 	}
+	if m.DevCode != "" {
+		attrs = append(attrs, slog.String("code", m.DevCode))
+	}
 	s.logger.InfoContext(ctx, "DEV MAIL (not sent): "+label, attrs...)
 	return "log-" + uuid.NewString(), nil
 }

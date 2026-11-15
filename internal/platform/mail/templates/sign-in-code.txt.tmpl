@@ -1,0 +1,13 @@
+{{define "subject"}}Your RightProperty365 sign-in code{{end}}
+{{define "heading"}}Your sign-in code{{end}}
+{{define "button"}}{{if eq .Path "/admin/sign-in"}}Open administrator sign-in{{else}}Open sign-in{{end}}{{end}}
+{{define "why"}}You are receiving this because someone signed in to your RightProperty365 account with its password.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+Enter this code to finish signing in to RightProperty365:
+
+    {{.Code}}
+
+The code is valid for 10 minutes and works once. RightProperty365 will never ask you for it by phone or message, so do not share it.
+
+{{if eq .Path "/admin/sign-in"}}If this wasn't you, someone knows your password: have it changed immediately and tell the platform owner. Administrator passwords are not reset by email.{{else}}If this wasn't you, someone knows your password: change your password now. Without this code they cannot sign in.{{end}}{{end}}

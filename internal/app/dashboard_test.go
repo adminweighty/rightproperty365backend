@@ -282,7 +282,8 @@ func TestOrganisationMembers(t *testing.T) {
 			t.Fatalf("organisation: %v", org)
 		}
 		items := list(body, "items")
-		if len(items) != 3 {
+		// The owner, the agency administrator, four agents and one staff member.
+		if len(items) != 7 {
 			t.Fatalf("members: %s", rec.Body)
 		}
 		first := items[0].(obj)
@@ -290,8 +291,9 @@ func TestOrganisationMembers(t *testing.T) {
 			first["status"] != "ACTIVE" || first["status_label"] != "Active" || first["is_you"] != true || first["market_code"] != "ZW" {
 			t.Fatalf("owner row: %v", first)
 		}
-		// Agents after the owner, by name; no contact details anywhere.
-		if items[1].(obj)["name"] != "Chipo Dube" || items[2].(obj)["name"] != "Tendai Ncube" || items[2].(obj)["role_label"] != "Estate Agent" || items[2].(obj)["is_you"] != false {
+		// The manager, then agents by name, then staff; no contact details anywhere.
+		if items[1].(obj)["role_label"] != "Agency Administrator" || items[2].(obj)["name"] != "Chipo Dube" || items[5].(obj)["name"] != "Tendai Ncube" ||
+			items[5].(obj)["role_label"] != "Estate Agent" || items[5].(obj)["is_you"] != false || items[6].(obj)["role_label"] != "Agency Staff" {
 			t.Fatalf("members: %s", rec.Body)
 		}
 		if strings.Contains(rec.Body.String(), "@") || strings.Contains(rec.Body.String(), "email") {
@@ -305,7 +307,7 @@ func TestOrganisationMembers(t *testing.T) {
 		}
 		rec := e.get(estates, withBearer(e.loginBearer(identity.SeedAgentEmail, seedPassword)))
 		wantStatus(t, rec, http.StatusOK)
-		if items := list(decode[obj](t, rec), "items"); items[1].(obj)["role_label"] != "Agency Administrator" || items[1].(obj)["is_you"] != true {
+		if items := list(decode[obj](t, rec), "items"); items[2].(obj)["role_label"] != "Agency Administrator" || items[2].(obj)["is_you"] != true {
 			t.Fatalf("manager's view: %s", rec.Body)
 		}
 	})
@@ -360,7 +362,13 @@ func TestAdminOverview(t *testing.T) {
 			t.Fatalf("sections = %s", sections(o))
 		}
 		accounts := o["accounts"].(obj)
-		if accounts["total"].(float64) != float64(e.identity.UserCount()-1) || accounts["administrators"] != float64(1) ||
+		admins := 0
+		for _, a := range devseed.Accounts() {
+			if a.PlatformRole != "" {
+				admins++
+			}
+		}
+		if accounts["total"].(float64) != float64(e.identity.UserCount()-admins) || accounts["administrators"] != float64(admins) ||
 			countOf(list(accounts, "by_status"), "status", "ACTIVE") != accounts["total"].(float64) {
 			t.Fatalf("accounts: %v", accounts)
 		}

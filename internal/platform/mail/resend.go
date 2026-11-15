@@ -110,7 +110,10 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 }
 
 // Name implements Sender.
-func (s *ResendSender) Name() string { return "resend" }
+func (s *ResendSender) Name() string { return resendName }
+
+// resendName is the name of the Resend transport.
+const resendName = "resend"
 
 type resendTag struct {
 	Name  string `json:"name"`

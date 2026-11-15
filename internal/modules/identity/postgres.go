@@ -256,6 +256,84 @@ func (s *PostgresStore) ApprovedDirectOwners(ctx context.Context) (int, error) {
 	return n, err
 }
 
+// CreateLoginChallenge implements Store (migrations/0019_sign_in_codes).
+// Expired challenges are deleted here, so the table stays about as small as
+// the number of sign-ins of the last ten minutes.
+//
+// NOTE: compiled but not yet exercised against a real database.
+func (s *PostgresStore) CreateLoginChallenge(ctx context.Context, c LoginChallenge) error {
+	if _, err := s.pool.Exec(ctx, `DELETE FROM sign_in_challenges WHERE expires_at < $1`, c.CreatedAt); err != nil {
+		return fmt.Errorf("delete expired sign-in challenges: %w", err)
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO sign_in_challenges (id, user_id, scope, delivery, code_hash, expires_at, attempts, resend_count, last_sent_at, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, 0, 0, $7, $8)`,
+		c.IDHash, c.UserID, c.Scope, c.Delivery, c.CodeHash, c.ExpiresAt, c.LastSentAt, c.CreatedAt)
+	return err
+}
+
+// LoginChallenge implements Store.
+func (s *PostgresStore) LoginChallenge(ctx context.Context, idHash []byte) (LoginChallenge, error) {
+	c := LoginChallenge{IDHash: idHash}
+	err := s.pool.QueryRow(ctx, `
+		SELECT user_id, scope, delivery, code_hash, expires_at, attempts, resend_count, last_sent_at, consumed_at, created_at
+		FROM sign_in_challenges WHERE id = $1`, idHash).Scan(
+		&c.UserID, &c.Scope, &c.Delivery, &c.CodeHash, &c.ExpiresAt, &c.Attempts, &c.ResendCount, &c.LastSentAt, &c.ConsumedAt, &c.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return LoginChallenge{}, ErrNotFound
+	}
+	if err != nil {
+		return LoginChallenge{}, err
+	}
+	return c, nil
+}
+
+// FailLoginChallenge implements Store.
+func (s *PostgresStore) FailLoginChallenge(ctx context.Context, idHash []byte, _ time.Time) (int, error) {
+	var attempts int
+	err := s.pool.QueryRow(ctx, `
+		UPDATE sign_in_challenges SET attempts = attempts + 1
+		WHERE id = $1 AND consumed_at IS NULL
+		RETURNING attempts`, idHash).Scan(&attempts)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	return attempts, err
+}
+
+// ConsumeLoginChallenge implements Store. The single conditional UPDATE is
+// what makes a challenge single-use under concurrency.
+func (s *PostgresStore) ConsumeLoginChallenge(ctx context.Context, idHash []byte, now time.Time) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE sign_in_challenges SET consumed_at = $2
+		WHERE id = $1 AND consumed_at IS NULL AND expires_at > $2 AND attempts < $3`,
+		idHash, now, SignInCodeMaxAttempts)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ResendLoginChallenge implements Store.
+func (s *PostgresStore) ResendLoginChallenge(ctx context.Context, idHash, codeHash []byte, expiresAt, now, sentBefore time.Time) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE sign_in_challenges
+		SET code_hash = $2, expires_at = $3, last_sent_at = $4, resend_count = resend_count + 1
+		WHERE id = $1 AND consumed_at IS NULL AND expires_at > $4 AND attempts < $6
+		  AND resend_count < $7 AND last_sent_at <= $5`,
+		idHash, codeHash, expiresAt, now, sentBefore, SignInCodeMaxAttempts, SignInCodeMaxResends)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // CreateCaptcha implements Store (migrations/0017_registration_captchas).
 // Expired captchas are deleted here, so the table stays about as small as the
 // number of questions asked in the last ten minutes.

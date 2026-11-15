@@ -181,6 +181,17 @@ func (m *AccountMailer) SendAccountExists(ctx context.Context, to, name string) 
 	return m.send(ctx, "account-exists", to, mail.Data{Name: name, Path: PathSignIn})
 }
 
+// SendSignInCode implements identity.Mailer. The code is rendered into the
+// message only: the notification key is random and the delivery record holds
+// no body.
+func (m *AccountMailer) SendSignInCode(ctx context.Context, to, name, code string, admin bool) error {
+	path := PathSignIn
+	if admin {
+		path = PathAdminSignIn
+	}
+	return m.send(ctx, "sign-in-code", to, mail.Data{Name: name, Path: path, Code: code})
+}
+
 // ---------------------------------------------------------------------------
 // Outbox-driven notification emails
 // ---------------------------------------------------------------------------

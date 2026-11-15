@@ -24,6 +24,8 @@ func SampleData(name string) Data {
 	case "welcome":
 		d.Path = "/account"
 		d.Roles = []Role{{Name: "Prospective Buyer"}, {Name: "Landlord", Pending: true}, {Name: "Estate Agent", Pending: true}}
+	case "sign-in-code":
+		d.Path, d.Code = "/sign-in", "000000"
 	case "admin-sign-in":
 		d.Name, d.Path = "Sam Admin", "/admin/sign-in"
 	case "property-request-received":

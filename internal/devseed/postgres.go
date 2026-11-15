@@ -160,7 +160,17 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 			}
 		}
 
-		if a.PlatformRole != "" {
+		if a.PlatformRole != "" && a.PlatformMarket != "" {
+			// A market-scoped role (MARKET_ADMIN); see the partial unique index.
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO platform_role_assignments (id, user_id, role, market_id, created_at)
+				SELECT $1, $2, $3, m.id, $5 FROM markets m
+				WHERE m.code = $4 AND NOT EXISTS (
+					SELECT 1 FROM platform_role_assignments WHERE user_id = $2 AND role = $3 AND market_id = m.id)`,
+				uuid.New(), a.ID, a.PlatformRole, a.PlatformMarket, now); err != nil {
+				return fmt.Errorf("seed platform role for %s: %w", a.Email, err)
+			}
+		} else if a.PlatformRole != "" {
 			// Global platform roles only (no market); see the partial unique index.
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO platform_role_assignments (id, user_id, role, created_at)

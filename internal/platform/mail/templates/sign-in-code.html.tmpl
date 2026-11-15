@@ -1,0 +1,13 @@
+{{define "preheader"}}Your RightProperty365 sign-in code. It is valid for 10 minutes.{{end}}
+{{define "heading"}}Your sign-in code{{end}}
+{{define "button"}}{{if eq .Path "/admin/sign-in"}}Open administrator sign-in{{else}}Open sign-in{{end}}{{end}}
+{{define "why"}}You are receiving this because someone signed in to your RightProperty365 account with its password.{{end}}
+{{define "body"}}
+<p class="ink" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;color:#131722;">{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}</p>
+<p class="ink" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;color:#131722;">Enter this code to finish signing in to RightProperty365:</p>
+<table role="presentation" class="facts" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 20px;background-color:#f8f9fc;border:1px solid #e6e9f0;border-radius:10px;"><tr><td align="center" style="padding:20px 16px;">
+<p class="ink" style="margin:0;font-family:'SFMono-Regular',Menlo,Consolas,'Liberation Mono',monospace;font-size:34px;line-height:42px;font-weight:700;letter-spacing:8px;color:#131722;">{{.Code}}</p>
+</td></tr></table>
+<p class="ink" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;color:#131722;">The code is valid for 10 minutes and works once. RightProperty365 will never ask you for it by phone or message, so do not share it.</p>
+<p class="muted" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:14px;line-height:21px;color:#4f586a;">{{if eq .Path "/admin/sign-in"}}If this wasn't you, someone knows your password: have it changed immediately and tell the platform owner. Administrator passwords are not reset by email.{{else}}If this wasn't you, someone knows your password: change your password now. Without this code they cannot sign in.{{end}}</p>
+{{end}}

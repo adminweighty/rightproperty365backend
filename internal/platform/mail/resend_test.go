@@ -362,6 +362,11 @@ func TestResendSenderValidation(t *testing.T) {
 // Whatever happens, the key and the Authorization header stay out of logs,
 // errors and stored records — including at debug level.
 func TestAPIKeyNeverAppearsInLogsErrorsOrRecords(t *testing.T) {
+	// A recipient that is not on a reserved test domain: those are skipped
+	// before the transport is reached (see IsReservedTestAddress).
+	const to = "tariro@inbox.rightproperty365.com"
+	msg := testMessage
+	msg.To = to
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
@@ -376,20 +381,20 @@ func TestAPIKeyNeverAppearsInLogsErrorsOrRecords(t *testing.T) {
 		s, _ := f.sender(t, nil)
 		log := NewMemoryDeliveryLog()
 		svc := NewService(s, log, logger)
-		err := svc.Deliver(context.Background(), Notification{Key: "k/" + name, Message: testMessage})
+		err := svc.Deliver(context.Background(), Notification{Key: "k/" + name, Message: msg})
 		if err != nil {
 			assertNoKey(t, name+" error", err.Error())
 			assertNoKey(t, name+" error %+v", fmt.Sprintf("%+v %#v", err, err))
 		}
 		for _, rec := range log.Records() {
 			assertNoKey(t, name+" record", fmt.Sprintf("%+v", rec))
-			if strings.Contains(fmt.Sprintf("%+v", rec), "tariro@example.com") {
+			if strings.Contains(fmt.Sprintf("%+v", rec), to) {
 				t.Fatalf("%s: the delivery record stores the recipient address", name)
 			}
 		}
 	}
 	assertNoKey(t, "logs", logs.String())
-	if strings.Contains(logs.String(), "tariro@example.com") || strings.Contains(logs.String(), "<p>Hello</p>") {
+	if strings.Contains(logs.String(), to) || strings.Contains(logs.String(), "<p>Hello</p>") {
 		t.Fatalf("logs contain the recipient address or the message body: %s", logs.String())
 	}
 	if !strings.Contains(logs.String(), "email accepted by the provider") || strings.Contains(strings.ToLower(logs.String()), "delivered") {

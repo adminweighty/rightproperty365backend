@@ -51,6 +51,39 @@ type captureMailer struct {
 	verifications []string
 	resets        []string
 	accountExists []string
+	// signInCodes are the sign-in codes that would have been emailed.
+	signInCodes []sentCode
+}
+
+// sentCode is one sign-in code email.
+type sentCode struct {
+	to, code string
+	admin    bool
+}
+
+func (m *captureMailer) SendSignInCode(_ context.Context, to, _, code string, admin bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.signInCodes = append(m.signInCodes, sentCode{to: to, code: code, admin: admin})
+	return nil
+}
+
+// lastCode returns the most recent sign-in code (the test seam: a test reads
+// the code from the captured email, as a person reads it from their inbox).
+func (m *captureMailer) lastCode(t *testing.T) sentCode {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.signInCodes) == 0 {
+		t.Fatal("no sign-in code was sent")
+	}
+	return m.signInCodes[len(m.signInCodes)-1]
+}
+
+func (m *captureMailer) codeCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.signInCodes)
 }
 
 // The mailer receives the raw token and builds the link itself; this fake
@@ -130,6 +163,9 @@ type env struct {
 	seq       int
 	// captchaSeq numbers the registration questions the tests ask for.
 	captchaSeq int
+	// twoStepLogin turns off the helper that completes the sign-in code step
+	// (see do): the tests of the code step itself see the raw answers.
+	twoStepLogin bool
 }
 
 func newEnv(t *testing.T) *env {
@@ -323,7 +359,47 @@ func (e *env) do(method, path string, body any, opts ...reqOpt) *httptest.Respon
 	}
 	rec := httptest.NewRecorder()
 	e.handler.ServeHTTP(rec, req)
+	if !e.twoStepLogin && method == http.MethodPost && (path == "/v1/auth/login" || path == "/v1/admin/auth/login") {
+		return e.completeCode(path, rec, opts...)
+	}
 	return rec
+}
+
+// completeCode finishes a sign-in whose password was right, the way a person
+// does: it reads the code from the captured email and sends it to the verify
+// endpoint from the same client. The tests that are not about the code step
+// therefore sign in through both steps and see the session answer.
+func (e *env) completeCode(path string, rec *httptest.ResponseRecorder, opts ...reqOpt) *httptest.ResponseRecorder {
+	e.t.Helper()
+	if rec.Code != http.StatusOK {
+		return rec
+	}
+	var c codeChallengeBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &c); err != nil || c.Status != "CODE_REQUIRED" || c.ChallengeID == "" {
+		e.t.Fatalf("login answered 200 without a code challenge: %s", rec.Body)
+	}
+	if sessionCookie(rec) != nil || strings.Contains(rec.Body.String(), "access_token") {
+		e.t.Fatalf("the password step must not start a session: %s", rec.Body)
+	}
+	code := e.mail.lastCode(e.t)
+	raw, _ := json.Marshal(obj{"challenge_id": c.ChallengeID, "code": code.code})
+	req := httptest.NewRequest(http.MethodPost, path+"/verify", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	for _, opt := range opts {
+		opt(req)
+	}
+	out := httptest.NewRecorder()
+	e.handler.ServeHTTP(out, req)
+	return out
+}
+
+// codeChallengeBody is the answer of the password step.
+type codeChallengeBody struct {
+	Status      string    `json:"status"`
+	ChallengeID string    `json:"challenge_id"`
+	SentTo      string    `json:"sent_to"`
+	ExpiresAt   time.Time `json:"expires_at"`
+	CodeLength  int       `json:"code_length"`
 }
 
 func (e *env) post(path string, body any, opts ...reqOpt) *httptest.ResponseRecorder {

@@ -140,6 +140,9 @@ type Service struct {
 	// Lifetimes of administrator sessions.
 	adminTTL     time.Duration
 	adminIdleTTL time.Duration
+	// demoCode is AUTH_DEMO_CODE: also accepted as the sign-in code of any
+	// live challenge. Empty (always in production) disables it.
+	demoCode string
 }
 
 // Option customises a Service (used by tests).
@@ -450,7 +453,9 @@ func (s *Service) VerifyEmail(ctx context.Context, token, delivery string) (Auth
 	return s.startSession(ctx, user, delivery, auth.ScopeCustomer, now)
 }
 
-// Login checks the credentials and starts a session.
+// Login checks the credentials and, when they are right, starts a sign-in
+// challenge and emails its code (see signincode.go). No session exists until
+// VerifyCode accepts the code; delivery is remembered for that moment.
 //
 // Unknown email and wrong password are indistinguishable (ErrInvalidCredentials,
 // and exactly one Argon2 verification runs in every case). ErrEmailNotVerified
@@ -459,7 +464,17 @@ func (s *Service) VerifyEmail(ctx context.Context, token, delivery string) (Auth
 // Accounts holding a platform role are refused here with the same
 // ErrInvalidCredentials, whatever the password: administrators sign in only
 // through AdminLogin.
-func (s *Service) Login(ctx context.Context, email, password, delivery string) (AuthResult, error) {
+func (s *Service) Login(ctx context.Context, email, password, delivery string) (CodeChallenge, error) {
+	user, delivery, err := s.checkCustomerPassword(ctx, email, password, delivery)
+	if err != nil {
+		return CodeChallenge{}, err
+	}
+	return s.beginChallenge(ctx, user, auth.ScopeCustomer, delivery)
+}
+
+// checkCustomerPassword is the password step of the customer sign-in: the
+// account, and the normalised token delivery, when the password is right.
+func (s *Service) checkCustomerPassword(ctx context.Context, email, password, delivery string) (User, string, error) {
 	delivery, err := normalizeDelivery(delivery)
 	fields := map[string]string{}
 	if err != nil {
@@ -473,34 +488,34 @@ func (s *Service) Login(ctx context.Context, email, password, delivery string) (
 		fields["password"] = "is required"
 	}
 	if len(fields) > 0 {
-		return AuthResult{}, &ValidationError{Fields: fields}
+		return User{}, "", &ValidationError{Fields: fields}
 	}
 
 	user, err := s.store.UserByEmail(ctx, email)
 	if err != nil && !errors.Is(err, ErrNotFound) {
-		return AuthResult{}, fmt.Errorf("look up user: %w", err)
+		return User{}, "", fmt.Errorf("look up user: %w", err)
 	}
 	if err != nil || user.Status != StatusActive || user.PasswordHash == "" {
 		_, _ = VerifyPassword(s.dummyHash, password)
-		return AuthResult{}, ErrInvalidCredentials
+		return User{}, "", ErrInvalidCredentials
 	}
 	ok, err := VerifyPassword(user.PasswordHash, password)
 	if err != nil {
-		return AuthResult{}, fmt.Errorf("verify password for user %s: %w", user.ID, err)
+		return User{}, "", fmt.Errorf("verify password for user %s: %w", user.ID, err)
 	}
 	if len(user.PlatformRoles) > 0 {
 		// Decided only after the password check so timing does not reveal it.
 		s.audit(ctx, slog.LevelWarn, "customer_sign_in_refused_platform_account", "failure",
 			slog.String("user_id", user.ID.String()), slog.Bool("password_correct", ok))
-		return AuthResult{}, ErrInvalidCredentials
+		return User{}, "", ErrInvalidCredentials
 	}
 	if !ok {
-		return AuthResult{}, ErrInvalidCredentials
+		return User{}, "", ErrInvalidCredentials
 	}
 	if !user.Verified() {
-		return AuthResult{}, ErrEmailNotVerified
+		return User{}, "", ErrEmailNotVerified
 	}
-	return s.startSession(ctx, user, delivery, auth.ScopeCustomer, s.clock())
+	return user, delivery, nil
 }
 
 // audit writes one structured, log-only audit line marked audit=true. It is
@@ -524,16 +539,18 @@ func emailFingerprint(email string) string {
 	return fmt.Sprintf("%x", hashToken(email))
 }
 
-// AdminLogin signs a platform administrator in. It succeeds only for an
-// active, verified account that holds at least one platform role and always
-// issues an admin-scope COOKIE session (never a bearer token).
+// AdminLogin is the password step of the administrator sign-in. It succeeds
+// only for an active, verified account that holds at least one platform role,
+// and then starts an admin-scope sign-in challenge (signincode.go); the
+// session, always an admin-scope COOKIE session (never a bearer token), is
+// started by VerifyCode.
 //
 // Every failure — unknown email, wrong password, an ordinary customer or
 // self-registered professional, an unverified or inactive account — is the
 // same ErrInvalidCredentials, and exactly one Argon2 verification (real or
 // dummy) runs before the outcome is decided, so the endpoint does not reveal
-// which accounts are administrators. Success and failure are both audited.
-func (s *Service) AdminLogin(ctx context.Context, email, password, clientIP string) (AuthResult, error) {
+// which accounts are administrators. Every outcome is audited.
+func (s *Service) AdminLogin(ctx context.Context, email, password, clientIP string) (CodeChallenge, error) {
 	email = NormalizeEmail(email)
 	fields := map[string]string{}
 	if email == "" {
@@ -543,12 +560,12 @@ func (s *Service) AdminLogin(ctx context.Context, email, password, clientIP stri
 		fields["password"] = "is required"
 	}
 	if len(fields) > 0 {
-		return AuthResult{}, &ValidationError{Fields: fields}
+		return CodeChallenge{}, &ValidationError{Fields: fields}
 	}
 
 	user, err := s.store.UserByEmail(ctx, email)
 	if err != nil && !errors.Is(err, ErrNotFound) {
-		return AuthResult{}, fmt.Errorf("look up user: %w", err)
+		return CodeChallenge{}, fmt.Errorf("look up user: %w", err)
 	}
 	found := err == nil
 
@@ -558,7 +575,7 @@ func (s *Service) AdminLogin(ctx context.Context, email, password, clientIP stri
 	}
 	ok, err := VerifyPassword(hash, password)
 	if err != nil {
-		return AuthResult{}, fmt.Errorf("verify password: %w", err)
+		return CodeChallenge{}, fmt.Errorf("verify password: %w", err)
 	}
 
 	// The reason is for the audit line only; the client always sees the same 401.
@@ -581,15 +598,16 @@ func (s *Service) AdminLogin(ctx context.Context, email, password, clientIP stri
 	}
 	if reason != "" {
 		s.audit(ctx, slog.LevelWarn, "admin_sign_in", "failure", append(attrs, slog.String("reason", reason))...)
-		return AuthResult{}, ErrInvalidCredentials
+		return CodeChallenge{}, ErrInvalidCredentials
 	}
 
-	res, err := s.startSession(ctx, user, DeliveryCookie, auth.ScopeAdmin, s.clock())
+	challenge, err := s.beginChallenge(ctx, user, auth.ScopeAdmin, DeliveryCookie)
 	if err != nil {
-		return AuthResult{}, err
+		return CodeChallenge{}, err
 	}
-	s.audit(ctx, slog.LevelInfo, "admin_sign_in", "success", attrs...)
-	return res, nil
+	// "success" is audited when the code is accepted (VerifyCode).
+	s.audit(ctx, slog.LevelInfo, "admin_sign_in", "code_sent", attrs...)
+	return challenge, nil
 }
 
 func normalizeDelivery(delivery string) (string, error) {

@@ -13,7 +13,7 @@ import (
 )
 
 // AppointmentCount is the number of sample appointments.
-const AppointmentCount = 7
+const AppointmentCount = 10
 
 // SampleAppointment is a sample appointment with its timeline.
 type SampleAppointment struct {
@@ -34,6 +34,12 @@ func SampleAppointmentID(n int) uuid.UUID { return id(fmt.Sprintf("f0%02d", n)) 
 //	5  CONSULTATION solicitors/sample-law-chambers  consumer  REQUESTED        in 6 days
 //	6  VIEWING listing 10 (Chipo Dube)         a guest    REQUESTED            in 8 days
 //	7  CONSULTATION agents/tendai-ncube        consumer   CONFIRMED            tomorrow
+//	8  CONSULTATION property-managers/sample-property-management  tenant  REQUESTED  in 3 days
+//	9  CONSULTATION developers/sample-developments                tenant  CONFIRMED  in 5 days
+//	10 CONSULTATION service-providers/sample-plumbers             tenant  REQUESTED  in 2 days
+//
+// 8 to 10 give the property manager, developer and service provider sample
+// accounts (and the tenant) something on their dashboards.
 func Appointments(now time.Time) []SampleAppointment {
 	now = now.UTC().Truncate(time.Microsecond)
 	// 08:00 UTC is 10:00 in Harare.
@@ -73,7 +79,7 @@ func Appointments(now time.Time) []SampleAppointment {
 		}}
 		entries = append(entries, steps...)
 		for i := range entries {
-			entries[i].ID, entries[i].AppointmentID = id(fmt.Sprintf("f1%d%d", n, i)), a.ID
+			entries[i].ID, entries[i].AppointmentID = id(fmt.Sprintf("f1%x%d", n, i)), a.ID
 			if i > 0 {
 				entries[i].FromStatus = entries[i-1].ToStatus
 				a.UpdatedAt = entries[i].At
@@ -143,6 +149,18 @@ func Appointments(now time.Time) []SampleAppointment {
 
 	a = consultation("agents/tendai-ncube", appointments.StatusConfirmed, day(1, 13))
 	add(a, now.Add(-30*time.Hour), professional(a.AssignedUserID, appointments.TimelineConfirmed, appointments.StatusConfirmed, now.Add(-28*time.Hour), &a.StartUTC))
+
+	// The tenant's consultations with the business sample accounts.
+	tenant := TenantID
+	asTenant := func(a appointments.Appointment) appointments.Appointment {
+		a.CustomerUserID, a.CustomerName, a.CustomerEmail = &tenant, "Tariro Tenant", TenantEmail
+		a.CustomerNote = "I am looking for a place to rent and would like some advice."
+		return a
+	}
+	add(asTenant(consultation("property-managers/sample-property-management", appointments.StatusRequested, day(3, 12))), now.Add(-4*time.Hour))
+	a = asTenant(consultation("developers/sample-developments", appointments.StatusConfirmed, day(5, 9)))
+	add(a, now.Add(-48*time.Hour), professional(nil, appointments.TimelineConfirmed, appointments.StatusConfirmed, now.Add(-46*time.Hour), &a.StartUTC))
+	add(asTenant(consultation("service-providers/sample-plumbers", appointments.StatusRequested, day(2, 13))), now.Add(-time.Hour))
 
 	return out
 }

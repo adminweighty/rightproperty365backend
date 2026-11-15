@@ -53,8 +53,10 @@ type Account struct {
 	// Organisation and MembershipRole are set for organisation members.
 	Organisation   *Organisation
 	MembershipRole string
-	// PlatformRole is set for the administrator only.
-	PlatformRole string
+	// PlatformRole is set for the platform administrators only, with
+	// PlatformMarket (a market code) for MARKET_ADMIN.
+	PlatformRole   string
+	PlatformMarket string
 	// AccountRoles are the self-declared roles; seeded ones are all ACTIVE.
 	AccountRoles []string
 	// Listings are the sample listing numbers (1..18) this person is the
@@ -128,7 +130,7 @@ var (
 
 // Accounts returns every sample account. All are email-verified.
 func Accounts() []Account {
-	accounts := append(append(peopleAccounts(), backendPeople()...), businessAccounts()...)
+	accounts := append(append(append(peopleAccounts(), backendPeople()...), businessAccounts()...), roleAccounts()...)
 	for i := range accounts {
 		if accounts[i].Profiles == nil {
 			accounts[i].Profiles = profilesOf(accounts[i].ID, accounts[i].Organisation, accounts[i].MembershipRole)
@@ -275,7 +277,7 @@ func SeedMemoryUsers(ctx context.Context, store *identity.MemoryStore, hasher id
 			}
 		}
 		if a.PlatformRole != "" {
-			if err := store.AddPlatformRole(a.ID, a.PlatformRole, ""); err != nil {
+			if err := store.AddPlatformRole(a.ID, a.PlatformRole, a.PlatformMarket); err != nil {
 				return err
 			}
 		}

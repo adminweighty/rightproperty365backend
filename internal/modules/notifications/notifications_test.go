@@ -370,7 +370,8 @@ func TestWhoIsNotified(t *testing.T) {
 		{"direct seller", func() outbox.Event { return f.propertyRequest(6, nil) }, "property-request-new", devseed.SellerEmail, 2},
 		{"agent profile: the named agent only", func() outbox.Event { return f.enquiry("agents", "tendai-ncube") }, "business-enquiry-new", identity.SeedAgentEmail, 2},
 		{"agency profile: its owners and managers, not agents or staff", func() outbox.Event { return f.enquiry("agencies", "sample-estates") }, "business-enquiry-new",
-			"estates-manager@example.com," + devseed.EstatesOwnerEmail, 3},
+			// The seeded agency administrator (a MANAGER) is notified too.
+			devseed.AgencyAdminEmail + ",estates-manager@example.com," + devseed.EstatesOwnerEmail, 4},
 		{"business profile: its owner", func() outbox.Event { return f.enquiry("hosts", "sample-showrooms") }, "business-enquiry-new", "sample-showrooms@example.test", 2},
 	}
 	for _, tt := range tests {

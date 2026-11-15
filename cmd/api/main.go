@@ -56,6 +56,10 @@ func run() error {
 	}
 	logger := logging.New(os.Stdout, cfg.LogLevel, "api", cfg.Env)
 	slog.SetDefault(logger)
+	if cfg.AuthDemoCode.IsSet() {
+		// config.Load refused it outside development and staging. Never the code itself.
+		logger.Warn(config.DemoCodeWarning, slog.String("app_env", cfg.Env))
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

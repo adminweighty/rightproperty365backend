@@ -34,6 +34,19 @@ func TestSampleDataMapping(t *testing.T) {
 		"agent-b@example.test":          {"Blake Agent", "Second Street Realty", "AGENT", "AGENT", nil},
 		// The United Kingdom agency (backend_samples.go).
 		"sample-homes-london@example.test": {"Sample Homes London Owner", "Sample Homes London", "OWNER", "AGENCY_OWNER", []int{19, 20, 21}},
+		// One account for each remaining role (role_samples.go).
+		"tenant@example.test":          {"Tariro Tenant", "", "", "TENANT", nil},
+		"sales.agent@example.test":     {"Simba Sales", "Sample Estates", "AGENT", "SALES_AGENT", nil},
+		"lettings.agent@example.test":  {"Lindiwe Lettings", "Sample Estates", "AGENT", "LETTINGS_AGENT", nil},
+		"agency.admin@example.test":    {"Ruvimbo Chari", "Sample Estates", "MANAGER", "AGENCY_ADMIN", nil},
+		"agency.staff@example.test":    {"Kuda Staff", "Sample Estates", "STAFF", "AGENCY_STAFF", nil},
+		"landlord@example.test":        {"Lloyd Landlord", "", "", "LANDLORD", nil},
+		"admin.platform@example.test":  {"Pat Platform", "", "", "", nil},
+		"admin.market@example.test":    {"Mika Market", "", "", "", nil},
+		"admin.moderator@example.test": {"Morgan Moderator", "", "", "", nil},
+		"admin.support@example.test":   {"Sam Support", "", "", "", nil},
+		"admin.finance@example.test":   {"Fiona Finance", "", "", "", nil},
+		"admin.content@example.test":   {"Connor Content", "", "", "", nil},
 	}
 
 	accounts := Accounts()
@@ -63,7 +76,7 @@ func TestSampleDataMapping(t *testing.T) {
 			t.Fatalf("%s = %+v, want %+v", a.Email, a, w)
 		}
 		ids[a.ID.String()] = true
-		if (a.PlatformRole != "") != (a.Email == "admin@example.test") {
+		if (a.PlatformRole != "") != (a.Email == "admin@example.test" || strings.HasPrefix(a.Email, "admin.")) {
 			t.Fatalf("%s: unexpected platform role %q", a.Email, a.PlatformRole)
 		}
 		if a.DirectSeller != (a.Email == "seller@example.test") {
@@ -149,7 +162,8 @@ func TestSeedMemory(t *testing.T) {
 				t.Fatalf("%s: account role %s is %s, want ACTIVE", a.Email, r.Role, r.Status)
 			}
 		}
-		if (len(u.Memberships) == 1) != (a.Organisation != nil) || (len(u.PlatformRoles) == 1) != (a.PlatformRole != "") {
+		if (len(u.Memberships) == 1) != (a.Organisation != nil) || (len(u.PlatformRoles) == 1) != (a.PlatformRole != "") ||
+			(a.PlatformRole != "" && (u.PlatformRoles[0].Role != a.PlatformRole || u.PlatformRoles[0].MarketCode != a.PlatformMarket)) {
 			t.Fatalf("%s: memberships=%v platform=%v", a.Email, u.Memberships, u.PlatformRoles)
 		}
 		if a.Organisation != nil && (u.Memberships[0].OrganisationName != a.Organisation.Name || u.Memberships[0].Role != a.MembershipRole || u.Memberships[0].MarketCode != MarketOf(a.Organisation)) {
@@ -469,5 +483,66 @@ func TestSampleAccountsFollowTheSeekerRule(t *testing.T) {
 			roles = append(roles, r.Role)
 		}
 		check(a.Email, roles, "")
+	}
+}
+
+// Every account role and every platform role has at least one verified,
+// working sample account (development and staging seed), and there is a
+// professional still awaiting verification.
+func TestEveryRoleHasASampleAccount(t *testing.T) {
+	ctx := context.Background()
+	store := identity.NewMemoryStore()
+	hasher := identity.Hasher{MemoryKiB: 64, Time: 1, Threads: 1}
+	now := time.Date(2026, 11, 14, 8, 0, 0, 0, time.UTC)
+	if err := SeedMemoryUsers(ctx, store, hasher, "a-test-seed-password", now); err != nil {
+		t.Fatal(err)
+	}
+	accountRoles, platformRoles := map[string][]string{}, map[string][]string{}
+	for _, a := range Accounts() {
+		u, err := store.UserByEmail(ctx, a.Email)
+		if err != nil || !u.Verified() || u.Status != identity.StatusActive || u.PasswordHash == "" {
+			t.Fatalf("%s is not a working verified account: %v", a.Email, err)
+		}
+		if !strings.HasSuffix(a.Email, "@example.test") {
+			t.Fatalf("%s: sample accounts use @example.test", a.Email)
+		}
+		for _, r := range u.AccountRoles {
+			if r.Status == identity.AccountRoleActive {
+				accountRoles[r.Role] = append(accountRoles[r.Role], a.Email)
+			}
+		}
+		for _, r := range u.PlatformRoles {
+			platformRoles[r.Role] = append(platformRoles[r.Role], a.Email)
+			if (r.Role == auth.PlatformMarketAdmin) != (r.MarketCode != "") {
+				t.Fatalf("%s: %s with market %q", a.Email, r.Role, r.MarketCode)
+			}
+		}
+	}
+	for _, role := range identity.SelectableAccountRoles() {
+		if len(accountRoles[role]) == 0 {
+			t.Errorf("no verified sample account holds the account role %s", role)
+		}
+	}
+	for _, role := range auth.AllPlatformRoles() {
+		if len(platformRoles[role]) == 0 {
+			t.Errorf("no sample account holds the platform role %s", role)
+		}
+	}
+	pending := 0
+	for _, a := range OnboardingAccounts() {
+		if a.Role != "" {
+			pending++
+		}
+	}
+	if pending == 0 {
+		t.Error("there must be a professional awaiting verification")
+	}
+	// Emails are unique across every sample account.
+	seen := map[string]bool{}
+	for _, email := range append(Emails(), PendingAgentEmail, PendingProviderEmail) {
+		if seen[email] {
+			t.Fatalf("duplicate sample email %s", email)
+		}
+		seen[email] = true
 	}
 }

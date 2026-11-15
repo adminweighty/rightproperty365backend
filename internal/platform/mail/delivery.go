@@ -102,7 +102,46 @@ func RecipientHash(address string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// reservedSuffixes are the top-level domains reserved for testing and
+// documentation (RFC 2606 and RFC 6761).
+var reservedSuffixes = []string{".test", ".example", ".invalid", ".localhost"}
+
+// IsReservedTestAddress reports whether an address is on a domain that can
+// never receive real mail: example.com, example.org, example.net, any
+// *.example.* domain, or one ending in .test, .example, .invalid or
+// .localhost. An address without a domain counts as reserved too.
+func IsReservedTestAddress(address string) bool {
+	address = strings.ToLower(strings.TrimSpace(address))
+	if i := strings.LastIndex(address, ">"); i >= 0 {
+		address = address[:i]
+	}
+	at := strings.LastIndex(address, "@")
+	if at < 0 || at == len(address)-1 {
+		return true
+	}
+	domain := strings.TrimSuffix(address[at+1:], ".")
+	for _, suffix := range reservedSuffixes {
+		// "." + domain so that the bare names ("localhost", "test") count too.
+		if strings.HasSuffix("."+domain, suffix) {
+			return true
+		}
+	}
+	labels := strings.Split(domain, ".")
+	for i, label := range labels {
+		// example.com / example.org / example.net, and any *.example.<tld>
+		if label == "example" && i < len(labels)-1 {
+			return true
+		}
+	}
+	return false
+}
+
 // Deliver sends n unless it was already accepted by the provider.
+//
+// With the real transport (Resend), a recipient on a reserved test domain
+// (IsReservedTestAddress) is skipped with an info log line that does not name
+// the address. The development LogSender sends nothing anyway and still
+// prints such messages for developers.
 //
 //   - Already PROVIDER_ACCEPTED: nothing is sent; nil.
 //   - Already terminally FAILED: nothing is sent; an error wrapping ErrTerminal.
@@ -118,8 +157,16 @@ func (s *Service) Deliver(ctx context.Context, n Notification) error {
 	if n.Key == "" || len(n.Key) > MaxKeyLength {
 		return fmt.Errorf("%w: invalid notification key", ErrTerminal)
 	}
-	now := s.now().UTC().Truncate(time.Microsecond)
 	hash := RecipientHash(n.Message.To)
+	if s.sender.Name() == resendName && IsReservedTestAddress(n.Message.To) {
+		// Sample and test accounts (@example.test and the like) are never
+		// emailed through a real provider: the address cannot receive mail
+		// and bounces hurt the sending domain. Nothing is recorded or sent.
+		s.logger.InfoContext(ctx, "email skipped: the recipient is on a reserved test domain",
+			slog.String("email_kind", n.Message.Kind), slog.String("notification_key", n.Key))
+		return nil
+	}
+	now := s.now().UTC().Truncate(time.Microsecond)
 	previous, err := s.log.Begin(ctx, Record{
 		Key: n.Key, Kind: n.Message.Kind, RecipientUserID: n.RecipientUserID, RecipientSHA256: hash, Provider: s.sender.Name(),
 	}, now)

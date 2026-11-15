@@ -81,6 +81,13 @@ const (
 	AdminAuthRequestsPerMinute = 5
 	AdminAuthRequestsBurst     = 5
 
+	// Per-IP limit on the sign-in code step (POST .../login/verify and
+	// .../login/resend), one bucket for customers and one for administrators,
+	// separate from the password step: bursts of 20, refilled at 20 per
+	// minute. Each challenge also dies after 5 wrong codes.
+	SignInCodeRequestsPerMinute = 20
+	SignInCodeRequestsBurst     = 20
+
 	// Per-IP limit on onboarding document uploads, its own bucket: bursts of
 	// 20, refilled at 20 per minute. Each upload can be 10 MB.
 	UploadRequestsPerMinute = 20
@@ -197,6 +204,11 @@ func NewRouter(d Deps) (http.Handler, error) {
 		identity.WithAdminSessionTTLs(cfg.AdminSessionTTL, cfg.AdminSessionIdleTTL),
 		identity.WithRoleCatalogue(vocab),
 	}
+	// The demo sign-in code: config.Load already refuses it outside
+	// development and staging; checked again here so no other path can pass it.
+	if cfg.AuthDemoCode.IsSet() && (cfg.Env == config.EnvDevelopment || cfg.Env == config.EnvStaging) {
+		identityOpts = append(identityOpts, identity.WithDemoCode(cfg.AuthDemoCode.Reveal()))
+	}
 	requestOpts := []propertyrequests.Option{propertyrequests.WithVocabulary(vocab), propertyrequests.WithStayChecker(stayChecker{svc: availabilitySvc})}
 	enquiryOpts := []businessenquiries.Option{businessenquiries.WithVocabulary(vocab)}
 	if d.Now != nil {
@@ -268,6 +280,8 @@ func NewRouter(d Deps) (http.Handler, error) {
 	authLimiter := httpx.NewRateLimiter(AuthRequestsPerMinute, AuthRequestsBurst)
 	adminAuthLimiter := httpx.NewRateLimiter(AdminAuthRequestsPerMinute, AdminAuthRequestsBurst)
 	captchaLimiter := httpx.NewRateLimiter(CaptchaRequestsPerMinute, CaptchaRequestsBurst)
+	codeLimiter := httpx.NewRateLimiter(SignInCodeRequestsPerMinute, SignInCodeRequestsBurst)
+	adminCodeLimiter := httpx.NewRateLimiter(SignInCodeRequestsPerMinute, SignInCodeRequestsBurst)
 
 	r := chi.NewRouter()
 	r.Use(
@@ -346,6 +360,9 @@ func NewRouter(d Deps) (http.Handler, error) {
 		// asking for one does not use up the sign-in allowance.
 		r.Route("/auth", func(r chi.Router) {
 			r.With(captchaLimiter.Middleware).Get("/captcha", identityH.Captcha)
+			// The second step of signing in: the emailed code.
+			r.With(codeLimiter.Middleware).Post("/login/verify", identityH.LoginVerify)
+			r.With(codeLimiter.Middleware).Post("/login/resend", identityH.LoginResend)
 			r.Group(func(r chi.Router) {
 				r.Use(authLimiter.Middleware)
 				r.Post("/register", identityH.Register)
@@ -443,6 +460,8 @@ func NewRouter(d Deps) (http.Handler, error) {
 		// user holds a platform role.
 		r.Route("/admin", func(r chi.Router) {
 			r.With(adminAuthLimiter.Middleware).Post("/auth/login", identityH.AdminLogin)
+			r.With(adminCodeLimiter.Middleware).Post("/auth/login/verify", identityH.AdminLoginVerify)
+			r.With(adminCodeLimiter.Middleware).Post("/auth/login/resend", identityH.AdminLoginResend)
 			r.With(auth.RequireAuth, auth.RequirePlatformRole(auth.AllPlatformRoles()...)).Get("/me", identityH.Me)
 
 			// Reviewing onboarding applications: an ADMIN-scope session with
