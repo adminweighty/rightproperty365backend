@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.24.0
+  version: 0.24.1
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -402,8 +402,10 @@ tags:
       `CANCELLED` | `EXPIRED`; `DRAFT` -> `CANCELLED`. Recipient status: `WAITING` -> `ACTIVE`
       (emailed) -> `SIGNED` | `APPROVED` | `DECLINED`; a CC is `CC`.
 
-      Not built: a PDF digital seal with a platform certificate; true script fonts (three Go
-      italic styles are used); SMS or ID verification; delegation to another signer; in-person
+      Typed signatures are drawn in one of three script fonts (Great Vibes, Kaushan Script,
+      Allura; OFL-1.1); a name with letters the font lacks is drawn in Go Italic instead.
+
+      Not built: a PDF digital seal with a platform certificate; SMS or ID verification; delegation to another signer; in-person
       signing; bulk sending; templates of field layouts; form fields of the uploaded PDF itself
       (AcroForm) are not read.
   - name: admin

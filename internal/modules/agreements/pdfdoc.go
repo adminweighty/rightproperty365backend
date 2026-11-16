@@ -3,11 +3,13 @@ package agreements
 import (
 	"bytes"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/go-pdf/fpdf"
 	"github.com/go-pdf/fpdf/contrib/gofpdi"
@@ -17,16 +19,30 @@ import (
 	"golang.org/x/image/font/gofont/goitalic"
 	"golang.org/x/image/font/gofont/gomediumitalic"
 	"golang.org/x/image/font/gofont/goregular"
+	"golang.org/x/image/font/sfnt"
 )
 
 // Documents are read and written with pure-Go libraries: the original
 // pages are imported with github.com/phpdave11/gofpdi (MIT) into
 // github.com/go-pdf/fpdf (MIT), the field values are drawn on top, and the
-// audit report is appended. Fonts are the Go fonts (BSD-3-Clause, embedded).
+// audit report is appended. Text fonts are the Go fonts (BSD-3-Clause,
+// embedded); typed signatures use the script fonts below (OFL-1.1).
 //
-// Typed signatures: three embedded styles (SignatureFonts). They are the Go
-// italic faces, not true script fonts: an OFL script font (for example
-// Dancing Script) can be added to signatureFonts once its file is vendored.
+// Typed signatures: three embedded script fonts (SignatureFonts), vendored in
+// fonts/ with their SIL Open Font License 1.1 texts: Great Vibes, Kaushan
+// Script and Allura (Google Fonts). The style keys stored with a signature
+// predate the fonts and stay as they are. A name with a letter a script font
+// does not have (Cyrillic, Greek, ...) is drawn in Go Italic instead, so no
+// letter is ever left out.
+
+//go:embed fonts/GreatVibes-Regular.ttf
+var greatVibesTTF []byte
+
+//go:embed fonts/KaushanScript-Regular.ttf
+var kaushanScriptTTF []byte
+
+//go:embed fonts/Allura-Regular.ttf
+var alluraTTF []byte
 
 // FontInfo is one typed-signature style.
 type FontInfo struct {
@@ -36,13 +52,53 @@ type FontInfo struct {
 
 type signatureFont struct {
 	FontInfo
-	ttf []byte
+	ttf      []byte
+	fallback []byte
+	face     *sfnt.Font
 }
 
 var signatureFonts = []signatureFont{
-	{FontInfo{"FLOWING", "Flowing (Go Italic)"}, goitalic.TTF},
-	{FontInfo{"BOLD", "Bold (Go Bold Italic)"}, gobolditalic.TTF},
-	{FontInfo{"CLASSIC", "Classic (Go Medium Italic)"}, gomediumitalic.TTF},
+	{FontInfo: FontInfo{"FLOWING", "Flowing (Great Vibes)"}, ttf: greatVibesTTF, fallback: goitalic.TTF},
+	{FontInfo: FontInfo{"BOLD", "Bold (Kaushan Script)"}, ttf: kaushanScriptTTF, fallback: gobolditalic.TTF},
+	{FontInfo: FontInfo{"CLASSIC", "Classic (Allura)"}, ttf: alluraTTF, fallback: gomediumitalic.TTF},
+}
+
+func init() {
+	for i := range signatureFonts {
+		face, err := sfnt.Parse(signatureFonts[i].ttf)
+		if err != nil {
+			panic(fmt.Sprintf("signature font %s: %v", signatureFonts[i].Key, err))
+		}
+		signatureFonts[i].face = face
+	}
+}
+
+// covers reports whether the font has a glyph for every letter of text.
+func (sf signatureFont) covers(text string) bool {
+	var buf sfnt.Buffer
+	for _, r := range text {
+		if unicode.IsSpace(r) {
+			continue
+		}
+		if g, err := sf.face.GlyphIndex(&buf, r); err != nil || g == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// fontFor returns the fpdf font name a typed signature is drawn with.
+func fontFor(key, text string) string {
+	for _, sf := range signatureFonts {
+		if sf.Key == key {
+			name := "sig" + strings.ToLower(sf.Key)
+			if !sf.covers(text) {
+				name += "fb"
+			}
+			return name
+		}
+	}
+	return fontFor(signatureFonts[0].Key, text)
 }
 
 // SignatureFonts lists the styles a typed signature can use.
@@ -119,6 +175,7 @@ func newPDF() *fpdf.Fpdf {
 	f.AddUTF8FontFromBytes("gotext", "B", gobold.TTF)
 	for _, sf := range signatureFonts {
 		f.AddUTF8FontFromBytes("sig"+strings.ToLower(sf.Key), "", sf.ttf)
+		f.AddUTF8FontFromBytes("sig"+strings.ToLower(sf.Key)+"fb", "", sf.fallback)
 	}
 	f.SetProducer("RightProperty365", false)
 	f.SetCreator("RightProperty365", false)
@@ -206,10 +263,7 @@ func (in FinalInput) drawAdopted(f *fpdf.Fpdf, a *Adopted, fd Field) {
 		return
 	}
 	if a.Kind == AdoptTyped {
-		font := "sig" + strings.ToLower(a.Font)
-		if !knownFont(a.Font) {
-			font = "sigflowing"
-		}
+		font := fontFor(a.Font, a.Text)
 		size := fitText(f, font, a.Text, fd.W, fd.H, 40)
 		f.SetTextColor(20, 30, 120)
 		f.Text(fd.X+2, fd.Y+fd.H/2+size*0.35, a.Text)
