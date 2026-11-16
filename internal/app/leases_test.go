@@ -124,7 +124,10 @@ func TestLeaseTemplateLibrary(t *testing.T) {
 	// A draft template cannot be used.
 	wantError(t, e.post("/v1/me/leases", leaseInput(v1.ID), agent), http.StatusUnprocessableEntity, "LEASE_TEMPLATE_NOT_AVAILABLE")
 
-	wantError(t, e.post("/v1/admin/lease-templates/"+v1.ID+"/approve", obj{}, content), http.StatusBadRequest, "VALIDATION_FAILED")
+	// The legal review is optional (0.26.0), but one that is sent is checked.
+	wantError(t, e.post("/v1/admin/lease-templates/"+v1.ID+"/approve",
+		obj{"legal_review": obj{"reviewer_name": "A. Advocate", "organisation": "Sample Chambers", "reviewed_on": "2099-01-01"}}, content),
+		http.StatusBadRequest, "VALIDATION_FAILED")
 	review := obj{"legal_review": obj{"reviewer_name": "A. Advocate", "organisation": "Sample Chambers", "reviewed_on": "2026-10-30"}}
 	rec = e.post("/v1/admin/lease-templates/"+v1.ID+"/approve", review, content)
 	wantStatus(t, rec, http.StatusOK)

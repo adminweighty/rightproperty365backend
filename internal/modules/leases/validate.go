@@ -85,12 +85,18 @@ type TemplateInput struct {
 	Description     *string    `json:"description"`
 	Sections        *[]Section `json:"sections"`
 	OptionalClauses *[]Clause  `json:"optional_clauses"`
+	// Clauses is another name for optional_clauses (the organisation
+	// template routes document it so); optional_clauses wins when both are sent.
+	Clauses *[]Clause `json:"clauses"`
 }
 
 // applyTemplateInput writes in onto t and validates the result.
 // knownMarket says whether a country code exists.
 func applyTemplateInput(t *Template, in TemplateInput, creating bool, knownMarket func(string) bool) error {
 	fields := map[string]string{}
+	if in.OptionalClauses == nil {
+		in.OptionalClauses = in.Clauses
+	}
 	if in.MarketCode != nil {
 		code := strings.ToUpper(strings.TrimSpace(*in.MarketCode))
 		switch {
@@ -223,6 +229,7 @@ type LeaseInput struct {
 	NoticePeriodDays  *int      `json:"notice_period_days"`
 	OptionalClauses   *[]string `json:"optional_clauses"`
 	SpecialConditions *string   `json:"special_conditions"`
+	LandlordStamp     *bool     `json:"landlord_stamp"`
 }
 
 // merge writes the fields that in sets onto base (template, listing and
@@ -270,6 +277,9 @@ func (in LeaseInput) merge(base Input) Input {
 	}
 	if in.SpecialConditions != nil {
 		out.SpecialConditions = *in.SpecialConditions
+	}
+	if in.LandlordStamp != nil {
+		out.LandlordStamp = *in.LandlordStamp
 	}
 	return out
 }

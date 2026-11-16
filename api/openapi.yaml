@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.25.0
+  version: 0.26.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -94,6 +94,34 @@ info:
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
 
+    Lease templates and stamps (new in 0.26.0)
+    - **Lease templates are owned by organisations.** Agencies and landlords design their own:
+      `/v1/me/organisations/{orgId}/lease-templates` (list, create or copy, edit, publish, retire,
+      audit trail). The organisation's OWNER and MANAGER (of a kind that manages listings; an
+      independent landlord owns their own organisation) manage them; its other members who may
+      create leases (AGENT) read them; other members get `403`, non-members `404
+      ORGANISATION_NOT_FOUND`. Publishing (`APPROVED`, shown as "Published") needs no review.
+    - **The platform library becomes sample templates** (`source: SAMPLE`, `organisation_id:
+      null`): anyone may use or copy them. Administrators still keep them under
+      `/v1/admin/lease-templates`; `legal_review` is now **optional** on approval.
+    - **Changed response shapes (additive).** Every template gains `organisation_id`, `source`
+      (`SAMPLE` | `ORGANISATION`) and `can_edit`. `GET /v1/me/lease-templates` offers every
+      approved sample plus the published templates of the caller's organisations (only one with
+      `organisation_id`). `POST /v1/me/leases` accepts an approved template that is a sample or
+      belongs to the lease's organisation (`400` on `template_id` for another organisation's).
+      Leases gain `landlord_stamp`.
+    - **Generated digital stamps.** A user types the text of their company stamp and the server
+      draws it (round, oval or rectangle; blue, red, black, green or purple ink) as a transparent
+      PNG: `POST /v1/stamp-preview` (public). The stamp is saved with the saved signature
+      (`/v1/me/signature`). Agreements gain a `STAMP` field (SIGNER only, default 113 x 113 pt,
+      at least 57 pt); `POST /v1/signing/{token}/submit` takes `stamp`, required when the
+      recipient has a required STAMP field; the completed PDF draws the stamp (dated the signing
+      day) in each of the signer's STAMP fields, and the audit report records "Stamp applied:
+      <top text>". A lease with `landlord_stamp: true` places a STAMP field next to each
+      landlord's signature block. It is a picture of a stamp, not a certificate seal.
+    - Migration 0025 (additive: `lease_templates.organisation_id`, `agreement_recipients.stamp`,
+      `user_signatures.stamp`, the STAMP field type; approval no longer requires a legal review).
+
     The administrators' area (new in 0.25.0)
     - **Accounts** (`/v1/admin/users`): list and search (SUPER_ADMIN, PLATFORM_ADMIN, SUPPORT), an
       account's detail (roles and onboarding state, memberships, listing counts, last sign-in,
@@ -156,7 +184,7 @@ info:
     - **New: an Adobe-Sign-style signing workflow** for generated leases and any uploaded PDF
       (`/v1/me/agreements`). Recipients are SIGNER, APPROVER or CC with an order: the same order
       acts in parallel, order n is emailed only when the earlier orders have finished, a CC only
-      gets the completed copy. Fields (SIGNATURE, INITIALS, DATE_SIGNED, NAME, TEXT, CHECKBOX) are
+      gets the completed copy. Fields (SIGNATURE, INITIALS, DATE_SIGNED, NAME, TEXT, CHECKBOX; STAMP since 0.26.0) are
       placed per recipient in PDF points from the page's top-left (`document.pages` gives every
       page's size for pdf.js). A lease is sent with `POST /v1/me/leases/{id}/send`, its fields
       placed automatically, and the lease follows its agreement.
@@ -6801,9 +6829,11 @@ paths:
     get:
       tags: [leases]
       operationId: adminListLeaseTemplates
-      summary: The lease template library, every version (new in 0.24.0)
+      summary: The sample template library, every version (new in 0.24.0)
       description: |
-        Admin-scope session with SUPER_ADMIN or CONTENT_ADMIN (`403` otherwise). Filters:
+        The platform's sample templates only (`source: SAMPLE`; organisation templates are never
+        listed or changed here, `404` by ID). Admin-scope session with SUPER_ADMIN or
+        CONTENT_ADMIN (`403` otherwise). Filters:
         `market` (country code), `status` (`DRAFT`, `APPROVED`, `RETIRED`). Ordered by country,
         name, newest version first. `variables` is the fixed list of placeholders a template may
         use. `Cache-Control: private, no-store`.
@@ -6955,22 +6985,22 @@ paths:
     post:
       tags: [leases]
       operationId: adminApproveLeaseTemplate
-      summary: Approve a DRAFT with its legal review
+      summary: Approve a sample DRAFT, with an optional legal review
       description: |
-        `legal_review` is required (`reviewed_on` a date, not in the future). The family's
+        The body is optional (changed in 0.26.0): `legal_review` may be left out; when sent it is
+        checked (`reviewed_on` a date, not in the future) and recorded. The family's
         earlier `APPROVED` version becomes `RETIRED` at the same time (leases made from it keep
         it). Audited (`APPROVED`, and `RETIRED` for the replaced version). Only a `DRAFT`: `409
         LEASE_TEMPLATE_STATE_CONFLICT` otherwise.
       security:
         - cookieSession: []
       requestBody:
-        required: true
+        required: false
         content:
           application/json:
             schema:
               type: object
               additionalProperties: false
-              required: [legal_review]
               properties:
                 legal_review:
                   $ref: "#/components/schemas/LegalReview"
@@ -7057,10 +7087,14 @@ paths:
       operationId: listOfferedLeaseTemplates
       summary: The approved templates a lease can be made from
       description: |
-        Only `APPROVED` templates, of `market` when given (every country otherwise): a draft,
-        retired or other-country template is never offered, and is refused when used (`422
-        LEASE_TEMPLATE_NOT_AVAILABLE`, `422 LEASE_MARKET_MISMATCH`). For whoever may create leases
-        (`403` otherwise). The legal review is shown: a sample template says it is a sample.
+        Only `APPROVED` templates, of `market` when given (every country otherwise): every
+        sample, and the published templates of the organisations the caller may create leases for
+        (changed in 0.26.0); with `organisation_id`, the samples and that organisation's only
+        (`400` when the caller may not create leases for it). A draft, retired or other-country
+        template is never offered, and is refused when used (`422 LEASE_TEMPLATE_NOT_AVAILABLE`,
+        `422 LEASE_MARKET_MISMATCH`); another organisation's template is `400` on `template_id`.
+        For whoever may create leases (`403` otherwise). `can_edit` is true on the templates of an
+        organisation the caller manages. A sample template's text says it is a sample.
       security:
         - cookieSession: []
         - bearerToken: []
@@ -7068,6 +7102,10 @@ paths:
         - name: market
           in: query
           schema: {type: string, pattern: "^[A-Za-z]{2}$"}
+        - name: organisation_id
+          in: query
+          schema: {type: string, format: uuid}
+          description: New in 0.26.0. Only this organisation's published templates (and the samples).
       responses:
         "200":
           description: The templates and the variables.
@@ -7075,10 +7113,279 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/LeaseTemplateList"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
         "401":
           $ref: "#/components/responses/Unauthenticated"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/me/organisations/{orgId}/lease-templates:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      tags: [leases]
+      operationId: listOrganisationLeaseTemplates
+      summary: An organisation's own lease templates, every version (new in 0.26.0)
+      description: |
+        Who may read: any member who may create leases for the organisation (OWNER, MANAGER,
+        AGENT of a kind that manages listings). Another member: `403 FORBIDDEN`; not a member:
+        `404 ORGANISATION_NOT_FOUND`. Filters `status` and `market`; the same shape as the admin
+        list. `can_edit` is true for the OWNER and MANAGER. `Cache-Control: private, no-store`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - name: market
+          in: query
+          schema: {type: string, pattern: "^[A-Za-z]{2}$"}
+        - name: status
+          in: query
+          schema: {type: string, enum: [DRAFT, APPROVED, RETIRED]}
+      responses:
+        "200":
+          description: The organisation's templates.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeaseTemplateList"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/LeaseNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [leases]
+      operationId: createOrganisationLeaseTemplate
+      summary: Create an organisation template, or copy one (version 1, DRAFT)
+      description: |
+        Who may manage (create, edit, publish, retire): the organisation's OWNER and MANAGER
+        (`403` for its other members, `404 ORGANISATION_NOT_FOUND` for non-members). Either a new
+        template (`market_code`, `name`, `lease_kind`, `sections` required; `clauses` or
+        `optional_clauses`), validated like the admin library's, or `copy_from_template_id`: a
+        copy of a published sample or of any of this organisation's templates (`400` otherwise),
+        named "Copy of <name>" unless `name` is sent; other keys sent change the copy. Audited
+        (`CREATED`, with what was copied). Rate limit: the lease bucket (30 / 30 per minute).
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrganisationLeaseTemplateInput"
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeaseTemplateEnvelope"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/LeaseNotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/me/organisations/{orgId}/lease-templates/{id}:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/LeaseTemplateId"
+    get:
+      tags: [leases]
+      operationId: getOrganisationLeaseTemplate
+      summary: One of the organisation's templates
+      description: Readers as for the list. A template that is not this organisation's (a sample, another organisation's) is `404 LEASE_TEMPLATE_NOT_FOUND`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The template and the variables.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [template, variables]
+                properties:
+                  template:
+                    $ref: "#/components/schemas/LeaseTemplate"
+                  variables:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/LeaseVariable"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/LeaseNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    patch:
+      tags: [leases]
+      operationId: editOrganisationLeaseTemplate
+      summary: Edit a DRAFT, or start the next version of a published template
+      description: |
+        OWNER and MANAGER. The same semantics as the admin edit: a `DRAFT` is changed in place
+        (`200`, `new_version: false`); an `APPROVED` template gets its family's next `DRAFT`
+        version (`201`, `new_version: true`; `409 LEASE_TEMPLATE_DRAFT_EXISTS` when there is one);
+        a `RETIRED` one is `409 LEASE_TEMPLATE_NOT_EDITABLE`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LeaseTemplateInput"
+      responses:
+        "200":
+          description: The edited draft.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeaseTemplateEnvelope"
+        "201":
+          description: The new draft version.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeaseTemplateEnvelope"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/LeaseNotFound"
+        "409":
+          $ref: "#/components/responses/LeaseConflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/me/organisations/{orgId}/lease-templates/{id}/publish:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/LeaseTemplateId"
+    post:
+      tags: [leases]
+      operationId: publishOrganisationLeaseTemplate
+      summary: Publish a DRAFT (no review)
+      description: |
+        OWNER and MANAGER. No body. `DRAFT` -> `APPROVED` (shown as "Published"); the family's
+        other `APPROVED` version becomes `RETIRED` (leases made from it keep it). Audited. Only a
+        `DRAFT`: `409 LEASE_TEMPLATE_STATE_CONFLICT` otherwise.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: Published.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeaseTemplateEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/LeaseNotFound"
+        "409":
+          $ref: "#/components/responses/LeaseConflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/me/organisations/{orgId}/lease-templates/{id}/retire:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/LeaseTemplateId"
+    post:
+      tags: [leases]
+      operationId: retireOrganisationLeaseTemplate
+      summary: Retire a published or draft template
+      description: |
+        OWNER and MANAGER. No body. `APPROVED` or `DRAFT` -> `RETIRED`: no longer offered or
+        accepted for new leases; existing leases keep their version. Audited. A `RETIRED` one:
+        `409 LEASE_TEMPLATE_STATE_CONFLICT`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: Retired.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeaseTemplateEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/LeaseNotFound"
+        "409":
+          $ref: "#/components/responses/LeaseConflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/me/organisations/{orgId}/lease-templates/{id}/events:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/LeaseTemplateId"
+    get:
+      tags: [leases]
+      operationId: listOrganisationLeaseTemplateEvents
+      summary: A template's audit trail, oldest first
+      description: Readers as for the list.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The audit trail.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/LeaseTemplateEvent"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/LeaseNotFound"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -8012,7 +8319,7 @@ paths:
     get:
       tags: [agreements]
       operationId: getMySignature
-      summary: The signed-in user's saved signature and initials
+      summary: The signed-in user's saved signature, initials and stamp
       security:
         - cookieSession: []
         - bearerToken: []
@@ -8032,8 +8339,10 @@ paths:
       operationId: putMySignature
       summary: Save a signature and initials to reuse
       description: |
-        `{signature?, initials?}`, each an adopted signature (see `AdoptedSignatureInput`); a missing
-        one is cleared. Nothing is applied automatically: the web sends the saved one with a submit.
+        `{signature?, initials?, stamp?}`: `signature` and `initials` are adopted signatures (see
+        `AdoptedSignatureInput`), a missing one is cleared. `stamp` (new in 0.26.0) is a `Stamp`:
+        left out, the saved stamp is kept; `null` clears it. Nothing is applied automatically: the
+        web sends the saved one with a submit.
       security:
         - cookieSession: []
         - bearerToken: []
@@ -8049,6 +8358,10 @@ paths:
                   $ref: "#/components/schemas/AdoptedSignatureInput"
                 initials:
                   $ref: "#/components/schemas/AdoptedSignatureInput"
+                stamp:
+                  oneOf:
+                    - $ref: "#/components/schemas/Stamp"
+                    - type: "null"
       responses:
         "200":
           description: Saved.
@@ -8074,7 +8387,9 @@ paths:
         No session. The agreement (name, reference, status, sender, expiry, page sizes, the
         original's SHA-256), the recipient (masked address), their fields with the values filled so
         far, the other recipients (name, role, order and status only), `can_act` and the consent
-        text. The first view is audited with IP and user agent. Unknown: `404
+        text. STAMP fields are listed like the others; when the caller is signed in with the
+        recipient's email address and has a STAMP field, `saved_stamp` is their saved stamp (new in
+        0.26.0). The first view is audited with IP and user agent. Unknown: `404
         SIGNING_LINK_NOT_FOUND`; replaced or cancelled: `410 SIGNING_LINK_NO_LONGER_VALID`; expired:
         `410 SIGNING_LINK_EXPIRED`. Rate limit: 20 / 20 per minute per IP. The token is never
         written to the access log.
@@ -8176,7 +8491,9 @@ paths:
         a dead or missing one `400 CODE_EXPIRED`), every required TEXT (non-empty) and CHECKBOX
         (`"true"`) value in `field_values`, and for a SIGNER the adopted `signature` (and
         `initials` when they have INITIALS fields; typed initials default to the initials of a
-        typed signature). NAME and DATE_SIGNED are filled in. Records IP, user agent, time and the
+        typed signature), and `stamp` when they have a required STAMP field (new in 0.26.0; the
+        stamp is drawn, dated the signing day, in each of their STAMP fields, and the audit report
+        records "Stamp applied: <top text>"). NAME and DATE_SIGNED are filled in. Records IP, user agent, time and the
         verification. The next order is then emailed, or after the last recipient the agreement is
         completed: every value is drawn onto the pages, an audit report page is appended, its
         SHA-256 recorded, and everybody (CCs and the sender too) is emailed. Body limit 2 MB.
@@ -8257,6 +8574,49 @@ paths:
           $ref: "#/components/responses/AgreementConflict"
         "410":
           $ref: "#/components/responses/SigningGone"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/stamp-preview:
+    post:
+      tags: [agreements]
+      operationId: previewStamp
+      summary: Draw a generated stamp (public; new in 0.26.0)
+      description: |
+        No session (signers by link use it too). Body `{stamp, date?}`: a `Stamp` and the date
+        printed when `include_date` is true (`YYYY-MM-DD`, today when left out). Returns the stamp
+        as a PNG with a transparent background, 600 pixels on its long side (ROUND 600 x 600, OVAL
+        600 x 400, RECTANGLE 600 wide). The text is shown in upper case; a text with a letter the
+        stamp font lacks is set in a fallback font. Deterministic: the same body gives the same
+        image. `400 VALIDATION_FAILED` with field errors (`stamp.top_text`, `date`, ...). Rate
+        limit: the signing links' bucket (20 / 20 per minute per IP). `Cache-Control: private,
+        no-store`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [stamp]
+              properties:
+                stamp:
+                  $ref: "#/components/schemas/Stamp"
+                date:
+                  type: string
+                  format: date
+      responses:
+        "200":
+          description: The stamp image.
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -9507,6 +9867,13 @@ components:
       schema:
         type: string
         enum: [DRAFT, OUT_FOR_SIGNATURE, COMPLETED, DECLINED, CANCELLED, EXPIRED]
+    OrgId:
+      name: orgId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
     LeaseTemplateId:
       name: id
       in: path
@@ -9974,7 +10341,7 @@ components:
             expires_at: "2026-11-14T09:15:00Z"
             code_length: 6
     LeaseNotFound:
-      description: "`LEASE_NOT_FOUND`, `LEASE_TEMPLATE_NOT_FOUND`, `LISTING_NOT_FOUND` (unknown, or not one the caller may edit) or `LEASE_DOCUMENT_UNAVAILABLE`."
+      description: "`LEASE_NOT_FOUND`, `LEASE_TEMPLATE_NOT_FOUND`, `LISTING_NOT_FOUND` (unknown, or not one the caller may edit), `LEASE_DOCUMENT_UNAVAILABLE` or `ORGANISATION_NOT_FOUND` (the caller is not a member)."
       headers:
         X-Request-Id:
           $ref: "#/components/headers/X-Request-Id"
@@ -13970,11 +14337,56 @@ components:
           maxItems: 30
           items:
             $ref: "#/components/schemas/LeaseClause"
+        clauses:
+          type: array
+          maxItems: 30
+          description: Another name for `optional_clauses` (new in 0.26.0); `optional_clauses` wins when both are sent.
+          items:
+            $ref: "#/components/schemas/LeaseClause"
+    OrganisationLeaseTemplateInput:
+      description: |
+        A new organisation template (as `LeaseTemplateInput`, with `market_code`, `name`,
+        `lease_kind` and `sections` required), or a copy: `copy_from_template_id` with an
+        optional `name` (default "Copy of <name>") and any other changes. New in 0.26.0.
+      type: object
+      additionalProperties: false
+      properties:
+        copy_from_template_id:
+          type: string
+          format: uuid
+        market_code:
+          type: string
+          pattern: "^[A-Za-z]{2}$"
+        name:
+          type: string
+          maxLength: 120
+        lease_kind:
+          type: string
+          enum: [RESIDENTIAL, COMMERCIAL]
+        description:
+          type: string
+          maxLength: 1000
+        sections:
+          type: array
+          minItems: 1
+          maxItems: 60
+          items:
+            $ref: "#/components/schemas/LeaseSection"
+        optional_clauses:
+          type: array
+          maxItems: 30
+          items:
+            $ref: "#/components/schemas/LeaseClause"
+        clauses:
+          type: array
+          maxItems: 30
+          items:
+            $ref: "#/components/schemas/LeaseClause"
     LeaseTemplate:
       type: object
       additionalProperties: false
-      required: [id, family_id, version, market_code, name, lease_kind, description, sections, optional_clauses, status,
-        legal_review, created_by_name, approved_at, approved_by_name, retired_at, created_at, updated_at]
+      required: [id, family_id, version, organisation_id, source, can_edit, market_code, name, lease_kind, description, sections,
+        optional_clauses, status, legal_review, created_by_name, approved_at, approved_by_name, retired_at, created_at, updated_at]
       properties:
         id:
           type: string
@@ -13986,6 +14398,17 @@ components:
         version:
           type: integer
           minimum: 1
+        organisation_id:
+          type: [string, "null"]
+          format: uuid
+          description: The organisation that owns the template; null for a sample. New in 0.26.0.
+        source:
+          type: string
+          enum: [SAMPLE, ORGANISATION]
+          description: New in 0.26.0.
+        can_edit:
+          type: boolean
+          description: True when the caller may manage the template (new in 0.26.0).
         market_code:
           type: string
         name:
@@ -14006,7 +14429,9 @@ components:
         status:
           type: string
           enum: [DRAFT, APPROVED, RETIRED]
+          description: APPROVED is shown as "Published" for an organisation template.
         legal_review:
+          description: Optional (0.26.0); never set on an organisation template.
           oneOf:
             - $ref: "#/components/schemas/LegalReview"
             - type: "null"
@@ -14157,6 +14582,12 @@ components:
         special_conditions:
           type: string
           maxLength: 4000
+        landlord_stamp:
+          type: boolean
+          default: false
+          description: |
+            New in 0.26.0. Each landlord also applies their stamp: the signing copy has a STAMP
+            field next to each landlord's signature block.
     LeaseDocument:
       type: object
       additionalProperties: false
@@ -14180,7 +14611,7 @@ components:
       additionalProperties: false
       required: [id, reference, status, template, organisation, listing, created_by, property_address, landlords, tenants,
         start_date, end_date, periodic, rent_amount, rent_currency, rent_period, payment_day, deposit_amount,
-        notice_period_days, optional_clauses, special_conditions, document, signing_copy, agreement_id, can_edit, can_send,
+        notice_period_days, optional_clauses, special_conditions, landlord_stamp, document, signing_copy, agreement_id, can_edit, can_send,
         can_cancel, can_delete, created_at, updated_at, sent_at, completed_at, declined_at, cancelled_at, cancel_reason]
       properties:
         id:
@@ -14274,6 +14705,9 @@ components:
             type: string
         special_conditions:
           type: [string, "null"]
+        landlord_stamp:
+          type: boolean
+          description: New in 0.26.0.
         document:
           description: The PDF `GET .../pdf` returns now.
           oneOf:
@@ -14431,7 +14865,10 @@ components:
           format: uuid
         type:
           type: string
-          enum: [SIGNATURE, INITIALS, DATE_SIGNED, NAME, TEXT, CHECKBOX]
+          enum: [SIGNATURE, INITIALS, DATE_SIGNED, NAME, TEXT, CHECKBOX, STAMP]
+          description: |
+            STAMP (new in 0.26.0): the signer's generated stamp; SIGNER recipients only; default size
+            113 x 113 points (40 mm), at least 57 x 57.
         page:
           type: integer
           minimum: 1
@@ -14445,6 +14882,7 @@ components:
           type: number
         required:
           type: boolean
+          description: TEXT, CHECKBOX and STAMP only (default true); the other types are always required.
         label:
           type: string
           maxLength: 80
@@ -14750,10 +15188,13 @@ components:
           $ref: "#/components/schemas/AdoptedSignatureInput"
         initials:
           $ref: "#/components/schemas/AdoptedSignatureInput"
+        stamp:
+          $ref: "#/components/schemas/Stamp"
+          description: New in 0.26.0. Required when the recipient has a required STAMP field.
     SigningView:
       type: object
       additionalProperties: false
-      required: [agreement, recipient, fields, other_recipients, can_act, read_only, code_length, consent_text, statement, signature_fonts, link_expires_at]
+      required: [agreement, recipient, fields, other_recipients, can_act, read_only, code_length, consent_text, statement, signature_fonts, link_expires_at, saved_stamp]
       properties:
         agreement:
           type: object
@@ -14840,6 +15281,13 @@ components:
         link_expires_at:
           type: string
           format: date-time
+        saved_stamp:
+          description: |
+            New in 0.26.0. The signed-in signer's saved stamp, when the caller's account has the
+            recipient's email address and the recipient has a STAMP field; null otherwise.
+          oneOf:
+            - $ref: "#/components/schemas/Stamp"
+            - type: "null"
     SigningRequest:
       type: object
       additionalProperties: false
@@ -14877,7 +15325,7 @@ components:
     SavedSignature:
       type: object
       additionalProperties: false
-      required: [signature, initials, signature_fonts]
+      required: [signature, initials, stamp, signature_fonts]
       properties:
         signature:
           oneOf:
@@ -14887,10 +15335,51 @@ components:
           oneOf:
             - $ref: "#/components/schemas/SavedAdopted"
             - type: "null"
+        stamp:
+          description: The saved stamp (new in 0.26.0).
+          oneOf:
+            - $ref: "#/components/schemas/Stamp"
+            - type: "null"
         signature_fonts:
           type: array
           items:
             $ref: "#/components/schemas/SignatureFont"
+    Stamp:
+      description: |
+        The text of a generated stamp (new in 0.26.0). The server draws it like a rubber company
+        stamp: ROUND and OVAL with `top_text` along the top arc, `bottom_text` along the bottom
+        arc, a double ring and the centre lines (and date) across the middle; RECTANGLE with a
+        double border and the lines stacked (`top_text` first, larger). Returned upper-cased and
+        trimmed (empty centre lines dropped). Plain text (no `<` or `>`); any script the fonts
+        cover, a fallback font otherwise.
+      type: object
+      additionalProperties: false
+      required: [top_text]
+      properties:
+        shape:
+          type: string
+          enum: [ROUND, OVAL, RECTANGLE]
+          default: ROUND
+        colour:
+          type: string
+          enum: [BLUE, RED, BLACK, GREEN, PURPLE]
+          default: BLUE
+        top_text:
+          type: string
+          minLength: 1
+          maxLength: 60
+        centre_lines:
+          type: array
+          maxItems: 3
+          items:
+            type: string
+            maxLength: 30
+        bottom_text:
+          type: string
+          maxLength: 60
+        include_date:
+          type: boolean
+          description: Prints the date the stamp is applied in the centre, e.g. "16 NOV 2026".
     SavedAdopted:
       type: object
       additionalProperties: false

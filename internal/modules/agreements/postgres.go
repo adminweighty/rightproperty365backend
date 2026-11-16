@@ -113,6 +113,25 @@ func derefS(v *string) string {
 	return *v
 }
 
+func readStamp(raw []byte) (*Stamp, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var s Stamp
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
+// stampJSON is a stamp for a jsonb column (NULL for nil).
+func stampJSON(s *Stamp) (*string, error) {
+	if s == nil {
+		return nil, nil
+	}
+	return jsonOrNil(s)
+}
+
 func readAdopted(raw []byte) (*Adopted, error) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil, nil
@@ -137,7 +156,7 @@ func children(ctx context.Context, q querier, list []Agreement) error {
 	}
 	rows, err := q.Query(ctx, `SELECT agreement_id, id, signing_order, role, name, email, label, status, activated_at, first_viewed_at,
 			completed_at, declined_at, decline_reason, code_hash, code_link_id, code_expires_at, code_attempts, code_sent_at, code_send_count,
-			ip, user_agent, verification, signature, initials
+			ip, user_agent, verification, signature, initials, stamp
 		FROM agreement_recipients WHERE agreement_id = ANY($1) ORDER BY signing_order, name, id`, ids)
 	if err != nil {
 		return fmt.Errorf("load recipients: %w", err)
@@ -145,15 +164,17 @@ func children(ctx context.Context, q querier, list []Agreement) error {
 	for rows.Next() {
 		var aid uuid.UUID
 		var r Recipient
-		var sig, ini []byte
+		var sig, ini, stamp []byte
 		if err := rows.Scan(&aid, &r.ID, &r.Order, &r.Role, &r.Name, &r.Email, &r.Label, &r.Status, &r.ActivatedAt, &r.FirstViewedAt,
 			&r.CompletedAt, &r.DeclinedAt, &r.DeclineReason, &r.CodeHash, &r.CodeLinkID, &r.CodeExpiresAt, &r.CodeAttempts, &r.CodeSentAt,
-			&r.CodeSendCount, &r.IP, &r.UserAgent, &r.Verification, &sig, &ini); err != nil {
+			&r.CodeSendCount, &r.IP, &r.UserAgent, &r.Verification, &sig, &ini, &stamp); err != nil {
 			rows.Close()
 			return fmt.Errorf("load recipients: %w", err)
 		}
 		if r.Signature, err = readAdopted(sig); err == nil {
-			r.Initials, err = readAdopted(ini)
+			if r.Initials, err = readAdopted(ini); err == nil {
+				r.Stamp, err = readStamp(stamp)
+			}
 		}
 		if err != nil {
 			rows.Close()
@@ -283,21 +304,25 @@ func saveChildren(ctx context.Context, q querier, a Agreement) error {
 		if r.Initials == nil {
 			ini = nil
 		}
+		stamp, err := stampJSON(r.Stamp)
+		if err != nil {
+			return err
+		}
 		if _, err := q.Exec(ctx, `
 			INSERT INTO agreement_recipients (id, agreement_id, signing_order, role, name, email, label, status, activated_at, first_viewed_at,
 				completed_at, declined_at, decline_reason, code_hash, code_link_id, code_expires_at, code_attempts, code_sent_at, code_send_count,
-				ip, user_agent, verification, signature, initials)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+				ip, user_agent, verification, signature, initials, stamp)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
 			ON CONFLICT (id) DO UPDATE SET signing_order = EXCLUDED.signing_order, role = EXCLUDED.role, name = EXCLUDED.name,
 				email = EXCLUDED.email, label = EXCLUDED.label, status = EXCLUDED.status, activated_at = EXCLUDED.activated_at,
 				first_viewed_at = EXCLUDED.first_viewed_at, completed_at = EXCLUDED.completed_at, declined_at = EXCLUDED.declined_at,
 				decline_reason = EXCLUDED.decline_reason, code_hash = EXCLUDED.code_hash, code_link_id = EXCLUDED.code_link_id,
 				code_expires_at = EXCLUDED.code_expires_at, code_attempts = EXCLUDED.code_attempts, code_sent_at = EXCLUDED.code_sent_at,
 				code_send_count = EXCLUDED.code_send_count, ip = EXCLUDED.ip, user_agent = EXCLUDED.user_agent,
-				verification = EXCLUDED.verification, signature = EXCLUDED.signature, initials = EXCLUDED.initials`,
+				verification = EXCLUDED.verification, signature = EXCLUDED.signature, initials = EXCLUDED.initials, stamp = EXCLUDED.stamp`,
 			r.ID, a.ID, r.Order, r.Role, r.Name, r.Email, r.Label, r.Status, r.ActivatedAt, r.FirstViewedAt, r.CompletedAt, r.DeclinedAt,
 			r.DeclineReason, r.CodeHash, r.CodeLinkID, r.CodeExpiresAt, r.CodeAttempts, r.CodeSentAt, r.CodeSendCount, r.IP, r.UserAgent,
-			r.Verification, sig, ini); err != nil {
+			r.Verification, sig, ini, stamp); err != nil {
 			return fmt.Errorf("save recipient: %w", err)
 		}
 	}
@@ -532,9 +557,9 @@ func (s *PostgresStore) ClaimJob(ctx context.Context, key string, at time.Time) 
 
 // SavedSignature implements Store.
 func (s *PostgresStore) SavedSignature(ctx context.Context, userID uuid.UUID) (SavedSignature, bool, error) {
-	var sig, ini []byte
+	var sig, ini, stamp []byte
 	var out SavedSignature
-	err := s.pool.QueryRow(ctx, `SELECT signature, initials, updated_at FROM user_signatures WHERE user_id = $1`, userID).Scan(&sig, &ini, &out.UpdatedAt)
+	err := s.pool.QueryRow(ctx, `SELECT signature, initials, stamp, updated_at FROM user_signatures WHERE user_id = $1`, userID).Scan(&sig, &ini, &stamp, &out.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return SavedSignature{}, false, nil
 	}
@@ -545,6 +570,9 @@ func (s *PostgresStore) SavedSignature(ctx context.Context, userID uuid.UUID) (S
 		return SavedSignature{}, false, err
 	}
 	if out.Initials, err = readAdopted(ini); err != nil {
+		return SavedSignature{}, false, err
+	}
+	if out.Stamp, err = readStamp(stamp); err != nil {
 		return SavedSignature{}, false, err
 	}
 	return out, true, nil
@@ -564,9 +592,14 @@ func (s *PostgresStore) PutSavedSignature(ctx context.Context, userID uuid.UUID,
 			return err
 		}
 	}
-	_, err = s.pool.Exec(ctx, `INSERT INTO user_signatures (user_id, signature, initials, updated_at) VALUES ($1, $2, $3, $4)
-		ON CONFLICT (user_id) DO UPDATE SET signature = EXCLUDED.signature, initials = EXCLUDED.initials, updated_at = EXCLUDED.updated_at`,
-		userID, sig, ini, v.UpdatedAt)
+	stamp, err := stampJSON(v.Stamp)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `INSERT INTO user_signatures (user_id, signature, initials, stamp, updated_at) VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (user_id) DO UPDATE SET signature = EXCLUDED.signature, initials = EXCLUDED.initials, stamp = EXCLUDED.stamp,
+			updated_at = EXCLUDED.updated_at`,
+		userID, sig, ini, stamp, v.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("save signature: %w", err)
 	}

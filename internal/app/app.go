@@ -636,6 +636,19 @@ func NewRouter(d Deps) (http.Handler, error) {
 			r.With(leaseLimiter.Middleware).Post("/{id}/cancel", leasesH.Cancel)
 			r.Get("/{id}/events", leasesH.Events)
 		})
+		// An organisation's own lease templates. The service decides who may:
+		// its OWNER and MANAGER manage them, its agents read them (403 for
+		// another member, 404 for somebody who is not a member).
+		r.Route("/me/organisations/{orgId}/lease-templates", func(r chi.Router) {
+			r.Use(auth.RequireAuth)
+			r.Get("/", leasesH.OrgTemplates)
+			r.With(leaseLimiter.Middleware).Post("/", leasesH.OrgCreateTemplate)
+			r.Get("/{id}", leasesH.OrgTemplate)
+			r.With(leaseLimiter.Middleware).Patch("/{id}", leasesH.OrgEditTemplate)
+			r.With(leaseLimiter.Middleware).Post("/{id}/publish", leasesH.OrgPublishTemplate)
+			r.With(leaseLimiter.Middleware).Post("/{id}/retire", leasesH.OrgRetireTemplate)
+			r.Get("/{id}/events", leasesH.OrgTemplateEvents)
+		})
 
 		// Agreements (signing): a sender's documents, recipients and fields.
 		// The service decides who may (agreements.MaySend; 403 otherwise)
@@ -672,6 +685,9 @@ func NewRouter(d Deps) (http.Handler, error) {
 			r.Post("/submit", agreementsH.Submit)
 			r.Post("/decline", agreementsH.Decline)
 		})
+		// A generated stamp as a PNG: no session (signers by link preview
+		// their stamp too); the signing links' limit.
+		r.With(signingLimiter.Middleware).Post("/stamp-preview", agreementsH.StampPreview)
 		// Public verification of a completed document.
 		r.With(verifyLimiter.Middleware).Get("/verify/{reference}", agreementsH.VerifyReference)
 		r.With(verifyLimiter.Middleware).Post("/verify", agreementsH.VerifyFile)

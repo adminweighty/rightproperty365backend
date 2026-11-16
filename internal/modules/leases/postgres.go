@@ -75,13 +75,15 @@ func utc(t *time.Time) *time.Time {
 // ---------------------------------------------------------------------------
 
 const templateColumns = `id, family_id, version, market_code, name, lease_kind, description, sections, optional_clauses, status,
-	legal_review, created_by, created_by_name, approved_at, approved_by, approved_by_name, retired_at, created_at, updated_at`
+	legal_review, created_by, created_by_name, approved_at, approved_by, approved_by_name, retired_at, created_at, updated_at,
+	organisation_id`
 
 func scanTemplate(row pgx.Row) (Template, error) {
 	var t Template
 	var sections, clauses, review []byte
 	err := row.Scan(&t.ID, &t.FamilyID, &t.Version, &t.MarketCode, &t.Name, &t.LeaseKind, &t.Description, &sections, &clauses, &t.Status,
-		&review, &t.CreatedBy, &t.CreatedByName, &t.ApprovedAt, &t.ApprovedBy, &t.ApprovedByName, &t.RetiredAt, &t.CreatedAt, &t.UpdatedAt)
+		&review, &t.CreatedBy, &t.CreatedByName, &t.ApprovedAt, &t.ApprovedBy, &t.ApprovedByName, &t.RetiredAt, &t.CreatedAt, &t.UpdatedAt,
+		&t.OrganisationID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Template{}, ErrTemplateNotFound
 	}
@@ -125,7 +127,8 @@ func templateArgs(t Template) ([]any, error) {
 		}
 	}
 	return []any{t.ID, t.FamilyID, t.Version, t.MarketCode, t.Name, t.LeaseKind, t.Description, sections, clauseText, t.Status,
-		review, t.CreatedBy, t.CreatedByName, t.ApprovedAt, t.ApprovedBy, t.ApprovedByName, t.RetiredAt, t.CreatedAt, t.UpdatedAt}, nil
+		review, t.CreatedBy, t.CreatedByName, t.ApprovedAt, t.ApprovedBy, t.ApprovedByName, t.RetiredAt, t.CreatedAt, t.UpdatedAt,
+		t.OrganisationID}, nil
 }
 
 func insertTemplate(ctx context.Context, q querier, t Template) error {
@@ -134,7 +137,7 @@ func insertTemplate(ctx context.Context, q querier, t Template) error {
 		return err
 	}
 	_, err = q.Exec(ctx, `INSERT INTO lease_templates (`+templateColumns+`)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`, args...)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`, args...)
 	if uniqueViolation(err, "lease_templates_one_draft_key") {
 		return ErrTemplateDraftExists
 	}
@@ -148,7 +151,8 @@ func updateTemplate(ctx context.Context, q querier, t Template) error {
 	}
 	_, err = q.Exec(ctx, `UPDATE lease_templates SET family_id = $2, version = $3, market_code = $4, name = $5, lease_kind = $6,
 		description = $7, sections = $8, optional_clauses = $9, status = $10, legal_review = $11, created_by = $12, created_by_name = $13,
-		approved_at = $14, approved_by = $15, approved_by_name = $16, retired_at = $17, created_at = $18, updated_at = $19
+		approved_at = $14, approved_by = $15, approved_by_name = $16, retired_at = $17, created_at = $18, updated_at = $19,
+		organisation_id = $20
 		WHERE id = $1`, args...)
 	return err
 }
@@ -180,6 +184,13 @@ func (s *PostgresStore) CreateTemplate(ctx context.Context, t Template, ev Templ
 	})
 }
 
+func orgs(ids []uuid.UUID) []uuid.UUID {
+	if ids == nil {
+		return []uuid.UUID{}
+	}
+	return ids
+}
+
 // Template implements Store.
 func (s *PostgresStore) Template(ctx context.Context, id uuid.UUID) (Template, error) {
 	return scanTemplate(s.pool.QueryRow(ctx, `SELECT `+templateColumns+` FROM lease_templates WHERE id = $1`, id))
@@ -189,7 +200,8 @@ func (s *PostgresStore) Template(ctx context.Context, id uuid.UUID) (Template, e
 func (s *PostgresStore) Templates(ctx context.Context, f TemplateFilter) ([]Template, error) {
 	rows, err := s.pool.Query(ctx, `SELECT `+templateColumns+` FROM lease_templates
 		WHERE ($1 = '' OR market_code = $1) AND ($2 = '' OR status = $2) AND ($3::uuid IS NULL OR family_id = $3)
-		ORDER BY market_code, name, version DESC`, f.MarketCode, f.Status, f.FamilyID)
+			AND (NOT $4 OR ($5 AND organisation_id IS NULL) OR organisation_id = ANY($6::uuid[]))
+		ORDER BY market_code, name, version DESC`, f.MarketCode, f.Status, f.FamilyID, f.Scoped, f.Samples, orgs(f.Organisations))
 	if err != nil {
 		return nil, fmt.Errorf("load templates: %w", err)
 	}
@@ -275,7 +287,7 @@ func (s *PostgresStore) CreateTemplateVersion(ctx context.Context, t Template, e
 }
 
 // ApproveTemplate implements Store.
-func (s *PostgresStore) ApproveTemplate(ctx context.Context, id uuid.UUID, review LegalReview, by *uuid.UUID, byName string, at time.Time,
+func (s *PostgresStore) ApproveTemplate(ctx context.Context, id uuid.UUID, review *LegalReview, by *uuid.UUID, byName string, at time.Time,
 	events func(t Template, retired []Template) []TemplateEvent) (Template, error) {
 	var out Template
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
@@ -302,8 +314,7 @@ func (s *PostgresStore) ApproveTemplate(ctx context.Context, id uuid.UUID, revie
 				return fmt.Errorf("retire template version: %w", err)
 			}
 		}
-		r := review
-		t.Status, t.LegalReview, t.ApprovedAt, t.ApprovedBy, t.ApprovedByName, t.UpdatedAt = TemplateApproved, &r, &at, by, byName, at
+		t.Status, t.LegalReview, t.ApprovedAt, t.ApprovedBy, t.ApprovedByName, t.UpdatedAt = TemplateApproved, review, &at, by, byName, at
 		if err := updateTemplate(ctx, tx, t); err != nil {
 			return fmt.Errorf("approve template: %w", err)
 		}

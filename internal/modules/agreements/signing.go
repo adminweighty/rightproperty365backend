@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -97,6 +98,10 @@ type SigningView struct {
 	Statement       string           `json:"statement"`
 	SignatureFonts  []FontInfo       `json:"signature_fonts"`
 	LinkExpiresAt   time.Time        `json:"link_expires_at"`
+	// SavedStamp is the signed-in signer's saved stamp, when the link is
+	// theirs (the account's email address is the recipient's) and they have
+	// a STAMP field; null otherwise.
+	SavedStamp *Stamp `json:"saved_stamp"`
 }
 
 func signingView(sg signing) SigningView {
@@ -145,9 +150,32 @@ func truncate(s string, max int) string {
 
 // Signing returns what a signing link shows; the first view is audited.
 func (s *Service) Signing(ctx context.Context, token, ip, ua string) (SigningView, error) {
-	sg, err := s.byToken(ctx, token)
+	return s.SigningFor(ctx, nil, token, ip, ua)
+}
+
+// SigningFor is Signing for a caller who may be signed in (p may be nil):
+// a signer whose account's email address is the recipient's also gets their
+// saved stamp when the document asks them for one.
+func (s *Service) SigningFor(ctx context.Context, p *auth.Principal, token, ip, ua string) (SigningView, error) {
+	v, sg, err := s.signing(ctx, token, ip, ua)
+	if err != nil || p == nil || p.SessionScope != auth.ScopeCustomer || callerEmail(p) != sg.r.Email {
+		return v, err
+	}
+	if !slices.ContainsFunc(sg.a.Fields, func(f Field) bool { return f.RecipientID == sg.r.ID && f.Type == FieldStamp }) {
+		return v, nil
+	}
+	saved, _, err := s.store.SavedSignature(ctx, p.UserID)
 	if err != nil {
 		return SigningView{}, err
+	}
+	v.SavedStamp = saved.Stamp
+	return v, nil
+}
+
+func (s *Service) signing(ctx context.Context, token, ip, ua string) (SigningView, signing, error) {
+	sg, err := s.byToken(ctx, token)
+	if err != nil {
+		return SigningView{}, signing{}, err
 	}
 	if sg.r.FirstViewedAt == nil {
 		now := s.clock()
@@ -160,7 +188,7 @@ func (s *Service) Signing(ctx context.Context, token, ip, ua string) (SigningVie
 			return []Event{recipientEvent(cur, *r, EventViewed, ip, ua, now, nil)}, nil
 		})
 		if err != nil {
-			return SigningView{}, err
+			return SigningView{}, signing{}, err
 		}
 		sg.a, sg.r = saved, *saved.Recipient(sg.r.ID)
 	}
@@ -169,7 +197,7 @@ func (s *Service) Signing(ctx context.Context, token, ip, ua string) (SigningVie
 			sg.a = *done
 		}
 	}
-	return signingView(sg), nil
+	return signingView(sg), sg, nil
 }
 
 // SigningPDF opens the document behind a link (the completed one once
@@ -291,10 +319,12 @@ func (s *Service) Submit(ctx context.Context, token, code string, in SubmitInput
 	r := sg.r
 	mine := map[uuid.UUID]Field{}
 	needs := map[string]bool{}
+	stampRequired := false
 	for _, f := range sg.a.Fields {
 		if f.RecipientID == r.ID {
 			mine[f.ID] = f
 			needs[f.Type] = true
+			stampRequired = stampRequired || (f.Type == FieldStamp && f.Required)
 		}
 	}
 	values := map[uuid.UUID]string{}
@@ -327,6 +357,7 @@ func (s *Service) Submit(ctx context.Context, token, code string, in SubmitInput
 		}
 	}
 	var sig, ini *Adopted
+	var stamp *Stamp
 	var sigImg, iniImg []byte
 	if r.Role == RoleSigner {
 		if in.Signature == nil {
@@ -344,6 +375,13 @@ func (s *Service) Submit(ctx context.Context, token, code string, in SubmitInput
 			} else {
 				problems["initials"] = "is required: adopt initials"
 			}
+		}
+		switch {
+		case in.Stamp != nil && needs[FieldStamp]:
+			clean := checkStamp("stamp", *in.Stamp, problems)
+			stamp = &clean
+		case stampRequired:
+			problems["stamp"] = "is required: type the text of your stamp"
 		}
 	}
 	if len(problems) > 0 {
@@ -414,7 +452,7 @@ func (s *Service) Submit(ctx context.Context, token, code string, in SubmitInput
 			action, status = EventApproved, RecipientApproved
 		}
 		x.Status, x.CompletedAt, x.IP, x.UserAgent, x.Verification = status, &now, ip, truncate(ua, 500), verification
-		x.Signature, x.Initials, x.CodeHash, x.CodeLinkID, x.CodeExpiresAt = sig, ini, nil, nil, nil
+		x.Signature, x.Initials, x.Stamp, x.CodeHash, x.CodeLinkID, x.CodeExpiresAt = sig, ini, stamp, nil, nil, nil
 		for i := range cur.Fields {
 			f := &cur.Fields[i]
 			if f.RecipientID == x.ID {
@@ -424,9 +462,13 @@ func (s *Service) Submit(ctx context.Context, token, code string, in SubmitInput
 			}
 		}
 		cur.UpdatedAt = now
+		detail := map[string]any{"document_sha256": cur.Original.SHA256}
+		if stamp != nil {
+			detail["stamp_top_text"] = stamp.TopText
+		}
 		events := []Event{
 			recipientEvent(cur, *x, EventEmailVerified, ip, ua, now, map[string]any{"method": verification, "email": identity.MaskEmail(x.Email)}),
-			recipientEvent(cur, *x, action, ip, ua, now, map[string]any{"document_sha256": cur.Original.SHA256}),
+			recipientEvent(cur, *x, action, ip, ua, now, detail),
 		}
 		var more []Event
 		var err error
@@ -561,6 +603,10 @@ func auditLines(a Agreement, events []Event) []AuditLine {
 			}
 		}
 		out = append(out, AuditLine{At: e.At, Text: text, Detail: strings.Join(detail, "; ")})
+		if top, ok := e.Detail["stamp_top_text"].(string); ok && top != "" && e.Action == EventSigned {
+			out = append(out, AuditLine{At: e.At, Text: "Stamp applied: " + top,
+				Detail: "by " + who + "; generated by RightProperty365 from the text the signer typed"})
+		}
 	}
 	return out
 }
@@ -787,6 +833,7 @@ type SavedView struct {
 type SavedSignatureView struct {
 	Signature *SavedView `json:"signature"`
 	Initials  *SavedView `json:"initials"`
+	Stamp     *Stamp     `json:"stamp"`
 	Fonts     []FontInfo `json:"signature_fonts"`
 }
 
@@ -813,13 +860,37 @@ func (s *Service) MySignature(ctx context.Context, p *auth.Principal) (SavedSign
 	if err != nil {
 		return SavedSignatureView{}, err
 	}
-	return SavedSignatureView{Signature: s.savedView(ctx, saved.Signature), Initials: s.savedView(ctx, saved.Initials), Fonts: SignatureFonts()}, nil
+	return SavedSignatureView{Signature: s.savedView(ctx, saved.Signature), Initials: s.savedView(ctx, saved.Initials), Stamp: saved.Stamp,
+		Fonts: SignatureFonts()}, nil
 }
 
 // SaveSignatureInput is the body of PUT /v1/me/signature (null clears one).
+// The stamp is kept when the key is left out, and cleared by null.
 type SaveSignatureInput struct {
-	Signature *AdoptInput `json:"signature"`
-	Initials  *AdoptInput `json:"initials"`
+	Signature *AdoptInput     `json:"signature"`
+	Initials  *AdoptInput     `json:"initials"`
+	Stamp     json.RawMessage `json:"stamp"`
+}
+
+// savedStamp reads the stamp of a PUT /v1/me/signature: keep (not sent),
+// nil (null) or the cleaned stamp.
+func savedStamp(raw json.RawMessage, problems map[string]string) (keep bool, out *Stamp) {
+	trimmed := bytes.TrimSpace(raw)
+	switch {
+	case len(trimmed) == 0:
+		return true, nil
+	case string(trimmed) == "null":
+		return false, nil
+	}
+	var in Stamp
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&in); err != nil {
+		problems["stamp"] = "must be a stamp: {shape, colour, top_text, centre_lines, bottom_text, include_date}, or null"
+		return false, nil
+	}
+	clean := checkStamp("stamp", in, problems)
+	return false, &clean
 }
 
 // SaveMySignature replaces the signed-in user's saved signature and
@@ -841,6 +912,8 @@ func (s *Service) SaveMySignature(ctx context.Context, p *auth.Principal, in Sav
 		a, img := checkAdopt("initials", *in.Initials, problems)
 		next.Initials, imgs, adopted = a, append(imgs, img), append(adopted, a)
 	}
+	keepStamp, stamp := savedStamp(in.Stamp, problems)
+	next.Stamp = stamp
 	if len(problems) > 0 {
 		return SavedSignatureView{}, &ValidationError{Fields: problems}
 	}
@@ -860,6 +933,9 @@ func (s *Service) SaveMySignature(ctx context.Context, p *auth.Principal, in Sav
 	old, _, err := s.store.SavedSignature(ctx, p.UserID)
 	if err != nil {
 		return SavedSignatureView{}, err
+	}
+	if keepStamp {
+		next.Stamp = old.Stamp
 	}
 	next.UpdatedAt = s.clock()
 	if err := s.store.PutSavedSignature(ctx, p.UserID, next); err != nil {

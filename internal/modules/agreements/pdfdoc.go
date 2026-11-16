@@ -227,7 +227,8 @@ type FinalInput struct {
 	Pages      []PageSize
 	Fields     []Field
 	Recipients map[string]Recipient
-	// Images are the adopted signature images by object key (PNG).
+	// Images are the adopted signature images by object key (PNG); the
+	// stamps rendered while drawing are kept here as "stamp:<recipient ID>".
 	Images map[string][]byte
 	Audit  AuditReport
 }
@@ -279,11 +280,46 @@ func (in FinalInput) drawAdopted(f *fpdf.Fpdf, a *Adopted, fd Field) {
 	if info == nil || f.Error() != nil {
 		return
 	}
+	drawImage(f, name, info, fd)
+}
+
+// drawImage draws a registered image inside the field, keeping its aspect
+// ratio, centred.
+func drawImage(f *fpdf.Fpdf, name string, info *fpdf.ImageInfoType, fd Field) {
 	w, h := fd.W, fd.W*info.Height()/info.Width()
 	if h > fd.H {
 		h, w = fd.H, fd.H*info.Width()/info.Height()
 	}
 	f.ImageOptions(name, fd.X+(fd.W-w)/2, fd.Y+(fd.H-h)/2, w, h, false, fpdf.ImageOptions{ImageType: "PNG"}, 0, "")
+}
+
+// drawStamp draws the recipient's generated stamp, dated the day they
+// signed, inside a STAMP field (a transparent PNG over the page).
+func (in FinalInput) drawStamp(f *fpdf.Fpdf, r Recipient, fd Field) {
+	if r.Stamp == nil {
+		return
+	}
+	key := "stamp:" + r.ID.String()
+	img := in.Images[key]
+	if len(img) == 0 {
+		day := in.Audit.CompletedAt
+		if r.CompletedAt != nil {
+			day = *r.CompletedAt
+		}
+		var err error
+		if img, err = RenderStamp(*r.Stamp, day.UTC()); err != nil {
+			return
+		}
+		if in.Images != nil {
+			in.Images[key] = img
+		}
+	}
+	name := "stamp" + Checksum(img)[:16]
+	info := f.RegisterImageOptionsReader(name, fpdf.ImageOptions{ImageType: "PNG"}, bytes.NewReader(img))
+	if info == nil || f.Error() != nil {
+		return
+	}
+	drawImage(f, name, info, fd)
 }
 
 func (in FinalInput) drawField(f *fpdf.Fpdf, fd Field) {
@@ -296,6 +332,8 @@ func (in FinalInput) drawField(f *fpdf.Fpdf, fd Field) {
 		in.drawAdopted(f, r.Signature, fd)
 	case FieldInitials:
 		in.drawAdopted(f, r.Initials, fd)
+	case FieldStamp:
+		in.drawStamp(f, r, fd)
 	case FieldName, FieldDateSigned, FieldText:
 		value := fd.Value
 		switch fd.Type {

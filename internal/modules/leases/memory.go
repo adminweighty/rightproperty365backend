@@ -34,6 +34,10 @@ func copyTemplate(t Template) Template {
 		r := *t.LegalReview
 		t.LegalReview = &r
 	}
+	if t.OrganisationID != nil {
+		id := *t.OrganisationID
+		t.OrganisationID = &id
+	}
 	return t
 }
 
@@ -91,8 +95,7 @@ func (s *MemoryStore) Templates(_ context.Context, f TemplateFilter) ([]Template
 	defer s.mu.Unlock()
 	out := []Template{}
 	for _, t := range s.templates {
-		if (f.MarketCode == "" || t.MarketCode == f.MarketCode) && (f.Status == "" || t.Status == f.Status) &&
-			(f.FamilyID == nil || t.FamilyID == *f.FamilyID) {
+		if f.matches(t) {
 			out = append(out, copyTemplate(t))
 		}
 	}
@@ -162,7 +165,7 @@ func (s *MemoryStore) CreateTemplateVersion(_ context.Context, t Template, ev Te
 }
 
 // ApproveTemplate implements Store.
-func (s *MemoryStore) ApproveTemplate(_ context.Context, id uuid.UUID, review LegalReview, by *uuid.UUID, byName string, at time.Time,
+func (s *MemoryStore) ApproveTemplate(_ context.Context, id uuid.UUID, review *LegalReview, by *uuid.UUID, byName string, at time.Time,
 	events func(t Template, retired []Template) []TemplateEvent) (Template, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -181,8 +184,12 @@ func (s *MemoryStore) ApproveTemplate(_ context.Context, id uuid.UUID, review Le
 			retired = append(retired, other)
 		}
 	}
-	r := review
-	t.Status, t.LegalReview, t.ApprovedAt, t.ApprovedBy, t.ApprovedByName, t.UpdatedAt = TemplateApproved, &r, &at, by, byName, at
+	var r *LegalReview
+	if review != nil {
+		c := *review
+		r = &c
+	}
+	t.Status, t.LegalReview, t.ApprovedAt, t.ApprovedBy, t.ApprovedByName, t.UpdatedAt = TemplateApproved, r, &at, by, byName, at
 	s.templates[id] = t
 	s.templateEvents = append(s.templateEvents, events(copyTemplate(t), retired)...)
 	return copyTemplate(t), nil

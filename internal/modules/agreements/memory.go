@@ -50,7 +50,7 @@ func copyAgreement(a Agreement) Agreement {
 		if len(r.CodeHash) == 0 {
 			r.CodeHash = nil
 		}
-		r.Signature, r.Initials = copyAdopted(r.Signature), copyAdopted(r.Initials)
+		r.Signature, r.Initials, r.Stamp = copyAdopted(r.Signature), copyAdopted(r.Initials), copyStamp(r.Stamp)
 		rs[i] = r
 	}
 	a.Recipients = rs
@@ -271,14 +271,14 @@ func (s *MemoryStore) SavedSignature(_ context.Context, userID uuid.UUID) (Saved
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	v, ok := s.signatures[userID]
-	return SavedSignature{Signature: copyAdopted(v.Signature), Initials: copyAdopted(v.Initials), UpdatedAt: v.UpdatedAt}, ok, nil
+	return SavedSignature{Signature: copyAdopted(v.Signature), Initials: copyAdopted(v.Initials), Stamp: copyStamp(v.Stamp), UpdatedAt: v.UpdatedAt}, ok, nil
 }
 
 // PutSavedSignature implements Store.
 func (s *MemoryStore) PutSavedSignature(_ context.Context, userID uuid.UUID, v SavedSignature) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.signatures[userID] = SavedSignature{Signature: copyAdopted(v.Signature), Initials: copyAdopted(v.Initials), UpdatedAt: v.UpdatedAt}
+	s.signatures[userID] = SavedSignature{Signature: copyAdopted(v.Signature), Initials: copyAdopted(v.Initials), Stamp: copyStamp(v.Stamp), UpdatedAt: v.UpdatedAt}
 	return nil
 }
 

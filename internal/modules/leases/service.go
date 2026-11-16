@@ -157,6 +157,9 @@ type TemplateView struct {
 	ID              uuid.UUID    `json:"id"`
 	FamilyID        uuid.UUID    `json:"family_id"`
 	Version         int          `json:"version"`
+	OrganisationID  *uuid.UUID   `json:"organisation_id"`
+	Source          string       `json:"source"`
+	CanEdit         bool         `json:"can_edit"`
 	MarketCode      string       `json:"market_code"`
 	Name            string       `json:"name"`
 	LeaseKind       string       `json:"lease_kind"`
@@ -180,9 +183,12 @@ func optional(s string) *string {
 	return &s
 }
 
-func templateView(t Template) TemplateView {
+// templateView is a template as the API returns it; canEdit says whether the
+// caller may manage it.
+func templateView(t Template, canEdit bool) TemplateView {
 	v := TemplateView{
-		ID: t.ID, FamilyID: t.FamilyID, Version: t.Version, MarketCode: t.MarketCode, Name: t.Name, LeaseKind: t.LeaseKind,
+		ID: t.ID, FamilyID: t.FamilyID, Version: t.Version, OrganisationID: t.OrganisationID, Source: SourceSample, CanEdit: canEdit,
+		MarketCode: t.MarketCode, Name: t.Name, LeaseKind: t.LeaseKind,
 		Description: optional(t.Description), Sections: t.Sections, OptionalClauses: t.Clauses, Status: t.Status,
 		LegalReview: t.LegalReview, CreatedByName: t.CreatedByName, ApprovedAt: t.ApprovedAt, ApprovedByName: optional(t.ApprovedByName),
 		RetiredAt: t.RetiredAt, CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt,
@@ -192,6 +198,9 @@ func templateView(t Template) TemplateView {
 	}
 	if v.OptionalClauses == nil {
 		v.OptionalClauses = []Clause{}
+	}
+	if t.OrganisationID != nil {
+		v.Source = SourceOrganisation
 	}
 	return v
 }
@@ -268,6 +277,7 @@ type LeaseView struct {
 	NoticePeriodDays  int           `json:"notice_period_days"`
 	OptionalClauses   []string      `json:"optional_clauses"`
 	SpecialConditions *string       `json:"special_conditions"`
+	LandlordStamp     bool          `json:"landlord_stamp"`
 	Document          *DocumentView `json:"document"`
 	SigningCopy       *DocumentView `json:"signing_copy"`
 	// AgreementID is the agreement the lease was sent for signing with
@@ -317,7 +327,7 @@ func leaseView(l Lease) LeaseView {
 		StartDate: l.Input.StartDate, Periodic: l.Input.Periodic, RentAmount: l.Input.RentAmount, RentCurrency: l.Input.RentCurrency,
 		RentPeriod: l.Input.RentPeriod, PaymentDay: l.Input.PaymentDay, DepositAmount: optional(l.Input.DepositAmount),
 		NoticePeriodDays: l.Input.NoticePeriodDays, OptionalClauses: append([]string{}, l.Input.OptionalClauses...),
-		SpecialConditions: optional(l.Input.SpecialConditions), EndDate: optional(l.Input.EndDate),
+		SpecialConditions: optional(l.Input.SpecialConditions), EndDate: optional(l.Input.EndDate), LandlordStamp: l.Input.LandlordStamp,
 		CreatedAt: l.CreatedAt, UpdatedAt: l.UpdatedAt, SentAt: l.SentAt, CompletedAt: l.CompletedAt, DeclinedAt: l.DeclinedAt,
 		CancelledAt: l.CancelledAt, CancelReason: optional(l.CancelReason), Landlords: []PartyView{}, Tenants: []PartyView{},
 	}
@@ -373,7 +383,7 @@ type Page struct {
 }
 
 // ---------------------------------------------------------------------------
-// Templates (administrators)
+// Templates
 // ---------------------------------------------------------------------------
 
 func (s *Service) knownMarket(ctx context.Context) func(string) bool {
@@ -387,65 +397,67 @@ func templateEvent(t Template, action string, p *auth.Principal, at time.Time, d
 	return TemplateEvent{ID: newID(), TemplateID: t.ID, Action: action, ActorUserID: userPtr(p.UserID), ActorName: p.Name, Detail: detail, At: at}
 }
 
-// CreateTemplate creates version 1 of a new template family, as a DRAFT.
-func (s *Service) CreateTemplate(ctx context.Context, p *auth.Principal, in TemplateInput) (TemplateView, error) {
-	now := s.clock()
-	id := newID()
-	t := Template{ID: id, FamilyID: id, Version: 1, Status: TemplateDraft, CreatedBy: userPtr(p.UserID), CreatedByName: p.Name,
-		CreatedAt: now, UpdatedAt: now, Clauses: []Clause{}}
-	if err := applyTemplateInput(&t, in, true, s.knownMarket(ctx)); err != nil {
-		return TemplateView{}, err
+// sameOwner reports whether the template belongs to owner (nil: a sample).
+func sameOwner(t Template, owner *uuid.UUID) bool {
+	if owner == nil || t.OrganisationID == nil {
+		return owner == nil && t.OrganisationID == nil
 	}
-	if err := s.store.CreateTemplate(ctx, t, templateEvent(t, TemplateEventCreated, p, now, map[string]any{"version": 1, "market_code": t.MarketCode})); err != nil {
-		return TemplateView{}, err
-	}
-	s.audit(ctx, "lease_template.created", slog.String("template_id", id.String()), slog.String("actor_user_id", p.UserID.String()))
-	return templateView(t), nil
+	return *owner == *t.OrganisationID
 }
 
-// AdminTemplates lists templates (every version), newest first.
-func (s *Service) AdminTemplates(ctx context.Context, f TemplateFilter) ([]TemplateView, error) {
-	list, err := s.store.Templates(ctx, f)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]TemplateView, 0, len(list))
-	for _, t := range list {
-		out = append(out, templateView(t))
-	}
-	return out, nil
-}
-
-// AdminTemplate returns one template with its audit trail.
-func (s *Service) AdminTemplate(ctx context.Context, id uuid.UUID) (TemplateView, []TemplateEventView, error) {
+// ownedTemplate loads a template of owner (nil: the sample library);
+// ErrTemplateNotFound for any other template.
+func (s *Service) ownedTemplate(ctx context.Context, id uuid.UUID, owner *uuid.UUID) (Template, error) {
 	t, err := s.store.Template(ctx, id)
 	if err != nil {
-		return TemplateView{}, nil, err
+		return Template{}, err
 	}
-	events, err := s.store.TemplateEvents(ctx, id)
-	if err != nil {
-		return TemplateView{}, nil, err
+	if !sameOwner(t, owner) {
+		return Template{}, ErrTemplateNotFound
 	}
-	out := make([]TemplateEventView, 0, len(events))
-	for _, e := range events {
-		out = append(out, TemplateEventView{ID: e.ID, Action: e.Action, Actor: ActorView{Type: ActorUser, UserID: e.ActorUserID, Name: e.ActorName}, Detail: e.Detail, At: e.At})
-	}
-	return templateView(t), out, nil
+	return t, nil
 }
 
-// EditTemplate changes a DRAFT in place. Editing an APPROVED template
-// creates the family's next DRAFT version from it (created=true);
-// ErrTemplateDraftExists when the family already has one. A RETIRED
-// template cannot be edited.
-func (s *Service) EditTemplate(ctx context.Context, p *auth.Principal, id uuid.UUID, in TemplateInput) (TemplateView, bool, error) {
-	current, err := s.store.Template(ctx, id)
+func ownerAttr(owner *uuid.UUID) slog.Attr {
+	if owner == nil {
+		return slog.String("source", SourceSample)
+	}
+	return slog.String("organisation_id", owner.String())
+}
+
+// createTemplate stores t (filled in by the caller) as version 1 of a new
+// family, as a DRAFT of owner.
+func (s *Service) createTemplate(ctx context.Context, p *auth.Principal, t Template, owner *uuid.UUID, detail map[string]any) (Template, error) {
+	now := s.clock()
+	t.ID = newID()
+	t.FamilyID, t.Version, t.Status, t.OrganisationID = t.ID, 1, TemplateDraft, owner
+	t.LegalReview, t.ApprovedAt, t.ApprovedBy, t.ApprovedByName, t.RetiredAt = nil, nil, nil, "", nil
+	t.CreatedBy, t.CreatedByName, t.CreatedAt, t.UpdatedAt = userPtr(p.UserID), p.Name, now, now
+	if t.Clauses == nil {
+		t.Clauses = []Clause{}
+	}
+	if detail == nil {
+		detail = map[string]any{}
+	}
+	detail["version"], detail["market_code"] = 1, t.MarketCode
+	if err := s.store.CreateTemplate(ctx, t, templateEvent(t, TemplateEventCreated, p, now, detail)); err != nil {
+		return Template{}, err
+	}
+	s.audit(ctx, "lease_template.created", slog.String("template_id", t.ID.String()), slog.String("actor_user_id", p.UserID.String()), ownerAttr(owner))
+	return t, nil
+}
+
+// editTemplate changes a DRAFT of owner in place, or creates the family's
+// next DRAFT version from an APPROVED one (created=true).
+func (s *Service) editTemplate(ctx context.Context, p *auth.Principal, id uuid.UUID, in TemplateInput, owner *uuid.UUID) (Template, bool, error) {
+	current, err := s.ownedTemplate(ctx, id, owner)
 	if err != nil {
-		return TemplateView{}, false, err
+		return Template{}, false, err
 	}
 	now := s.clock()
 	switch current.Status {
 	case TemplateRetired:
-		return TemplateView{}, false, ErrTemplateNotEditable
+		return Template{}, false, ErrTemplateNotEditable
 	case TemplateApproved:
 		next := current
 		next.ID, next.Status, next.LegalReview = newID(), TemplateDraft, nil
@@ -454,14 +466,14 @@ func (s *Service) EditTemplate(ctx context.Context, p *auth.Principal, id uuid.U
 		next.Sections = append([]Section{}, current.Sections...)
 		next.Clauses = append([]Clause{}, current.Clauses...)
 		if err := applyTemplateInput(&next, in, false, s.knownMarket(ctx)); err != nil {
-			return TemplateView{}, false, err
+			return Template{}, false, err
 		}
 		created, err := s.store.CreateTemplateVersion(ctx, next, templateEvent(next, TemplateEventNewVersion, p, now, map[string]any{"from_template_id": current.ID.String(), "from_version": current.Version}))
 		if err != nil {
-			return TemplateView{}, false, err
+			return Template{}, false, err
 		}
-		s.audit(ctx, "lease_template.new_version", slog.String("template_id", created.ID.String()), slog.Int("version", created.Version))
-		return templateView(created), true, nil
+		s.audit(ctx, "lease_template.new_version", slog.String("template_id", created.ID.String()), slog.Int("version", created.Version), ownerAttr(owner))
+		return created, true, nil
 	}
 	t, err := s.store.ChangeTemplate(ctx, id, func(t Template) (Template, []TemplateEvent, error) {
 		if t.Status != TemplateDraft {
@@ -474,61 +486,355 @@ func (s *Service) EditTemplate(ctx context.Context, p *auth.Principal, id uuid.U
 		return t, []TemplateEvent{templateEvent(t, TemplateEventEdited, p, now, nil)}, nil
 	})
 	if err != nil {
-		return TemplateView{}, false, err
+		return Template{}, false, err
 	}
-	return templateView(t), false, nil
+	return t, false, nil
 }
 
-// ApproveTemplate approves a DRAFT with its legal review; the family's
-// earlier APPROVED version is RETIRED at the same time (its leases keep it).
-func (s *Service) ApproveTemplate(ctx context.Context, p *auth.Principal, id uuid.UUID, review LegalReview) (TemplateView, error) {
+// approveTemplate approves (publishes) a DRAFT of owner, with an optional
+// legal review; the family's earlier APPROVED version is RETIRED at the same
+// time (its leases keep it).
+func (s *Service) approveTemplate(ctx context.Context, p *auth.Principal, id uuid.UUID, review *LegalReview, owner *uuid.UUID) (Template, error) {
+	if _, err := s.ownedTemplate(ctx, id, owner); err != nil {
+		return Template{}, err
+	}
 	now := s.clock()
-	clean, err := checkLegalReview(review, now)
-	if err != nil {
-		return TemplateView{}, err
+	var clean *LegalReview
+	if review != nil {
+		c, err := checkLegalReview(*review, now)
+		if err != nil {
+			return Template{}, err
+		}
+		clean = &c
 	}
 	t, err := s.store.ApproveTemplate(ctx, id, clean, userPtr(p.UserID), p.Name, now, func(t Template, retired []Template) []TemplateEvent {
-		events := []TemplateEvent{templateEvent(t, TemplateEventApproved, p, now, map[string]any{
-			"version": t.Version, "reviewer_name": clean.ReviewerName, "organisation": clean.Organisation, "reviewed_on": clean.ReviewedOn,
-		})}
+		detail := map[string]any{"version": t.Version}
+		if clean != nil {
+			detail["reviewer_name"], detail["organisation"], detail["reviewed_on"] = clean.ReviewerName, clean.Organisation, clean.ReviewedOn
+		}
+		events := []TemplateEvent{templateEvent(t, TemplateEventApproved, p, now, detail)}
 		for _, r := range retired {
 			events = append(events, templateEvent(r, TemplateEventRetired, p, now, map[string]any{"replaced_by_version": t.Version}))
 		}
 		return events
 	})
 	if err != nil {
-		return TemplateView{}, err
+		return Template{}, err
 	}
 	s.audit(ctx, "lease_template.approved", slog.String("template_id", id.String()), slog.Int("version", t.Version),
-		slog.String("actor_user_id", p.UserID.String()))
-	return templateView(t), nil
+		slog.String("actor_user_id", p.UserID.String()), ownerAttr(owner))
+	return t, nil
 }
 
-// RetireTemplate retires an APPROVED template: it is no longer offered or
-// accepted for new leases; leases made from it keep it.
-func (s *Service) RetireTemplate(ctx context.Context, p *auth.Principal, id uuid.UUID) (TemplateView, error) {
+// retireTemplate retires an APPROVED template of owner (a DRAFT too when
+// draftsToo): it is no longer offered or accepted for new leases; leases
+// made from it keep it.
+func (s *Service) retireTemplate(ctx context.Context, p *auth.Principal, id uuid.UUID, owner *uuid.UUID, draftsToo bool) (Template, error) {
+	if _, err := s.ownedTemplate(ctx, id, owner); err != nil {
+		return Template{}, err
+	}
 	now := s.clock()
 	t, err := s.store.ChangeTemplate(ctx, id, func(t Template) (Template, []TemplateEvent, error) {
-		if t.Status != TemplateApproved {
+		if t.Status != TemplateApproved && !(draftsToo && t.Status == TemplateDraft) {
 			return Template{}, nil, ErrTemplateState
 		}
 		t.Status, t.RetiredAt, t.UpdatedAt = TemplateRetired, &now, now
 		return t, []TemplateEvent{templateEvent(t, TemplateEventRetired, p, now, nil)}, nil
 	})
 	if err != nil {
-		return TemplateView{}, err
+		return Template{}, err
 	}
-	s.audit(ctx, "lease_template.retired", slog.String("template_id", id.String()), slog.String("actor_user_id", p.UserID.String()))
-	return templateView(t), nil
+	s.audit(ctx, "lease_template.retired", slog.String("template_id", id.String()), slog.String("actor_user_id", p.UserID.String()), ownerAttr(owner))
+	return t, nil
 }
 
-// OfferedTemplates are the APPROVED templates of a country (every
-// country when market is ""): the only templates a lease can be made from.
-func (s *Service) OfferedTemplates(ctx context.Context, p *auth.Principal, market string) ([]TemplateView, error) {
+func (s *Service) templateEvents(ctx context.Context, id uuid.UUID) ([]TemplateEventView, error) {
+	events, err := s.store.TemplateEvents(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TemplateEventView, 0, len(events))
+	for _, e := range events {
+		detail := e.Detail
+		if detail == nil {
+			detail = map[string]any{}
+		}
+		out = append(out, TemplateEventView{ID: e.ID, Action: e.Action, Actor: ActorView{Type: ActorUser, UserID: e.ActorUserID, Name: e.ActorName}, Detail: detail, At: e.At})
+	}
+	return out, nil
+}
+
+func views(list []Template, canEdit func(Template) bool) []TemplateView {
+	out := make([]TemplateView, 0, len(list))
+	for _, t := range list {
+		out = append(out, templateView(t, canEdit(t)))
+	}
+	return out
+}
+
+// ---------------------------------------------------------------------------
+// Sample templates (content administrators)
+// ---------------------------------------------------------------------------
+
+func always(Template) bool { return true }
+
+// CreateTemplate creates version 1 of a new sample template family, as a DRAFT.
+func (s *Service) CreateTemplate(ctx context.Context, p *auth.Principal, in TemplateInput) (TemplateView, error) {
+	t := Template{Clauses: []Clause{}}
+	if err := applyTemplateInput(&t, in, true, s.knownMarket(ctx)); err != nil {
+		return TemplateView{}, err
+	}
+	created, err := s.createTemplate(ctx, p, t, nil, nil)
+	if err != nil {
+		return TemplateView{}, err
+	}
+	return templateView(created, true), nil
+}
+
+// AdminTemplates lists the sample templates (every version), newest first.
+func (s *Service) AdminTemplates(ctx context.Context, f TemplateFilter) ([]TemplateView, error) {
+	f.Scoped, f.Samples, f.Organisations = true, true, nil
+	list, err := s.store.Templates(ctx, f)
+	if err != nil {
+		return nil, err
+	}
+	return views(list, always), nil
+}
+
+// AdminTemplate returns one sample template with its audit trail.
+func (s *Service) AdminTemplate(ctx context.Context, id uuid.UUID) (TemplateView, []TemplateEventView, error) {
+	t, err := s.ownedTemplate(ctx, id, nil)
+	if err != nil {
+		return TemplateView{}, nil, err
+	}
+	events, err := s.templateEvents(ctx, id)
+	if err != nil {
+		return TemplateView{}, nil, err
+	}
+	return templateView(t, true), events, nil
+}
+
+// EditTemplate changes a sample DRAFT in place. Editing an APPROVED sample
+// creates the family's next DRAFT version from it (created=true);
+// ErrTemplateDraftExists when the family already has one. A RETIRED
+// template cannot be edited.
+func (s *Service) EditTemplate(ctx context.Context, p *auth.Principal, id uuid.UUID, in TemplateInput) (TemplateView, bool, error) {
+	t, created, err := s.editTemplate(ctx, p, id, in, nil)
+	if err != nil {
+		return TemplateView{}, false, err
+	}
+	return templateView(t, true), created, nil
+}
+
+// ApproveTemplate approves a sample DRAFT; the legal review is optional.
+func (s *Service) ApproveTemplate(ctx context.Context, p *auth.Principal, id uuid.UUID, review *LegalReview) (TemplateView, error) {
+	t, err := s.approveTemplate(ctx, p, id, review, nil)
+	if err != nil {
+		return TemplateView{}, err
+	}
+	return templateView(t, true), nil
+}
+
+// RetireTemplate retires an APPROVED sample.
+func (s *Service) RetireTemplate(ctx context.Context, p *auth.Principal, id uuid.UUID) (TemplateView, error) {
+	t, err := s.retireTemplate(ctx, p, id, nil, false)
+	if err != nil {
+		return TemplateView{}, err
+	}
+	return templateView(t, true), nil
+}
+
+// ---------------------------------------------------------------------------
+// Organisation templates (/v1/me/organisations/{orgId}/lease-templates)
+// ---------------------------------------------------------------------------
+
+// orgTemplates checks that the caller may read (manage=false) or manage
+// the organisation's templates: ErrOrganisationNotFound for somebody who is
+// not a member, ErrTemplateForbidden for a member without the right.
+// Reading: any member who may create leases there (OWNER, MANAGER, AGENT of
+// a kind that manages listings). Managing: its OWNER and MANAGER (orgWide).
+func orgTemplates(p *auth.Principal, orgID uuid.UUID, manage bool) error {
+	if p == nil || p.MembershipRole(orgID) == "" {
+		return ErrOrganisationNotFound
+	}
+	if !MayCreateLeases(p) || !mayCreateIn(p, orgID) || (manage && !orgWide(p, orgID)) {
+		return ErrTemplateForbidden
+	}
+	return nil
+}
+
+// MayManageTemplates reports whether the caller may create, edit, publish
+// and retire the organisation's templates.
+func MayManageTemplates(p *auth.Principal, orgID uuid.UUID) bool {
+	return orgTemplates(p, orgID, true) == nil
+}
+
+// OrgTemplateInput is the body of POST /v1/me/organisations/{orgId}/lease-templates:
+// a new template, or a copy of one the caller may use (copy_from_template_id).
+type OrgTemplateInput struct {
+	TemplateInput
+	CopyFromTemplateID *string `json:"copy_from_template_id"`
+}
+
+// OrgTemplates lists the organisation's templates (every version).
+func (s *Service) OrgTemplates(ctx context.Context, p *auth.Principal, orgID uuid.UUID, f TemplateFilter) ([]TemplateView, error) {
+	if err := orgTemplates(p, orgID, false); err != nil {
+		return nil, err
+	}
+	f.Scoped, f.Samples, f.Organisations = true, false, []uuid.UUID{orgID}
+	list, err := s.store.Templates(ctx, f)
+	if err != nil {
+		return nil, err
+	}
+	manage := orgWide(p, orgID)
+	return views(list, func(Template) bool { return manage }), nil
+}
+
+// OrgTemplate returns one of the organisation's templates.
+func (s *Service) OrgTemplate(ctx context.Context, p *auth.Principal, orgID, id uuid.UUID) (TemplateView, error) {
+	if err := orgTemplates(p, orgID, false); err != nil {
+		return TemplateView{}, err
+	}
+	t, err := s.ownedTemplate(ctx, id, &orgID)
+	if err != nil {
+		return TemplateView{}, err
+	}
+	return templateView(t, orgWide(p, orgID)), nil
+}
+
+// OrgTemplateEvents returns the audit trail of one of the organisation's templates.
+func (s *Service) OrgTemplateEvents(ctx context.Context, p *auth.Principal, orgID, id uuid.UUID) ([]TemplateEventView, error) {
+	if err := orgTemplates(p, orgID, false); err != nil {
+		return nil, err
+	}
+	if _, err := s.ownedTemplate(ctx, id, &orgID); err != nil {
+		return nil, err
+	}
+	return s.templateEvents(ctx, id)
+}
+
+// CreateOrgTemplate creates a DRAFT (version 1 of a new family) of the
+// organisation: from the body, or as a copy of a template the caller may use
+// (an approved sample, or any of this organisation's), named "Copy of
+// <name>" unless a name is sent.
+func (s *Service) CreateOrgTemplate(ctx context.Context, p *auth.Principal, orgID uuid.UUID, in OrgTemplateInput) (TemplateView, error) {
+	if err := orgTemplates(p, orgID, true); err != nil {
+		return TemplateView{}, err
+	}
+	fields := map[string]string{}
+	sourceID := parseID(fields, "copy_from_template_id", in.CopyFromTemplateID)
+	if len(fields) > 0 {
+		return TemplateView{}, &ValidationError{Fields: fields}
+	}
+	if sourceID == nil {
+		t := Template{Clauses: []Clause{}}
+		if err := applyTemplateInput(&t, in.TemplateInput, true, s.knownMarket(ctx)); err != nil {
+			return TemplateView{}, err
+		}
+		created, err := s.createTemplate(ctx, p, t, &orgID, nil)
+		if err != nil {
+			return TemplateView{}, err
+		}
+		return templateView(created, true), nil
+	}
+	source, err := s.store.Template(ctx, *sourceID)
+	if errors.Is(err, ErrTemplateNotFound) || (err == nil && !(source.IsSample() && source.Status == TemplateApproved) && !sameOwner(source, &orgID)) {
+		return TemplateView{}, &ValidationError{Fields: map[string]string{"copy_from_template_id": "must be a published sample template or one of this organisation's templates"}}
+	}
+	if err != nil {
+		return TemplateView{}, err
+	}
+	t := Template{MarketCode: source.MarketCode, Name: source.Name, LeaseKind: source.LeaseKind, Description: source.Description,
+		Sections: append([]Section{}, source.Sections...), Clauses: append([]Clause{}, source.Clauses...)}
+	if in.Name == nil {
+		name := "Copy of " + source.Name
+		if r := []rune(name); len(r) > MaxTemplateName {
+			name = string(r[:MaxTemplateName])
+		}
+		t.Name = name
+	}
+	if err := applyTemplateInput(&t, in.TemplateInput, false, s.knownMarket(ctx)); err != nil {
+		return TemplateView{}, err
+	}
+	created, err := s.createTemplate(ctx, p, t, &orgID, map[string]any{"copied_from_template_id": source.ID.String(),
+		"copied_from_version": source.Version, "copied_from_source": templateView(source, false).Source})
+	if err != nil {
+		return TemplateView{}, err
+	}
+	return templateView(created, true), nil
+}
+
+// EditOrgTemplate is EditTemplate for one of the organisation's templates.
+func (s *Service) EditOrgTemplate(ctx context.Context, p *auth.Principal, orgID, id uuid.UUID, in TemplateInput) (TemplateView, bool, error) {
+	if err := orgTemplates(p, orgID, true); err != nil {
+		return TemplateView{}, false, err
+	}
+	t, created, err := s.editTemplate(ctx, p, id, in, &orgID)
+	if err != nil {
+		return TemplateView{}, false, err
+	}
+	return templateView(t, true), created, nil
+}
+
+// PublishOrgTemplate makes one of the organisation's DRAFTs APPROVED
+// (published) and retires the family's other APPROVED version. No review.
+func (s *Service) PublishOrgTemplate(ctx context.Context, p *auth.Principal, orgID, id uuid.UUID) (TemplateView, error) {
+	if err := orgTemplates(p, orgID, true); err != nil {
+		return TemplateView{}, err
+	}
+	t, err := s.approveTemplate(ctx, p, id, nil, &orgID)
+	if err != nil {
+		return TemplateView{}, err
+	}
+	return templateView(t, true), nil
+}
+
+// RetireOrgTemplate retires one of the organisation's APPROVED or DRAFT templates.
+func (s *Service) RetireOrgTemplate(ctx context.Context, p *auth.Principal, orgID, id uuid.UUID) (TemplateView, error) {
+	if err := orgTemplates(p, orgID, true); err != nil {
+		return TemplateView{}, err
+	}
+	t, err := s.retireTemplate(ctx, p, id, &orgID, true)
+	if err != nil {
+		return TemplateView{}, err
+	}
+	return templateView(t, true), nil
+}
+
+// ---------------------------------------------------------------------------
+// Templates on offer
+// ---------------------------------------------------------------------------
+
+// OfferedTemplates are the APPROVED templates the caller may make a lease
+// from, of a country (every country when market is ""): every sample, and
+// the published templates of the organisations the caller may create leases
+// for (only orgID's when given).
+func (s *Service) OfferedTemplates(ctx context.Context, p *auth.Principal, market string, orgID *uuid.UUID) ([]TemplateView, error) {
 	if !MayCreateLeases(p) {
 		return nil, ErrForbidden
 	}
-	return s.AdminTemplates(ctx, TemplateFilter{MarketCode: strings.ToUpper(market), Status: TemplateApproved})
+	orgs := p.ListingOrganisationIDs()
+	if orgID != nil {
+		if !mayCreateIn(p, *orgID) {
+			return nil, &ValidationError{Fields: map[string]string{"organisation_id": "must be an organisation whose listings you manage"}}
+		}
+		orgs = []uuid.UUID{*orgID}
+	}
+	list, err := s.store.Templates(ctx, TemplateFilter{MarketCode: strings.ToUpper(market), Status: TemplateApproved, Scoped: true, Samples: true, Organisations: orgs})
+	if err != nil {
+		return nil, err
+	}
+	return views(list, func(t Template) bool { return t.OrganisationID != nil && orgWide(p, *t.OrganisationID) }), nil
+}
+
+// mayUse reports whether a lease of organisation (nil: no organisation) may
+// use the template: a sample, or a template of that organisation.
+func mayUse(t Template, organisation *uuid.UUID) bool {
+	return t.IsSample() || (organisation != nil && *organisation == *t.OrganisationID)
+}
+
+func templateNotOfOrganisation() error {
+	return &ValidationError{Fields: map[string]string{"template_id": "must be a sample template or a published template of the lease's organisation"}}
 }
 
 // ---------------------------------------------------------------------------
@@ -699,6 +1005,9 @@ func (s *Service) Create(ctx context.Context, p *auth.Principal, in LeaseInput) 
 		}
 		input.OrganisationID = l.OrganisationID
 	}
+	if !mayUse(t, l.OrganisationID) {
+		return LeaseView{}, templateNotOfOrganisation()
+	}
 	clean, problems := checkInput(input, t)
 	if len(problems) > 0 {
 		return LeaseView{}, &ValidationError{Fields: problems}
@@ -844,6 +1153,9 @@ func (s *Service) Patch(ctx context.Context, p *auth.Principal, id uuid.UUID, in
 		if t, err = s.usableTemplate(ctx, *templateID); err != nil {
 			return LeaseView{}, err
 		}
+		if !mayUse(t, l.OrganisationID) {
+			return LeaseView{}, templateNotOfOrganisation()
+		}
 		if t.MarketCode != l.MarketCode {
 			return LeaseView{}, ErrMarketMismatch
 		}
@@ -913,6 +1225,7 @@ func changedKeys(in LeaseInput) []string {
 	add(in.NoticePeriodDays != nil, "notice_period_days")
 	add(in.OptionalClauses != nil, "optional_clauses")
 	add(in.SpecialConditions != nil, "special_conditions")
+	add(in.LandlordStamp != nil, "landlord_stamp")
 	if keys == nil {
 		keys = []string{}
 	}

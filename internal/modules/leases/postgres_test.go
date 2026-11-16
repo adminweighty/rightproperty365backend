@@ -63,7 +63,7 @@ func TestPostgresStore(t *testing.T) {
 	if err := s.CreateTemplate(ctx, tmpl, TemplateEvent{ID: uuid.New(), TemplateID: tid, Action: TemplateEventCreated, At: now}); err != nil {
 		t.Fatal(err)
 	}
-	approved, err := s.ApproveTemplate(ctx, tid, LegalReview{ReviewerName: "R", Organisation: "O", ReviewedOn: "2026-11-01"}, nil, "", now,
+	approved, err := s.ApproveTemplate(ctx, tid, &LegalReview{ReviewerName: "R", Organisation: "O", ReviewedOn: "2026-11-01"}, nil, "", now,
 		func(t Template, _ []Template) []TemplateEvent {
 			return []TemplateEvent{{ID: uuid.New(), TemplateID: t.ID, Action: TemplateEventApproved, At: now}}
 		})

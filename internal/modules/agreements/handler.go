@@ -545,13 +545,40 @@ func (h *Handler) SaveMySignature(w http.ResponseWriter, r *http.Request) {
 
 // Signing serves GET /v1/signing/{token}.
 func (h *Handler) Signing(w http.ResponseWriter, r *http.Request) {
-	v, err := h.svc.Signing(r.Context(), chi.URLParam(r, "token"), httpx.ClientIP(r), r.UserAgent())
+	v, err := h.svc.SigningFor(r.Context(), auth.FromContext(r.Context()), chi.URLParam(r, "token"), httpx.ClientIP(r), r.UserAgent())
 	if err != nil {
 		h.fail(w, r, err)
 		return
 	}
 	private(w)
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"signing": v})
+}
+
+// StampPreview serves POST /v1/stamp-preview {stamp, date?}: the generated
+// stamp as a transparent PNG (no session; signers by link use it too).
+func (h *Handler) StampPreview(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Stamp *Stamp `json:"stamp"`
+		Date  string `json:"date"`
+	}
+	if !httpx.DecodeJSON(w, r, &in) {
+		return
+	}
+	content, err := h.svc.StampPreview(in.Stamp, in.Date)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	head := w.Header()
+	head.Set("Content-Type", "image/png")
+	head.Set("Content-Length", strconv.Itoa(len(content)))
+	head.Set("Cache-Control", "private, no-store")
+	head.Set("X-Content-Type-Options", "nosniff")
+	head.Set("Content-Disposition", `inline; filename="stamp.png"`)
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(content); err != nil {
+		h.logger.WarnContext(r.Context(), "stamp preview interrupted", slog.String("error", err.Error()))
+	}
 }
 
 // SigningPDF serves GET /v1/signing/{token}/pdf.

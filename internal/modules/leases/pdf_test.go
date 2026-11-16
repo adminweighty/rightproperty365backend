@@ -111,3 +111,47 @@ func TestPlaceholdersAndValues(t *testing.T) {
 		t.Fatal("fill")
 	}
 }
+
+// A lease asking for the landlords' stamps leaves a 40 mm STAMP field next
+// to each landlord's signature block, inside the page, not over the name.
+func TestRenderPDFLandlordStamp(t *testing.T) {
+	snap := sampleSnapshot()
+	_, plain, err := RenderPDF(snap, ModeSigning)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range plain.Fields {
+		if f.Type == FieldStamp {
+			t.Fatal("no stamp unless the lease asks for one")
+		}
+	}
+	snap.Input.LandlordStamp = true
+	snap.Input.Landlords = append(snap.Input.Landlords, Party{Name: "Second Landlord", Email: "second@example.test"})
+	_, layout, err := RenderPDF(snap, ModeSigning)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stamps []PlacedField
+	names := map[int]PlacedField{}
+	for _, f := range layout.Fields {
+		switch f.Type {
+		case FieldStamp:
+			stamps = append(stamps, f)
+		case FieldName:
+			if f.Role == RoleLandlord {
+				names[f.Position] = f
+			}
+		}
+	}
+	if len(stamps) != 2 {
+		t.Fatalf("%d STAMP fields, want one per landlord", len(stamps))
+	}
+	for _, s := range stamps {
+		page := layout.Pages[s.Page-1]
+		name := names[s.Position]
+		if s.Role != RoleLandlord || s.W < 113 || s.H < 113 || s.X+s.W > page.Width || s.Y+s.H > page.Height ||
+			(name.Page == s.Page && name.X+name.W > s.X) {
+			t.Fatalf("stamp %+v (name %+v, page %+v)", s, name, page)
+		}
+	}
+}

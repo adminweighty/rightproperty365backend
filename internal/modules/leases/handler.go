@@ -50,6 +50,8 @@ var answers = []answer{
 	{ErrListingNotFound, http.StatusNotFound, CodeListingNotFound, "This listing does not exist or is not one you manage."},
 	{ErrMarketMismatch, http.StatusUnprocessableEntity, CodeMarketMismatch, "The template is for another country than the property. Choose a template of the property's country."},
 	{ErrDocumentUnavailable, http.StatusNotFound, CodeDocumentUnavailable, "The document is not available."},
+	{ErrTemplateForbidden, http.StatusForbidden, httpx.CodeForbidden, "Only the organisation's owner and managers can create, change, publish or retire its lease templates; its agents can read them."},
+	{ErrOrganisationNotFound, http.StatusNotFound, CodeOrganisationNotFound, "This organisation does not exist or you are not a member of it."},
 }
 
 func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
@@ -241,14 +243,10 @@ func (h *Handler) AdminApproveTemplate(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		LegalReview *LegalReview `json:"legal_review"`
 	}
-	if !httpx.DecodeJSON(w, r, &in) {
+	if !decodeOptional(w, r, &in) {
 		return
 	}
-	if in.LegalReview == nil {
-		h.fail(w, r, &ValidationError{Fields: map[string]string{"legal_review": "is required: who reviewed the template, for which organisation, and when"}})
-		return
-	}
-	t, err := h.svc.ApproveTemplate(r.Context(), p, id, *in.LegalReview)
+	t, err := h.svc.ApproveTemplate(r.Context(), p, id, in.LegalReview)
 	if err != nil {
 		h.fail(w, r, err)
 		return
@@ -299,13 +297,22 @@ func (h *Handler) AdminLeases(w http.ResponseWriter, r *http.Request) {
 // Advertisers: templates on offer, drafting, sending
 // ---------------------------------------------------------------------------
 
-// OfferedTemplates serves GET /v1/me/lease-templates?market=.
+// OfferedTemplates serves GET /v1/me/lease-templates?market=&organisation_id=.
 func (h *Handler) OfferedTemplates(w http.ResponseWriter, r *http.Request) {
 	p := principal(w, r)
 	if p == nil {
 		return
 	}
-	items, err := h.svc.OfferedTemplates(r.Context(), p, r.URL.Query().Get("market"))
+	var orgID *uuid.UUID
+	if raw := r.URL.Query().Get("organisation_id"); raw != "" {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			h.fail(w, r, &ValidationError{Fields: map[string]string{"organisation_id": "must be an ID"}})
+			return
+		}
+		orgID = &id
+	}
+	items, err := h.svc.OfferedTemplates(r.Context(), p, r.URL.Query().Get("market"), orgID)
 	if err != nil {
 		h.fail(w, r, err)
 		return
@@ -486,4 +493,156 @@ func (h *Handler) Events(w http.ResponseWriter, r *http.Request) {
 	}
 	private(w)
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// ---------------------------------------------------------------------------
+// Organisation templates: /v1/me/organisations/{orgId}/lease-templates
+// ---------------------------------------------------------------------------
+
+// orgPath reads {orgId} (and {id} when withID): 404 for an ID that is not one.
+func (h *Handler) orgPath(w http.ResponseWriter, r *http.Request, withID bool) (*auth.Principal, uuid.UUID, uuid.UUID, bool) {
+	p := principal(w, r)
+	if p == nil {
+		return nil, uuid.Nil, uuid.Nil, false
+	}
+	orgID, ok := pathID(r, "orgId")
+	if !ok {
+		h.fail(w, r, ErrOrganisationNotFound)
+		return nil, uuid.Nil, uuid.Nil, false
+	}
+	if !withID {
+		return p, orgID, uuid.Nil, true
+	}
+	id, ok := pathID(r, "id")
+	if !ok {
+		if err := orgTemplates(p, orgID, false); err != nil {
+			h.fail(w, r, err)
+		} else {
+			h.fail(w, r, ErrTemplateNotFound)
+		}
+		return nil, uuid.Nil, uuid.Nil, false
+	}
+	return p, orgID, id, true
+}
+
+func (h *Handler) writeTemplate(w http.ResponseWriter, status int, body map[string]any) {
+	private(w)
+	httpx.WriteJSON(w, status, body)
+}
+
+// OrgTemplates serves GET /v1/me/organisations/{orgId}/lease-templates?status=&market=.
+func (h *Handler) OrgTemplates(w http.ResponseWriter, r *http.Request) {
+	p, orgID, _, ok := h.orgPath(w, r, false)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	f := TemplateFilter{MarketCode: strings.ToUpper(q.Get("market")), Status: q.Get("status")}
+	if f.Status != "" && !slices.Contains(templateStatuses(), f.Status) {
+		h.fail(w, r, &ValidationError{Fields: map[string]string{"status": "must be one of DRAFT, APPROVED, RETIRED"}})
+		return
+	}
+	items, err := h.svc.OrgTemplates(r.Context(), p, orgID, f)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	h.writeTemplate(w, http.StatusOK, map[string]any{"items": items, "variables": Variables()})
+}
+
+// OrgCreateTemplate serves POST /v1/me/organisations/{orgId}/lease-templates.
+func (h *Handler) OrgCreateTemplate(w http.ResponseWriter, r *http.Request) {
+	p, orgID, _, ok := h.orgPath(w, r, false)
+	if !ok {
+		return
+	}
+	var in OrgTemplateInput
+	if !httpx.DecodeJSON(w, r, &in) {
+		return
+	}
+	t, err := h.svc.CreateOrgTemplate(r.Context(), p, orgID, in)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	h.writeTemplate(w, http.StatusCreated, map[string]any{"template": t})
+}
+
+// OrgTemplate serves GET /v1/me/organisations/{orgId}/lease-templates/{id}.
+func (h *Handler) OrgTemplate(w http.ResponseWriter, r *http.Request) {
+	p, orgID, id, ok := h.orgPath(w, r, true)
+	if !ok {
+		return
+	}
+	t, err := h.svc.OrgTemplate(r.Context(), p, orgID, id)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	h.writeTemplate(w, http.StatusOK, map[string]any{"template": t, "variables": Variables()})
+}
+
+// OrgEditTemplate serves PATCH /v1/me/organisations/{orgId}/lease-templates/{id}:
+// 200 with the edited draft, or 201 with the new draft version of a published one.
+func (h *Handler) OrgEditTemplate(w http.ResponseWriter, r *http.Request) {
+	p, orgID, id, ok := h.orgPath(w, r, true)
+	if !ok {
+		return
+	}
+	var in TemplateInput
+	if !httpx.DecodeJSON(w, r, &in) {
+		return
+	}
+	t, created, err := h.svc.EditOrgTemplate(r.Context(), p, orgID, id, in)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	h.writeTemplate(w, status, map[string]any{"template": t, "new_version": created})
+}
+
+// OrgPublishTemplate serves POST /v1/me/organisations/{orgId}/lease-templates/{id}/publish. No body.
+func (h *Handler) OrgPublishTemplate(w http.ResponseWriter, r *http.Request) {
+	p, orgID, id, ok := h.orgPath(w, r, true)
+	if !ok {
+		return
+	}
+	t, err := h.svc.PublishOrgTemplate(r.Context(), p, orgID, id)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	h.writeTemplate(w, http.StatusOK, map[string]any{"template": t})
+}
+
+// OrgRetireTemplate serves POST /v1/me/organisations/{orgId}/lease-templates/{id}/retire. No body.
+func (h *Handler) OrgRetireTemplate(w http.ResponseWriter, r *http.Request) {
+	p, orgID, id, ok := h.orgPath(w, r, true)
+	if !ok {
+		return
+	}
+	t, err := h.svc.RetireOrgTemplate(r.Context(), p, orgID, id)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	h.writeTemplate(w, http.StatusOK, map[string]any{"template": t})
+}
+
+// OrgTemplateEvents serves GET /v1/me/organisations/{orgId}/lease-templates/{id}/events.
+func (h *Handler) OrgTemplateEvents(w http.ResponseWriter, r *http.Request) {
+	p, orgID, id, ok := h.orgPath(w, r, true)
+	if !ok {
+		return
+	}
+	items, err := h.svc.OrgTemplateEvents(r.Context(), p, orgID, id)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	h.writeTemplate(w, http.StatusOK, map[string]any{"items": items})
 }

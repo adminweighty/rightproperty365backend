@@ -8,7 +8,8 @@
 //     when everybody of the earlier orders has finished. A CC is never asked
 //     to act and gets the completed copy.
 //   - Fields: SIGNATURE, INITIALS, DATE_SIGNED (filled when they sign), NAME
-//     (filled), TEXT and CHECKBOX, in PDF points from the page's top-left.
+//     (filled), TEXT, CHECKBOX and STAMP (a stamp the server generates from
+//     the text the signer types), in PDF points from the page's top-left.
 //   - Signing by link: every recipient gets their own link (only the
 //     token's SHA-256 is stored), valid until the agreement expires and,
 //     read-only, for 90 days after it is completed. Before submitting, the
@@ -97,6 +98,9 @@ const (
 	FieldName       = "NAME"
 	FieldText       = "TEXT"
 	FieldCheckbox   = "CHECKBOX"
+	// FieldStamp takes the signer's generated stamp (stamp.go), dated the
+	// day they sign. SIGNER recipients only.
+	FieldStamp = "STAMP"
 )
 
 // Adopted signature kinds and how an email address was verified.
@@ -244,6 +248,8 @@ type Recipient struct {
 	Verification string
 	Signature    *Adopted
 	Initials     *Adopted
+	// Stamp is the stamp they applied (when they had a STAMP field).
+	Stamp *Stamp
 }
 
 // Done reports whether the recipient finished (signed, approved or declined).
@@ -341,10 +347,12 @@ type Filter struct {
 	Statuses            []string
 }
 
-// SavedSignature is a signed-in user's adopted signature and initials.
+// SavedSignature is a signed-in user's adopted signature and initials, and
+// their stamp.
 type SavedSignature struct {
 	Signature *Adopted
 	Initials  *Adopted
+	Stamp     *Stamp
 	UpdatedAt time.Time
 }
 

@@ -206,7 +206,7 @@ type FieldInput struct {
 }
 
 func fieldTypes() []string {
-	return []string{FieldSignature, FieldInitials, FieldDateSigned, FieldName, FieldText, FieldCheckbox}
+	return []string{FieldSignature, FieldInitials, FieldDateSigned, FieldName, FieldText, FieldCheckbox, FieldStamp}
 }
 
 func fieldInputs(fields []Field) []FieldInput {
@@ -222,7 +222,8 @@ func fieldInputs(fields []Field) []FieldInput {
 // recipients: on a page, inside it, for a SIGNER or APPROVER (never a CC;
 // an APPROVER has no SIGNATURE or INITIALS), and every SIGNER has at least
 // one SIGNATURE field. SIGNATURE, INITIALS, NAME and DATE_SIGNED are always
-// required; TEXT and CHECKBOX as sent.
+// required; TEXT, CHECKBOX and STAMP as sent (required unless sent false).
+// A STAMP is for a SIGNER and at least 57 x 57 points.
 func checkFields(a *Agreement, in []FieldInput) ([]Field, error) {
 	problems := map[string]string{}
 	if len(in) > MaxFields {
@@ -238,8 +239,12 @@ func checkFields(a *Agreement, in []FieldInput) ([]Field, error) {
 			problems[k+".recipient_id"] = "is not a recipient of this agreement"
 		case r.Role == RoleCC:
 			problems[k+".recipient_id"] = "is a CC: a copy recipient fills in nothing"
-		case r.Role == RoleApprover && (f.Type == FieldSignature || f.Type == FieldInitials):
-			problems[k+".type"] = "an APPROVER approves without signing: no SIGNATURE or INITIALS fields"
+		case r.Role == RoleApprover && (f.Type == FieldSignature || f.Type == FieldInitials || f.Type == FieldStamp):
+			problems[k+".type"] = "an APPROVER approves without signing: no SIGNATURE, INITIALS or STAMP fields"
+		}
+		if f.Type == FieldStamp && (f.W < MinStampFieldSize || f.H < MinStampFieldSize) {
+			problems[k] = fmt.Sprintf("a STAMP field must be at least %.0f x %.0f points (the default is %.0f x %.0f)",
+				MinStampFieldSize, MinStampFieldSize, StampFieldSize, StampFieldSize)
 		}
 		if !slices.Contains(fieldTypes(), f.Type) {
 			problems[k+".type"] = "must be one of " + strings.Join(fieldTypes(), ", ")
@@ -257,7 +262,7 @@ func checkFields(a *Agreement, in []FieldInput) ([]Field, error) {
 			problems[k+".label"] = problem
 		}
 		req := true
-		if (f.Type == FieldText || f.Type == FieldCheckbox) && f.Required != nil {
+		if (f.Type == FieldText || f.Type == FieldCheckbox || f.Type == FieldStamp) && f.Required != nil {
 			req = *f.Required
 		}
 		out = append(out, Field{ID: newID(), RecipientID: rid, Type: f.Type, Page: f.Page, X: f.X, Y: f.Y, W: f.W, H: f.H, Required: req, Label: label})
@@ -402,4 +407,6 @@ type SubmitInput struct {
 	FieldValues []FieldValue    `json:"field_values"`
 	Signature   *AdoptInput     `json:"signature"`
 	Initials    *AdoptInput     `json:"initials"`
+	// Stamp is required when the recipient has a required STAMP field.
+	Stamp *Stamp `json:"stamp"`
 }

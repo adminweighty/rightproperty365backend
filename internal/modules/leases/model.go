@@ -1,14 +1,18 @@
 // Package leases is the lease library and lease drafting (BRD BR-011, FSD
 // FR-030, FR-031); signing is the agreements module (FR-032).
 //
-//   - Templates (FR-030): platform content administrators keep a library of
-//     lease templates per country (market): ordered sections whose text
-//     holds {{variable}} placeholders from a fixed set (variables.go), and
-//     optional clauses an advertiser may switch on. A template is DRAFT ->
-//     APPROVED (with a recorded legal review) -> RETIRED. Editing an
+//   - Templates (FR-030): a template is per country (market): ordered
+//     sections whose text holds {{variable}} placeholders from a fixed set
+//     (variables.go), and optional clauses an advertiser may switch on. A
+//     template is DRAFT -> APPROVED ("published") -> RETIRED. Editing an
 //     APPROVED template creates the next DRAFT version of the same family;
 //     approving a version retires the family's earlier approved version.
-//     Only APPROVED templates of the lease's country are offered or accepted.
+//     Agencies and landlords own their templates (OrganisationID): their
+//     OWNER and MANAGER design and publish them, with no lawyer or platform
+//     review. The platform's content administrators keep a library of
+//     SAMPLE templates (no organisation; a legal review may be recorded but
+//     is optional) that anyone may use or copy. A lease may use an APPROVED
+//     template of its country that is a sample or its organisation's.
 //   - Leases (FR-031): whoever may manage listings (auth.ManagesListings)
 //     drafts a lease from an approved template: parties, property, dates,
 //     rent, deposit and clauses. Each save renders the draft PDF (with a
@@ -139,6 +143,13 @@ const (
 	CodeListingNotFound      = "LISTING_NOT_FOUND"
 	CodeMarketMismatch       = "LEASE_MARKET_MISMATCH"
 	CodeDocumentUnavailable  = "LEASE_DOCUMENT_UNAVAILABLE"
+	CodeOrganisationNotFound = "ORGANISATION_NOT_FOUND"
+)
+
+// Template sources (TemplateView.Source).
+const (
+	SourceSample       = "SAMPLE"
+	SourceOrganisation = "ORGANISATION"
 )
 
 // Errors, mapped to HTTP by the handler.
@@ -156,6 +167,11 @@ var (
 	ErrMarketMismatch      = errors.New("the template's country is not the listing's")
 	ErrDocumentUnavailable = errors.New("the document is not available")
 	ErrReferenceTaken      = errors.New("lease reference already used")
+	// ErrTemplateForbidden: a member of the organisation who may not manage
+	// (or read) its templates.
+	ErrTemplateForbidden = errors.New("not allowed to manage the organisation's templates")
+	// ErrOrganisationNotFound: the caller is not a member of the organisation.
+	ErrOrganisationNotFound = errors.New("organisation not found")
 )
 
 // ValidationError carries per-field messages for a 400 response.
@@ -193,8 +209,10 @@ type LegalReview struct {
 type Template struct {
 	ID uuid.UUID
 	// FamilyID groups the versions of one template; Version counts from 1.
-	FamilyID       uuid.UUID
-	Version        int
+	FamilyID uuid.UUID
+	Version  int
+	// OrganisationID owns the template; nil for a sample template.
+	OrganisationID *uuid.UUID
 	MarketCode     string
 	Name           string
 	LeaseKind      string
@@ -234,11 +252,38 @@ type TemplateEvent struct {
 	At          time.Time
 }
 
-// TemplateFilter selects templates.
+// IsSample reports whether the template is a platform sample.
+func (t Template) IsSample() bool { return t.OrganisationID == nil }
+
+// TemplateFilter selects templates. When Scoped, only the samples
+// (Samples) and the templates of Organisations are selected.
 type TemplateFilter struct {
-	MarketCode string
-	Status     string
-	FamilyID   *uuid.UUID
+	MarketCode    string
+	Status        string
+	FamilyID      *uuid.UUID
+	Scoped        bool
+	Samples       bool
+	Organisations []uuid.UUID
+}
+
+// matches reports whether t is selected by the filter.
+func (f TemplateFilter) matches(t Template) bool {
+	if (f.MarketCode != "" && t.MarketCode != f.MarketCode) || (f.Status != "" && t.Status != f.Status) ||
+		(f.FamilyID != nil && t.FamilyID != *f.FamilyID) {
+		return false
+	}
+	if !f.Scoped {
+		return true
+	}
+	if t.OrganisationID == nil {
+		return f.Samples
+	}
+	for _, id := range f.Organisations {
+		if id == *t.OrganisationID {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -271,6 +316,9 @@ type Input struct {
 	NoticePeriodDays  int        `json:"notice_period_days"`
 	OptionalClauses   []string   `json:"optional_clauses"`
 	SpecialConditions string     `json:"special_conditions,omitempty"`
+	// LandlordStamp: each landlord also applies their stamp (a STAMP field
+	// next to their signature block).
+	LandlordStamp bool `json:"landlord_stamp,omitempty"`
 }
 
 // Document is one stored PDF of a lease.
@@ -359,7 +407,8 @@ type Store interface {
 	CreateTemplateVersion(ctx context.Context, t Template, ev TemplateEvent) (Template, error)
 	// ApproveTemplate makes a DRAFT APPROVED and retires the family's other
 	// APPROVED version, with the events. ErrTemplateState when not a DRAFT.
-	ApproveTemplate(ctx context.Context, id uuid.UUID, review LegalReview, by *uuid.UUID, byName string, at time.Time, events func(t Template, retired []Template) []TemplateEvent) (Template, error)
+	// review may be nil (no legal review recorded).
+	ApproveTemplate(ctx context.Context, id uuid.UUID, review *LegalReview, by *uuid.UUID, byName string, at time.Time, events func(t Template, retired []Template) []TemplateEvent) (Template, error)
 	TemplateEvents(ctx context.Context, templateID uuid.UUID) ([]TemplateEvent, error)
 
 	// NextReference returns the next lease reference of that year.
