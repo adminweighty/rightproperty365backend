@@ -1,0 +1,16 @@
+{{define "subject"}}Your {{.PlanName}} subscription is active{{end}}
+{{define "heading"}}Your subscription is active{{end}}
+{{define "button"}}View your subscription{{end}}
+{{define "why"}}You are receiving this because a payment was recorded for your RightProperty365 subscription.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+We have received your payment and your {{.PlanName}} subscription is active.
+
+Invoice: {{.InvoiceNumber}}
+Plan: {{.PlanName}}
+Period: {{.Period}}
+Amount paid: {{.Amount}}
+Starts: {{date .When}}
+Ends: {{date .ExpiresOn}}
+
+It does not renew by itself. From 30 days before it ends you can ask for the next period from your account, and we will send you a new invoice.{{end}}

@@ -7,12 +7,16 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"rightproperty365.com/backend/internal/platform/adminaudit"
 )
 
 // MemoryStore is an in-memory Store for development and tests.
 type MemoryStore struct {
 	mu   sync.RWMutex
 	sets map[string][]Item
+	// audit receives the administrators' audit records (admin.go).
+	audit *adminaudit.MemoryLog
 }
 
 // NewMemoryStore returns a store holding the given rows.

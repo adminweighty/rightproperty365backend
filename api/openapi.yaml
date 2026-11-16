@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.24.1
+  version: 0.25.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,44 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    The administrators' area (new in 0.25.0)
+    - **Accounts** (`/v1/admin/users`): list and search (SUPER_ADMIN, PLATFORM_ADMIN, SUPPORT), an
+      account's detail (roles and onboarding state, memberships, listing counts, last sign-in,
+      subscriptions, audit), and - SUPER_ADMIN and PLATFORM_ADMIN only - suspend (with a reason),
+      reactivate and delete. Nobody acts on their own account and only a SUPER_ADMIN acts on an
+      account that holds a platform role. **Suspension** ends every session at once and refuses
+      sign-in; it unpublishes nothing: the listings the person owns directly stay `PUBLISHED` but
+      leave the public catalogue while the account is suspended (the verified-advertiser rule
+      already requires the direct owner's account to be `ACTIVE`), and come back on reactivation;
+      an organisation's listings are the organisation's and stay public. **Deletion** anonymises
+      the account in place (see `AccountDeleted`) and is refused for the only owner of an
+      organisation that still has members (`409 SOLE_OWNER`). `DELETE /v1/me` (password again)
+      is the same deletion for the person themselves; an administrator account cannot use it.
+      The person is emailed (suspended, reactivated, deleted).
+    - **Subscriptions** (`/v1/me/subscription-plans`, `/v1/me/subscriptions`,
+      `/v1/admin/subscription-plans`, `/v1/admin/subscriptions`). **There is no online
+      payment**: asking for a plan creates a `PENDING_PAYMENT` subscription with an invoice number
+      and the amount (emailed); it is paid outside the platform, and a FINANCE_ADMIN (or
+      SUPER_ADMIN) records the payment, which makes it `ACTIVE` for 3 months (`QUARTERLY`) or a
+      year (`YEARLY`). Requests can be withdrawn while pending, rejected with a reason, and an
+      active subscription cancelled by an administrator, who records whether a pro-rata refund is
+      due (`refund_due`, a flag and a note: no money moves). Nothing renews by itself: from 30
+      days before the end the subscriber asks for the next period, a new invoice that starts when
+      the current period ends. Past its end a subscription is `EXPIRED` at once in every answer,
+      and the worker records it (and emails) within minutes. A plan's limits
+      (`MAX_ACTIVE_LISTINGS`, ...) are shown with the current usage but **not enforced yet**
+      (`usage.limit_enforced: false`).
+    - **Reference data** (`/v1/admin/reference`): relabel, reorder, deactivate and reactivate the
+      rows of every set; add rows to property types, listing features, service trades, regions,
+      cities and suburbs. Nothing is deleted (SUPER_ADMIN, PLATFORM_ADMIN, CONTENT_ADMIN;
+      MARKET_ADMIN for its own market's rows).
+    - **Reports** (`/v1/admin/reports/summary` for SUPER_ADMIN, PLATFORM_ADMIN, FINANCE_ADMIN):
+      counts over a date range per market and the payments recorded per currency; CSV exports of
+      users and listings (SUPER_ADMIN, PLATFORM_ADMIN) and subscriptions (also FINANCE_ADMIN).
+    - **Audit**: every administrator action above is recorded, immutably, in the same transaction
+      (`GET /v1/admin/audit`, SUPER_ADMIN and PLATFORM_ADMIN).
+    - Migration 0024 (additive). No existing response shape changes.
 
     Leases (new in 0.24.0)
     - **New: a lease template library and lease drafting.** Content administrators (SUPER_ADMIN,
@@ -409,6 +447,15 @@ tags:
       signing; bulk sending; templates of field layouts; form fields of the uploaded PDF itself
       (AcroForm) are not read.
   - name: admin
+    description: |
+      Platform administration. Every route needs an admin-scope session (POST /v1/admin/auth/login);
+      each names the platform roles it accepts (SUPER_ADMIN always qualifies).
+  - name: subscriptions
+    description: |
+      Paid plans for professionals and organisations, invoiced and paid outside the platform (no
+      online payment, nothing charged automatically). New in 0.25.0.
+  - name: reports
+    description: Administrators' counts and CSV exports. New in 0.25.0.
 
 paths:
   /healthz:
@@ -3605,6 +3652,50 @@ paths:
           $ref: "#/components/responses/Timeout"
 
   /v1/me:
+    delete:
+      tags: [account]
+      operationId: deleteMe
+      summary: Delete one's own account (new in 0.25.0)
+      description: |
+        The signed-in person deletes their account after typing their password again. Exactly
+        what an administrator's deletion does (see `AccountDeleted`): the account is anonymised and
+        can never sign in again, the session cookie is cleared, and the address it had is sent a
+        last email. Refused for the only owner of an organisation that still has members (`409
+        SOLE_OWNER`) and for an account holding a platform role (`403
+        ADMIN_ACCOUNT_CANNOT_SELF_DELETE`). Shares the per-IP limit of `POST /v1/auth/*`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeleteAccountRequest" }
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccountDeleted" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          description: "`UNAUTHENTICATED`, or `INVALID_PASSWORD` (the password is wrong)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "403":
+          description: "`ADMIN_ACCOUNT_CANNOT_SELF_DELETE` (`CSRF_ORIGIN` for a cookie request without the web app's `Origin`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: "`SOLE_OWNER`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429":
+          $ref: "#/components/responses/RateLimited"
     get:
       tags: [account]
       operationId: getMe
@@ -8237,8 +8328,1158 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/me/subscription-plans:
+    get:
+      tags: [subscriptions]
+      operationId: listMySubscriptionPlans
+      summary: The plans the caller may take (new in 0.25.0)
+      description: |
+        The `ACTIVE` plans offered to an approved (`ACTIVE`) account role of the caller; an
+        `ORGANISATION` plan only when the caller is the `OWNER` of an organisation. With `market`,
+        only the prices in that country's currency are returned and a plan without one is left
+        out. There is no online payment: taking a plan creates an invoice (see
+        `POST /v1/me/subscriptions`).
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - name: market
+          in: query
+          description: A country code; prices in its currency only.
+          schema: { type: string, pattern: "^[A-Za-z]{2}$" }
+      responses:
+        "200":
+          description: The plans on offer.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AvailablePlans" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+
+  /v1/me/subscriptions:
+    get:
+      tags: [subscriptions]
+      operationId: listMySubscriptions
+      summary: The caller's subscriptions and those of the organisations they own (new in 0.25.0)
+      description: |
+        One entry per subscriber: the caller (always) and every organisation they are the `OWNER`
+        of. `current` is the subscription in force now, `upcoming` a paid renewal that starts
+        when it ends, `pending` the one waiting for payment, `history` every subscription,
+        newest first. `can_renew` is true from 30 days before the end of `current` when nothing
+        else is pending or upcoming. `usage` shows the published listings against the plan's
+        `MAX_ACTIVE_LISTINGS` limit; **the limit is not enforced yet** (`limit_enforced: false`).
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The caller's subscribers.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MySubscriptions" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+    post:
+      tags: [subscriptions]
+      operationId: requestSubscription
+      summary: Ask for a plan, which creates an invoice (new in 0.25.0)
+      description: |
+        Creates a `PENDING_PAYMENT` subscription with an invoice number (`RPS-<year>-<6 digits>`)
+        and the plan's price in the market's currency for the period. The requester is emailed
+        the invoice. Pay it outside the platform (bank transfer or the method on the invoice),
+        quoting the invoice number; a finance administrator records the payment, which
+        activates the subscription. Nothing is ever charged automatically.
+
+        - An `INDIVIDUAL` plan is for the caller: `market_code` is required unless the caller
+          belongs to an organisation (its country is used); `organisation_id` must be empty.
+        - An `ORGANISATION` plan needs `organisation_id`, an organisation the caller is the
+          `OWNER` of (`403 NOT_ORGANISATION_OWNER` otherwise); its country is the market.
+        - The caller must hold an approved role the plan is offered to (`403 PLAN_NOT_ELIGIBLE`).
+        - At most one subscription per subscriber waits for payment (`409
+          SUBSCRIPTION_PENDING_EXISTS`); with a subscription in force, renew it instead (`409
+          SUBSCRIPTION_ACTIVE_EXISTS`).
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SubscriptionRequest" }
+      responses:
+        "201":
+          description: The subscription, `PENDING_PAYMENT`, with `payment_instructions`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubscriptionEnvelope" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: "`PLAN_NOT_ELIGIBLE` or `NOT_ORGANISATION_OWNER` (`CSRF_ORIGIN` for a cookie write without the web app's `Origin`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404":
+          description: "`PLAN_NOT_FOUND`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: "`SUBSCRIPTION_PENDING_EXISTS` or `SUBSCRIPTION_ACTIVE_EXISTS`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "422":
+          description: "`PLAN_NOT_AVAILABLE` (retired) or `PRICE_NOT_AVAILABLE` (no price in that currency for that period)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /v1/me/subscriptions/{id}:
+    get:
+      tags: [subscriptions]
+      operationId: getMySubscription
+      summary: One of the caller's subscriptions, with its history (new in 0.25.0)
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - $ref: "#/components/parameters/SubscriptionId"
+      responses:
+        "200":
+          description: The subscription and its history, oldest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [subscription, events]
+                properties:
+                  subscription: { $ref: "#/components/schemas/Subscription" }
+                  events:
+                    type: array
+                    items: { $ref: "#/components/schemas/SubscriptionEvent" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: "`SUBSCRIPTION_NOT_FOUND`: no such subscription, or not the caller's (or their organisation's)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/me/subscriptions/{id}/cancel:
+    post:
+      tags: [subscriptions]
+      operationId: cancelMySubscription
+      summary: Withdraw a request while it waits for payment (new in 0.25.0)
+      description: Only `PENDING_PAYMENT` (`409 SUBSCRIPTION_STATE_CONFLICT` otherwise). No body.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - $ref: "#/components/parameters/SubscriptionId"
+      responses:
+        "200":
+          description: The subscription, `CANCELLED` (`cancelled_by` `SUBSCRIBER`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubscriptionEnvelope" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: "`SUBSCRIPTION_NOT_FOUND`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: "`SUBSCRIPTION_STATE_CONFLICT`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/me/subscriptions/{id}/renew:
+    post:
+      tags: [subscriptions]
+      operationId: renewMySubscription
+      summary: Ask for the next period (new in 0.25.0)
+      description: |
+        From 30 days before the end of a subscription in force (`409 RENEWAL_NOT_OPEN` before):
+        a new `PENDING_PAYMENT` subscription of the same plan (`renewal_of` set), invoiced at the
+        plan's current price for `period` (default: the current period), that starts when the
+        current one ends once its payment is recorded. Refused while another subscription of the
+        subscriber is pending or already paid for later (`409`), or when the plan was retired
+        (`422 PLAN_NOT_AVAILABLE`).
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - $ref: "#/components/parameters/SubscriptionId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                period: { type: string, enum: [QUARTERLY, YEARLY] }
+      responses:
+        "201":
+          description: The renewal, `PENDING_PAYMENT`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubscriptionEnvelope" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: "`SUBSCRIPTION_NOT_FOUND`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: "`RENEWAL_NOT_OPEN`, `SUBSCRIPTION_STATE_CONFLICT` (not in force), `SUBSCRIPTION_PENDING_EXISTS` or `SUBSCRIPTION_ACTIVE_EXISTS` (a paid renewal exists)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "422":
+          description: "`PLAN_NOT_AVAILABLE` or `PRICE_NOT_AVAILABLE`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/admin/users:
+    get:
+      tags: [admin]
+      operationId: adminListUsers
+      summary: Every account, searchable (SUPER_ADMIN, PLATFORM_ADMIN, SUPPORT; new in 0.25.0)
+      description: |
+        Newest first. `q` matches the name or email address; `role` an account role in any
+        status (`AGENT`, `LANDLORD`, ...) or a platform role (`SUPER_ADMIN`, ...); `status`
+        `ACTIVE`, `SUSPENDED` or `DELETED`; `market` a country where the account has a membership
+        that was not removed. Administrators are listed too.
+      security:
+        - cookieSession: []
+      parameters:
+        - { name: q, in: query, schema: { type: string, maxLength: 200 } }
+        - { name: role, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string, enum: [ACTIVE, SUSPENDED, DELETED] } }
+        - { name: market, in: query, schema: { type: string, pattern: "^[A-Za-z]{2}$" } }
+        - $ref: "#/components/parameters/RequestPage"
+        - $ref: "#/components/parameters/RequestPageSize"
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminUserPage" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /v1/admin/users/{id}:
+    get:
+      tags: [admin]
+      operationId: adminGetUser
+      summary: An account's detail (SUPER_ADMIN, PLATFORM_ADMIN, SUPPORT; new in 0.25.0)
+      description: |
+        Roles with their onboarding state, platform roles, every membership (any status), the
+        listings the person owns directly or is the assigned agent of (by status), the last
+        sign-in (the newest session), the suspension, the subscriptions of the person and of the
+        organisations they own, and the newest 20 records of the administrators' audit trail
+        about the account.
+      security:
+        - cookieSession: []
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      responses:
+        "200":
+          description: The account.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminUserDetail" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/UserNotFound"
+
+  /v1/admin/users/{id}/suspend:
+    post:
+      tags: [admin]
+      operationId: adminSuspendUser
+      summary: Suspend an account (SUPER_ADMIN, PLATFORM_ADMIN; new in 0.25.0)
+      description: |
+        Only an `ACTIVE` account. At once: every session is revoked, sign-in codes and reset
+        links stop working, and sign-in is refused (`INVALID_CREDENTIALS`, as for any account that
+        is not active). **Nothing is unpublished**: the listings the person owns directly stay
+        `PUBLISHED` but are not public while the account is suspended, because a direct owner's
+        listing is public only while the owner's account is `ACTIVE` (the verified-advertiser
+        rule; the search index is refreshed). Listings of an organisation stay public: they are
+        the organisation's. The person is emailed the reason; an audit record is written.
+        Nobody suspends their own account (`403 SELF_ACTION_FORBIDDEN`), and only a SUPER_ADMIN
+        suspends an account that holds a platform role (`403 ADMIN_ACCOUNT_PROTECTED`).
+      security:
+        - cookieSession: []
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminReason" }
+      responses:
+        "200":
+          description: The account, `SUSPENDED`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminUserDetail" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/AdminUserForbidden"
+        "404":
+          $ref: "#/components/responses/UserNotFound"
+        "409":
+          $ref: "#/components/responses/UserStateConflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /v1/admin/users/{id}/reactivate:
+    post:
+      tags: [admin]
+      operationId: adminReactivateUser
+      summary: Reactivate a suspended account (SUPER_ADMIN, PLATFORM_ADMIN; new in 0.25.0)
+      description: |
+        Only a `SUSPENDED` account; the person may sign in again and their own listings are
+        public again while published. The body (an optional `note`) may be omitted. The person
+        is emailed; an audit record is written.
+      security:
+        - cookieSession: []
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                note: { type: string, maxLength: 1000 }
+      responses:
+        "200":
+          description: The account, `ACTIVE`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminUserDetail" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/AdminUserForbidden"
+        "404":
+          $ref: "#/components/responses/UserNotFound"
+        "409":
+          $ref: "#/components/responses/UserStateConflict"
+
+  /v1/admin/users/{id}/delete:
+    post:
+      tags: [admin]
+      operationId: adminDeleteUser
+      summary: Delete (anonymise) an account (SUPER_ADMIN, PLATFORM_ADMIN; new in 0.25.0)
+      description: |
+        See `AccountDeleted` for what deletion does. The account row is kept, anonymised, so
+        audit records, signed agreements and leases keep their references; it is `DELETED` and
+        can never sign in again. Refused, with nothing changed, while the person is the only
+        active owner of an organisation that still has other members (`409 SOLE_OWNER`, the
+        message names the organisations): make another member an owner or remove the members
+        first. The address the account had is sent a last email. Same rules on whose account as
+        suspension.
+      security:
+        - cookieSession: []
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminReason" }
+      responses:
+        "200":
+          description: What the deletion did.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccountDeleted" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/AdminUserForbidden"
+        "404":
+          $ref: "#/components/responses/UserNotFound"
+        "409":
+          description: "`SOLE_OWNER`, or `USER_STATE_CONFLICT` (already deleted)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/admin/audit:
+    get:
+      tags: [admin]
+      operationId: adminAudit
+      summary: The administrators' audit trail (SUPER_ADMIN, PLATFORM_ADMIN; new in 0.25.0)
+      description: |
+        Newest first. Every administrator action of the administrators' area is recorded in the
+        same transaction as the change and never altered: account suspension, reactivation and
+        deletion (also self-service deletion), plans, subscription decisions and reference data.
+      security:
+        - cookieSession: []
+      parameters:
+        - { name: target_type, in: query, schema: { type: string, enum: [USER, SUBSCRIPTION_PLAN, SUBSCRIPTION, REFERENCE_ITEM] } }
+        - { name: target_id, in: query, description: "A UUID, or `<set>/<code>` for a reference item.", schema: { type: string } }
+        - { name: action, in: query, schema: { type: string } }
+        - { name: actor_user_id, in: query, schema: { type: string, format: uuid } }
+        - $ref: "#/components/parameters/RequestPage"
+        - $ref: "#/components/parameters/RequestPageSize"
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page, page_size, total]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/AdminAuditEvent" }
+                  page: { type: integer }
+                  page_size: { type: integer }
+                  total: { type: integer }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /v1/admin/subscription-plans:
+    get:
+      tags: [admin, subscriptions]
+      operationId: adminListPlans
+      summary: Every plan (SUPER_ADMIN, FINANCE_ADMIN, PLATFORM_ADMIN, SUPPORT; new in 0.25.0)
+      description: Retired plans included unless `include_retired=false`; with the feature codes and the roles a plan may be offered to.
+      security:
+        - cookieSession: []
+      parameters:
+        - { name: include_retired, in: query, schema: { type: boolean, default: true } }
+      responses:
+        "200":
+          description: The plans.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [plans, feature_codes, professional_roles]
+                properties:
+                  plans:
+                    type: array
+                    items: { $ref: "#/components/schemas/SubscriptionPlan" }
+                  feature_codes:
+                    type: array
+                    items: { type: string, enum: [MAX_ACTIVE_LISTINGS, MAX_FEATURED_LISTINGS, MAX_TEAM_MEMBERS] }
+                  professional_roles:
+                    type: array
+                    items: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [admin, subscriptions]
+      operationId: adminCreatePlan
+      summary: Create a plan (SUPER_ADMIN, FINANCE_ADMIN; new in 0.25.0)
+      description: |
+        Required: `name`, `subscriber_kind`, `eligible_roles` (professional account roles only:
+        never `CONSUMER` or `TENANT`), and at least one price (one per currency and period;
+        `amount` a positive decimal string with at most two decimals). `features` are
+        `{code, limit}` with `limit` null for unlimited; `benefits` free text (at most 20).
+      security:
+        - cookieSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SubscriptionPlanInput" }
+      responses:
+        "201":
+          description: The plan, `ACTIVE`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubscriptionPlanEnvelope" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /v1/admin/subscription-plans/{id}:
+    get:
+      tags: [admin, subscriptions]
+      operationId: adminGetPlan
+      summary: One plan (new in 0.25.0)
+      security:
+        - cookieSession: []
+      parameters:
+        - $ref: "#/components/parameters/PlanId"
+      responses:
+        "200":
+          description: The plan.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubscriptionPlanEnvelope" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PlanNotFound"
+    patch:
+      tags: [admin, subscriptions]
+      operationId: adminUpdatePlan
+      summary: Change a plan (SUPER_ADMIN, FINANCE_ADMIN; new in 0.25.0)
+      description: |
+        Every field is optional; `prices`, `features`, `benefits` and `eligible_roles` replace the
+        whole list. Subscriptions already requested keep the name, period and amount they were
+        invoiced with. A retired plan cannot be changed (`409 PLAN_RETIRED`).
+      security:
+        - cookieSession: []
+      parameters:
+        - $ref: "#/components/parameters/PlanId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SubscriptionPlanInput" }
+      responses:
+        "200":
+          description: The plan.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubscriptionPlanEnvelope" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PlanNotFound"
+        "409":
+          description: "`PLAN_RETIRED`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/admin/subscription-plans/{id}/retire:
+    post:
+      tags: [admin, subscriptions]
+      operationId: adminRetirePlan
+      summary: Retire a plan (SUPER_ADMIN, FINANCE_ADMIN; new in 0.25.0)
+      description: It is no longer offered, requested or renewed; subscriptions already taken run to their end. Plans are never deleted.
+      security:
+        - cookieSession: []
+      parameters:
+        - $ref: "#/components/parameters/PlanId"
+      responses:
+        "200":
+          description: The plan, `RETIRED`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubscriptionPlanEnvelope" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PlanNotFound"
+        "409":
+          description: "`PLAN_RETIRED`: already retired."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/admin/subscriptions:
+    get:
+      tags: [admin, subscriptions]
+      operationId: adminListSubscriptions
+      summary: Every subscription (SUPER_ADMIN, FINANCE_ADMIN, PLATFORM_ADMIN, SUPPORT; new in 0.25.0)
+      description: Newest first. `status` is the stored status (an `ACTIVE` one past its end is shown `EXPIRED` in the item).
+      security:
+        - cookieSession: []
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [PENDING_PAYMENT, ACTIVE, EXPIRED, REJECTED, CANCELLED] } }
+        - { name: plan_id, in: query, schema: { type: string, format: uuid } }
+        - { name: market, in: query, schema: { type: string, pattern: "^[A-Za-z]{2}$" } }
+        - { name: period, in: query, schema: { type: string, enum: [QUARTERLY, YEARLY] } }
+        - { name: subscriber_kind, in: query, schema: { type: string, enum: [INDIVIDUAL, ORGANISATION] } }
+        - { name: q, in: query, description: The invoice number or the subscriber's name., schema: { type: string } }
+        - $ref: "#/components/parameters/RequestPage"
+        - $ref: "#/components/parameters/RequestPageSize"
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page, page_size, total]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Subscription" }
+                  page: { type: integer }
+                  page_size: { type: integer }
+                  total: { type: integer }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /v1/admin/subscriptions/{id}:
+    get:
+      tags: [admin, subscriptions]
+      operationId: adminGetSubscription
+      summary: A subscription with its history and the subscriber's usage (new in 0.25.0)
+      security:
+        - cookieSession: []
+      parameters:
+        - $ref: "#/components/parameters/SubscriptionId"
+      responses:
+        "200":
+          description: The subscription.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubscriptionDetail" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/SubscriptionNotFound"
+
+  /v1/admin/subscriptions/{id}/approve:
+    post:
+      tags: [admin, subscriptions]
+      operationId: adminApproveSubscription
+      summary: Record the payment and activate (SUPER_ADMIN, FINANCE_ADMIN; new in 0.25.0)
+      description: |
+        Only `PENDING_PAYMENT`. Records the payment received outside the platform (reference,
+        amount in the invoice currency, the day it was received, a note) and activates the
+        subscription: it starts now, or when the subscriber's paid period ends for a renewal,
+        and ends 3 months (`QUARTERLY`) or 1 year (`YEARLY`) later. The amount must cover the
+        invoice (`422 PAYMENT_AMOUNT_TOO_LOW`); an overpayment is recorded as received (refund
+        it as the Refund Policy says). The requester is emailed; an audit record is written.
+      security:
+        - cookieSession: []
+      parameters:
+        - $ref: "#/components/parameters/SubscriptionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SubscriptionPayment" }
+      responses:
+        "200":
+          description: The subscription, `ACTIVE`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubscriptionDetail" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/SubscriptionNotFound"
+        "409":
+          $ref: "#/components/responses/SubscriptionStateConflict"
+        "422":
+          description: "`PAYMENT_AMOUNT_TOO_LOW`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/admin/subscriptions/{id}/reject:
+    post:
+      tags: [admin, subscriptions]
+      operationId: adminRejectSubscription
+      summary: Refuse a request (SUPER_ADMIN, FINANCE_ADMIN; new in 0.25.0)
+      description: |
+        Only `PENDING_PAYMENT`; `REJECTED` with the reason (emailed). When a payment had been
+        received all the same, set `refund_due` (Refund Policy: service not activated, or
+        application not approved); no money moves here.
+      security:
+        - cookieSession: []
+      parameters:
+        - $ref: "#/components/parameters/SubscriptionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SubscriptionDecision" }
+      responses:
+        "200":
+          description: The subscription, `REJECTED`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubscriptionDetail" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/SubscriptionNotFound"
+        "409":
+          $ref: "#/components/responses/SubscriptionStateConflict"
+
+  /v1/admin/subscriptions/{id}/cancel:
+    post:
+      tags: [admin, subscriptions]
+      operationId: adminCancelSubscription
+      summary: Cancel a subscription (SUPER_ADMIN, FINANCE_ADMIN; new in 0.25.0)
+      description: |
+        An `ACTIVE` (in force or upcoming) or `PENDING_PAYMENT` subscription becomes `CANCELLED`
+        (`cancelled_by` `ADMIN`) with the reason. `refund_due` and `refund_note` record whether a
+        pro-rata refund of the unused period is due under the Refund Policy (for example a
+        withdrawal that is not for the subscriber's breach of the Terms); no money moves here.
+        The requester is emailed.
+      security:
+        - cookieSession: []
+      parameters:
+        - $ref: "#/components/parameters/SubscriptionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SubscriptionDecision" }
+      responses:
+        "200":
+          description: The subscription, `CANCELLED`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubscriptionDetail" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/SubscriptionNotFound"
+        "409":
+          $ref: "#/components/responses/SubscriptionStateConflict"
+
+  /v1/admin/reference:
+    get:
+      tags: [admin, reference]
+      operationId: adminReferenceSets
+      summary: The reference sets and what may be done to each (new in 0.25.0)
+      description: |
+        SUPER_ADMIN, PLATFORM_ADMIN, CONTENT_ADMIN and MARKET_ADMIN (who changes only the rows of
+        its own market). `creatable`: rows may be added (property types, listing features,
+        service trades, regions, cities, suburbs); every other set's codes drive behaviour and can
+        only be relabelled, reordered, deactivated and reactivated. Nothing is ever deleted.
+      security:
+        - cookieSession: []
+      responses:
+        "200":
+          description: The sets.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sets]
+                properties:
+                  sets:
+                    type: array
+                    items:
+                      type: object
+                      required: [set, creatable, market_bound, parent_set]
+                      properties:
+                        set: { type: string }
+                        creatable: { type: boolean }
+                        market_bound: { type: boolean, description: Rows belong to one market (market_code required). }
+                        parent_set: { type: [string, "null"], description: The set parent_code points into. }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /v1/admin/reference/{set}:
+    get:
+      tags: [admin, reference]
+      operationId: adminReferenceList
+      summary: Every row of a set, inactive ones too (new in 0.25.0)
+      security:
+        - cookieSession: []
+      parameters:
+        - $ref: "#/components/parameters/ReferenceSet"
+        - { name: market, in: query, schema: { type: string, pattern: "^[A-Za-z]{2}$" } }
+      responses:
+        "200":
+          description: The rows, with `active`.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [set, items]
+                properties:
+                  set: { type: string }
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/AdminReferenceItem" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: "`REFERENCE_SET_NOT_FOUND`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    post:
+      tags: [admin, reference]
+      operationId: adminReferenceCreate
+      summary: Add a row to a creatable set (new in 0.25.0)
+      description: |
+        `code` is lower-case letters and digits separated by single hyphens and never changes.
+        `parent_code` must be an active code of the parent set (a property category for a property
+        type, a region for a city, a city for a suburb); `market_code` is required for regions,
+        cities and suburbs. The row is offered (and accepted in input) at once.
+      security:
+        - cookieSession: []
+      parameters:
+        - $ref: "#/components/parameters/ReferenceSet"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminReferenceInput" }
+      responses:
+        "201":
+          description: The row.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminReferenceEnvelope" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: "`FORBIDDEN`, or `REFERENCE_MARKET_FORBIDDEN` (a MARKET_ADMIN outside its market)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404":
+          description: "`REFERENCE_SET_NOT_FOUND`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: "`REFERENCE_ITEM_EXISTS` (also when the existing row is inactive: reactivate it)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "422":
+          description: "`REFERENCE_SET_NOT_EXTENSIBLE`: rows cannot be added to this set."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/admin/reference/{set}/{code}:
+    patch:
+      tags: [admin, reference]
+      operationId: adminReferenceUpdate
+      summary: Relabel or reorder a row (new in 0.25.0)
+      description: "`label`, `singular_label`, `description`, `sort_order` and `parent_code` may change; `code` and `market_code` never do (`400`)."
+      security:
+        - cookieSession: []
+      parameters:
+        - $ref: "#/components/parameters/ReferenceSet"
+        - $ref: "#/components/parameters/ReferenceCode"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminReferenceInput" }
+      responses:
+        "200":
+          description: The row.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminReferenceEnvelope" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: "`FORBIDDEN` or `REFERENCE_MARKET_FORBIDDEN`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404":
+          description: "`REFERENCE_SET_NOT_FOUND` or `REFERENCE_ITEM_NOT_FOUND`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/admin/reference/{set}/{code}/deactivate:
+    post:
+      tags: [admin, reference]
+      operationId: adminReferenceDeactivate
+      summary: Deactivate a row (new in 0.25.0)
+      description: |
+        The row is no longer offered or accepted in new input, at once. It is never deleted: the
+        listings, profiles and requests that use the code keep it, and it can be reactivated.
+      security:
+        - cookieSession: []
+      parameters:
+        - $ref: "#/components/parameters/ReferenceSet"
+        - $ref: "#/components/parameters/ReferenceCode"
+      responses:
+        "200":
+          description: The row, `active` false.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminReferenceEnvelope" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: "`FORBIDDEN` or `REFERENCE_MARKET_FORBIDDEN`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404":
+          description: "`REFERENCE_SET_NOT_FOUND` or `REFERENCE_ITEM_NOT_FOUND`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/admin/reference/{set}/{code}/reactivate:
+    post:
+      tags: [admin, reference]
+      operationId: adminReferenceReactivate
+      summary: Reactivate a row (new in 0.25.0)
+      security:
+        - cookieSession: []
+      parameters:
+        - $ref: "#/components/parameters/ReferenceSet"
+        - $ref: "#/components/parameters/ReferenceCode"
+      responses:
+        "200":
+          description: The row, `active` true.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminReferenceEnvelope" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: "`FORBIDDEN` or `REFERENCE_MARKET_FORBIDDEN`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404":
+          description: "`REFERENCE_SET_NOT_FOUND` or `REFERENCE_ITEM_NOT_FOUND`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/admin/reports/summary:
+    get:
+      tags: [admin, reports]
+      operationId: adminReportSummary
+      summary: Counts over a date range, per market (SUPER_ADMIN, PLATFORM_ADMIN, FINANCE_ADMIN; new in 0.25.0)
+      description: |
+        Everything CREATED in `[from, to]` (UTC days, both included; default the last 30 days, at
+        most three years), grouped by its status now (new users by account role; property
+        requests by lead stage, `ROUTING_EXCEPTION` apart) and market. An account has no market:
+        it is counted in the country of its first membership (`market_code` null when none), and
+        administrators are not counted; a person with several roles counts once per role, `NONE`
+        for none. An agreement has no market (`market_code` null; none with a market filter).
+        `revenue` sums the payments administrators recorded, by the day they were received, per
+        currency and market: there is no online payment.
+      security:
+        - cookieSession: []
+      parameters:
+        - $ref: "#/components/parameters/ReportFrom"
+        - $ref: "#/components/parameters/ReportTo"
+        - $ref: "#/components/parameters/ReportMarket"
+      responses:
+        "200":
+          description: The counts.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReportSummary" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /v1/admin/reports/users.csv:
+    get:
+      tags: [admin, reports]
+      operationId: adminExportUsers
+      summary: Accounts created in the range, as CSV (SUPER_ADMIN, PLATFORM_ADMIN; new in 0.25.0)
+      description: |
+        Streamed, newest first, at most `limit` rows (default 10000, at most 50000).
+        `X-Total-Count` is the number of matching rows and `X-Export-Truncated` says whether
+        some were left out (narrow the range). Columns: id, name, email, status, email_verified,
+        account_roles, platform_roles, market_codes (space-separated), created_at,
+        last_sign_in_at. A cell that starts with `=`, `+`, `-`, `@`, a tab or a carriage return is
+        prefixed with `'` so that a spreadsheet does not run it as a formula. Personal data:
+        handle the file accordingly.
+      security:
+        - cookieSession: []
+      parameters:
+        - $ref: "#/components/parameters/ReportFrom"
+        - $ref: "#/components/parameters/ReportTo"
+        - $ref: "#/components/parameters/ReportMarket"
+        - $ref: "#/components/parameters/ExportLimit"
+      responses:
+        "200":
+          $ref: "#/components/responses/CSVExport"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /v1/admin/reports/listings.csv:
+    get:
+      tags: [admin, reports]
+      operationId: adminExportListings
+      summary: Listings created in the range, as CSV (SUPER_ADMIN, PLATFORM_ADMIN; new in 0.25.0)
+      description: |
+        As `users.csv`. Columns: id, reference, title, status (a published listing past its
+        expiry is `EXPIRED`), market_code, deal, category, property_type, price, currency_code,
+        organisation_id, agent_user_id, seller_user_id, created_at, published_at, expires_at.
+      security:
+        - cookieSession: []
+      parameters:
+        - $ref: "#/components/parameters/ReportFrom"
+        - $ref: "#/components/parameters/ReportTo"
+        - $ref: "#/components/parameters/ReportMarket"
+        - $ref: "#/components/parameters/ExportLimit"
+      responses:
+        "200":
+          $ref: "#/components/responses/CSVExport"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /v1/admin/reports/subscriptions.csv:
+    get:
+      tags: [admin, reports]
+      operationId: adminExportSubscriptions
+      summary: Subscriptions created in the range, as CSV (SUPER_ADMIN, FINANCE_ADMIN, PLATFORM_ADMIN; new in 0.25.0)
+      description: |
+        As `users.csv`. Columns: id, invoice_number, status, plan_name, period, subscriber_kind,
+        subscriber_name, market_code, currency_code, amount, payment_amount, payment_reference,
+        payment_received_on, starts_at, ends_at, created_at, refund_due.
+      security:
+        - cookieSession: []
+      parameters:
+        - $ref: "#/components/parameters/ReportFrom"
+        - $ref: "#/components/parameters/ReportTo"
+        - $ref: "#/components/parameters/ReportMarket"
+        - $ref: "#/components/parameters/ExportLimit"
+      responses:
+        "200":
+          $ref: "#/components/responses/CSVExport"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
 components:
   parameters:
+    UserId:
+      name: id
+      in: path
+      required: true
+      description: The account's ID.
+      schema: { type: string, format: uuid }
+    PlanId:
+      name: id
+      in: path
+      required: true
+      description: The plan's ID.
+      schema: { type: string, format: uuid }
+    SubscriptionId:
+      name: id
+      in: path
+      required: true
+      description: The subscription's ID.
+      schema: { type: string, format: uuid }
+    ReferenceSet:
+      name: set
+      in: path
+      required: true
+      schema: { $ref: "#/components/schemas/ReferenceSetCode" }
+    ReferenceCode:
+      name: code
+      in: path
+      required: true
+      schema: { type: string, maxLength: 80 }
+    ReportFrom:
+      name: from
+      in: query
+      description: First day of the range (UTC, YYYY-MM-DD). Default 29 days before `to`.
+      schema: { type: string, format: date }
+    ReportTo:
+      name: to
+      in: query
+      description: Last day of the range, included (UTC, YYYY-MM-DD). Default today.
+      schema: { type: string, format: date }
+    ReportMarket:
+      name: market
+      in: query
+      description: Country codes separated by commas; every market when absent.
+      schema: { type: string, examples: ["ZW,GB"] }
+    ExportLimit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 50000, default: 10000 }
     AgreementId:
       name: id
       in: path
@@ -8429,6 +9670,55 @@ components:
         type: string
 
   responses:
+    UserNotFound:
+      description: "`USER_NOT_FOUND`."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    UserStateConflict:
+      description: "`USER_STATE_CONFLICT`: the account's status does not allow this (suspend: not `ACTIVE`; reactivate: not `SUSPENDED`)."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    AdminUserForbidden:
+      description: |
+        `FORBIDDEN` (not SUPER_ADMIN or PLATFORM_ADMIN on an admin session),
+        `SELF_ACTION_FORBIDDEN` (one's own account) or `ADMIN_ACCOUNT_PROTECTED` (an account
+        holding a platform role, by anybody but a SUPER_ADMIN).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    PlanNotFound:
+      description: "`PLAN_NOT_FOUND`."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    SubscriptionNotFound:
+      description: "`SUBSCRIPTION_NOT_FOUND`."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    SubscriptionStateConflict:
+      description: "`SUBSCRIPTION_STATE_CONFLICT`: the subscription's status does not allow this."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    CSVExport:
+      description: A CSV file (header row first), streamed.
+      headers:
+        Content-Disposition:
+          schema: { type: string, examples: ['attachment; filename="users-2026-10-18-to-2026-11-16.csv"'] }
+        X-Total-Count:
+          description: The number of rows that match.
+          schema: { type: integer }
+        X-Export-Limit:
+          schema: { type: integer }
+        X-Export-Truncated:
+          description: true when rows were left out (narrow the range).
+          schema: { type: boolean }
+      content:
+        text/csv:
+          schema: { type: string }
     CustomerAppointment:
       description: The appointment as its customer sees it, with its timeline.
       content:
@@ -13642,3 +14932,426 @@ components:
           type: integer
         statement:
           type: string
+    # -----------------------------------------------------------------------
+    # The administrators' area (new in 0.25.0)
+    # -----------------------------------------------------------------------
+    DeleteAccountRequest:
+      type: object
+      required: [password]
+      additionalProperties: false
+      properties:
+        password: { type: string, description: The account's current password. }
+    AccountDeleted:
+      type: object
+      description: |
+        What deleting an account did. The account is anonymised in place (name `Deleted
+        account`, address `deleted-<id>@deleted.invalid`, no phone, no password, marketing
+        consent withdrawn, status `DELETED`); every session, sign-in code and reset link ends;
+        every membership is `REMOVED` with the person's open requests and appointments given
+        back to the organisation (and a `MEMBER_REMOVED` team audit record); the listings they own
+        directly are `ARCHIVED` (withdrawn) and they are removed as the assigned agent of
+        organisation listings; their agent profile is hidden; their own pending and active
+        subscriptions are `CANCELLED` (no refund is recorded); their saved signature is deleted.
+        Audit records, signed agreements, leases, and the requests and enquiries they sent stay as
+        they are.
+      required: [status, sessions_revoked, organisations_left, listings_withdrawn, listings_unassigned, subscriptions_cancelled]
+      properties:
+        status: { type: string, enum: [DELETED] }
+        sessions_revoked: { type: integer }
+        organisations_left: { type: integer }
+        listings_withdrawn: { type: integer }
+        listings_unassigned: { type: integer }
+        subscriptions_cancelled: { type: integer }
+    AdminReason:
+      type: object
+      required: [reason]
+      additionalProperties: false
+      properties:
+        reason: { type: string, minLength: 3, maxLength: 1000, description: Kept in the audit trail; a suspension's reason is emailed to the person. }
+    AdminUserSummary:
+      type: object
+      required: [id, name, email, status, email_verified, created_at, last_sign_in_at, account_roles, platform_roles, market_codes]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        email: { type: string }
+        status: { type: string, enum: [ACTIVE, SUSPENDED, DELETED] }
+        email_verified: { type: boolean }
+        created_at: { type: string, format: date-time }
+        last_sign_in_at: { type: [string, "null"], format: date-time }
+        account_roles: { type: array, items: { type: string } }
+        platform_roles: { type: array, items: { type: string } }
+        market_codes: { type: array, items: { type: string }, description: Countries of the memberships that were not removed. }
+    AdminUserPage:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/AdminUserSummary" }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer }
+    AdminUserDetail:
+      type: object
+      required: [user, subscriptions, audit]
+      properties:
+        user:
+          type: object
+          required: [id, name, email, status, email_verified, created_at, last_sign_in_at, suspended_at, suspension_reason, deleted_at,
+                     platform_roles, account_roles, memberships, listing_counts, listings_total]
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string }
+            email: { type: string }
+            status: { type: string, enum: [ACTIVE, SUSPENDED, DELETED] }
+            email_verified: { type: boolean }
+            created_at: { type: string, format: date-time }
+            last_sign_in_at: { type: [string, "null"], format: date-time, description: When the newest session started. }
+            suspended_at: { type: [string, "null"], format: date-time }
+            suspension_reason: { type: [string, "null"] }
+            deleted_at: { type: [string, "null"], format: date-time }
+            platform_roles:
+              type: array
+              items:
+                type: object
+                required: [role, market_code]
+                properties:
+                  role: { type: string }
+                  market_code: { type: [string, "null"] }
+            account_roles:
+              type: array
+              items:
+                type: object
+                required: [role, status, onboarding_status]
+                properties:
+                  role: { type: string }
+                  status: { type: string }
+                  onboarding_status: { type: [string, "null"], description: The newest onboarding application's status. }
+            memberships:
+              type: array
+              description: Every membership, in any status (ACTIVE, INVITED, SUSPENDED, REMOVED).
+              items:
+                type: object
+                required: [organisation_id, organisation_name, organisation_kind, market_code, role, role_label, status]
+                properties:
+                  organisation_id: { type: string, format: uuid }
+                  organisation_name: { type: string }
+                  organisation_kind: { type: string }
+                  market_code: { type: string }
+                  role: { type: string, enum: [OWNER, MANAGER, AGENT, STAFF] }
+                  role_label: { type: string }
+                  status: { type: string }
+            listing_counts:
+              type: object
+              description: Listings the person owns directly or is the assigned agent of, by status (a published one past its expiry is EXPIRED).
+              additionalProperties: { type: integer }
+            listings_total: { type: integer }
+        subscriptions:
+          type: array
+          items:
+            type: object
+            required: [id, invoice_number, plan_name, period, status, subscriber_kind, subscriber_name, amount, currency_code, starts_at, ends_at, organisation_id]
+            properties:
+              id: { type: string, format: uuid }
+              invoice_number: { type: string }
+              plan_name: { type: string }
+              period: { type: string, enum: [QUARTERLY, YEARLY] }
+              status: { type: string, enum: [PENDING_PAYMENT, ACTIVE, EXPIRED, REJECTED, CANCELLED] }
+              subscriber_kind: { type: string, enum: [INDIVIDUAL, ORGANISATION] }
+              subscriber_name: { type: string }
+              amount: { type: string }
+              currency_code: { type: string }
+              starts_at: { type: [string, "null"], format: date-time }
+              ends_at: { type: [string, "null"], format: date-time }
+              organisation_id: { type: [string, "null"], format: uuid }
+              organisation_name: { type: string }
+        audit:
+          type: array
+          description: The newest 20 records about the account.
+          items: { $ref: "#/components/schemas/AdminAuditEvent" }
+    AdminAuditEvent:
+      type: object
+      required: [id, actor_user_id, actor_name, action, target_type, target_id, target_label, reason, before, after, at]
+      properties:
+        id: { type: string, format: uuid }
+        actor_user_id: { type: [string, "null"], format: uuid }
+        actor_name: { type: string }
+        action:
+          type: string
+          enum: [USER_SUSPENDED, USER_REACTIVATED, USER_DELETED, USER_SELF_DELETED, PLAN_CREATED, PLAN_UPDATED, PLAN_RETIRED,
+                 SUBSCRIPTION_APPROVED, SUBSCRIPTION_REJECTED, SUBSCRIPTION_CANCELLED, REFERENCE_ITEM_CREATED, REFERENCE_ITEM_UPDATED,
+                 REFERENCE_ITEM_DEACTIVATED, REFERENCE_ITEM_REACTIVATED]
+        target_type: { type: string, enum: [USER, SUBSCRIPTION_PLAN, SUBSCRIPTION, REFERENCE_ITEM] }
+        target_id: { type: string }
+        target_label: { type: string }
+        reason: { type: string }
+        before: { type: [object, "null"] }
+        after: { type: [object, "null"] }
+        at: { type: string, format: date-time }
+    PlanFeature:
+      type: object
+      required: [code, limit]
+      properties:
+        code: { type: string, enum: [MAX_ACTIVE_LISTINGS, MAX_FEATURED_LISTINGS, MAX_TEAM_MEMBERS] }
+        label: { type: string, description: Response only. }
+        limit: { type: [integer, "null"], minimum: 0, maximum: 1000000, description: null is unlimited. }
+    PlanPrice:
+      type: object
+      required: [currency_code, period, amount]
+      properties:
+        currency_code: { type: string, pattern: "^[A-Z]{3}$" }
+        period: { type: string, enum: [QUARTERLY, YEARLY] }
+        amount: { type: string, pattern: "^[0-9]+(\\.[0-9]{1,2})?$", description: "A decimal string; responses always have two decimals (\"30.00\")." }
+    SubscriptionPlan:
+      type: object
+      required: [id, name, description, subscriber_kind, eligible_roles, features, benefits, prices, status, sort_order, created_at, updated_at, retired_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string }
+        subscriber_kind:
+          type: string
+          enum: [INDIVIDUAL, ORGANISATION]
+          description: INDIVIDUAL is taken by a professional for themselves; ORGANISATION by an organisation's OWNER for it.
+        eligible_roles: { type: array, items: { type: string }, description: Account roles (approved) the plan is offered to. }
+        features: { type: array, items: { $ref: "#/components/schemas/PlanFeature" } }
+        benefits: { type: array, items: { type: string } }
+        prices: { type: array, items: { $ref: "#/components/schemas/PlanPrice" } }
+        status: { type: string, enum: [ACTIVE, RETIRED] }
+        sort_order: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        retired_at: { type: [string, "null"], format: date-time }
+    SubscriptionPlanInput:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string, maxLength: 120 }
+        description: { type: string, maxLength: 2000 }
+        subscriber_kind: { type: string, enum: [INDIVIDUAL, ORGANISATION] }
+        eligible_roles: { type: array, minItems: 1, items: { type: string } }
+        features:
+          type: array
+          items:
+            type: object
+            required: [code]
+            additionalProperties: false
+            properties:
+              code: { type: string }
+              limit: { type: [integer, "null"] }
+        benefits: { type: array, maxItems: 20, items: { type: string, maxLength: 200 } }
+        prices: { type: array, minItems: 1, items: { $ref: "#/components/schemas/PlanPrice" } }
+        sort_order: { type: integer }
+    SubscriptionPlanEnvelope:
+      type: object
+      required: [plan]
+      properties:
+        plan: { $ref: "#/components/schemas/SubscriptionPlan" }
+    AvailablePlans:
+      type: object
+      required: [currency_code, plans, payment_note]
+      properties:
+        currency_code: { type: [string, "null"], description: The market's currency when `market` was given. }
+        plans: { type: array, items: { $ref: "#/components/schemas/SubscriptionPlan" } }
+        payment_note: { type: string, description: How invoices are paid (no online payment). }
+    SubscriptionRequest:
+      type: object
+      required: [plan_id, period]
+      additionalProperties: false
+      properties:
+        plan_id: { type: string, format: uuid }
+        period: { type: string, enum: [QUARTERLY, YEARLY] }
+        market_code: { type: string, pattern: "^[A-Za-z]{2}$", description: "INDIVIDUAL plans: the country whose currency is paid in." }
+        organisation_id: { type: string, format: uuid, description: ORGANISATION plans only. }
+    Subscription:
+      type: object
+      description: |
+        `status` is as of the response: an ACTIVE subscription whose `ends_at` has passed is
+        shown EXPIRED at once (the worker records it within minutes). An ACTIVE subscription
+        whose `starts_at` is in the future is a paid renewal waiting for the current period.
+      required: [id, invoice_number, plan_id, plan_name, period, status, subscriber, organisation_id, requested_by, market_code, currency_code,
+                 amount, renewal_of, starts_at, ends_at, activated_at, renewal_opens_at, payment, rejected_at, rejection_reason, cancelled_at,
+                 cancel_reason, cancelled_by, refund_due, refund_note, expired_at, created_at, updated_at, payment_instructions]
+      properties:
+        id: { type: string, format: uuid }
+        invoice_number: { type: string, pattern: "^RPS-[0-9]{4}-[0-9]{6,}$" }
+        plan_id: { type: string, format: uuid }
+        plan_name: { type: string, description: The plan's name when it was requested. }
+        period: { type: string, enum: [QUARTERLY, YEARLY] }
+        status: { type: string, enum: [PENDING_PAYMENT, ACTIVE, EXPIRED, REJECTED, CANCELLED] }
+        subscriber:
+          type: object
+          required: [kind, id, name]
+          properties:
+            kind: { type: string, enum: [INDIVIDUAL, ORGANISATION] }
+            id: { type: string, format: uuid, description: The person's or the organisation's ID. }
+            name: { type: string }
+        organisation_id: { type: [string, "null"], format: uuid }
+        requested_by:
+          type: object
+          required: [id, name]
+          properties:
+            id: { type: [string, "null"], format: uuid }
+            name: { type: string }
+        market_code: { type: string }
+        currency_code: { type: string }
+        amount: { type: string, description: The invoice amount, two decimals. }
+        renewal_of: { type: [string, "null"], format: uuid }
+        starts_at: { type: [string, "null"], format: date-time }
+        ends_at: { type: [string, "null"], format: date-time }
+        activated_at: { type: [string, "null"], format: date-time }
+        renewal_opens_at: { type: [string, "null"], format: date-time, description: ACTIVE only; 30 days before `ends_at`. }
+        payment:
+          type: [object, "null"]
+          required: [reference, amount, received_on, recorded_by_name]
+          properties:
+            reference: { type: string }
+            amount: { type: string }
+            received_on: { type: string, format: date }
+            note: { type: string }
+            recorded_by_name: { type: string }
+        rejected_at: { type: [string, "null"], format: date-time }
+        rejection_reason: { type: [string, "null"] }
+        cancelled_at: { type: [string, "null"], format: date-time }
+        cancel_reason: { type: [string, "null"] }
+        cancelled_by: { type: [string, "null"], enum: [SUBSCRIBER, ADMIN, SYSTEM, null] }
+        refund_due: { type: boolean, description: An administrator recorded that a refund is due (no payment is processed here). }
+        refund_note: { type: [string, "null"] }
+        expired_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        payment_instructions: { type: [string, "null"], description: PENDING_PAYMENT only. }
+    SubscriptionEnvelope:
+      type: object
+      required: [subscription]
+      properties:
+        subscription: { $ref: "#/components/schemas/Subscription" }
+    SubscriptionEvent:
+      type: object
+      required: [id, action, actor_type, actor_name, note, at]
+      properties:
+        id: { type: string, format: uuid }
+        action: { type: string, enum: [REQUESTED, RENEWAL_REQUESTED, CANCELLED, PAYMENT_RECORDED, ACTIVATED, REJECTED, EXPIRED] }
+        actor_type: { type: string, enum: [SUBSCRIBER, ADMIN, SYSTEM] }
+        actor_name: { type: string }
+        note: { type: string }
+        at: { type: string, format: date-time }
+    SubscriptionUsage:
+      type: object
+      required: [active_listings, max_active_listings, limit_enforced]
+      properties:
+        active_listings: { type: integer, description: Published, unexpired listings of the subscriber now. }
+        max_active_listings: { type: [integer, "null"], description: The plan's MAX_ACTIVE_LISTINGS (null - unlimited or none). }
+        limit_enforced: { type: boolean, description: Always false in 0.25.0 - the limit is shown, not enforced. }
+    SubscriptionDetail:
+      type: object
+      required: [subscription, events, usage]
+      properties:
+        subscription: { $ref: "#/components/schemas/Subscription" }
+        events: { type: array, items: { $ref: "#/components/schemas/SubscriptionEvent" } }
+        usage: { $ref: "#/components/schemas/SubscriptionUsage" }
+    MySubscriptions:
+      type: object
+      required: [subscribers]
+      properties:
+        subscribers:
+          type: array
+          items:
+            type: object
+            required: [subscriber, current, upcoming, pending, can_renew, usage, history]
+            properties:
+              subscriber:
+                type: object
+                required: [kind, id, name]
+                properties:
+                  kind: { type: string, enum: [INDIVIDUAL, ORGANISATION] }
+                  id: { type: string, format: uuid }
+                  name: { type: string }
+                  market_code: { type: string }
+              current: { oneOf: [{ $ref: "#/components/schemas/Subscription" }, { type: "null" }] }
+              upcoming: { oneOf: [{ $ref: "#/components/schemas/Subscription" }, { type: "null" }] }
+              pending: { oneOf: [{ $ref: "#/components/schemas/Subscription" }, { type: "null" }] }
+              can_renew: { type: boolean }
+              usage: { $ref: "#/components/schemas/SubscriptionUsage" }
+              history: { type: array, items: { $ref: "#/components/schemas/Subscription" } }
+    SubscriptionPayment:
+      type: object
+      required: [payment_reference, amount, received_on]
+      additionalProperties: false
+      properties:
+        payment_reference: { type: string, maxLength: 100, description: The bank reference or receipt number. }
+        amount: { type: string, description: In the invoice currency; at least the invoice amount. }
+        received_on: { type: string, format: date, description: Not in the future. }
+        note: { type: string, maxLength: 1000 }
+    SubscriptionDecision:
+      type: object
+      required: [reason]
+      additionalProperties: false
+      properties:
+        reason: { type: string, minLength: 3, maxLength: 1000, description: Emailed to the requester. }
+        refund_due: { type: boolean, default: false }
+        refund_note: { type: string, maxLength: 1000 }
+    AdminReferenceItem:
+      allOf:
+        - $ref: "#/components/schemas/ReferenceItem"
+        - type: object
+          required: [active]
+          properties:
+            active: { type: boolean }
+    AdminReferenceInput:
+      type: object
+      additionalProperties: false
+      properties:
+        code: { type: string, pattern: "^[a-z0-9]+(-[a-z0-9]+)*$", maxLength: 80, description: Create only. }
+        label: { type: string, maxLength: 120, description: Required to create. }
+        singular_label: { type: string, maxLength: 120 }
+        description: { type: string, maxLength: 500 }
+        sort_order: { type: integer }
+        market_code: { type: string, description: Create only; required for regions, cities and suburbs. }
+        parent_code: { type: string, maxLength: 80 }
+    AdminReferenceEnvelope:
+      type: object
+      required: [item]
+      properties:
+        item: { $ref: "#/components/schemas/AdminReferenceItem" }
+    ReportSection:
+      type: object
+      required: [total, rows]
+      properties:
+        total: { type: integer }
+        rows:
+          type: array
+          items:
+            type: object
+            required: [group, market_code, count]
+            properties:
+              group: { type: string, description: A status (or an account role for new users; NONE for none). }
+              market_code: { type: [string, "null"] }
+              count: { type: integer }
+    ReportSummary:
+      type: object
+      required: [from, to, market_codes, new_users, onboarding_applications, listings, property_requests, business_enquiries, leases,
+                 agreements, subscriptions, revenue]
+      properties:
+        from: { type: string, format: date }
+        to: { type: string, format: date }
+        market_codes: { type: [array, "null"], items: { type: string } }
+        new_users: { $ref: "#/components/schemas/ReportSection" }
+        onboarding_applications: { $ref: "#/components/schemas/ReportSection" }
+        listings: { $ref: "#/components/schemas/ReportSection" }
+        property_requests: { $ref: "#/components/schemas/ReportSection" }
+        business_enquiries: { $ref: "#/components/schemas/ReportSection" }
+        leases: { $ref: "#/components/schemas/ReportSection" }
+        agreements: { $ref: "#/components/schemas/ReportSection" }
+        subscriptions: { $ref: "#/components/schemas/ReportSection" }
+        revenue:
+          type: array
+          items:
+            type: object
+            required: [currency_code, market_code, total, payments]
+            properties:
+              currency_code: { type: string }
+              market_code: { type: [string, "null"] }
+              total: { type: string, description: Sum of the recorded payments, two decimals. }
+              payments: { type: integer }

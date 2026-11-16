@@ -17,6 +17,7 @@ import (
 
 	"rightproperty365.com/backend/internal/app"
 	"rightproperty365.com/backend/internal/devseed"
+	"rightproperty365.com/backend/internal/modules/accounts"
 	"rightproperty365.com/backend/internal/modules/agreements"
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/availability"
@@ -31,7 +32,10 @@ import (
 	"rightproperty365.com/backend/internal/modules/onboarding"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
+	"rightproperty365.com/backend/internal/modules/reports"
+	"rightproperty365.com/backend/internal/modules/subscriptions"
 	"rightproperty365.com/backend/internal/modules/teams"
+	"rightproperty365.com/backend/internal/platform/adminaudit"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/database"
 	"rightproperty365.com/backend/internal/platform/elastic"
@@ -110,12 +114,21 @@ func run() error {
 		leaseStore leases.Store
 		// agreementStore holds the agreements (signing).
 		agreementStore agreements.Store
+		// The administrators' area: accounts, subscriptions, reports and
+		// the administrators' audit trail.
+		accountStore      accounts.Store
+		subscriptionStore subscriptions.Store
+		reportStore       reports.Store
+		adminAuditLog     adminaudit.Log
+		// memSubscriptions is set without a database (its expiry sweep runs here).
+		memSubscriptions *subscriptions.MemoryStore
 	)
 	if cfg.UseMemoryStore() {
 		// config.Load guarantees this branch is only reachable in development.
 		logger.Warn("DATABASE_URL is not set: using IN-MEMORY stores. Data is lost on restart and the worker cannot see it. Development only.")
 		marketStore = markets.NewMemoryStore()
-		referenceStore = devseed.NewMemoryReferenceStore()
+		memReference := devseed.NewMemoryReferenceStore()
+		referenceStore = memReference
 		// The public catalogue: the web's 18 sample listings and 29 profiles.
 		memListings := listings.NewMemoryStore(reference.NewService(referenceStore, nil))
 		memDirectory := directory.NewMemoryStore()
@@ -198,6 +211,21 @@ func run() error {
 			return fmt.Errorf("seed sample agreements: %w", err)
 		}
 
+		// The administrators' area: one audit log for every store that
+		// records administrators' actions.
+		memAudit := &adminaudit.MemoryLog{}
+		adminAuditLog = memAudit
+		memReference.SetAuditLog(memAudit)
+		memSubscriptions = subscriptions.NewMemoryStore(memAudit)
+		memSubscriptions.SetActiveListings(app.MemoryActiveListings(memListings))
+		subscriptionStore = memSubscriptions
+		accountStore = accounts.NewMemoryStore(accounts.MemoryDeps{Identity: memIdentity, Listings: memListings, Teams: memTeams,
+			Directory: memDirectory, Audit: memAudit, CancelSubscriptions: memSubscriptions.CancelForDeletedUser,
+			DeleteSignature: memAgreements.DeleteSavedSignature})
+		reportStore = app.MemoryReports(app.MemoryReportStores{Identity: memIdentity, Onboarding: memOnboarding, Listings: memListings,
+			Requests: memRequests, Enquiries: memEnquiries, Leases: memLeases, Agreements: memAgreements, Subscriptions: memSubscriptions,
+			Markets: marketStore})
+
 		// Without a database there is no outbox table for the worker to poll,
 		// so notification emails are handled in this process, straight from
 		// the in-memory stores. Development only: no retries, nothing durable.
@@ -218,6 +246,8 @@ func run() error {
 		handlers.SetOnboardingSource(app.OnboardingNotifications(memOnboarding, files, referenceStore, logger))
 		handlers.SetAppointmentSource(memAppointments.Get)
 		handlers.SetListingSource(app.ListingRecord(memListings))
+		handlers.SetSuspensionReasons(app.SuspensionReasons(accountStore))
+		handlers.SetSubscriptionSource(memSubscriptions.Subscription)
 		sink := func(ev outbox.Event) {
 			go func() {
 				hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
@@ -233,6 +263,7 @@ func run() error {
 		memEnquiries.SetOutboxSink(sink)
 		memOnboarding.SetOutboxSink(sink)
 		memAppointments.SetOutboxSink(sink)
+		memSubscriptions.SetOutboxSink(sink)
 		// The listing store also writes search-index events; without a worker
 		// only the review emails are handled.
 		memListings.SetOutboxSink(func(ev outbox.Event) {
@@ -251,6 +282,9 @@ func run() error {
 			}
 			if err := devseed.SeedMemoryTeams(ctx, memIdentity, memOnboarding, memTeams, files, identity.DefaultHasher(), cfg.DevSeedPassword, time.Now()); err != nil {
 				return fmt.Errorf("seed the sample team's invitation and join request: %w", err)
+			}
+			if err := devseed.SeedMemorySubscriptions(ctx, memSubscriptions, time.Now()); err != nil {
+				return fmt.Errorf("seed sample subscription plans: %w", err)
 			}
 			logger.Info("development seed users created (password from DEV_SEED_PASSWORD)",
 				slog.Any("emails", append(devseed.Emails(), devseed.PendingProviderEmail, devseed.PendingAgentEmail, devseed.JoiningAgentEmail)))
@@ -283,6 +317,10 @@ func run() error {
 		teamStore = teams.NewPostgresStore(pool)
 		leaseStore = leases.NewPostgresStore(pool)
 		agreementStore = agreements.NewPostgresStore(pool)
+		accountStore = accounts.NewPostgresStore(pool)
+		subscriptionStore = subscriptions.NewPostgresStore(pool)
+		reportStore = reports.NewPostgresStore(pool)
+		adminAuditLog = adminaudit.PostgresLog{Q: pool}
 	}
 
 	// Search engine. Elasticsearch only proposes listing IDs: every hit is
@@ -331,6 +369,10 @@ func run() error {
 		Leases:        leaseStore,
 		Agreements:    agreementStore,
 		Files:         files,
+		Accounts:      accountStore,
+		Subscriptions: subscriptionStore,
+		Reports:       reportStore,
+		AdminAudit:    adminAuditLog,
 	})
 	if err != nil {
 		return err
@@ -341,6 +383,7 @@ func run() error {
 	if cfg.UseMemoryStore() {
 		go app.RunAgreementSweeps(ctx, agreements.NewService(agreements.Deps{Store: agreementStore, Files: files, Mailer: mailer, Logger: logger,
 			PublicWebURL: cfg.PublicWebURL}), nil, logger)
+		go app.RunSubscriptionSweeps(ctx, subscriptions.NewService(subscriptions.Deps{Store: memSubscriptions, Logger: logger}), logger)
 	}
 
 	srv := &http.Server{

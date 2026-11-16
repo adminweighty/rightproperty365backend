@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 
 	"rightproperty365.com/backend/internal/devseed"
+	"rightproperty365.com/backend/internal/modules/accounts"
 	"rightproperty365.com/backend/internal/modules/agreements"
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/availability"
@@ -33,7 +34,9 @@ import (
 	"rightproperty365.com/backend/internal/modules/onboarding"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
+	"rightproperty365.com/backend/internal/modules/subscriptions"
 	"rightproperty365.com/backend/internal/modules/teams"
+	"rightproperty365.com/backend/internal/platform/adminaudit"
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/httpx"
@@ -63,6 +66,8 @@ type captureMailer struct {
 	agreementCodes []sentCode
 	completions    []sentSigning
 	declines       []string
+	// deletions are the addresses sent the account deletion notice.
+	deletions []string
 }
 
 // sentSigning is one agreement email with a link.
@@ -253,11 +258,15 @@ type env struct {
 	team      *teams.MemoryStore
 	leases    *leases.MemoryStore
 	agree     *agreements.MemoryStore
-	files     *storage.Local
-	mail      *captureMailer
-	logs      *bytes.Buffer
-	now       time.Time
-	seq       int
+	// The administrators' area: accounts, subscriptions and their audit log.
+	accounts *accounts.MemoryStore
+	subs     *subscriptions.MemoryStore
+	audit    *adminaudit.MemoryLog
+	files    *storage.Local
+	mail     *captureMailer
+	logs     *bytes.Buffer
+	now      time.Time
+	seq      int
 	// captchaSeq numbers the registration questions the tests ask for.
 	captchaSeq int
 	// twoStepLogin turns off the helper that completes the sign-in code step
@@ -341,6 +350,19 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	e.marketStore = markets.NewMemoryStore()
 	e.calendars = availability.NewMemoryStore()
+	e.audit = &adminaudit.MemoryLog{}
+	e.reference.SetAuditLog(e.audit)
+	e.subs = subscriptions.NewMemoryStore(e.audit)
+	e.subs.SetActiveListings(MemoryActiveListings(e.listings))
+	if err := devseed.SeedMemorySubscriptions(context.Background(), e.subs, e.now); err != nil {
+		t.Fatal(err)
+	}
+	e.accounts = accounts.NewMemoryStore(accounts.MemoryDeps{Identity: e.identity, Listings: e.listings, Teams: e.team, Directory: e.directory,
+		Audit: e.audit, CancelSubscriptions: e.subs.CancelForDeletedUser, DeleteSignature: e.agree.DeleteSavedSignature,
+		Now: func() time.Time { return e.now }})
+	reportStore := MemoryReports(MemoryReportStores{Identity: e.identity, Onboarding: e.onboard, Listings: e.listings, Requests: e.requests,
+		Enquiries: e.enquiries, Leases: e.leases, Agreements: e.agree, Subscriptions: e.subs, Markets: e.marketStore,
+		Now: func() time.Time { return e.now }})
 	e.handler, err = NewRouter(Deps{
 		Config:    cfg,
 		Logger:    logging.New(e.logs, slog.LevelInfo, "api", cfg.Env),
@@ -358,8 +380,9 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		Teams:        e.team,
 		Leases:       e.leases,
 		Agreements:   e.agree,
-		Now:          func() time.Time { return e.now },
-		Hasher:       &hasher,
+		Accounts:     e.accounts, Subscriptions: e.subs, Reports: reportStore, AdminAudit: e.audit,
+		Now:    func() time.Time { return e.now },
+		Hasher: &hasher,
 	})
 	if err != nil {
 		t.Fatal(err)

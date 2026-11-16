@@ -29,6 +29,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"rightproperty365.com/backend/internal/modules/accounts"
 	"rightproperty365.com/backend/internal/modules/agreements"
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
@@ -36,6 +37,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/onboarding"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
+	"rightproperty365.com/backend/internal/modules/subscriptions"
 	"rightproperty365.com/backend/internal/modules/teams"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/mail"
@@ -270,6 +272,10 @@ type Handlers struct {
 	appointment func(ctx context.Context, id uuid.UUID) (appointments.Appointment, error)
 	// listingRecord loads the listing behind a listing review event.
 	listingRecord func(ctx context.Context, id uuid.UUID) (listings.Record, error)
+	// suspensionReason reads the reason behind a suspension.
+	suspensionReason func(ctx context.Context, userID uuid.UUID) (string, error)
+	// subscription loads the subscription behind a subscription event.
+	subscription func(ctx context.Context, id uuid.UUID) (subscriptions.Subscription, error)
 }
 
 // SetListingSource supplies the listing behind a listing review event (the
@@ -463,7 +469,8 @@ func EventTypes() []string {
 		identity.EventUserEmailVerified,
 		identity.EventPasswordChanged,
 		identity.EventAdminSignedIn,
-	}, onboarding.EventTypes()...), append(appointments.EventTypes(), listings.ReviewEventTypes()...)...)
+	}, onboarding.EventTypes()...), append(append(append(appointments.EventTypes(), listings.ReviewEventTypes()...),
+		accounts.EventTypes()...), subscriptions.EventTypes()...)...)
 }
 
 // PathOnboarding is the web page where an applicant fills in an application.
@@ -716,6 +723,16 @@ func (h *Handlers) build(ctx context.Context, ev outbox.Event) ([]mail.Notificat
 
 	case listings.EventListingApproved, listings.EventListingChangesRequested, listings.EventListingRejected:
 		if err := h.listingReviewNotes(ctx, ev, add); err != nil {
+			return nil, err
+		}
+
+	case accounts.EventAccountSuspended, accounts.EventAccountReactivated:
+		if err := h.accountNotes(ctx, ev, add); err != nil {
+			return nil, err
+		}
+
+	case subscriptions.EventRequested, subscriptions.EventActivated, subscriptions.EventRejected, subscriptions.EventCancelled, subscriptions.EventExpired:
+		if err := h.subscriptionNotes(ctx, ev, add); err != nil {
 			return nil, err
 		}
 

@@ -1,0 +1,12 @@
+{{define "subject"}}Your account is active again{{end}}
+{{define "heading"}}Your account is active again{{end}}
+{{define "button"}}Sign in{{end}}
+{{define "why"}}You are receiving this because an administrator reactivated the RightProperty365 account for this address.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+Your RightProperty365 account is active again. You can sign in as before.
+
+Status: Active
+Reactivated: {{dateTime .When}}
+
+The listings you advertise yourself are shown to the public again while they are published.{{end}}

@@ -1,0 +1,14 @@
+{{define "subject"}}Your subscription request was not approved{{end}}
+{{define "heading"}}Subscription not approved{{end}}
+{{define "button"}}View your subscription{{end}}
+{{define "why"}}You are receiving this because you asked for a RightProperty365 subscription.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+We are sorry: your request for {{.PlanName}} was not approved.
+
+Invoice: {{.InvoiceNumber}}
+Plan: {{.PlanName}}
+Status: {{.StatusText}}
+Reason: {{.Reason}}
+
+{{if .RefundDue}}A payment for this invoice was received: we will refund it as our Refund Policy describes.{{else}}Please do not pay this invoice. If you already have, reply to this email and we will refund it.{{end}}{{end}}

@@ -1,0 +1,17 @@
+{{define "subject"}}Invoice {{.InvoiceNumber}} for {{.PlanName}}{{end}}
+{{define "heading"}}Your subscription invoice{{end}}
+{{define "button"}}View your subscription{{end}}
+{{define "why"}}You are receiving this because you asked for a RightProperty365 subscription.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+Thank you for choosing {{.PlanName}}{{if .Edit}} again: this is the invoice for the next period{{end}}. Your subscription starts once we have recorded your payment.
+
+Invoice: {{.InvoiceNumber}}
+Plan: {{.PlanName}}
+Period: {{.Period}}
+Amount: {{.Amount}}
+Status: {{.StatusText}}
+
+Pay by bank transfer, or by another method stated on the invoice, into the account named on the invoice we sent you, and quote the invoice number. There is no online payment on RightProperty365 and nothing is charged automatically.
+
+If you are unsure whether a request for payment is genuine, contact us before you pay. You can cancel the request from your account while it waits for payment.{{end}}

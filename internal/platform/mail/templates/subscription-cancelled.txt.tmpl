@@ -1,0 +1,14 @@
+{{define "subject"}}Your {{.PlanName}} subscription has been cancelled{{end}}
+{{define "heading"}}Subscription cancelled{{end}}
+{{define "button"}}View your subscription{{end}}
+{{define "why"}}You are receiving this because a RightProperty365 subscription of yours was cancelled.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+An administrator has cancelled your {{.PlanName}} subscription.
+
+Invoice: {{.InvoiceNumber}}
+Plan: {{.PlanName}}
+Status: {{.StatusText}}
+Reason: {{.Reason}}
+
+{{if .RefundDue}}A refund is due for the unused part of the period. We will pay it as our Refund Policy describes.{{else}}No refund is due for this cancellation. If you think one is, reply to this email.{{end}}{{end}}

@@ -281,3 +281,12 @@ func (s *MemoryStore) PutSavedSignature(_ context.Context, userID uuid.UUID, v S
 	s.signatures[userID] = SavedSignature{Signature: copyAdopted(v.Signature), Initials: copyAdopted(v.Initials), UpdatedAt: v.UpdatedAt}
 	return nil
 }
+
+// DeleteSavedSignature removes a user's saved signature and initials (the
+// account was deleted). In Postgres the accounts module deletes the
+// user_signatures row in its own transaction.
+func (s *MemoryStore) DeleteSavedSignature(userID uuid.UUID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.signatures, userID)
+}

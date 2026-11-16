@@ -130,6 +130,24 @@ func SampleData(name string) Data {
 		d.Path, d.DeletionOn = "/sign-in", sampleTime.AddDate(0, 0, 30)
 	case "account-deletion-completed":
 		d.Path = "/"
+	case "account-suspended":
+		d.Path, d.Reason = "/", "Several customers reported listings that ask for a deposit before a viewing."
+	case "account-reactivated":
+		d.Path = "/sign-in"
+	case "subscription-invoice", "subscription-activated", "subscription-rejected", "subscription-cancelled", "subscription-expired":
+		d.Name, d.Path, d.InvoiceNumber, d.PlanName, d.Period, d.Amount = "Tendai Ncube", "/account/subscriptions", "RPS-2026-000042", "Agent Starter", "3 months", "USD 30.00"
+		switch name {
+		case "subscription-invoice":
+			d.StatusText = "Waiting for payment"
+		case "subscription-activated":
+			d.ExpiresOn = sampleTime.AddDate(0, 3, 0)
+		case "subscription-rejected":
+			d.StatusText, d.Reason = "Not approved", "The onboarding application for this role was not approved."
+		case "subscription-cancelled":
+			d.StatusText, d.Reason, d.RefundDue = "Cancelled", "The plan was withdrawn before the end of the period.", true
+		case "subscription-expired":
+			d.StatusText, d.ExpiresOn = "Ended", sampleTime
+		}
 	}
 	return d
 }

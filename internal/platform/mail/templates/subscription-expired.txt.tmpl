@@ -1,0 +1,14 @@
+{{define "subject"}}Your {{.PlanName}} subscription has ended{{end}}
+{{define "heading"}}Your subscription has ended{{end}}
+{{define "button"}}Choose a plan{{end}}
+{{define "why"}}You are receiving this because a RightProperty365 subscription of yours ended.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+Your {{.PlanName}} subscription has ended. It was not renewed, and nothing has been charged.
+
+Invoice: {{.InvoiceNumber}}
+Plan: {{.PlanName}}
+Status: {{.StatusText}}
+Ended: {{date .ExpiresOn}}
+
+You can choose a plan again from your account at any time.{{end}}

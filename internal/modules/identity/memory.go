@@ -214,6 +214,11 @@ func (s *MemoryStore) GrantAccountRole(userID uuid.UUID, role, status string) er
 type memoryUser struct {
 	User
 	MarketingOptIn bool
+	// Account administration (memory_admin.go).
+	SuspendedAt      *time.Time
+	SuspensionReason string
+	SuspendedBy      *uuid.UUID
+	DeletedAt        *time.Time
 }
 
 type memoryMembership struct {

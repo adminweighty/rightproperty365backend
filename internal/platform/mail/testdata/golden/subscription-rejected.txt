@@ -1,0 +1,22 @@
+Subject: Your subscription request was not approved
+
+Subscription not approved
+
+Hello Tendai Ncube,
+
+We are sorry: your request for Agent Starter was not approved.
+
+Invoice: RPS-2026-000042
+Plan: Agent Starter
+Status: Not approved
+Reason: The onboarding application for this role was not approved.
+
+Please do not pay this invoice. If you already have, reply to this email and we will refund it.
+
+View your subscription:
+https://rightproperty365.com/account/subscriptions
+
+--
+You are receiving this because you asked for a RightProperty365 subscription.
+Sent by RightProperty365.
+https://rightproperty365.com

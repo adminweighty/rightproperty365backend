@@ -90,6 +90,11 @@ func run() error {
 	if err := devseed.SeedPostgresAgreements(ctx, pool, files, time.Now()); err != nil {
 		return err
 	}
+	// The sample subscription plans and agent@example.test's pending
+	// subscription (needs migration 0024), after the accounts.
+	if err := devseed.SeedPostgresSubscriptions(ctx, pool, time.Now()); err != nil {
+		return err
+	}
 	fmt.Printf("seeded %d organisations, %d accounts, %d listings and %d directory profiles (password: DEV_SEED_PASSWORD)\n",
 		len(devseed.Organisations()), len(devseed.Accounts()), len(devseed.Listings()), len(devseed.Profiles()))
 	return nil

@@ -1,0 +1,22 @@
+Subject: Your Agent Starter subscription has ended
+
+Your subscription has ended
+
+Hello Tendai Ncube,
+
+Your Agent Starter subscription has ended. It was not renewed, and nothing has been charged.
+
+Invoice: RPS-2026-000042
+Plan: Agent Starter
+Status: Ended
+Ended: 14 November 2026
+
+You can choose a plan again from your account at any time.
+
+Choose a plan:
+https://rightproperty365.com/account/subscriptions
+
+--
+You are receiving this because a RightProperty365 subscription of yours ended.
+Sent by RightProperty365.
+https://rightproperty365.com

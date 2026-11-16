@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"rightproperty365.com/backend/internal/modules/accounts"
 	"rightproperty365.com/backend/internal/modules/agreements"
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/availability"
@@ -27,8 +28,11 @@ import (
 	"rightproperty365.com/backend/internal/modules/onboarding"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
+	"rightproperty365.com/backend/internal/modules/reports"
+	"rightproperty365.com/backend/internal/modules/subscriptions"
 	"rightproperty365.com/backend/internal/modules/teams"
 	"rightproperty365.com/backend/internal/modules/trust"
+	"rightproperty365.com/backend/internal/platform/adminaudit"
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/httpx"
@@ -123,6 +127,13 @@ const (
 	leaseChangesPerMinute = 30
 	leaseChangesBurst     = 30
 
+	// Per-IP limit on the administrators' changes (suspend, reactivate and
+	// delete accounts, plans, subscription decisions, reference data) and on
+	// a subscriber's requests, cancellations and renewals, its own bucket:
+	// bursts of 30, refilled at 30 per minute.
+	adminChangesPerMinute = 30
+	adminChangesBurst     = 30
+
 	// Per-IP limit on the public signing links (GET and POST
 	// /v1/signing/{token}/...), its own bucket: bursts of 20, refilled at 20
 	// per minute. Sending a code has a stricter bucket of its own (5 / 5 per
@@ -207,6 +218,16 @@ type Deps struct {
 	// their emails (nil means Mailer when it can).
 	Agreements      agreements.Store
 	AgreementMailer agreements.Mailer
+
+	// The administrators' area (API 0.25.0): account administration,
+	// subscriptions, reports and the administrators' audit trail.
+	// AccountMailer sends the deletion notice (nil means Mailer when it can).
+	// The Reference store must also implement reference.AdminStore.
+	Accounts      accounts.Store
+	AccountMailer accounts.Mailer
+	Subscriptions subscriptions.Store
+	Reports       reports.Store
+	AdminAudit    adminaudit.Log
 
 	// Optional overrides used by tests.
 	Now    func() time.Time
@@ -410,6 +431,27 @@ func NewRouter(d Deps) (http.Handler, error) {
 	}, logger)
 	uploadLimiter := httpx.NewRateLimiter(UploadRequestsPerMinute, UploadRequestsBurst)
 
+	// The administrators' area: accounts, subscriptions, reference data,
+	// reports and the audit trail.
+	if d.Accounts == nil || d.Subscriptions == nil || d.Reports == nil {
+		return nil, errors.New("app: no account, subscription or report store")
+	}
+	referenceAdminStore, ok := d.Reference.(reference.AdminStore)
+	if !ok {
+		return nil, errors.New("app: the reference store does not implement reference administration")
+	}
+	accountMailer := d.AccountMailer
+	if accountMailer == nil {
+		accountMailer, _ = d.Mailer.(accounts.Mailer)
+	}
+	subscriptionsSvc := subscriptions.NewService(subscriptions.Deps{Store: d.Subscriptions, Currency: marketCurrency(d.Markets), Logger: logger, Now: d.Now})
+	subscriptionsH := subscriptions.NewHandler(subscriptionsSvc, logger)
+	accountsH := accounts.NewHandler(accounts.NewService(accounts.Deps{Store: d.Accounts, Audit: d.AdminAudit, Mailer: accountMailer,
+		Subscriptions: AccountSubscriptions(d.Subscriptions, d.Now), Logger: logger, Now: d.Now}), logger, secure)
+	referenceAdminH := reference.NewAdminHandler(reference.NewAdmin(referenceSvc, referenceAdminStore, d.Now), logger)
+	reportsH := reports.NewHandler(d.Reports, marketCodes(d.Markets), d.Now, logger)
+	adminLimiter := httpx.NewRateLimiter(adminChangesPerMinute, adminChangesBurst)
+
 	requestLimiter := httpx.NewRateLimiter(propertyRequestsPerMinute, propertyRequestsBurst)
 	enquiryLimiter := httpx.NewRateLimiter(businessEnquiriesPerMinute, businessEnquiriesBurst)
 	authLimiter := httpx.NewRateLimiter(AuthRequestsPerMinute, AuthRequestsBurst)
@@ -523,6 +565,22 @@ func NewRouter(d Deps) (http.Handler, error) {
 		})
 
 		r.With(auth.RequireAuth).Get("/me", identityH.Me)
+		// Deleting one's own account, confirmed with the password. It shares
+		// the sign-in bucket (a password is checked).
+		r.With(auth.RequireAuth, authLimiter.Middleware).Delete("/me", accountsH.DeleteSelf)
+
+		// Subscriptions: the plans the caller may take, and their own
+		// subscriptions and those of the organisations they own (404 for
+		// anybody else's). There is no online payment: a request is invoiced.
+		r.With(auth.RequireAuth).Get("/me/subscription-plans", subscriptionsH.AvailablePlans)
+		r.Route("/me/subscriptions", func(r chi.Router) {
+			r.Use(auth.RequireAuth)
+			r.Get("/", subscriptionsH.Mine)
+			r.With(adminLimiter.Middleware).Post("/", subscriptionsH.Request)
+			r.Get("/{id}", subscriptionsH.MineOne)
+			r.With(adminLimiter.Middleware).Post("/{id}/cancel", subscriptionsH.CancelPending)
+			r.With(adminLimiter.Middleware).Post("/{id}/renew", subscriptionsH.Renew)
+		})
 
 		// One role-aware summary for the signed-in account: which dashboard
 		// applies, counters, next actions and recent items, each scoped as
@@ -722,6 +780,72 @@ func NewRouter(d Deps) (http.Handler, error) {
 			// The counts an administrator starts from. Every platform role
 			// may ask; the handler returns only the sections its role covers.
 			r.With(auth.RequirePlatformRole(auth.AllPlatformRoles()...)).Get("/overview", dashboardH.Overview)
+
+			// Accounts: SUPER_ADMIN, PLATFORM_ADMIN and SUPPORT read them;
+			// SUPER_ADMIN and PLATFORM_ADMIN suspend, reactivate and delete
+			// (an administrator account only by a SUPER_ADMIN, never one's own).
+			r.Route("/users", func(r chi.Router) {
+				r.Use(auth.RequirePlatformRole(accounts.ReadRoles()...))
+				r.Get("/", accountsH.List)
+				r.Get("/{id}", accountsH.Get)
+				r.Group(func(r chi.Router) {
+					r.Use(auth.RequirePlatformRole(accounts.ManageRoles()...), adminLimiter.Middleware)
+					r.Post("/{id}/suspend", accountsH.Suspend)
+					r.Post("/{id}/reactivate", accountsH.Reactivate)
+					r.Post("/{id}/delete", accountsH.Delete)
+				})
+			})
+			// The administrators' audit trail: SUPER_ADMIN and PLATFORM_ADMIN.
+			r.With(auth.RequirePlatformRole(accounts.AuditRoles()...)).Get("/audit", accountsH.Audit)
+
+			// Subscription plans: read by whoever reads subscriptions, changed
+			// by SUPER_ADMIN and FINANCE_ADMIN.
+			r.Route("/subscription-plans", func(r chi.Router) {
+				r.Use(auth.RequirePlatformRole(subscriptions.ReadRoles()...))
+				r.Get("/", subscriptionsH.AdminPlans)
+				r.Get("/{id}", subscriptionsH.AdminPlan)
+				r.Group(func(r chi.Router) {
+					r.Use(auth.RequirePlatformRole(subscriptions.PlanAdminRoles()...), adminLimiter.Middleware)
+					r.Post("/", subscriptionsH.CreatePlan)
+					r.Patch("/{id}", subscriptionsH.UpdatePlan)
+					r.Post("/{id}/retire", subscriptionsH.RetirePlan)
+				})
+			})
+			// Subscriptions: read by SUPER_ADMIN, FINANCE_ADMIN, PLATFORM_ADMIN
+			// and SUPPORT; payments, approvals, rejections and cancellations by
+			// SUPER_ADMIN and FINANCE_ADMIN.
+			r.Route("/subscriptions", func(r chi.Router) {
+				r.Use(auth.RequirePlatformRole(subscriptions.ReadRoles()...))
+				r.Get("/", subscriptionsH.AdminList)
+				r.Get("/{id}", subscriptionsH.AdminGet)
+				r.Group(func(r chi.Router) {
+					r.Use(auth.RequirePlatformRole(subscriptions.DecisionRoles()...), adminLimiter.Middleware)
+					r.Post("/{id}/approve", subscriptionsH.Approve)
+					r.Post("/{id}/reject", subscriptionsH.Reject)
+					r.Post("/{id}/cancel", subscriptionsH.Cancel)
+				})
+			})
+
+			// Reference data: SUPER_ADMIN, PLATFORM_ADMIN, CONTENT_ADMIN, and
+			// MARKET_ADMIN for the rows of its own market. Nothing is deleted.
+			r.Route("/reference", func(r chi.Router) {
+				r.Use(auth.RequirePlatformRole(reference.AdminRoles()...))
+				r.Get("/", referenceAdminH.Sets)
+				r.Get("/{set}", referenceAdminH.List)
+				r.With(adminLimiter.Middleware).Post("/{set}", referenceAdminH.Create)
+				r.With(adminLimiter.Middleware).Patch("/{set}/{code}", referenceAdminH.Update)
+				r.With(adminLimiter.Middleware).Post("/{set}/{code}/deactivate", referenceAdminH.Deactivate)
+				r.With(adminLimiter.Middleware).Post("/{set}/{code}/reactivate", referenceAdminH.Reactivate)
+			})
+
+			// Reports: the summary for SUPER_ADMIN, PLATFORM_ADMIN and
+			// FINANCE_ADMIN; the CSV exports by what they contain.
+			r.Route("/reports", func(r chi.Router) {
+				r.With(auth.RequirePlatformRole(reports.SummaryRoles()...)).Get("/summary", reportsH.Summary)
+				r.With(auth.RequirePlatformRole(reports.PeopleExportRoles()...)).Get("/users.csv", reportsH.Users)
+				r.With(auth.RequirePlatformRole(reports.PeopleExportRoles()...)).Get("/listings.csv", reportsH.Listings)
+				r.With(auth.RequirePlatformRole(reports.SubscriptionExportRoles()...)).Get("/subscriptions.csv", reportsH.Subscriptions)
+			})
 
 			// Requests nobody could receive: SUPER_ADMIN, PLATFORM_ADMIN,
 			// SUPPORT, and MARKET_ADMIN for its own markets (the handler

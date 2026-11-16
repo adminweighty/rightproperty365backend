@@ -1,0 +1,22 @@
+Subject: Your Agent Starter subscription has been cancelled
+
+Subscription cancelled
+
+Hello Tendai Ncube,
+
+An administrator has cancelled your Agent Starter subscription.
+
+Invoice: RPS-2026-000042
+Plan: Agent Starter
+Status: Cancelled
+Reason: The plan was withdrawn before the end of the period.
+
+A refund is due for the unused part of the period. We will pay it as our Refund Policy describes.
+
+View your subscription:
+https://rightproperty365.com/account/subscriptions
+
+--
+You are receiving this because a RightProperty365 subscription of yours was cancelled.
+Sent by RightProperty365.
+https://rightproperty365.com

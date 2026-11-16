@@ -20,7 +20,7 @@ const HeaderRequestID = "X-Request-Id"
 const (
 	corsAllowMethods  = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
 	corsAllowHeaders  = "Content-Type, Idempotency-Key, Authorization, X-Request-Id, If-None-Match"
-	corsExposeHeaders = "X-Request-Id, Retry-After, ETag"
+	corsExposeHeaders = "X-Request-Id, Retry-After, ETag, Content-Disposition, X-Total-Count, X-Export-Truncated"
 	corsMaxAge        = "600"
 )
 

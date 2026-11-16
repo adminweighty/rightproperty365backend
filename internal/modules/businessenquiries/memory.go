@@ -235,3 +235,27 @@ func (s *MemoryStore) SetAgentEligible(organisationID, userID uuid.UUID, eligibl
 		}
 	}
 }
+
+// EnquiryRow is one enquiry as the reports count it.
+type EnquiryRow struct {
+	ID        uuid.UUID
+	MarketID  uuid.UUID
+	Status    string
+	CreatedAt time.Time
+}
+
+// ReportRows returns every enquiry with its status and creation time (reports).
+func (s *MemoryStore) ReportRows() []EnquiryRow {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	records := make(map[uuid.UUID]Record, len(s.byKey))
+	for _, r := range s.byKey {
+		records[r.ID] = r
+	}
+	out := make([]EnquiryRow, 0, len(s.enquiries))
+	for _, e := range s.enquiries {
+		r := records[e.ID]
+		out = append(out, EnquiryRow{ID: e.ID, MarketID: e.MarketID, Status: r.Status, CreatedAt: r.CreatedAt})
+	}
+	return out
+}

@@ -1,0 +1,15 @@
+{{define "subject"}}Your account has been suspended{{end}}
+{{define "heading"}}Your account is suspended{{end}}
+{{define "button"}}Open RightProperty365{{end}}
+{{define "why"}}You are receiving this because an administrator suspended the RightProperty365 account for this address.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+An administrator has suspended your RightProperty365 account. You cannot sign in while it is suspended, and every device that was signed in has been signed out.
+
+Status: Suspended
+Reason: {{.Reason}}
+Suspended: {{dateTime .When}}
+
+While the account is suspended, the listings you advertise yourself are not shown to the public. Nothing has been deleted.
+
+If you think this is a mistake, reply to this email and tell us why.{{end}}

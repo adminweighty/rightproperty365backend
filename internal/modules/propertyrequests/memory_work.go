@@ -303,3 +303,14 @@ func (s *MemoryStore) StoredNotes() []Note {
 	defer s.mu.Unlock()
 	return append([]Note(nil), s.notes...)
 }
+
+// StoredRequests returns every request with its working state (reports).
+func (s *MemoryStore) StoredRequests() []StoredRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]StoredRequest, 0, len(s.requests))
+	for _, req := range s.requests {
+		out = append(out, s.stored(req))
+	}
+	return out
+}

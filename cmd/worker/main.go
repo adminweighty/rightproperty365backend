@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"rightproperty365.com/backend/internal/app"
+	"rightproperty365.com/backend/internal/modules/accounts"
 	"rightproperty365.com/backend/internal/modules/agreements"
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/leases"
@@ -23,6 +24,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/onboarding"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
+	"rightproperty365.com/backend/internal/modules/subscriptions"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/database"
 	"rightproperty365.com/backend/internal/platform/elastic"
@@ -108,6 +110,12 @@ func run() error {
 		return records[0].Title, records[0].Reference, true
 	})
 
+	// Account suspension emails carry the administrator's reason, and the
+	// subscription emails read the subscription, at send time.
+	handlers.SetSuspensionReasons(app.SuspensionReasons(accounts.NewPostgresStore(pool)))
+	subscriptionStore := subscriptions.NewPostgresStore(pool)
+	handlers.SetSubscriptionSource(subscriptionStore.Subscription)
+
 	dispatcher := outbox.NewDispatcher(outbox.NewPostgresQueue(pool), logger, outbox.Config{})
 	handlers.Register(dispatcher)
 
@@ -149,6 +157,10 @@ func run() error {
 		Logger: logger, PublicWebURL: cfg.PublicWebURL})
 	leaseSvc := leases.NewService(leases.Deps{Store: leases.NewPostgresStore(pool), Logger: logger})
 	go app.RunAgreementSweeps(ctx, agreementSvc, leaseSvc, logger)
+
+	// Subscriptions: an ACTIVE subscription whose end has passed is recorded
+	// EXPIRED (and its holder emailed) every few minutes.
+	go app.RunSubscriptionSweeps(ctx, subscriptions.NewService(subscriptions.Deps{Store: subscriptionStore, Logger: logger}), logger)
 
 	err = dispatcher.Run(ctx)
 	logger.Info("worker stopped")

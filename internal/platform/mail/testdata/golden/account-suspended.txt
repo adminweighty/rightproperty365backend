@@ -1,0 +1,23 @@
+Subject: Your account has been suspended
+
+Your account is suspended
+
+Hello Tariro Moyo,
+
+An administrator has suspended your RightProperty365 account. You cannot sign in while it is suspended, and every device that was signed in has been signed out.
+
+Status: Suspended
+Reason: Several customers reported listings that ask for a deposit before a viewing.
+Suspended: 14 November 2026, 09:05 UTC
+
+While the account is suspended, the listings you advertise yourself are not shown to the public. Nothing has been deleted.
+
+If you think this is a mistake, reply to this email and tell us why.
+
+Open RightProperty365:
+https://rightproperty365.com/
+
+--
+You are receiving this because an administrator suspended the RightProperty365 account for this address.
+Sent by RightProperty365.
+https://rightproperty365.com

@@ -75,6 +75,14 @@ func Templates() []Template {
 		{"agreement-signing-code", "Code to confirm the email address before signing (to a recipient)", true},
 		{"agreement-completed", "Everybody signed (to every recipient, the CCs and the sender)", true},
 		{"agreement-declined", "A recipient declined (to the sender)", true},
+		{"account-suspended", "Account suspended by an administrator (to the account)", true},
+		{"account-reactivated", "Account reactivated by an administrator (to the account)", true},
+		{"account-deletion-completed", "Account deletion completed (to the address the account had)", true},
+		{"subscription-invoice", "Subscription requested or renewal asked for: the invoice to pay (to the requester)", true},
+		{"subscription-activated", "Payment recorded, subscription active (to the requester)", true},
+		{"subscription-rejected", "Subscription request not approved (to the requester)", true},
+		{"subscription-cancelled", "Subscription cancelled by an administrator (to the requester)", true},
+		{"subscription-expired", "Subscription ended (to the requester)", true},
 
 		{"request-update", "Reply or status update to the customer", false},
 		{"listing-expiring", "Listing expiring in 14, 7 or 1 days", false},
@@ -83,7 +91,6 @@ func Templates() []Template {
 		{"renewal-invoice", "Renewal invoice issued", false},
 		{"payment-received", "Payment received", false},
 		{"account-deletion-requested", "Account deletion requested", false},
-		{"account-deletion-completed", "Account deletion completed", false},
 	}
 }
 
@@ -158,6 +165,12 @@ type Data struct {
 	// Agreement emails: the document's name and the sender's message.
 	DocumentName string
 	Message      string
+
+	// Subscription emails: the plan, the period ("3 months", "1 year") and
+	// whether a refund is due (rejected, cancelled).
+	PlanName  string
+	Period    string
+	RefundDue bool
 }
 
 // LocalDateTime writes an instant in an IANA time zone and names the zone,
