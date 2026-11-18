@@ -46,6 +46,12 @@ type ContentView struct {
 	YouTubeURL          *string `json:"youtube_url"`
 	YouTubeVideoID      *string `json:"youtube_video_id"`
 	YouTubeStartSeconds *int    `json:"youtube_start_seconds"`
+	// Latitude and Longitude are the EXACT coordinates (the lister's own
+	// view; the public sees rounded ones for APPROXIMATE), null for none.
+	// LocationPrecision is EXACT or APPROXIMATE, never null.
+	Latitude          *float64 `json:"latitude"`
+	Longitude         *float64 `json:"longitude"`
+	LocationPrecision string   `json:"location_precision"`
 }
 
 func opt(s string) *string {
@@ -65,6 +71,7 @@ func contentView(c Content) ContentView {
 	}
 	return ContentView{
 		YouTubeURL: video, YouTubeVideoID: opt(c.YouTubeVideoID), YouTubeStartSeconds: start,
+		Latitude: copyFloat(c.Latitude), Longitude: copyFloat(c.Longitude), LocationPrecision: NormalPrecision(c.LocationPrecision),
 		Title: c.Title, Summary: c.Summary, Description: c.Description, Deal: opt(c.Deal), Category: opt(c.Category),
 		PropertyType: opt(c.PropertyType), Price: PriceView{Amount: opt(c.PriceAmount), Currency: opt(c.Currency)},
 		PricePeriod: opt(c.PricePeriod), Country: opt(c.MarketCode), City: opt(c.City), Suburb: opt(c.Suburb),
@@ -248,7 +255,7 @@ func diff(before, after Content) []FieldChange {
 	a, b := contentMap(contentView(before)), contentMap(contentView(after))
 	for _, field := range []string{"title", "summary", "description", "deal", "category", "property_type", "price", "price_period",
 		"country", "city", "suburb", "city_name", "region_name", "bedrooms", "bathrooms", "floor_area", "land_area",
-		"features", "max_guests", "min_nights", "youtube_url"} {
+		"features", "max_guests", "min_nights", "youtube_url", "latitude", "longitude", "location_precision"} {
 		if !reflect.DeepEqual(a[field], b[field]) {
 			out = append(out, FieldChange{Field: field, Before: a[field], After: b[field]})
 		}

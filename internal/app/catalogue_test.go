@@ -95,7 +95,7 @@ func TestListingsDefaultPageAndPaging(t *testing.T) {
 	if beyond := e.search("?page=3"); len(beyond.Items) != 0 || beyond.Total != 18 || beyond.TotalPages != 2 {
 		t.Fatalf("a page past the end is empty, not an error: %+v", beyond.Page)
 	}
-	if got := strings.TrimSpace(e.get("/v1/listings?page=3").Body.String()); !strings.HasPrefix(got, `{"items":[],"page":3,"page_size":12,"total":18,"total_pages":2,"facets":{`) {
+	if got := strings.TrimSpace(e.get("/v1/listings?page=3").Body.String()); !strings.HasPrefix(got, `{"items":[],"page":3,"page_size":12,"total":18,"total_pages":2,"mappable_total":17,"facets":{`) {
 		t.Fatalf("body = %.120s", got)
 	}
 	if all := e.search("?page_size=48"); len(all.Items) != 18 || all.TotalPages != 1 {

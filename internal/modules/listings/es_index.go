@@ -58,7 +58,11 @@ type ESTransport interface {
 //	   without reference places; city and suburb may now be absent)
 //	5  advertiser_verified (only listings of a verified advertiser are public)
 //	6  has_video (the listing has a YouTube video tour)
-const MappingVersion = 6
+//	7  location is now set (the reserved geo_point: the PUBLIC coordinates,
+//	   already rounded for an APPROXIMATE listing). The field itself is
+//	   unchanged; the version is raised so that operators reindex, without
+//	   which existing documents have no location and no bbox finds them.
+const MappingVersion = 7
 
 // IndexMapping is the explicit mapping of a listings index.
 //
@@ -124,7 +128,10 @@ type Document struct {
 	ExpiresAt   ESTime   `json:"expires_at"`
 	UpdatedAt   ESTime   `json:"updated_at"`
 	Version     int64    `json:"version"`
-	// Location is reserved for map search; nothing sets it yet.
+	// Location is the geo_point of map search, as [longitude, latitude]:
+	// the PUBLIC coordinates (rounded for an APPROXIMATE listing), so the
+	// index never holds an exact position the public may not see. Absent
+	// for a listing without coordinates.
 	Location *[2]float64 `json:"location,omitempty"`
 }
 
@@ -185,7 +192,18 @@ func BuildDocument(r Record, labels map[string]map[string]string) Document {
 		Bedrooms: r.Bedrooms, Bathrooms: r.Bathrooms, FloorArea: r.FloorArea, LandArea: r.LandArea,
 		Features: features, Featured: r.Featured, Status: r.Status,
 		PublishedAt: ESTime(r.PublishedAt), ExpiresAt: ESTime(r.ExpiresAt), UpdatedAt: ESTime(r.UpdatedAt), Version: r.Version(),
+		Location: esLocation(r),
 	}
+}
+
+// esLocation is the geo_point of a record ([lon, lat], the public
+// coordinates), nil without coordinates.
+func esLocation(r Record) *[2]float64 {
+	l := r.PublicLocation()
+	if l == nil {
+		return nil
+	}
+	return &[2]float64{l.Longitude, l.Latitude}
 }
 
 // IndexAlias is the alias searches and writes go through: <prefix>-listings-current.

@@ -127,6 +127,24 @@
         }
       }
     },
+    "mappable": {
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "region": "matabeleland-north"
+              }
+            },
+            {
+              "exists": {
+                "field": "location"
+              }
+            }
+          ]
+        }
+      }
+    },
     "price": {
       "aggs": {
         "values": {

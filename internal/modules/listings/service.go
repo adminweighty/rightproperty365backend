@@ -68,7 +68,10 @@ type Page struct {
 	PageSize   int       `json:"page_size"`
 	Total      int       `json:"total"`
 	TotalPages int       `json:"total_pages"`
-	Facets     Facets    `json:"facets"`
+	// MappableTotal is how many of the matching listings have coordinates
+	// and can be shown on a map ("12 of 20 results are on the map").
+	MappableTotal int    `json:"mappable_total"`
+	Facets        Facets `json:"facets"`
 }
 
 // labelSets loads the labels of every set a listing uses.
@@ -110,6 +113,7 @@ func present(r Record, labels map[string]map[string]string) Listing {
 	}
 	l.Video = videoOf(r.YouTubeVideoID, r.YouTubeStartSeconds)
 	l.HasVideo = l.Video != nil
+	l.Location = r.PublicLocation()
 	for i := range l.Photos {
 		if l.Photos[i].Variants == nil {
 			l.Photos[i].Variants = []PhotoVariant{}
@@ -306,6 +310,7 @@ func (s *Service) Find(ctx context.Context, q Query) (Page, error) {
 	if q.PageSize > 0 {
 		page.TotalPages = (hits.Total + q.PageSize - 1) / q.PageSize
 	}
+	page.MappableTotal = min(max(hits.Mappable, 0), page.Total)
 	page.Facets = s.facets(hits.Facets, q, labels)
 	return page, nil
 }

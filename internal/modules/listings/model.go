@@ -430,6 +430,10 @@ type Listing struct {
 	// HasVideo says whether it has one (for the cards of a search).
 	Video    *Video `json:"video"`
 	HasVideo bool   `json:"has_video"`
+	// Location is where the listing is on a map, null when the lister set no
+	// coordinates. For an APPROXIMATE listing the coordinates are rounded to
+	// two decimals (about 1 km) by the server: the exact ones are never public.
+	Location *Location `json:"location"`
 	// Verification says which checks stand behind the listing.
 	Verification Verification `json:"verification"`
 	PublishedAt  time.Time    `json:"published_at"`
@@ -512,6 +516,12 @@ type Record struct {
 	// none); YouTubeStartSeconds where it starts (nil: at the beginning).
 	YouTubeVideoID      string
 	YouTubeStartSeconds *int
+	// Latitude and Longitude are the exact coordinates the lister set (both
+	// or neither; at most six decimals). LocationPrecision is EXACT or
+	// APPROXIMATE ("" reads as EXACT). The public sees PublicLocation.
+	Latitude          *float64
+	Longitude         *float64
+	LocationPrecision string
 
 	Status      string
 	PublishedAt time.Time
@@ -607,6 +617,11 @@ type Query struct {
 	Reference string
 	// HasPhotos keeps listings with at least one photo.
 	HasPhotos bool
+	// BBox keeps listings whose public coordinates are inside the box;
+	// HasLocation keeps listings that have coordinates at all (the map view
+	// before it has a box). Neither is a facet: both narrow every count.
+	BBox        *BBox
+	HasLocation bool
 	// GuestsMin keeps short stays that sleep at least this many guests.
 	GuestsMin *int
 	// CheckIn and CheckOut (YYYY-MM-DD) ask for short stays that are free for
@@ -702,6 +717,8 @@ type Hits struct {
 	IDs    []uuid.UUID
 	Total  int
 	Facets RawFacets
+	// Mappable is how many of the Total matches have coordinates.
+	Mappable int
 }
 
 // Suggestion is one search suggestion.

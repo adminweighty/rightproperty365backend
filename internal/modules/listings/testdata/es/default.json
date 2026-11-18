@@ -79,6 +79,19 @@
         "match_all": {}
       }
     },
+    "mappable": {
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "exists": {
+                "field": "location"
+              }
+            }
+          ]
+        }
+      }
+    },
     "price": {
       "aggs": {
         "values": {

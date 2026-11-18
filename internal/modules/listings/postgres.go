@@ -58,7 +58,8 @@ const recordColumns = `
 	o.name, COALESCE(o.kind::text, ''), COALESCE(o.status = 'ACTIVE', false),
 	ag.verified_at, COALESCE(ag.logo_checksum, ''), COALESCE(ag.logo_width, 0), COALESCE(ag.logo_height, 0),
 	COALESCE(at.specialism, ''), COALESCE(at.logo_checksum, ''), COALESCE(at.logo_width, 0), COALESCE(at.logo_height, 0),
-	su.full_name, sr.approved_at, l.reviewed_at, l.reviewed_by, COALESCE(l.youtube_video_id, ''), l.youtube_start_seconds`
+	su.full_name, sr.approved_at, l.reviewed_at, l.reviewed_by, COALESCE(l.youtube_video_id, ''), l.youtube_start_seconds,
+	l.latitude::float8, l.longitude::float8, l.location_precision`
 
 // recordFrom joins who advertises the listing, read with the listing every
 // time: the organisation and its own profile, the assigned agent's profile,
@@ -110,7 +111,7 @@ func scanRecord(row pgx.CollectableRow) (Record, error) {
 		&sellerName, &r.CityName, &r.RegionName, &agKind, &agSlug, &agName, &agVerified, &atSlug, &atNm, &atVerified, &r.Features, &photos,
 		&orgName, &orgKind, &orgActive, &agVerifiedAt, &agChecksum, &agWidth, &agHeight,
 		&atSpecialism, &atChecksum, &atWidth, &atHigh, &ownerName, &ownerApprovedAt, &r.ReviewedAt, &r.ReviewedBy,
-		&r.YouTubeVideoID, &r.YouTubeStartSeconds); err != nil {
+		&r.YouTubeVideoID, &r.YouTubeStartSeconds, &r.Latitude, &r.Longitude, &r.LocationPrecision); err != nil {
 		return Record{}, err
 	}
 	if v, ok := new(big.Rat).SetString(priceText); priceText != "" && ok {
@@ -340,6 +341,14 @@ const searchFrom = `
 // reference data. The hierarchy has one source, so nothing is stored twice.
 const regionColumn = `ct.parent_code`
 
+// publicLatitude and publicLongitude are the coordinates the public sees:
+// rounded to two decimals (half away from zero, like RoundCoordinate) for
+// an APPROXIMATE listing.
+const (
+	publicLatitude  = `(CASE WHEN l.location_precision = 'APPROXIMATE' THEN round(l.latitude, 2) ELSE l.latitude END)`
+	publicLongitude = `(CASE WHEN l.location_precision = 'APPROXIMATE' THEN round(l.longitude, 2) ELSE l.longitude END)`
+)
+
 // builder accumulates a WHERE clause and its arguments.
 type builder struct {
 	conds []string
@@ -437,6 +446,26 @@ func where(q Query, now time.Time, skip string) *builder {
 			b.add(`mk.code <> ALL(%s::text[])`, q.Stay.ExcludeCountries)
 		}
 	}
+	// The map: has_location and bbox, never skipped, so every facet is
+	// counted with them applied.
+	if q.HasLocation || q.BBox != nil {
+		b.conds = append(b.conds, `l.latitude IS NOT NULL AND l.longitude IS NOT NULL`)
+	}
+	if box := q.BBox; box != nil {
+		// A range the btree index (latitude, longitude) can use, widened by
+		// half the rounding of an APPROXIMATE listing, then the exact test
+		// on the public coordinates (rounded for APPROXIMATE), so the box
+		// finds a listing where the public sees it and nowhere else.
+		const slack = 0.005
+		b.add(`l.latitude >= %s::numeric`, box.South-slack)
+		b.add(`l.latitude <= %s::numeric`, box.North+slack)
+		b.add(`l.longitude >= %s::numeric`, box.West-slack)
+		b.add(`l.longitude <= %s::numeric`, box.East+slack)
+		b.add(publicLatitude+` >= %s::numeric`, box.South)
+		b.add(publicLatitude+` <= %s::numeric`, box.North)
+		b.add(publicLongitude+` >= %s::numeric`, box.West)
+		b.add(publicLongitude+` <= %s::numeric`, box.East)
+	}
 	if skip != "price" && q.priced() {
 		b.add(`l.currency_code = %s`, currencyOf(q))
 		if q.MinPrice != nil {
@@ -473,7 +502,7 @@ func (s *PostgresStore) countBy(ctx context.Context, column string, b *builder) 
 func (s *PostgresStore) Search(ctx context.Context, q Query, now time.Time) (Hits, error) {
 	all := where(q, now, "")
 	hits := Hits{IDs: []uuid.UUID{}, Facets: RawFacets{Bedrooms: map[int]int{}}}
-	if err := s.pool.QueryRow(ctx, `SELECT count(*) `+searchFrom+` WHERE `+all.sql(), all.args...).Scan(&hits.Total); err != nil {
+	if err := s.pool.QueryRow(ctx, `SELECT count(*), count(l.latitude) `+searchFrom+` WHERE `+all.sql(), all.args...).Scan(&hits.Total, &hits.Mappable); err != nil {
 		return Hits{}, fmt.Errorf("count: %w", err)
 	}
 

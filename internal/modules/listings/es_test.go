@@ -94,6 +94,11 @@ func TestSearchBodyGoldenFiles(t *testing.T) {
 			ListedWithinDays: intp(30), AdvertiserType: AdvertiserFilterAgency, Reference: "rp-zw-10001", HasPhotos: true,
 			Sort: SortAreaDesc, Page: 1, PageSize: 12,
 		}, esNow),
+		// The map: a box, only listings with coordinates.
+		"map": BuildSearchBody(Query{
+			Deal: "rent", BBox: &BBox{West: 30.9, South: -17.9, East: 31.2, North: -17.7}, HasLocation: true,
+			Sort: SortNewest, Page: 1, PageSize: 24,
+		}, esNow),
 		"oldest":  BuildSearchBody(Query{Region: "matabeleland-north", AdvertiserType: AdvertiserFilterPrivate, Sort: SortOldest, Page: 1, PageSize: 12}, esNow),
 		"suggest": BuildSuggestBody("bor", 8, esNow),
 	}

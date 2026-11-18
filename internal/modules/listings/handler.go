@@ -180,6 +180,21 @@ func parseQuery(v url.Values) (Query, map[string]string) {
 	default:
 		fields["has_photos"] = "must be true or false"
 	}
+	// The map: a box (west,south,east,north) and / or "only with coordinates".
+	if raw := strings.TrimSpace(v.Get("bbox")); raw != "" {
+		box, problem := ParseBBox(raw)
+		if problem != "" {
+			fields["bbox"] = problem
+		}
+		q.BBox = box
+	}
+	switch raw := v.Get("has_location"); raw {
+	case "", "false":
+	case "true":
+		q.HasLocation = true
+	default:
+		fields["has_location"] = "must be true or false"
+	}
 	if raw := v.Get("min_price"); raw != "" {
 		amount, err := ParseAmount(raw)
 		if err != nil {

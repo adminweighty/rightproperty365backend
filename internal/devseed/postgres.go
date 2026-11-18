@@ -205,10 +205,10 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 			                      slug, reference, deal, category, property_type, price_period, city_code, suburb_code,
 			                      bedrooms, bathrooms, floor_area_m2, land_area_m2, summary, description, featured, private_seller_name,
 			                      max_guests, min_nights, city_name, region_name, reviewed_at, reviewed_by,
-			                      youtube_video_id, youtube_start_seconds)
+			                      youtube_video_id, youtube_start_seconds, latitude, longitude, location_precision)
 			VALUES ($1, (SELECT id FROM markets WHERE code = $2), $3, $4::text::listing_status, $5::text::numeric, $6, $7, $8, $9, $10, $11, $12, $12,
 			        $13, $14, $15, $16, $17, $18, NULLIF($19, ''), NULLIF($20, ''), $21, $22, $23, $24, $25, $26, $27, $28, $29, $30,
-			        NULLIF($31, ''), NULLIF($32, ''), $33, $34, NULLIF($35, ''), $36)
+			        NULLIF($31, ''), NULLIF($32, ''), $33, $34, NULLIF($35, ''), $36, $37, $38, $39)
 			ON CONFLICT (id) DO UPDATE
 			SET market_id = EXCLUDED.market_id, title = EXCLUDED.title, status = EXCLUDED.status,
 			    price_amount = EXCLUDED.price_amount, currency_code = EXCLUDED.currency_code,
@@ -226,6 +226,7 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 			    city_name = EXCLUDED.city_name, region_name = EXCLUDED.region_name,
 			    reviewed_at = EXCLUDED.reviewed_at, reviewed_by = EXCLUDED.reviewed_by,
 			    youtube_video_id = EXCLUDED.youtube_video_id, youtube_start_seconds = EXCLUDED.youtube_start_seconds,
+			    latitude = EXCLUDED.latitude, longitude = EXCLUDED.longitude, location_precision = EXCLUDED.location_precision,
 			    -- Listing management (0020): a re-run drops pending changes and reviews.
 			    revision = NULL, revision_status = NULL, review_reason = NULL, submitted_at = NULL, submitted_by = NULL`,
 			l.ID, l.MarketCode, l.Title, l.Status, l.Price.Amount, l.Price.Currency,
@@ -233,7 +234,7 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 			l.Slug, l.Reference, l.Deal, l.Category, l.PropertyType, period, l.City, l.Suburb,
 			l.Bedrooms, l.Bathrooms, l.FloorArea, l.LandArea, l.Summary, l.Description, l.Featured, sellerName,
 			l.MaxGuests, l.MinNights, l.CityName, l.RegionName, l.ReviewedAt, l.ReviewedBy,
-			l.YouTubeVideoID, l.YouTubeStartSeconds); err != nil {
+			l.YouTubeVideoID, l.YouTubeStartSeconds, l.Latitude, l.Longitude, listings.NormalPrecision(l.LocationPrecision)); err != nil {
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 				return fmt.Errorf("seed listing %s: its slug or reference already belongs to a different listing in this database", l.Slug)

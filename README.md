@@ -485,6 +485,74 @@ activity dashboard; Enquired, Applied, Viewings and Consultations are the existi
 **Not verified:** migration `0026` and `internal/modules/saved/postgres.go` have only run where
 `RP365_TEST_DATABASE_URL` points at a database (`TestPostgresStore` skips otherwise).
 
+## Map search and listing coordinates (API 0.29.0)
+
+Migration `0028`, `internal/modules/listings` (`location.go`; BR-002, the FSD's listing
+"geocoordinates"). A lister places a pin; the public sees the listing on a map and can search an
+area of it.
+
+- **Input** – `latitude` (-90..90) and `longitude` (-180..180) in `POST /v1/me/listings` and
+  `PATCH /v1/me/listings/{id}`: JSON numbers with at most 6 decimals (about 10 cm), sent
+  together, or both `null` to remove the pin. `location_precision` is `EXACT` (the default;
+  `null` means it) or `APPROXIMATE`. Field errors (`400 VALIDATION_FAILED`): only one of the pair
+  is an error on the missing one; out of range, more than 6 decimals (`1e-7` included), or not a
+  number (a string, a boolean) on that coordinate; `0, 0` on `latitude` ("pick the property's
+  location"); any other precision (lower case included) on `location_precision`. Coordinates are
+  optional: `completeness` never asks for them, and a listing without them is simply not on a map.
+- **Review** – a location is listing content: on a published listing it goes into the revision
+  and is public only after approval; `GET /v1/admin/listings/{id}` shows `latitude`, `longitude`
+  and `location_precision` in `content`, `live` and `changes`. `ListingContent` (the lister's
+  and the reviewers' view) always has the **exact** values.
+- **Public** – `Listing.location` is `{latitude, longitude, precision}` or `null`, on the detail
+  and on every search card (both adapters; it is built from the database row with every hit).
+  For **`APPROXIMATE` the server rounds the public coordinates to 2 decimals** (about 1 km; half
+  away from zero on the decimal value, like Postgres `round(numeric, 2)`), in
+  `Listing.location`, in the database adapter's `bbox` test and in the Elasticsearch document.
+  The exact values are never in a public response or in the index; a test greps the public JSON
+  for their digits. Saved-listing cards (`SavedListingCard`) carry no location, so nothing changes
+  there.
+- **Search** – `GET /v1/listings?bbox=west,south,east,north` (decimal degrees, edges included;
+  west and east -180..180, south and north -90..90, `south < north`, `west < east`; a box across
+  the antimeridian is not supported: `400` on `bbox`) keeps the listings whose **public**
+  coordinates are inside; `has_location=true` keeps the listings with coordinates. Both narrow the
+  hits, `total` and every facet, and combine with every other filter, sort and page. The response
+  gains `mappable_total`: how many of the matching listings have coordinates ("12 of 20 results are
+  on the map"; equal to `total` with `bbox` or `has_location`).
+  - memory adapter: the same rule in Go (`locationMatches`);
+  - database adapter: a numeric range on `latitude` / `longitude`, widened by 0.005 so the btree
+    index `(latitude, longitude)` serves it, then the exact test on the public expression
+    (`round(..., 2)` for APPROXIMATE); `mappable_total` is `count(l.latitude)` of the same query;
+  - Elasticsearch: `geo_bounding_box` on the `location` geo_point (set from the public
+    coordinates, `[lon, lat]`) and `exists` for `has_location`, both in the main filter;
+    `mappable_total` is a `filter` aggregation (`exists: location` plus the post filters).
+- **PostGIS not used: numeric range; why.** The project's Postgres is the official `postgres:16`
+  image, which has `cube`, `earthdistance` and `btree_gist` but **not** `postgis` (the handover
+  says "Validate PostGIS support before enabling geo filters": it is not there). A map box is two
+  range predicates, which a plain btree index answers well at this scale, so no extension is
+  created and none is needed. What that rules out today: distance ("within 5 km") search, polygons
+  (draw an area), and accurate behaviour near the poles or across the antimeridian. If those are
+  wanted, `earthdistance` (already available) or PostGIS (an infrastructure decision) are the
+  options; Elasticsearch's geo_point supports them already.
+- **Sample data** – most sample listings have plausible coordinates near their suburb or city
+  (Harare suburbs, Bulawayo, Victoria Falls, Mutare, Kensington, Shoreditch, Manchester's Northern
+  Quarter, Grand Baie): `internal/devseed/coordinates.go`. The Murambi plot
+  (`one-acre-plot-murambi-mutare`) is `APPROXIMATE` (public `-18.95, 32.66`); the Ruwa stand
+  (`residential-stand-ruwa`) has none.
+- **Reindex** – the Elasticsearch document now carries `location` (mapping version **7**; the
+  field was already mapped, only `_meta` changes): **run `cmd/reindex` once after the deploy**.
+  Until then the documents have no `location`, so with the Elasticsearch driver a `bbox` or
+  `has_location=true` finds nothing and `mappable_total` is 0. The database driver needs only
+  migration `0028`.
+
+**Not built (follow-ups):** checking that coordinates lie inside the listing's country (not
+validated: a Harare listing can be pinned in London); geocoding an address; distance search and
+polygons; clustering of markers on the server; a box across the antimeridian.
+
+**Not verified:** migration `0028` and the new columns in `postgres.go` / `manage_postgres.go` /
+`devseed/postgres.go` have only run where `RP365_TEST_DATABASE_URL` points at a database
+(`TestPostgresStoreKeepsTheLocation` skips otherwise); the `geo_bounding_box` query has only been
+checked against the fake cluster of the tests.
+
 ## YouTube video tours (API 0.28.0)
 
 Migration `0027`, `internal/modules/listings` (BR-013, FR-011). An advertiser links one YouTube
@@ -1253,6 +1321,8 @@ re-checks status and expiry, so an index that is behind cannot bring back an exp
   `listed_within_days` (1–365), `advertiser_type` (`agency` or `private`), `reference` (exact,
   case-insensitive) and `has_photos=true`. A maximum below its minimum is `400` on the `_max`
   parameter.
+- **Map** (0.29.0): `bbox=west,south,east,north` and `has_location=true`; the page carries
+  `mappable_total`. See "Map search and listing coordinates".
 - **Sort**: `newest` (default), `relevance` (default when `q` is given), `price_asc`, `price_desc`,
   `oldest`, `area_desc` (largest floor area first, listings without one last).
   **Paging**: `page` from 1, `page_size` 1–48 (default 12).
@@ -1686,6 +1756,13 @@ The API and the worker each log one line at startup naming the driver:
 
 **PostgreSQL stays the source of truth.**
 
+> **After deploying map search (mapping version 7), run `cmd/reindex` once.** Documents now
+> carry `location` (the public coordinates). The field was already in the mapping, so old
+> documents are still accepted, but until the index is rebuilt they have no `location`: with the
+> Elasticsearch driver `bbox` and `has_location=true` find nothing and `mappable_total` is 0.
+> `Listing.location` itself is right at once with either driver (it is read from the database
+> with every hit). The database driver needs only migration `0028`.
+
 > **After deploying YouTube video tours (mapping version 6), run `cmd/reindex` once.** Documents
 > now carry the boolean `has_video`. The mapping is strict, so until the index is rebuilt the old
 > index **refuses every new or changed document** (the worker's index events fail and are
@@ -1748,7 +1825,7 @@ city, suburb, region, features, market — the country —, currency, advertiser
 `has_photos` and `has_video`, `text` with a `keyword` and a `search_as_you_type`
 sub-field for title, suburb and city labels, `scaled_float` for the price with the currency kept
 separately, integers for bedrooms and bathrooms, dates, a `version`, and a `geo_point` `location`
-that is mapped but unused. **A document holds public listing data only** — no customer, no contact
+(since 0.29.0: the public coordinates, rounded for an APPROXIMATE listing; absent without any). **A document holds public listing data only** — no customer, no contact
 detail, no owner account, and nothing that says who the advertiser is (only `advertiser_type`:
 `agency` or `private`, and the boolean `advertiser_verified`); a test checks every field name and that every field is in the mapping.
 A document's `region` is read from the reference data when it is built, so **moving a city to
@@ -2828,6 +2905,13 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0028_listing_coordinates` (API 0.29.0): `listings.latitude numeric(9, 6)` and
+  `listings.longitude numeric(9, 6)` (nullable; CHECK -90..90 and -180..180, and both or neither)
+  and `listings.location_precision text NOT NULL DEFAULT 'EXACT'` (CHECK `EXACT` /
+  `APPROXIMATE`); btree index `listings_coordinates_idx (latitude, longitude) WHERE latitude IS
+  NOT NULL`. No extension (no PostGIS). Pending revisions carry `latitude`, `longitude`,
+  `location_precision` in their jsonb. Additive only. The down migration drops them and loses every
+  listing's coordinates.
 - `0027_listing_youtube` (API 0.28.0): `listings.youtube_video_id text` (CHECK
   `^[A-Za-z0-9_-]{11}$`) and `listings.youtube_start_seconds integer` (CHECK `>= 0`, and only with a
   video), both nullable. Pending revisions carry the same keys in their jsonb. Two nullable

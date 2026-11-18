@@ -299,6 +299,10 @@ func matches(r Record, q Query, skip string) bool {
 	if q.Stay != nil && !stayMatches(r, *q.Stay) {
 		return false
 	}
+	// The map box and has_location: never skipped either.
+	if !locationMatches(r, q) {
+		return false
+	}
 	if skip != "price" && q.priced() {
 		if r.Price.Currency != currencyOf(q) {
 			return false
@@ -472,6 +476,11 @@ func (s *MemoryStore) Search(ctx context.Context, q Query, now time.Time) (Hits,
 	})
 
 	hits := Hits{Total: len(matched), Facets: facets, IDs: []uuid.UUID{}}
+	for _, m := range matched {
+		if m.PublicLocation() != nil {
+			hits.Mappable++
+		}
+	}
 	start := (q.Page - 1) * q.PageSize
 	for i := start; i < len(matched) && i < start+q.PageSize; i++ {
 		hits.IDs = append(hits.IDs, matched[i].ID)

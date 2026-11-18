@@ -217,6 +217,42 @@
         }
       }
     },
+    "mappable": {
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "sale"
+              }
+            },
+            {
+              "term": {
+                "market": "ZW"
+              }
+            },
+            {
+              "term": {
+                "region": "harare"
+              }
+            },
+            {
+              "range": {
+                "bedrooms": {
+                  "gte": 2,
+                  "lte": 5
+                }
+              }
+            },
+            {
+              "exists": {
+                "field": "location"
+              }
+            }
+          ]
+        }
+      }
+    },
     "price": {
       "aggs": {
         "values": {

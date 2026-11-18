@@ -150,6 +150,18 @@ func BuildSearchBody(q Query, now time.Time) J {
 	for _, f := range q.Features { // every feature must be present
 		filter = append(filter, J{"term": J{"features": f}})
 	}
+	// The map. In the main filter, so hits, the total and every facet are
+	// computed with the box applied. The geo_point holds the public
+	// coordinates (rounded for APPROXIMATE listings).
+	if q.HasLocation {
+		filter = append(filter, J{"exists": J{"field": "location"}})
+	}
+	if b := q.BBox; b != nil {
+		filter = append(filter, J{"geo_bounding_box": J{"location": J{
+			"top_left":     J{"lat": b.North, "lon": b.West},
+			"bottom_right": J{"lat": b.South, "lon": b.East},
+		}}})
+	}
 	// A stay. The index holds no availability data: the listings that are
 	// not free were resolved from the database and are excluded by ID. It is
 	// part of the main filter, so hits, the total and every facet are
@@ -204,6 +216,8 @@ func BuildSearchBody(q Query, now time.Time) J {
 		"features": J{"filter": esAll(allExcept(facets, "")), "aggs": J{"values": J{"terms": J{"field": "features", "size": 1000}}}},
 		// Prices per currency, without the price filter: nothing is converted,
 		// and the Service decides which currency the search is in.
+		// How many of the hits have coordinates (mappable_total).
+		"mappable": J{"filter": esAll(append(allExcept(facets, ""), J{"exists": J{"field": "location"}}))},
 		"price": J{"filter": esAll(allExcept(facets, "price")), "aggs": J{"values": J{
 			"terms": J{"field": "currency", "size": 200},
 			"aggs":  J{"min": J{"min": J{"field": "price"}}, "max": J{"max": J{"field": "price"}}},
@@ -371,7 +385,10 @@ func (e *ElasticSearch) Search(ctx context.Context, q Query, now time.Time) (Hit
 			Deal, Category, City, Suburb, Bedrooms, Features esBuckets
 			Country, Region                                  esBuckets
 			PropertyType                                     esBuckets `json:"property_type"`
-			Price                                            struct {
+			Mappable                                         struct {
+				DocCount int `json:"doc_count"`
+			} `json:"mappable"`
+			Price struct {
 				Values struct {
 					Buckets []struct {
 						Key      string `json:"key"`
@@ -390,7 +407,7 @@ func (e *ElasticSearch) Search(ctx context.Context, q Query, now time.Time) (Hit
 	if err := e.search(ctx, BuildSearchBody(q, now), &resp); err != nil {
 		return Hits{}, err
 	}
-	hits := Hits{IDs: []uuid.UUID{}, Total: resp.Hits.Total.Value}
+	hits := Hits{IDs: []uuid.UUID{}, Total: resp.Hits.Total.Value, Mappable: resp.Aggregations.Mappable.DocCount}
 	for _, h := range resp.Hits.Hits {
 		id, err := uuid.Parse(h.ID)
 		if err != nil {

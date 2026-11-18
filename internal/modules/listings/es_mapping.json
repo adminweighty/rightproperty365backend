@@ -5,7 +5,7 @@
   },
   "mappings": {
     "dynamic": "strict",
-    "_meta": { "mapping_version": 6 },
+    "_meta": { "mapping_version": 7 },
     "properties": {
       "id": { "type": "keyword" },
       "slug": { "type": "keyword" },

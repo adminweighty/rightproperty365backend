@@ -345,6 +345,64 @@
         }
       }
     },
+    "mappable": {
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "sale"
+              }
+            },
+            {
+              "term": {
+                "category": "residential"
+              }
+            },
+            {
+              "term": {
+                "property_type": "house"
+              }
+            },
+            {
+              "term": {
+                "city": "harare"
+              }
+            },
+            {
+              "term": {
+                "suburb": "borrowdale"
+              }
+            },
+            {
+              "range": {
+                "bedrooms": {
+                  "gte": 3
+                }
+              }
+            },
+            {
+              "term": {
+                "currency": "USD"
+              }
+            },
+            {
+              "range": {
+                "price": {
+                  "gte": 100000,
+                  "lte": 400000.5
+                }
+              }
+            },
+            {
+              "exists": {
+                "field": "location"
+              }
+            }
+          ]
+        }
+      }
+    },
     "price": {
       "aggs": {
         "values": {

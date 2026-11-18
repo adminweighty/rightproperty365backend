@@ -81,6 +81,10 @@ func ListingRecords(now time.Time) []listings.Record {
 		for _, f := range l.Features {
 			r.Features = append(r.Features, Code(f))
 		}
+		if c, ok := SampleCoordinates(l.Slug); ok {
+			lat, lon := c.Latitude, c.Longitude
+			r.Latitude, r.Longitude, r.LocationPrecision = &lat, &lon, c.Precision
+		}
 		if owner.OrganisationID != nil {
 			agency := agencies[*owner.OrganisationID]
 			r.Advertiser = listings.Advertiser{Type: listings.AdvertiserAgency, Name: agency.Name, Verified: agency.Verified, Agency: &agency}

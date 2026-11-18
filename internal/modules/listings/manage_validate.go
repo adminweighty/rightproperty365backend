@@ -31,7 +31,7 @@ const (
 var patchFields = []string{
 	"title", "summary", "description", "deal", "category", "property_type", "price", "price_period",
 	"country", "city", "suburb", "city_name", "region_name", "bedrooms", "bathrooms", "floor_area", "land_area",
-	"features", "max_guests", "min_nights", "youtube_url",
+	"features", "max_guests", "min_nights", "youtube_url", "latitude", "longitude", "location_precision",
 }
 
 // htmlRe finds markup: a "<" that starts a tag, a comment or a declaration.
@@ -154,6 +154,41 @@ func applyPatch(c *Content, patch map[string]json.RawMessage, fields map[string]
 				break
 			}
 			c.YouTubeVideoID, c.YouTubeStartSeconds = id, start
+		}
+	}
+	// Coordinates: JSON numbers with at most six decimals; null clears one
+	// (validateContent then wants both or neither).
+	for _, k := range []struct {
+		key string
+		dst **float64
+	}{{"latitude", &c.Latitude}, {"longitude", &c.Longitude}} {
+		v, ok := patch[k.key]
+		if !ok {
+			continue
+		}
+		if isNull(v) {
+			*k.dst = nil
+			continue
+		}
+		f, problem := parseCoordinate(v)
+		if problem != "" {
+			fields[k.key] = problem
+			continue
+		}
+		*k.dst = &f
+	}
+	if v, ok := patch["location_precision"]; ok {
+		var p string
+		switch {
+		case isNull(v):
+			c.LocationPrecision = PrecisionExact
+		case json.Unmarshal(v, &p) != nil:
+			fields["location_precision"] = MsgPrecision
+		default:
+			c.LocationPrecision = p
+			if c.LocationPrecision != PrecisionExact && c.LocationPrecision != PrecisionApproximate {
+				fields["location_precision"] = MsgPrecision
+			}
 		}
 	}
 	if v, ok := patch["features"]; ok {
@@ -342,6 +377,10 @@ func (s *Service) validateContent(ctx context.Context, c Content, g Geography, f
 		fields["youtube_url"] = MsgNotYouTubeVideo
 	}
 
+	// Coordinates (the CHECK constraints of migration 0028, and (0, 0)).
+	// Whether they lie inside the listing's country is not checked.
+	validateLocation(c, fields)
+
 	// Price.
 	if c.PriceAmount != "" {
 		amount, err := ParseAmount(c.PriceAmount)
@@ -474,7 +513,8 @@ func completeness(c Content, photos []StoredPhoto, alts map[string]string, g Geo
 	if c.Category == CategoryShortStay && c.MaxGuests == nil {
 		need("max_guests", "Say how many guests the place sleeps.")
 	}
-	// A video tour is optional (BR-013): no video is never missing.
+	// A video tour is optional (BR-013): no video is never missing. Nor are
+	// coordinates: without them the listing is just not on the map.
 	if len(photos) < MinPhotosToSubmit {
 		need("photos", fmt.Sprintf("Add at least %d photo.", MinPhotosToSubmit))
 	}

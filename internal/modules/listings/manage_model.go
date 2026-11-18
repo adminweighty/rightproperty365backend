@@ -104,6 +104,12 @@ type Content struct {
 	// They are parsed from the youtube_url of a PATCH (ParseYouTubeURL).
 	YouTubeVideoID      string `json:"youtube_video_id,omitempty"`
 	YouTubeStartSeconds *int   `json:"youtube_start_seconds,omitempty"`
+	// Latitude and Longitude are the exact coordinates (both or neither);
+	// LocationPrecision is EXACT or APPROXIMATE ("" reads as EXACT). A
+	// revision written before 0.29.0 lacks them: no coordinates.
+	Latitude          *float64 `json:"latitude,omitempty"`
+	Longitude         *float64 `json:"longitude,omitempty"`
+	LocationPrecision string   `json:"location_precision,omitempty"`
 }
 
 // ContentOf returns the editable content of a record.
@@ -115,6 +121,7 @@ func ContentOf(r Record) Content {
 		Bedrooms: copyInt(r.Bedrooms), Bathrooms: copyInt(r.Bathrooms), FloorArea: copyInt(r.FloorArea), LandArea: copyInt(r.LandArea),
 		Features: append([]string{}, r.Features...), MaxGuests: copyInt(r.MaxGuests), MinNights: copyInt(r.MinNights),
 		YouTubeVideoID: r.YouTubeVideoID, YouTubeStartSeconds: copyInt(r.YouTubeStartSeconds),
+		Latitude: copyFloat(r.Latitude), Longitude: copyFloat(r.Longitude), LocationPrecision: NormalPrecision(r.LocationPrecision),
 	}
 }
 
@@ -126,6 +133,15 @@ func (c Content) ApplyTo(r *Record) {
 	r.Bedrooms, r.Bathrooms, r.FloorArea, r.LandArea = copyInt(c.Bedrooms), copyInt(c.Bathrooms), copyInt(c.FloorArea), copyInt(c.LandArea)
 	r.Features, r.MaxGuests, r.MinNights = append([]string{}, c.Features...), copyInt(c.MaxGuests), copyInt(c.MinNights)
 	r.YouTubeVideoID, r.YouTubeStartSeconds = c.YouTubeVideoID, copyInt(c.YouTubeStartSeconds)
+	r.Latitude, r.Longitude, r.LocationPrecision = copyFloat(c.Latitude), copyFloat(c.Longitude), NormalPrecision(c.LocationPrecision)
+}
+
+func copyFloat(p *float64) *float64 {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
 }
 
 func copyInt(p *int) *int {

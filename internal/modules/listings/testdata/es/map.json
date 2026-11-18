@@ -1,0 +1,305 @@
+{
+  "_source": false,
+  "aggs": {
+    "bedrooms": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "bedrooms",
+            "size": 60
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "rent"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "category": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "category",
+            "size": 50
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "rent"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "city": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "city",
+            "size": 500
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "rent"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "country": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "market",
+            "size": 300
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "rent"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "deal": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "deal",
+            "size": 50
+          }
+        }
+      },
+      "filter": {
+        "match_all": {}
+      }
+    },
+    "features": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "features",
+            "size": 1000
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "rent"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "mappable": {
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "rent"
+              }
+            },
+            {
+              "exists": {
+                "field": "location"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "price": {
+      "aggs": {
+        "values": {
+          "aggs": {
+            "max": {
+              "max": {
+                "field": "price"
+              }
+            },
+            "min": {
+              "min": {
+                "field": "price"
+              }
+            }
+          },
+          "terms": {
+            "field": "currency",
+            "size": 200
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "rent"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "property_type": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "property_type",
+            "size": 200
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "rent"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "region": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "region",
+            "size": 500
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "rent"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "suburb": {
+      "aggs": {
+        "values": {
+          "terms": {
+            "field": "suburb",
+            "size": 1000
+          }
+        }
+      },
+      "filter": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "deal": "rent"
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "from": 0,
+  "post_filter": {
+    "bool": {
+      "filter": [
+        {
+          "term": {
+            "deal": "rent"
+          }
+        }
+      ]
+    }
+  },
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "term": {
+            "status": "PUBLISHED"
+          }
+        },
+        {
+          "range": {
+            "expires_at": {
+              "gt": "2026-11-14T09:00:00.000Z"
+            }
+          }
+        },
+        {
+          "bool": {
+            "must_not": {
+              "term": {
+                "advertiser_verified": false
+              }
+            }
+          }
+        },
+        {
+          "exists": {
+            "field": "location"
+          }
+        },
+        {
+          "geo_bounding_box": {
+            "location": {
+              "bottom_right": {
+                "lat": -17.9,
+                "lon": 31.2
+              },
+              "top_left": {
+                "lat": -17.7,
+                "lon": 30.9
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "size": 24,
+  "sort": [
+    {
+      "published_at": "desc"
+    },
+    {
+      "id": "asc"
+    }
+  ],
+  "track_total_hits": true
+}
