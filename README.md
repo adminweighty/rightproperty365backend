@@ -233,6 +233,7 @@ All configuration comes from environment variables. For local development you ma
 | `AUTH_DEMO_CODE` | _(empty)_ | A demo sign-in code (4–6 digits) accepted for every sign-in besides the emailed one. **Development and staging only: set with `APP_ENV=production` the API and the worker refuse to start.** Never logged; the API logs a warning while it is active. See "Sign-in code" |
 | `ADMIN_SESSION_TTL` | `12h` | Absolute lifetime of an administrator session (Go duration, 1m–24h) |
 | `ADMIN_SESSION_IDLE_TTL` | `30m` | Administrator inactivity timeout (Go duration; must not exceed `ADMIN_SESSION_TTL`) |
+| `ANALYTICS_RAW_RETENTION_DAYS` | `90` | Days raw analytics events are kept before the worker deletes them (7..3650); rollups are kept. See "Listing analytics" |
 | `STORAGE_DRIVER`, `STORAGE_LOCAL_DIR`, `S3_*` | | Private file storage for onboarding documents: see "File storage". **Staging and production must use `STORAGE_DRIVER=s3`** |
 | `ADMINCTL_PASSWORD` | _(empty)_ | `cmd/adminctl` only: the administrator password, as an alternative to stdin |
 
@@ -279,6 +280,8 @@ All configuration comes from environment variables. For local development you ma
 | GET | `/v1/me/property-requests`, `/{id}` | The requests this account sent, in the customer's own terms |
 | GET | `/v1/me/saved-listings`, `/ids` | The listings this account saved, newest first, with a snapshot for those no longer public; the IDs of those still public (see "Saved properties", 0.27.0) |
 | PUT, DELETE | `/v1/me/saved-listings/{listingId}` | Save a public listing (idempotent, `created` flag) / remove a save (always `204`) |
+| POST | `/v1/analytics/events` | Browser analytics events (public; see "Listing analytics", 0.30.0) |
+| GET | `/v1/analytics/listings/{id}`, `/v1/analytics/organisations/{orgId}` | A listing's / an organisation's figures, owner-scoped (404 otherwise) |
 | GET | `/v1/admin/overview` | Counts an administrator starts from, sections by platform role |
 | GET, POST | `/v1/admin/routing-exceptions`, `/{id}/resolve` | Requests nobody could receive, and marking one as dealt with |
 | POST | `/v1/appointments` | A signed-in customer asks for a viewing or a consultation |
@@ -313,6 +316,7 @@ All configuration comes from environment variables. For local development you ma
 | GET, POST, PATCH | `/v1/admin/subscription-plans`, `/{id}`, `/{id}/retire` | Subscription plans: read (SUPER_ADMIN, FINANCE_ADMIN, PLATFORM_ADMIN, SUPPORT); create, change, retire (SUPER_ADMIN, FINANCE_ADMIN) |
 | GET, POST | `/v1/admin/subscriptions`, `/{id}`, `/{id}/approve`, `/{id}/reject`, `/{id}/cancel` | Subscriptions: read (SUPER_ADMIN, FINANCE_ADMIN, PLATFORM_ADMIN, SUPPORT); record a payment, reject, cancel (SUPER_ADMIN, FINANCE_ADMIN) |
 | GET, POST, PATCH | `/v1/admin/reference`, `/{set}`, `/{set}/{code}`, `/{set}/{code}/deactivate`, `/reactivate` | Change reference data (SUPER_ADMIN, PLATFORM_ADMIN, CONTENT_ADMIN; MARKET_ADMIN for its own market's rows) |
+| GET | `/v1/admin/analytics/summary` | Site and market analytics (SUPER_ADMIN, PLATFORM_ADMIN, MARKET_ADMIN for its markets) |
 | GET | `/v1/admin/reports/summary`, `/users.csv`, `/listings.csv`, `/subscriptions.csv` | Report summary (SUPER_ADMIN, PLATFORM_ADMIN, FINANCE_ADMIN); user and listing exports (SUPER_ADMIN, PLATFORM_ADMIN); subscription export (SUPER_ADMIN, PLATFORM_ADMIN, FINANCE_ADMIN) |
 
 Every error uses one envelope, and `trace_id` equals the `X-Request-Id` response header:
@@ -440,6 +444,92 @@ change; follow-up dates and reminders; editing or deleting a note; listing analy
 funnels and response-time KPIs (no event data exists); seeker favourites, saved searches and
 alerts.
 
+## Listing analytics (API 0.30.0)
+
+Migration `0029`, module `internal/modules/analytics` (BR-006, FR-033 to FR-036, FSD section 5).
+First-party measurement only: no third-party code, no cross-site identifier. **These are not
+Google Analytics figures** (the web's `/analytics-definitions` says so and lists the differences).
+
+| Method | Path | Who |
+| --- | --- | --- |
+| POST | `/v1/analytics/events` | Public, signed-in optional. `application/json` or `text/plain` (the `sendBeacon` fallback without a preflight), at most 32 KB and 50 events, its own per-IP bucket (burst 60, 120 a minute). `202 {accepted, duplicates, rejected}` |
+| GET | `/v1/analytics/listings/{id}?period=24h\|7d\|30d\|custom&from=&to=` | The lister (approved direct owner), an OWNER / MANAGER of the listing's organisation, or its assigned agent; **404** for everyone else |
+| GET | `/v1/analytics/organisations/{orgId}?period=...` | OWNER / MANAGER: every listing of the organisation; AGENT: only their assigned listings; not a member **404**; STAFF 403 |
+| GET | `/v1/admin/analytics/summary?market=&period=...` | SUPER_ADMIN, PLATFORM_ADMIN, MARKET_ADMIN (own markets only; another market 403) |
+
+**Events.** Browser: `property_card_impression` (with `placement` and `rank`),
+`listing_detail_view`, `contact_click` (sent by the web when a listing's request form is
+submitted, once per listing per page view) and `youtube_play_intent`. Server-side, recorded by
+the worker from the outbox (`analytics.Recorder`, chained after the notification handlers with
+`outbox.Dispatcher.Also`): `listing_save` (LISTING_SAVED), `enquiry_submit`
+(PROPERTY_REQUEST_CREATED about a listing; a viewing request sent through the request form
+therefore also counts as an enquiry), `viewing_request` (APPOINTMENT_REQUESTED for a listing),
+`appointment_confirm` (APPOINTMENT_CONFIRMED for a listing) and `listing_relist`
+(LISTING_RELISTED, a new outbox event of `POST /v1/me/listings/{id}/relist`). A server event's
+`event_id` is a UUIDv5 of the outbox event's ID, so a redelivery records nothing new. A browser
+sending a server-only type gets that event rejected. Without a database the API records them
+in-process and runs the rollup itself (development only).
+
+**Ingestion rules.** Idempotent on `event_id` (primary key; a repeat counts in `duplicates`).
+The listing must exist and be public (`listings.Record.Public`); the market is the listing's.
+`occurred_at` must lie from 24 h before to 5 min after receipt (a time ahead is clamped to the
+receipt). Wrong enums, a session that is not 16-64 `[A-Za-z0-9_-]` or `consent.analytics:
+false` reject the event. **SPA de-duplication:** a `listing_detail_view` of the same listing in
+the same session less than 30 minutes from a stored one is a duplicate (atomic: an advisory lock
+per session and listing in Postgres).
+
+**Bots.** A user agent matching the list in `analytics/bots.go` (crawlers, link previews,
+headless browsers, HTTP libraries, uptime monitors; an empty user agent too), or more than 300
+events from one session or one network in 10 minutes (the excess), marks the event `bot=true`:
+stored, excluded from every metric, counted in `filtered_bot_events`. The response does not
+reveal it. The rate counter is in process memory (per API instance, like the rate limiters).
+
+**Privacy.** Stored per event: type, times, listing, market, local day, placement / rank, source
+class, device class, the session pseudonym and the **truncated network** (IPv4 /24, IPv6 /48; a
+database check refuses anything finer). Never stored: the IP, the user agent, the referrer.
+Server-side events have no session and no network. Do Not Track and GPC are honoured by the web
+not sending; the API does not read them. **Raw events are never returned by any endpoint.**
+
+**Metric definitions** (the same for advertisers and administrators, `AnalyticsReport`):
+
+| Metric | Definition |
+| --- | --- |
+| views | valid (non-bot, accepted, de-duplicated) `listing_detail_view` events |
+| unique_views | distinct sessions per listing per market-local day, summed over the period's days; a view without a session counts once (disclosed exception) |
+| impressions, contact_clicks, video_plays | valid events of those types |
+| saves, enquiries, viewing_requests, appointments_confirmed, relists | server-side events |
+| conversion | enquiries / views, 4 decimals, `null` without views |
+| ctr | contact clicks / views (the click is the request-form submit), 4 decimals, `null` without views |
+| sources, devices | valid views by class (`unknown` when not sent) |
+| filtered_bot_events | events marked bot |
+| late_events_dropped | events dropped because they arrived late (counted on the local day of arrival) |
+
+**Rollups, days and late events.** Each event's market-local day is worked out at ingestion from
+`markets.timezone` (every country already had one, e.g. ZW Africa/Harare, GB Europe/London, MU
+Indian/Mauritius; UTC when it does not load). The worker recomputes the last **3 local days**
+(today included) of every market with recent events **every 15 minutes** and upserts
+`analytics_listing_daily` (idempotent: a second run gives the same rows); `refreshed_at` is the
+last run. An event that arrives **more than 3 days after it occurred** is dropped (only its
+identity is kept) and counted in `late_events_dropped`, so a day is final once it leaves the
+window. `period=24h` reads the raw events (`near_real_time: true`, "Near real time, may
+change"); 7d / 30d are the last 7 / 30 local days including today; custom is `from`..`to` (at
+most 366 days). Site-wide admin periods use UTC days for the window.
+
+**Retention.** `ANALYTICS_RAW_RETENTION_DAYS` (default 90, 7..3650): the worker deletes raw and
+late events older than that every 15 minutes. Rollups are kept.
+
+**Tests.** The FR-035 fixture (`analytics/fixture_test.go`): 100 events across ZW, GB (around the
+end of summer time, 25 October 2026) and MU, placed around local midnights, with duplicates, bot
+user agents, an SPA double view, three rejections and a late event; exact totals per local day,
+unique views, filtered, duplicate and late counts, on the memory store and (with
+`RP365_TEST_DATABASE_URL`) on Postgres.
+
+**Not verified / follow-ups:** migration `0029` and `analytics/postgres.go` have only run where
+`RP365_TEST_DATABASE_URL` points at a database. `analytics_events` is a plain table with an
+`(occurred_at)` index: range partitioning by month is a follow-up (the `event_id` key would then
+have to include `occurred_at` or move to its own table). The bot rate counter and the zone cache
+are per process.
+
 ## Saved properties (API 0.27.0)
 
 Migration `0026`, module `internal/modules/saved` (FR-016 "Saved", the first part of the customer
@@ -471,8 +561,8 @@ activity dashboard; Enquired, Applied, Viewings and Consultations are the existi
   an unavailable item to its listing or into search (FR-016's acceptance test).
 - **Events** – `LISTING_SAVED` / `LISTING_UNSAVED` (aggregate `listing`, payload `{user_id,
   listing_id, at}`) are written in the same transaction as the change, and only when something
-  changed (saving twice writes one event). Nothing is emailed; the worker acknowledges them until
-  analytics consumes them.
+  changed (saving twice writes one event). Nothing is emailed; analytics counts `LISTING_SAVED` as
+  `listing_save` (API 0.30.0).
 - **Caching** – the catalogue (`/v1/listings`, `/v1/listings/{slug}`) stays unpersonalised; the
   saved endpoints answer `Cache-Control: private, no-store`.
 - **Account deletion** – deleting an account (by an administrator or `DELETE /v1/me`) deletes its
@@ -2810,6 +2900,7 @@ internal/modules/accounts          /v1/admin/users (suspend, reactivate, delete)
 internal/modules/subscriptions     /v1/me/subscription-plans, /v1/me/subscriptions, /v1/admin/subscription-plans, /v1/admin/subscriptions; the expiry sweep (postgres + memory)
 internal/modules/reports           /v1/admin/reports/summary and the CSV exports (postgres + memory)
 internal/modules/saved             /v1/me/saved-listings[/ids|/{listingId}]: a customer's saved listings and their snapshots (postgres + memory)
+internal/modules/analytics         /v1/analytics/* and /v1/admin/analytics/summary: events, bots, rollups, reports (postgres + memory)
 internal/platform/adminaudit       the administrators' audit trail (admin_audit_events)
 internal/platform/orgaudit         an organisation's team audit trail (organisation_audit_events)
 internal/platform/imaging          image helpers for the re-encoded uploads (profile logos, listing photos)
@@ -2905,6 +2996,13 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0029_listing_analytics` (API 0.30.0): `analytics_events` (raw events; `event_id` primary key,
+  `local_day date`, `network cidr` CHECK IPv4 /24 or IPv6 /48 only, enum CHECKs, server events
+  without session or network; indexes on `occurred_at`, `(market_code, local_day)`,
+  `(listing_id, local_day)` and a partial SPA index), `analytics_late_events`,
+  `analytics_listing_daily` (rollup, primary key `(listing_id, day)`) and `analytics_rollup_runs`
+  (last run). No foreign key to listings. New tables only; the down migration drops them and loses
+  every figure.
 - `0028_listing_coordinates` (API 0.29.0): `listings.latitude numeric(9, 6)` and
   `listings.longitude numeric(9, 6)` (nullable; CHECK -90..90 and -180..180, and both or neither)
   and `listings.location_precision text NOT NULL DEFAULT 'EXACT'` (CHECK `EXACT` /
@@ -3096,7 +3194,7 @@ The worker handles `PROPERTY_REQUEST_CREATED`, `BUSINESS_ENQUIRY_CREATED`, `USER
 `PASSWORD_CHANGED` and `ADMIN_SIGNED_IN` by sending the notification emails described under
 "Email"; each email is keyed on the event ID and recipient, so a redelivered event sends nothing
 twice. `PROPERTY_REQUEST_STAGE_CHANGED` and `PROPERTY_REQUEST_EXCEPTION_RESOLVED` (identifiers
-and stages only), `LISTING_SAVED` and `LISTING_UNSAVED` (identifiers only) are acknowledged without sending anything: no email exists for them yet. A handler can mark a failure permanent, which dead-letters the event at once. **The worker
+and stages only), `LISTING_SAVED` and `LISTING_UNSAVED` (identifiers only) are acknowledged without sending anything: no email exists for them yet. `LISTING_SAVED`, `PROPERTY_REQUEST_CREATED`, `APPOINTMENT_REQUESTED`, `APPOINTMENT_CONFIRMED` and `LISTING_RELISTED` are also recorded as server-side analytics events (after the email handler, `outbox.Chain`: a transient failure of either retries both, each idempotent). Every 15 minutes the worker recomputes the analytics rollups and applies `ANALYTICS_RAW_RETENTION_DAYS` (see "Listing analytics"). A handler can mark a failure permanent, which dead-letters the event at once. **The worker
 sends real email when `RESEND_API_KEY` is set.** Without `DATABASE_URL` in development the worker
 logs that it is idle and waits for shutdown (the API then handles the events in-process).
 

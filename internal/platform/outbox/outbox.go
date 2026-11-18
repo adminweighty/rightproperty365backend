@@ -138,6 +138,45 @@ func NewDispatcher(queue Queue, logger *slog.Logger, cfg Config) *Dispatcher {
 // Register sets the handler for an event type. Call before Run.
 func (d *Dispatcher) Register(eventType string, h Handler) { d.handlers[eventType] = h }
 
+// Also adds h to the handlers of an event type: alone when the type has
+// none yet, otherwise after the one registered (see Chain). Call before Run.
+func (d *Dispatcher) Also(eventType string, h Handler) {
+	if existing, ok := d.handlers[eventType]; ok {
+		d.handlers[eventType] = Chain(existing, h)
+		return
+	}
+	d.handlers[eventType] = h
+}
+
+// Chain runs every handler in order, whatever the others returned, so that
+// one consumer failing never starves another. The event is retried when any
+// of them failed transiently (each handler is idempotent, so the ones that
+// succeeded do nothing the second time), and dead-lettered only when every
+// failure was permanent.
+func Chain(handlers ...Handler) Handler {
+	return HandlerFunc(func(ctx context.Context, ev Event) error {
+		var transient, permanent error
+		for _, h := range handlers {
+			err := h.Handle(ctx, ev)
+			switch {
+			case err == nil:
+			case IsPermanent(err):
+				if permanent == nil {
+					permanent = err
+				}
+			default:
+				if transient == nil {
+					transient = err
+				}
+			}
+		}
+		if transient != nil {
+			return transient
+		}
+		return permanent
+	})
+}
+
 // Run polls until ctx is cancelled. The in-flight event is allowed to finish.
 func (d *Dispatcher) Run(ctx context.Context) error {
 	d.logger.Info("outbox dispatcher started",

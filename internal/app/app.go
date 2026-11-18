@@ -15,6 +15,7 @@ import (
 
 	"rightproperty365.com/backend/internal/modules/accounts"
 	"rightproperty365.com/backend/internal/modules/agreements"
+	"rightproperty365.com/backend/internal/modules/analytics"
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/availability"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
@@ -148,6 +149,12 @@ const (
 	// POST /v1/verify): bursts of 10, refilled at 10 per minute.
 	verifyRequestsPerMinute = 10
 	verifyRequestsBurst     = 10
+
+	// Per-IP limit on POST /v1/analytics/events (public), its own bucket:
+	// bursts of 60, refilled at 120 per minute. Each request carries at most
+	// 50 events; the per-session and per-network bot rule is separate.
+	analyticsEventsPerMinute = 120
+	analyticsEventsBurst     = 60
 )
 
 // uploadPath matches POST /v1/me/onboarding/{role}/documents and logoPath
@@ -233,6 +240,10 @@ type Deps struct {
 	// Saved holds the listings customers saved (API 0.27.0).
 	Saved saved.Store
 
+	// Analytics holds the raw analytics events and the daily rollups (API
+	// 0.30.0). The raw retention is Config.AnalyticsRawRetentionDays.
+	Analytics analytics.Store
+
 	// Optional overrides used by tests.
 	Now    func() time.Time
 	Hasher *identity.Hasher
@@ -292,6 +303,14 @@ func NewRouter(d Deps) (http.Handler, error) {
 		return nil, errors.New("app: no saved-listings store")
 	}
 	savedH := saved.NewHandler(saved.NewService(d.Saved, listingsSvc, d.Now), logger)
+	// Listing analytics: ingestion of the browser events and the owner-scoped
+	// and administrators' reports. The rollups and the server-side events are
+	// the worker's.
+	if d.Analytics == nil {
+		return nil, errors.New("app: no analytics store")
+	}
+	analyticsH := analytics.NewHandler(AnalyticsService(d.Analytics, d.Listings, d.Markets, cfg.AnalyticsRawRetentionDays, logger, d.Now), logger)
+	analyticsLimiter := httpx.NewRateLimiter(analyticsEventsPerMinute, analyticsEventsBurst)
 	directorySvc := directory.NewService(d.Directory, vocab, listingsSvc)
 	directorySvc.SetPlaces(geography)
 	// Logos are kept in the object storage and served by the API itself.
@@ -489,6 +508,8 @@ func NewRouter(d Deps) (http.Handler, error) {
 				return agreements.MaxSubmitBodyBytes
 			case r.Method == http.MethodPut && r.URL.Path == "/v1/me/signature":
 				return agreements.MaxSignatureBodyBytes
+			case r.Method == http.MethodPost && r.URL.Path == "/v1/analytics/events":
+				return analytics.MaxBodyBytes
 			case isUpload(r):
 				return onboarding.MaxUploadBodyBytes
 			}
@@ -545,6 +566,14 @@ func NewRouter(d Deps) (http.Handler, error) {
 		r.Get("/sitemap", directoryH.Sitemap)
 		// How many advertisers are verified and how many listings are public.
 		r.Get("/trust/summary", trustH.Summary)
+
+		// Listing analytics (FR-033..036). Ingestion is public (signed-in
+		// optional), in its own bucket, with a 32 KB body. The reports are
+		// owner-scoped: 404 for a listing or an organisation that is not the
+		// caller's. Raw events are never returned.
+		r.With(analyticsLimiter.Middleware).Post("/analytics/events", analyticsH.Ingest)
+		r.With(auth.RequireAuth).Get("/analytics/listings/{id}", analyticsH.ListingReport)
+		r.With(auth.RequireAuth).Get("/analytics/organisations/{orgId}", analyticsH.OrganisationReport)
 
 		// The only way to contact a directory profile. Open to guests and
 		// signed-in customers alike.
@@ -883,6 +912,11 @@ func NewRouter(d Deps) (http.Handler, error) {
 				r.With(auth.RequirePlatformRole(reports.PeopleExportRoles()...)).Get("/listings.csv", reportsH.Listings)
 				r.With(auth.RequirePlatformRole(reports.SubscriptionExportRoles()...)).Get("/subscriptions.csv", reportsH.Subscriptions)
 			})
+
+			// Listing analytics, site and market aggregates: SUPER_ADMIN,
+			// PLATFORM_ADMIN, and MARKET_ADMIN for its own markets (403 for
+			// another market).
+			r.With(auth.RequirePlatformRole(analytics.AdminRoles()...)).Get("/analytics/summary", analyticsH.AdminSummary)
 
 			// Requests nobody could receive: SUPER_ADMIN, PLATFORM_ADMIN,
 			// SUPPORT, and MARKET_ADMIN for its own markets (the handler

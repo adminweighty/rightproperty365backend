@@ -589,3 +589,25 @@ func TestAuthDemoCode(t *testing.T) {
 		}
 	}
 }
+
+func TestAnalyticsRawRetentionDays(t *testing.T) {
+	lookup := func(v string) func(string) string {
+		return func(k string) string {
+			if k == "ANALYTICS_RAW_RETENTION_DAYS" {
+				return v
+			}
+			return ""
+		}
+	}
+	if cfg, err := FromLookup(lookup("")); err != nil || cfg.AnalyticsRawRetentionDays != 90 {
+		t.Fatalf("default: %d %v", cfg.AnalyticsRawRetentionDays, err)
+	}
+	if cfg, err := FromLookup(lookup("30")); err != nil || cfg.AnalyticsRawRetentionDays != 30 {
+		t.Fatalf("30: %d %v", cfg.AnalyticsRawRetentionDays, err)
+	}
+	for _, bad := range []string{"0", "6", "abc", "4000"} {
+		if _, err := FromLookup(lookup(bad)); err == nil {
+			t.Fatalf("%q accepted", bad)
+		}
+	}
+}

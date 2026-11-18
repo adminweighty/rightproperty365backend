@@ -53,6 +53,8 @@ const (
 
 	defaultAdminSessionTTL     = 12 * time.Hour
 	defaultAdminSessionIdleTTL = 30 * time.Minute
+	// defaultAnalyticsRawRetentionDays is ANALYTICS_RAW_RETENTION_DAYS' default.
+	defaultAnalyticsRawRetentionDays = 90
 	// Hard ceiling so a typo cannot create week-long administrator sessions.
 	maxAdminSessionTTL = 24 * time.Hour
 )
@@ -109,6 +111,10 @@ type Config struct {
 	// (absolute lifetime and inactivity timeout).
 	AdminSessionTTL     time.Duration
 	AdminSessionIdleTTL time.Duration
+	// AnalyticsRawRetentionDays is ANALYTICS_RAW_RETENTION_DAYS: how long raw
+	// analytics events are kept before the worker deletes them (rollups are
+	// kept). Default 90, 7..3650.
+	AnalyticsRawRetentionDays int
 	// StorageDriver is StorageDriverLocal or StorageDriverS3 (private files:
 	// onboarding documents). Local is development only.
 	StorageDriver string
@@ -429,6 +435,16 @@ func FromLookup(get func(string) string) (Config, error) {
 	}
 	if cfg.AdminSessionIdleTTL > cfg.AdminSessionTTL {
 		errs = append(errs, errors.New("ADMIN_SESSION_IDLE_TTL must not be longer than ADMIN_SESSION_TTL"))
+	}
+
+	cfg.AnalyticsRawRetentionDays = defaultAnalyticsRawRetentionDays
+	if raw := val("ANALYTICS_RAW_RETENTION_DAYS", ""); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 7 || n > 3650 {
+			errs = append(errs, errors.New("ANALYTICS_RAW_RETENTION_DAYS must be a whole number of days from 7 to 3650"))
+		} else {
+			cfg.AnalyticsRawRetentionDays = n
+		}
 	}
 
 	level, err := parseLevel(val("LOG_LEVEL", "info"))

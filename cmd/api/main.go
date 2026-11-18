@@ -19,6 +19,7 @@ import (
 	"rightproperty365.com/backend/internal/devseed"
 	"rightproperty365.com/backend/internal/modules/accounts"
 	"rightproperty365.com/backend/internal/modules/agreements"
+	"rightproperty365.com/backend/internal/modules/analytics"
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/availability"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
@@ -123,6 +124,8 @@ func run() error {
 		adminAuditLog     adminaudit.Log
 		// savedStore holds the listings customers saved.
 		savedStore saved.Store
+		// analyticsStore holds the raw analytics events and the rollups.
+		analyticsStore analytics.Store
 		// memSubscriptions is set without a database (its expiry sweep runs here).
 		memSubscriptions *subscriptions.MemoryStore
 	)
@@ -212,6 +215,8 @@ func run() error {
 		memSaved := saved.NewMemoryStore()
 		devseed.SeedMemorySaved(memSaved, time.Now())
 		savedStore = memSaved
+		memAnalytics := analytics.NewMemoryStore()
+		analyticsStore = memAnalytics
 		memAgreements := agreements.NewMemoryStore()
 		agreementStore = memAgreements
 		if err := devseed.SeedMemoryAgreements(ctx, memAgreements, memLeases, files, time.Now()); err != nil {
@@ -255,7 +260,27 @@ func run() error {
 		handlers.SetListingSource(app.ListingRecord(memListings))
 		handlers.SetSuspensionReasons(app.SuspensionReasons(accountStore))
 		handlers.SetSubscriptionSource(memSubscriptions.Subscription)
+		// Server-side analytics events (saves, enquiries, viewing requests,
+		// confirmations, relists) are recorded here too, and the rollups run
+		// in this process.
+		memAnalyticsSvc := app.AnalyticsService(memAnalytics, memListings, marketStore, cfg.AnalyticsRawRetentionDays, logger, nil)
+		recorder := analytics.NewRecorder(memAnalyticsSvc, app.AppointmentListing(memAppointments))
+		record := func(ev outbox.Event) {
+			if !slices.Contains(analytics.OutboxEventTypes(), ev.Type) {
+				return
+			}
+			go func() {
+				hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+				defer cancel()
+				if err := recorder.Handle(hctx, ev); err != nil {
+					logger.Error("in-process analytics recording failed (development; not retried)",
+						slog.String("event_type", ev.Type), slog.String("error", err.Error()))
+				}
+			}()
+		}
+		go app.RunAnalyticsJobs(ctx, memAnalyticsSvc, logger)
 		sink := func(ev outbox.Event) {
+			record(ev)
 			go func() {
 				hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 				defer cancel()
@@ -277,7 +302,10 @@ func run() error {
 			if slices.Contains(listings.ReviewEventTypes(), ev.Type) {
 				sink(ev)
 			}
+			record(ev)
 		})
+		// Saves only matter to analytics.
+		memSaved.SetOutboxSink(record)
 		if cfg.DevSeedPassword == "" {
 			logger.Warn("DEV_SEED_PASSWORD is not set: development seed users were NOT created (copy .env.example to .env to get them)")
 		} else {
@@ -328,6 +356,7 @@ func run() error {
 		subscriptionStore = subscriptions.NewPostgresStore(pool)
 		reportStore = reports.NewPostgresStore(pool)
 		savedStore = saved.NewPostgresStore(pool)
+		analyticsStore = analytics.NewPostgresStore(pool)
 		adminAuditLog = adminaudit.PostgresLog{Q: pool}
 	}
 
@@ -382,6 +411,7 @@ func run() error {
 		Reports:       reportStore,
 		AdminAudit:    adminAuditLog,
 		Saved:         savedStore,
+		Analytics:     analyticsStore,
 	})
 	if err != nil {
 		return err

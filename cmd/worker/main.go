@@ -1,5 +1,7 @@
-// Command worker runs background processing: currently the transactional
-// outbox dispatcher that will drive notifications.
+// Command worker runs background processing: the transactional outbox
+// dispatcher (notifications, the search index, server-side analytics events)
+// and the periodic jobs (agreements, subscriptions, analytics rollups and
+// retention).
 package main
 
 import (
@@ -16,6 +18,7 @@ import (
 	"rightproperty365.com/backend/internal/app"
 	"rightproperty365.com/backend/internal/modules/accounts"
 	"rightproperty365.com/backend/internal/modules/agreements"
+	"rightproperty365.com/backend/internal/modules/analytics"
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/leases"
 	"rightproperty365.com/backend/internal/modules/listings"
@@ -128,12 +131,24 @@ func run() error {
 		dispatcher.Register(t, outbox.HandlerFunc(func(context.Context, outbox.Event) error { return nil }))
 	}
 
-	// Saves and removals of saved listings are recorded for analytics
-	// (counted server-side later); nothing is sent for them, so they are
-	// acknowledged.
+	// Saves and removals of saved listings: nothing is sent for them, so they
+	// are acknowledged here; analytics counts the saves (below).
 	for _, t := range saved.EventTypes() {
 		dispatcher.Register(t, outbox.HandlerFunc(func(context.Context, outbox.Event) error { return nil }))
 	}
+
+	// Listing analytics: saves, enquiries (property requests), viewing
+	// requests, confirmed appointments and relists are recorded as
+	// server-side events, after any notification handler of the same event
+	// (idempotent: the analytics event_id is derived from the outbox event's).
+	// Every 15 minutes the rollups of the last 3 market-local days are
+	// recomputed and raw events older than ANALYTICS_RAW_RETENTION_DAYS deleted.
+	analyticsSvc := app.AnalyticsService(analytics.NewPostgresStore(pool), listingStore, markets.NewPostgresStore(pool),
+		cfg.AnalyticsRawRetentionDays, logger, nil)
+	analytics.NewRecorder(analyticsSvc, app.AppointmentListing(appointments.NewPostgresStore(pool))).Register(dispatcher)
+	go app.RunAnalyticsJobs(ctx, analyticsSvc, logger)
+	logger.Info("analytics jobs scheduled", slog.Duration("interval", app.AnalyticsJobInterval),
+		slog.Int("raw_retention_days", cfg.AnalyticsRawRetentionDays))
 
 	// Search index: listing events keep Elasticsearch in step. With the
 	// database search driver there is no index, and the events are acknowledged.

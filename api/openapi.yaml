@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.29.0
+  version: 0.30.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,40 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Listing analytics (new in 0.30.0)
+    - **First-party measurement** (BR-006, FR-033..036). The browser sends
+      `property_card_impression`, `listing_detail_view`, `contact_click` (sent when a listing's
+      request form is submitted, once per listing per page view) and `youtube_play_intent` to
+      `POST /v1/analytics/events` (public, signed-in optional, `application/json` or
+      `text/plain` for `navigator.sendBeacon`, at most 32 KB and 50 events, its own per-IP limit
+      of a burst of 60 refilled at 120 a minute). It answers `202 {accepted, duplicates, rejected}`.
+    - **Server-side events** are recorded by the API itself from its outbox: `listing_save`
+      (LISTING_SAVED), `enquiry_submit` (PROPERTY_REQUEST_CREATED about a listing),
+      `viewing_request` (APPOINTMENT_REQUESTED for a listing), `appointment_confirm`
+      (APPOINTMENT_CONFIRMED for a listing) and `listing_relist` (LISTING_RELISTED, a new outbox
+      event written by `POST /v1/me/listings/{id}/relist`). The browser may not send them: each
+      is rejected. Reserved, server only: `application_submit`, `booking_confirm`,
+      `invoice_payment_confirmed`.
+    - **Rules.** Idempotent on `event_id` (a repeat is a duplicate). The listing must exist and be
+      public; the market is the listing's. `occurred_at` must lie within 24 h before to 5 min
+      after receipt (a time in the future is clamped to the receipt). A second
+      `listing_detail_view` of the same listing in the same session less than 30 minutes away is
+      a duplicate (SPA navigation). Bots (a maintained user-agent list, or over 300 events from
+      one session or network in 10 minutes) are stored with `bot=true`, excluded from every
+      metric and counted in `filtered_bot_events`; the response does not tell them apart.
+    - **Privacy.** Only the truncated network is stored (IPv4 /24, IPv6 /48), never the IP, the
+      user agent or the referrer (`source` is a class worked out by the browser). The session is
+      the browser's opaque pseudonym; server-side events carry none. Do Not Track and GPC are
+      honoured by the browser not sending; the server does not read them. **Raw events are never
+      returned by any endpoint.** They are deleted after `ANALYTICS_RAW_RETENTION_DAYS` (default 90).
+    - **Reports** (`GET /v1/analytics/listings/{id}`, `GET /v1/analytics/organisations/{orgId}`,
+      `GET /v1/admin/analytics/summary`) share one metric contract (`AnalyticsReport`): daily
+      figures per **market-local day** (the market's time zone), rolled up by the worker every 15
+      minutes over the last 3 local days (`refreshed_at` is the last run). `period=24h` reads the
+      raw events instead and is labelled near real time. An event more than 3 days old on arrival
+      is dropped and counted in `late_events_dropped`. These are **not Google Analytics figures**:
+      see the web's `/analytics-definitions`. Migration 0029.
 
     Map search and listing coordinates (new in 0.29.0)
     - **A listing may carry coordinates** (BR-002; the FSD's listing "geocoordinates"). The editor
@@ -496,6 +530,10 @@ tags:
       Not built: payments, instant booking, holds and their expiry, iCal import / export and
       calendar sync, seasonal pricing, per-night price overrides, and an endpoint for the
       audit trail.
+  - name: analytics
+    description: |
+      First-party listing analytics (new in 0.30.0): ingestion of the browser's events and the
+      owner-scoped and administrators' reports. Raw events are never returned.
   - name: property-requests
   - name: business-enquiries
   - name: appointments
@@ -3007,6 +3045,130 @@ paths:
         "504":
           $ref: "#/components/responses/Timeout"
 
+  /v1/analytics/events:
+    post:
+      tags: [analytics]
+      operationId: ingestAnalyticsEvents
+      summary: Send browser analytics events (new in 0.30.0)
+      description: |
+        Public; a session is optional (a cookie session needs an allowed `Origin` like every
+        unsafe request). The body may be sent as `application/json` or as `text/plain` holding the
+        same JSON (what `navigator.sendBeacon` sends without a CORS preflight). At most 32 KB.
+        A bad event is only counted in `rejected`; the batch is still accepted. Request-level
+        errors: an unknown `schema`, or not 1 to 50 events, is `400 VALIDATION_FAILED`.
+        `Cache-Control: no-store`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AnalyticsEventBatch" }
+          text/plain:
+            schema: { $ref: "#/components/schemas/AnalyticsEventBatch" }
+      responses:
+        "202":
+          description: What happened to the events.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AnalyticsIngestResult" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "403":
+          $ref: "#/components/responses/CsrfOrigin"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /v1/analytics/listings/{id}:
+    get:
+      tags: [analytics]
+      operationId: getListingAnalytics
+      summary: One listing's figures (new in 0.30.0)
+      description: |
+        For its lister (the approved direct owner), an OWNER or MANAGER of its organisation, or
+        its assigned agent (the manage API's edit rule, `MayEditListing`). Everyone else, an
+        agent of the same organisation who is not assigned included, gets `404 NOT_FOUND`, the
+        same as for a listing that does not exist. Days are the listing's market-local days.
+        `Cache-Control: private, no-store`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: period
+          in: query
+          schema: { type: string, enum: ["24h", "7d", "30d", custom], default: 30d }
+          description: "`24h`: raw events, near real time. `7d` / `30d`: the last 7 / 30 local days, today included, from the rollups. `custom`: `from` .. `to`."
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+          description: Custom period only. First local day (YYYY-MM-DD).
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+          description: Custom period only. Last local day, at most 366 days after `from`.
+      responses:
+        "200":
+          description: The report.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ListingAnalyticsReport" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/AnalyticsNotFound"
+  /v1/analytics/organisations/{orgId}:
+    get:
+      tags: [analytics]
+      operationId: getOrganisationAnalytics
+      summary: An organisation's figures (new in 0.30.0)
+      description: |
+        The same totals summed over the organisation's listings, with its top listings by views.
+        OWNER and MANAGER see every listing of it (`scope: organisation`); an AGENT only the
+        listings they are the assigned agent of (`scope: assigned`). Not a member: `404 NOT_FOUND`
+        (the mandatory wrong-organisation rule). A member whose role manages no listings (STAFF),
+        or of an organisation kind that has none: `403 FORBIDDEN`. Days are the organisation's
+        market-local days. `Cache-Control: private, no-store`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: period
+          in: query
+          schema: { type: string, enum: ["24h", "7d", "30d", custom], default: 30d }
+          description: "`24h`: raw events, near real time. `7d` / `30d`: the last 7 / 30 local days, today included, from the rollups. `custom`: `from` .. `to`."
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+          description: Custom period only. First local day (YYYY-MM-DD).
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+          description: Custom period only. Last local day, at most 366 days after `from`.
+      responses:
+        "200":
+          description: The report.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OrganisationAnalyticsReport" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/AnalyticsNotFound"
   /v1/business-enquiries:
     post:
       tags: [business-enquiries]
@@ -6301,6 +6463,48 @@ paths:
         "504":
           $ref: "#/components/responses/Timeout"
 
+  /v1/admin/analytics/summary:
+    get:
+      tags: [analytics]
+      operationId: getAdminAnalyticsSummary
+      summary: Site and market analytics (new in 0.30.0)
+      description: |
+        An ADMIN-scope session with SUPER_ADMIN, PLATFORM_ADMIN or MARKET_ADMIN (others `403`).
+        A MARKET_ADMIN sees only its own markets: without `market` its markets, another market is
+        `403 FORBIDDEN`. An unknown market is `400` on `market`. Site-wide periods are UTC days
+        (each row's day is its own market's local day); one market's are its local days.
+        `Cache-Control: private, no-store`.
+      security:
+        - cookieSession: []
+      parameters:
+        - name: market
+          in: query
+          schema: { type: string, pattern: "^[A-Za-z]{2}$" }
+          description: A country code; empty is every market the caller may see.
+        - name: period
+          in: query
+          schema: { type: string, enum: ["24h", "7d", "30d", custom], default: 30d }
+          description: "`24h`: raw events, near real time. `7d` / `30d`: the last 7 / 30 local days, today included, from the rollups. `custom`: `from` .. `to`."
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+          description: Custom period only. First local day (YYYY-MM-DD).
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+          description: Custom period only. Last local day, at most 366 days after `from`.
+      responses:
+        "200":
+          description: The summary.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminAnalyticsSummary" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
   /v1/admin/routing-exceptions:
     get:
       tags: [admin]
@@ -10655,6 +10859,11 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
+    AnalyticsNotFound:
+      description: "`NOT_FOUND`: no such listing or organisation, or not the caller's (the same answer)."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
     RateLimited:
       description: Too many requests from this IP (`RATE_LIMITED`).
       headers:
@@ -10762,6 +10971,156 @@ components:
           description: The saved listings that are public right now, newest saved first.
           items: { type: string, format: uuid }
 
+    AnalyticsEventBatch:
+      type: object
+      required: [schema, events]
+      properties:
+        schema: { type: integer, enum: [1], description: The event schema version. }
+        events:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items: { $ref: "#/components/schemas/AnalyticsEvent" }
+    AnalyticsEvent:
+      type: object
+      description: One browser event. Unknown fields are ignored; a field with a wrong value rejects the event.
+      required: [event_id, type, occurred_at, listing_id]
+      properties:
+        event_id: { type: string, format: uuid, description: Chosen by the client; a repeat is a duplicate. }
+        type: { type: string, enum: [property_card_impression, listing_detail_view, contact_click, youtube_play_intent] }
+        occurred_at: { type: string, format: date-time, description: "UTC; 24 h before to 5 min after receipt." }
+        listing_id: { type: string, format: uuid }
+        placement: { type: string, enum: [search, rail, similar, home, saved], description: Impressions only. }
+        rank: { type: integer, minimum: 0, maximum: 10000, description: Impressions only. }
+        source: { type: string, enum: [direct, search_engine, social, internal, email, other], description: The referrer class, never the referrer. }
+        device: { type: string, enum: [mobile, tablet, desktop] }
+        session: { type: string, pattern: "^[A-Za-z0-9_-]{16,64}$", description: The first-party session pseudonym (rotates at local midnight and at most every 24 h). }
+        consent:
+          type: object
+          properties:
+            analytics: { type: boolean, description: "Always true today; false rejects the event." }
+    AnalyticsIngestResult:
+      type: object
+      required: [accepted, duplicates, rejected]
+      properties:
+        accepted: { type: integer, description: Stored (bots included; they are excluded from the figures). }
+        duplicates: { type: integer, description: A repeated event_id, or an SPA double view. }
+        rejected: { type: integer }
+    AnalyticsTotals:
+      type: object
+      required: [impressions, views, unique_views, contact_clicks, video_plays, saves, enquiries, viewing_requests, appointments_confirmed, relists]
+      properties:
+        impressions: { type: integer }
+        views: { type: integer, description: Valid listing_detail_view events. }
+        unique_views: { type: integer, description: "Distinct sessions per listing per local day, summed over the days; a view without a session counts once." }
+        contact_clicks: { type: integer }
+        video_plays: { type: integer }
+        saves: { type: integer }
+        enquiries: { type: integer }
+        viewing_requests: { type: integer }
+        appointments_confirmed: { type: integer }
+        relists: { type: integer }
+    AnalyticsKeyCount:
+      type: object
+      required: [key, count]
+      properties:
+        key: { type: string, description: "A source or device, or unknown." }
+        count: { type: integer, description: Valid views. }
+    AnalyticsReport:
+      type: object
+      description: The metric contract every report shares. Every known source and device is listed (largest first), with unknown.
+      required: [period, from, to, timezone, near_real_time, label, totals, daily, conversion, ctr, sources, devices, filtered_bot_events, late_events_dropped, refreshed_at]
+      properties:
+        period: { type: string, enum: ["24h", "7d", "30d", custom] }
+        from: { type: string, format: date, description: First local day. }
+        to: { type: string, format: date, description: Last local day. }
+        timezone: { type: string, description: The IANA zone of the days. }
+        near_real_time: { type: boolean, description: "True for 24h (raw events)." }
+        label: { type: [string, "null"], description: "Near real time, may change (24h); null otherwise." }
+        totals: { $ref: "#/components/schemas/AnalyticsTotals" }
+        daily:
+          type: array
+          description: Every local day of the period, oldest first (zeros included).
+          items:
+            type: object
+            required: [date, views, unique_views, impressions, contact_clicks, saves, enquiries]
+            properties:
+              date: { type: string, format: date }
+              views: { type: integer }
+              unique_views: { type: integer }
+              impressions: { type: integer }
+              contact_clicks: { type: integer }
+              saves: { type: integer }
+              enquiries: { type: integer }
+        conversion: { type: [number, "null"], description: "enquiries / views (4 decimals); null without views." }
+        conversion_definition: { type: string }
+        ctr: { type: [number, "null"], description: "contact_clicks / views (4 decimals); null without views." }
+        ctr_definition: { type: string }
+        sources: { type: array, items: { $ref: "#/components/schemas/AnalyticsKeyCount" } }
+        devices: { type: array, items: { $ref: "#/components/schemas/AnalyticsKeyCount" } }
+        filtered_bot_events: { type: integer }
+        late_events_dropped: { type: integer }
+        refreshed_at: { type: [string, "null"], format: date-time, description: "The last rollup run (the request time for 24h); null before the first." }
+        definitions_path: { type: string, description: The web page that defines every metric (/analytics-definitions). }
+    AnalyticsTopListing:
+      type: object
+      required: [listing_id, title, reference, slug, market_code, views, unique_views, contact_clicks, enquiries]
+      properties:
+        listing_id: { type: string, format: uuid }
+        title: { type: string }
+        reference: { type: string }
+        slug: { type: [string, "null"], description: Only while the listing is public. }
+        market_code: { type: string }
+        views: { type: integer }
+        unique_views: { type: integer }
+        contact_clicks: { type: integer }
+        enquiries: { type: integer }
+    ListingAnalyticsReport:
+      allOf:
+        - $ref: "#/components/schemas/AnalyticsReport"
+        - type: object
+          required: [listing]
+          properties:
+            listing:
+              type: object
+              required: [id, title, reference, market_code]
+              properties:
+                id: { type: string, format: uuid }
+                title: { type: string }
+                reference: { type: string }
+                market_code: { type: string }
+    OrganisationAnalyticsReport:
+      allOf:
+        - $ref: "#/components/schemas/AnalyticsReport"
+        - type: object
+          required: [organisation, scope, listings_count, top_listings]
+          properties:
+            organisation:
+              type: object
+              properties:
+                id: { type: string, format: uuid }
+                name: { type: string }
+            scope: { type: string, enum: [organisation, assigned] }
+            listings_count: { type: integer }
+            top_listings: { type: array, maxItems: 10, items: { $ref: "#/components/schemas/AnalyticsTopListing" } }
+    AdminAnalyticsSummary:
+      allOf:
+        - $ref: "#/components/schemas/AnalyticsReport"
+        - type: object
+          required: [market, markets, top_listings]
+          properties:
+            market: { type: [string, "null"] }
+            markets:
+              type: array
+              items:
+                type: object
+                required: [market_code, totals]
+                properties:
+                  market_code: { type: string }
+                  totals: { $ref: "#/components/schemas/AnalyticsTotals" }
+                  filtered_bot_events: { type: integer }
+                  late_events_dropped: { type: integer }
+            top_listings: { type: array, maxItems: 10, items: { $ref: "#/components/schemas/AnalyticsTopListing" } }
     SavedListingPage:
       type: object
       description: New in 0.27.0. One page of saved listings, newest saved first.

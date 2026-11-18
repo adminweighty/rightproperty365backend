@@ -378,6 +378,17 @@ type Change struct {
 	NewCycle bool
 }
 
+// EventListingRelisted is written when an advertiser relists an archived or
+// expired listing. Its payload is {listing_id, occurred_at}; analytics
+// counts it as listing_relist (nothing is emailed).
+const EventListingRelisted = "LISTING_RELISTED"
+
+// relistEvent is the LISTING_RELISTED event of a relist at now.
+func relistEvent(id uuid.UUID, now time.Time) ChangeEvent {
+	raw, _ := json.Marshal(map[string]string{"listing_id": id.String(), "occurred_at": now.UTC().Format(time.RFC3339Nano)})
+	return ChangeEvent{Type: EventListingRelisted, Payload: raw}
+}
+
 // indexEvent is an event that tells the search index about a listing.
 func indexEvent(eventType string, id uuid.UUID) ChangeEvent {
 	raw, _ := json.Marshal(map[string]string{"listing_id": id.String()})

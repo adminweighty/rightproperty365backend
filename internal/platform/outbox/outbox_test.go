@@ -120,3 +120,26 @@ func TestPermanentFailureIsDeadLetteredImmediately(t *testing.T) {
 		t.Fatal("Permanent/IsPermanent misbehave")
 	}
 }
+
+func TestAlsoChainsHandlers(t *testing.T) {
+	var calls []string
+	h := func(name string, err error) Handler {
+		return HandlerFunc(func(context.Context, Event) error { calls = append(calls, name); return err })
+	}
+	d := NewDispatcher(&fakeQueue{}, slog.New(slog.NewJSONHandler(io.Discard, nil)), Config{})
+	d.Also("NEW", h("only", nil))
+	d.Register("X", h("first", Permanent(errors.New("gone"))))
+	d.Also("X", h("second", errors.New("db down")))
+	if err := d.handle(context.Background(), Event{Type: "NEW"}); err != nil || len(calls) != 1 {
+		t.Fatalf("alone: %v %v", err, calls)
+	}
+	calls = nil
+	// Both run; a transient failure wins over a permanent one (retry).
+	err := d.handle(context.Background(), Event{Type: "X"})
+	if err == nil || IsPermanent(err) || len(calls) != 2 || calls[0] != "first" || calls[1] != "second" {
+		t.Fatalf("chain: %v %v", err, calls)
+	}
+	if err := Chain(h("a", Permanent(errors.New("x"))), h("b", nil)).Handle(context.Background(), Event{}); !IsPermanent(err) {
+		t.Fatalf("only permanent failures: %v", err)
+	}
+}

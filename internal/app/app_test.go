@@ -22,6 +22,7 @@ import (
 	"rightproperty365.com/backend/internal/devseed"
 	"rightproperty365.com/backend/internal/modules/accounts"
 	"rightproperty365.com/backend/internal/modules/agreements"
+	"rightproperty365.com/backend/internal/modules/analytics"
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/availability"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
@@ -265,11 +266,13 @@ type env struct {
 	audit    *adminaudit.MemoryLog
 	// saved holds the customers' saved listings (the sample tenant has two).
 	saved *saved.MemoryStore
-	files *storage.Local
-	mail  *captureMailer
-	logs  *bytes.Buffer
-	now   time.Time
-	seq   int
+	// analytics holds the raw analytics events and the rollups (empty).
+	analytics *analytics.MemoryStore
+	files     *storage.Local
+	mail      *captureMailer
+	logs      *bytes.Buffer
+	now       time.Time
+	seq       int
 	// captchaSeq numbers the registration questions the tests ask for.
 	captchaSeq int
 	// twoStepLogin turns off the helper that completes the sign-in code step
@@ -361,6 +364,7 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		t.Fatal(err)
 	}
 	e.saved = saved.NewMemoryStore()
+	e.analytics = analytics.NewMemoryStore()
 	devseed.SeedMemorySaved(e.saved, e.now)
 	e.accounts = accounts.NewMemoryStore(accounts.MemoryDeps{Identity: e.identity, Listings: e.listings, Teams: e.team, Directory: e.directory,
 		Audit: e.audit, CancelSubscriptions: e.subs.CancelForDeletedUser, DeleteSignature: e.agree.DeleteSavedSignature,
@@ -387,7 +391,7 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		Leases:       e.leases,
 		Agreements:   e.agree,
 		Accounts:     e.accounts, Subscriptions: e.subs, Reports: reportStore, AdminAudit: e.audit,
-		Saved:  e.saved,
+		Saved: e.saved, Analytics: e.analytics,
 		Now:    func() time.Time { return e.now },
 		Hasher: &hasher,
 	})

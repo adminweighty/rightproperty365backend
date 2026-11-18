@@ -622,7 +622,7 @@ func (mg *Manager) Relist(ctx context.Context, p *auth.Principal, id uuid.UUID) 
 	}
 	m.Status, m.UpdatedAt, m.ReviewReason = to, now, ""
 	ch := Change{Entry: mg.entry(m, p, ActorAdvertiser, ActionRelisted, from, to, kind, "", now),
-		Events: []ChangeEvent{indexEvent(EventListingUnpublished, m.ID)}}
+		Events: []ChangeEvent{indexEvent(EventListingUnpublished, m.ID), relistEvent(m.ID, now)}}
 	if err := mg.save(ctx, m, expect, ch); err != nil {
 		return ManagedView{}, err
 	}
