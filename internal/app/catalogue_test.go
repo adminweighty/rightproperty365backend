@@ -753,8 +753,9 @@ func TestPublicResponsesCarryNoContactDetails(t *testing.T) {
 		}
 		walk(doc, "$", func(at, key string, value any) {
 			checked++
-			// "contact_methods" is the name of a reference set, not contact data.
-			if contactKeyRe.MatchString(key) && key != "contact_methods" {
+			// "contact_methods", "contact_types" and "contact_sources" are the
+			// names of reference sets, not contact data.
+			if contactKeyRe.MatchString(key) && key != "contact_methods" && key != "contact_types" && key != "contact_sources" {
 				t.Fatalf("%s: key %q at %s looks like contact data", path, key, at)
 			}
 			s, ok := value.(string)

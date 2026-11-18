@@ -61,6 +61,11 @@ func NewMemoryStore(deps MemoryDeps) *MemoryStore {
 // AuditLog returns the audit records (test helper).
 func (s *MemoryStore) AuditLog() []orgaudit.Event { return s.log.All() }
 
+// AuditSink appends to the team audit trail. Other in-memory stores that
+// write organisation audit records (the contact book) are given it, so that
+// GET .../audit shows their records too.
+func (s *MemoryStore) AuditSink() orgaudit.Sink { return s.log.Append }
+
 // PutInvitation stores an invitation as it is, without an audit record (seed helper).
 func (s *MemoryStore) PutInvitation(inv Invitation) {
 	s.mu.Lock()

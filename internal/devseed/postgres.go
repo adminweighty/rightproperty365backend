@@ -405,6 +405,11 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 		return err
 	}
 
+	// The sample contact books (needs migration 0030), after the appointments.
+	if err := seedPostgresCRM(ctx, tx, now); err != nil {
+		return err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}

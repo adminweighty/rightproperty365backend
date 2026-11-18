@@ -26,6 +26,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/availability"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
+	"rightproperty365.com/backend/internal/modules/crm"
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/health"
 	"rightproperty365.com/backend/internal/modules/identity"
@@ -268,11 +269,15 @@ type env struct {
 	saved *saved.MemoryStore
 	// analytics holds the raw analytics events and the rollups (empty).
 	analytics *analytics.MemoryStore
-	files     *storage.Local
-	mail      *captureMailer
-	logs      *bytes.Buffer
-	now       time.Time
-	seq       int
+	// crm holds the contact books (the sample ones); crmItems reads the
+	// requests, enquiries and appointments they link to.
+	crm      *crm.MemoryStore
+	crmItems MemoryCRMItems
+	files    *storage.Local
+	mail     *captureMailer
+	logs     *bytes.Buffer
+	now      time.Time
+	seq      int
 	// captchaSeq numbers the registration questions the tests ask for.
 	captchaSeq int
 	// twoStepLogin turns off the helper that completes the sign-in code step
@@ -345,6 +350,10 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 			return id, id != uuid.Nil
 		},
 	})
+	e.crm = crm.NewMemoryStore()
+	e.crm.SetAuditSink(e.team.AuditSink())
+	devseed.SeedMemoryCRM(e.crm, e.now)
+	e.crmItems = MemoryCRMItems{Requests: e.requests, Enquiries: e.enquiries, Appointments: e.appts, Identity: e.identity, Listings: e.listings}
 	e.leases = leases.NewMemoryStore()
 	if err := devseed.SeedMemoryLeases(context.Background(), e.leases, e.files, e.now); err != nil {
 		t.Fatal(err)
@@ -392,6 +401,7 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		Agreements:   e.agree,
 		Accounts:     e.accounts, Subscriptions: e.subs, Reports: reportStore, AdminAudit: e.audit,
 		Saved: e.saved, Analytics: e.analytics,
+		CRM: e.crm, CRMItems: e.crmItems,
 		Now:    func() time.Time { return e.now },
 		Hasher: &hasher,
 	})

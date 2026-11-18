@@ -43,6 +43,11 @@ const (
 	ActionMemberRemoved              = "MEMBER_REMOVED"
 	ActionRequestAssigned            = "REQUEST_ASSIGNED"
 	ActionRequestUnassigned          = "REQUEST_UNASSIGNED"
+	// The contact book (API 0.31.0).
+	ActionContactOwnerChanged = "CONTACT_OWNER_CHANGED"
+	ActionContactsMerged      = "CONTACTS_MERGED"
+	ActionContactsImported    = "CONTACTS_IMPORTED"
+	ActionContactsExported    = "CONTACTS_EXPORTED"
 )
 
 var actionLabels = map[string]string{
@@ -59,6 +64,10 @@ var actionLabels = map[string]string{
 	ActionMemberRemoved:              "Member removed",
 	ActionRequestAssigned:            "Request assigned",
 	ActionRequestUnassigned:          "Request returned to the organisation inbox",
+	ActionContactOwnerChanged:        "Contact reassigned",
+	ActionContactsMerged:             "Contacts merged",
+	ActionContactsImported:           "Contacts imported",
+	ActionContactsExported:           "Contacts exported",
 }
 
 // Actions returns every action, in a stable order.
@@ -85,6 +94,10 @@ const (
 	TargetInvitation      = "INVITATION"
 	TargetJoinRequest     = "JOIN_REQUEST"
 	TargetPropertyRequest = "PROPERTY_REQUEST"
+	// TargetContact is one contact (labelled with its name); TargetContactBook
+	// the whole book (an import or an export; its ID is the organisation's).
+	TargetContact     = "CONTACT"
+	TargetContactBook = "CONTACT_BOOK"
 )
 
 // Event is one audit record.

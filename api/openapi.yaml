@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.30.0
+  version: 0.31.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,34 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Agent CRM: contact books (new in 0.31.0)
+    - **A private contact book per organisation** (BR-004, FR-014) under
+      `/v1/agent/organisations/{id}/contacts`: contacts with emails (lower-cased) and phones
+      (E.164; a national number is read in the organisation's market), a type and a source
+      (reference sets `contact_types` and `contact_sources`, admin-editable), a lead stage
+      (NEW, CONTACTED, VIEWING_REQUESTED, VIEWING_CONFIRMED, NEGOTIATING, CLOSED, UNSUCCESSFUL;
+      any stage may move to any other), a relationship owner, tags, a marketing permission
+      (`{granted, granted_at, source, recorded_by}`), append-only notes, reminders, linked
+      listings and a timeline. An approved direct owner (landlord, property seller) has a
+      personal book at `/v1/agent/organisations/{their user ID}/contacts`.
+    - **Who.** Every member of the organisation reads (STAFF included); OWNER, MANAGER and AGENT
+      write and merge; OWNER and MANAGER (or the contact's current owner) reassign; only OWNER
+      and MANAGER import and export. **Another organisation, a consumer or an administrator
+      always gets `404 CONTACT_NOT_FOUND`**, never data. Never shown to the customer.
+    - **Duplicates.** Creating (or editing into) a contact that shares a normalised email or phone
+      with another live contact of the book is `409 CONTACT_DUPLICATE` with
+      `error.details.duplicates` (`[{id, name}]`) unless `?allow_duplicate=true`. Merging moves
+      everything onto the kept contact and leaves tombstones (`merged_into`).
+    - **Automatic links.** A property request, business enquiry or appointment that reaches the
+      organisation is linked (by the worker, from the outbox) to the contacts that share the
+      customer's entered email or phone, or their verified account email, exactly after
+      normalisation and within the same organisation; so is everything that matches when a
+      contact is created or edited. Linking never merges.
+    - **Audit.** Reassignments, merges, imports and exports are written to the organisation's
+      audit trail (`GET /v1/agent/organisations/{id}/audit`: actions `CONTACT_OWNER_CHANGED`,
+      `CONTACTS_MERGED`, `CONTACTS_IMPORTED`, `CONTACTS_EXPORTED`; target types `CONTACT`,
+      `CONTACT_BOOK`). Migration 0030.
 
     Listing analytics (new in 0.30.0)
     - **First-party measurement** (BR-006, FR-033..036). The browser sends
@@ -534,6 +562,10 @@ tags:
     description: |
       First-party listing analytics (new in 0.30.0): ingestion of the browser's events and the
       owner-scoped and administrators' reports. Raw events are never returned.
+  - name: contacts
+    description: |
+      The agent CRM (new in 0.31.0): an organisation's (or a direct owner's) private contact
+      book. 404 `CONTACT_NOT_FOUND` for anyone else.
   - name: property-requests
   - name: business-enquiries
   - name: appointments
@@ -865,6 +897,8 @@ paths:
         | `onboarding_documents` | document types for professional onboarding (`description` is set) | — |
         | `organisation_kinds` | organisation kinds and their labels (AGENCY "Real Estate Agency", LAW_FIRM "Law Firm", ...) | — |
         | `price_periods` | what a listing's price is charged per: `month` "per month", `night` "per night" (a listing's `price_period`; null there means a sale price) | — |
+        | `contact_types` | how a contact of an agent's contact book is classified: `buyer`, `tenant`, `landlord`, `owner`, `other` (new in 0.31.0) | — |
+        | `contact_sources` | where a contact came from: `enquiry`, `walk-in`, `referral`, `phone`, `import`, `website`, `other` (new in 0.31.0) | — |
 
         `property_categories` has `residential`, `commercial`, `land` and `short-stay` ("Short
         stays", with a `description`); the short-stay `property_types` are `holiday-home`,
@@ -5862,6 +5896,600 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/agent/organisations/{id}/contacts:
+    parameters:
+      - $ref: "#/components/parameters/ContactBookId"
+    get:
+      tags: [contacts]
+      operationId: listContacts
+      summary: The contact book (new in 0.31.0)
+      description: |
+        Any member of the organisation reads it (STAFF included); another organisation, a
+        consumer or an administrator gets `404 CONTACT_NOT_FOUND`. Live contacts only (no
+        deleted contacts, no merge tombstones). `stage_counts` counts the contacts that match
+        every filter except `stage`, per stage. `Cache-Control: private, no-store`,
+        `X-Robots-Tag: noindex`.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      parameters:
+        - { name: q, in: query, schema: { type: string }, description: "Part of the name, an email address or a phone number (digits)." }
+        - { name: type, in: query, schema: { type: string }, description: "A `contact_types` code." }
+        - { name: stage, in: query, schema: { $ref: "#/components/schemas/ContactStage" } }
+        - { name: tag, in: query, schema: { type: string } }
+        - { name: owner, in: query, schema: { type: string }, description: "A user ID, `me` or `none`." }
+        - { name: has_reminder_due, in: query, schema: { type: boolean }, description: "Only contacts with an open reminder due now (overdue included)." }
+        - { name: sort, in: query, schema: { type: string, enum: [last_contact, name, created], default: last_contact } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
+      responses:
+        "200":
+          description: One page of contacts.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContactPage" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/ContactNotFound" }
+    post:
+      tags: [contacts]
+      operationId: createContact
+      summary: Create a contact (new in 0.31.0)
+      description: |
+        OWNER, MANAGER and AGENT (`403` for STAFF). Emails are trimmed and lower-cased; phones
+        are normalised to E.164, a national number being read in the organisation's market
+        (`0771234567` in Zimbabwe is `+263771234567`). If another live contact of the book has
+        one of the emails or phones, the answer is `409 CONTACT_DUPLICATE` with
+        `error.details.duplicates` (`[{id, name}]`), unless `?allow_duplicate=true`. The creator
+        owns the contact unless `owner_user_id` says otherwise (an AGENT may only name
+        themselves). `notes` becomes the first note. Property requests, business enquiries and
+        appointments of the organisation with the same email or phone are linked at once.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      parameters:
+        - { name: allow_duplicate, in: query, schema: { type: boolean } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ContactCreate" }
+      responses:
+        "201":
+          description: The new contact.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContactBody" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/ContactNotFound" }
+        "409": { $ref: "#/components/responses/ContactDuplicate" }
+  /v1/agent/organisations/{id}/contacts/reminders:
+    parameters:
+      - $ref: "#/components/parameters/ContactBookId"
+    get:
+      tags: [contacts]
+      operationId: listDueContactReminders
+      summary: Reminders due, for the dashboard (new in 0.31.0)
+      description: |
+        Open reminders of live contacts due before the end of the period, overdue ones
+        included, soonest first: `overdue` (now), `today` (the end of the market-local day,
+        the default) or `week` (the end of the sixth day after today). `mine=true` keeps the
+        reminders the caller created or whose contact they own.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      parameters:
+        - { name: due, in: query, schema: { type: string, enum: [today, overdue, week], default: today } }
+        - { name: mine, in: query, schema: { type: boolean } }
+      responses:
+        "200":
+          description: The reminders.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/DueContactReminder" } }
+                  total: { type: integer }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "404": { $ref: "#/components/responses/ContactNotFound" }
+  /v1/agent/organisations/{id}/contacts/tags:
+    parameters:
+      - $ref: "#/components/parameters/ContactBookId"
+    get:
+      tags: [contacts]
+      operationId: listContactTags
+      summary: The tags of the book with their counts (new in 0.31.0)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: Most used first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [tag, count]
+                      properties: { tag: { type: string }, count: { type: integer } }
+        "404": { $ref: "#/components/responses/ContactNotFound" }
+  /v1/agent/organisations/{id}/contacts/assignees:
+    parameters:
+      - $ref: "#/components/parameters/ContactBookId"
+    get:
+      tags: [contacts]
+      operationId: listContactAssignees
+      summary: The members a contact may be given to (new in 0.31.0)
+      description: |
+        Active OWNER, MANAGER and AGENT members, by name; for anyone who may change the book
+        (so an AGENT who owns a contact can choose a colleague). `403` for STAFF. A personal book
+        lists its owner.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The members.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [user_id, name, role]
+                      properties:
+                        user_id: { type: string, format: uuid }
+                        name: { type: string }
+                        role: { type: string, enum: [OWNER, MANAGER, AGENT] }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/ContactNotFound" }
+  /v1/agent/organisations/{id}/contacts/export.csv:
+    parameters:
+      - $ref: "#/components/parameters/ContactBookId"
+    get:
+      tags: [contacts]
+      operationId: exportContacts
+      summary: Export the book as CSV (new in 0.31.0)
+      description: |
+        OWNER and MANAGER only (`403` otherwise, and for a personal book). The export is written
+        to the organisation's audit trail (`CONTACTS_EXPORTED`) before any row is sent. Live
+        contacts, newest first, at most 50,000. Columns: id, name, type, stage, emails, phones,
+        tags (several values separated by `; `), owner_user_id, owner_name, source,
+        marketing_granted, marketing_granted_at, marketing_source, last_contact_at, created_at.
+        A cell starting with `= + - @` is prefixed with `'` (the import removes it).
+        `Content-Disposition: attachment; filename="contacts-YYYY-MM-DD.csv"`.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The CSV file.
+          content:
+            text/csv:
+              schema: { type: string }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/ContactNotFound" }
+  /v1/agent/organisations/{id}/contacts/import:
+    parameters:
+      - $ref: "#/components/parameters/ContactBookId"
+    post:
+      tags: [contacts]
+      operationId: importContacts
+      summary: Import contacts from CSV (new in 0.31.0)
+      description: |
+        OWNER and MANAGER only. `multipart/form-data` with the CSV (UTF-8, at most 2 MB and 5,000
+        data rows) in the field `file`. A header row is required with at least `name`; also read:
+        `type`, `stage`, `emails`/`email`, `phones`/`phone`, `tags` (several values separated by
+        `;` or `|`), `source`, `owner_user_id`, `marketing_granted`, `marketing_source`,
+        `last_contact_at`, `notes`; other columns (such as the export's `id`) are ignored. `type`
+        defaults to `other`, `source` to `import`, `stage` to `NEW`. `?dry_run=true` validates
+        every row and reports `CREATE`, `DUPLICATE` (of a contact of the book, `duplicate_of`, or
+        of an earlier row, `duplicate_of_row`) or `ERROR` (`errors` per field), and changes
+        nothing. A real run creates exactly the rows a dry run reports as `CREATE` (status
+        `CREATED`), skips the duplicates (`SKIPPED`: nothing is ever overwritten), is written to
+        the audit trail (`CONTACTS_IMPORTED`) and answers `201` (`200` when nothing was created).
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      parameters:
+        - { name: dry_run, in: query, schema: { type: boolean } }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        "200":
+          description: The dry run's report (or a real run that created nothing).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContactImportReport" }
+        "201":
+          description: The real run's report.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContactImportReport" }
+        "400":
+          description: "`VALIDATION_FAILED` (`error.fields.file`) or `IMPORT_TOO_MANY_ROWS`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/ContactNotFound" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+  /v1/agent/organisations/{id}/contacts/merge:
+    parameters:
+      - $ref: "#/components/parameters/ContactBookId"
+    post:
+      tags: [contacts]
+      operationId: mergeContacts
+      summary: Merge contacts (new in 0.31.0)
+      description: |
+        OWNER, MANAGER and AGENT. The emails, phones and tags of `merge_ids` are added to
+        `keep_id`; their notes (with `merged_from`), reminders, links and activity move to it; an
+        owner, source, marketing permission or last contact `keep` lacks is taken from them. The
+        merged contacts stay as tombstones (`merged_into`), readable but not changeable
+        (`409 CONTACT_MERGED`), and leave the list. Written to the activity log and the audit
+        trail (`CONTACTS_MERGED`). At most 20 contacts at once.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [keep_id, merge_ids]
+              additionalProperties: false
+              properties:
+                keep_id: { type: string, format: uuid }
+                merge_ids: { type: array, minItems: 1, maxItems: 20, items: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The kept contact.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContactBody" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/ContactNotFound" }
+        "409": { $ref: "#/components/responses/ContactMerged" }
+  /v1/agent/organisations/{id}/contacts/from-request/{requestId}:
+    parameters:
+      - $ref: "#/components/parameters/ContactBookId"
+      - { name: requestId, in: path, required: true, schema: { type: string, format: uuid }, description: "A property request, business enquiry or appointment ID." }
+    post:
+      tags: [contacts]
+      operationId: createContactFromRequest
+      summary: One-click contact from a request, enquiry or appointment (new in 0.31.0)
+      description: |
+        For an item the caller can see in their inbox (OWNER and MANAGER every one of the
+        organisation; an AGENT the organisation inbox's and their own; a direct owner theirs;
+        `404 REQUEST_NOT_FOUND` otherwise). If a live contact shares its email (or the customer's
+        verified account email) or phone, the item is linked to it and that contact is returned
+        (`200`); otherwise a contact is created from the customer's name, email and phone, source
+        `enquiry`, type `?type=` (default `other`), owned by the caller, linked to the item (`201`).
+        `?kind=` (PROPERTY_REQUEST, BUSINESS_ENQUIRY, APPOINTMENT) narrows the lookup. No body.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      parameters:
+        - { name: kind, in: query, schema: { type: string, enum: [PROPERTY_REQUEST, BUSINESS_ENQUIRY, APPOINTMENT] } }
+        - { name: type, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: The existing contact it was linked to.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContactBody" }
+        "201":
+          description: The new contact.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContactBody" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`CONTACT_NOT_FOUND` (not the caller's book) or `REQUEST_NOT_FOUND`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+  /v1/agent/organisations/{id}/contacts/{contactId}:
+    parameters:
+      - $ref: "#/components/parameters/ContactBookId"
+      - $ref: "#/components/parameters/ContactId"
+    get:
+      tags: [contacts]
+      operationId: getContact
+      summary: One contact (new in 0.31.0)
+      description: A tombstone is returned with `merged_into` set; a deleted contact is `404`.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The contact.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContactBody" }
+        "404": { $ref: "#/components/responses/ContactNotFound" }
+    patch:
+      tags: [contacts]
+      operationId: updateContact
+      summary: Edit a contact (new in 0.31.0)
+      description: |
+        OWNER, MANAGER and AGENT. Absent fields are unchanged; `source`, `marketing_permission`
+        and `last_contact_at` may be `null`. The stage and the owner have their own endpoints.
+        New emails or phones that another contact has are `409 CONTACT_DUPLICATE` unless
+        `?allow_duplicate=true`; items that match them are linked. Logged (`EDITED`, the field names).
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      parameters:
+        - { name: allow_duplicate, in: query, schema: { type: boolean } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ContactPatch" }
+      responses:
+        "200":
+          description: The contact.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContactBody" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/ContactNotFound" }
+        "409": { $ref: "#/components/responses/ContactDuplicate" }
+    delete:
+      tags: [contacts]
+      operationId: deleteContact
+      summary: Delete a contact (soft; new in 0.31.0)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "204": { description: Deleted. }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/ContactNotFound" }
+  /v1/agent/organisations/{id}/contacts/{contactId}/notes:
+    parameters:
+      - $ref: "#/components/parameters/ContactBookId"
+      - $ref: "#/components/parameters/ContactId"
+    get:
+      tags: [contacts]
+      operationId: listContactNotes
+      summary: A contact's notes, newest first (new in 0.31.0)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The notes.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/ContactNote" } }
+        "404": { $ref: "#/components/responses/ContactNotFound" }
+    post:
+      tags: [contacts]
+      operationId: addContactNote
+      summary: Add a note (append-only; new in 0.31.0)
+      description: Notes are never edited or deleted; a correction is a new note. 1 to 5,000 characters.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              additionalProperties: false
+              properties: { text: { type: string, maxLength: 5000 } }
+      responses:
+        "201":
+          description: The note.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContactNote" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/ContactNotFound" }
+        "409": { $ref: "#/components/responses/ContactMerged" }
+  /v1/agent/organisations/{id}/contacts/{contactId}/reminders:
+    parameters:
+      - $ref: "#/components/parameters/ContactBookId"
+      - $ref: "#/components/parameters/ContactId"
+    post:
+      tags: [contacts]
+      operationId: addContactReminder
+      summary: Add a reminder (new in 0.31.0)
+      description: When it falls due the worker writes `CONTACT_REMINDER_DUE` to the outbox (no email yet).
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [due_at, text]
+              additionalProperties: false
+              properties:
+                due_at: { type: string, format: date-time }
+                text: { type: string, maxLength: 500 }
+      responses:
+        "201":
+          description: The reminder.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContactReminder" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/ContactNotFound" }
+  /v1/agent/organisations/{id}/contacts/{contactId}/reminders/{reminderId}:
+    parameters:
+      - $ref: "#/components/parameters/ContactBookId"
+      - $ref: "#/components/parameters/ContactId"
+      - { name: reminderId, in: path, required: true, schema: { type: string, format: uuid } }
+    patch:
+      tags: [contacts]
+      operationId: updateContactReminder
+      summary: Mark a reminder done or open again (new in 0.31.0)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [done]
+              additionalProperties: false
+              properties: { done: { type: boolean } }
+      responses:
+        "200":
+          description: The reminder.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContactReminder" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`CONTACT_NOT_FOUND` or `CONTACT_REMINDER_NOT_FOUND`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+  /v1/agent/organisations/{id}/contacts/{contactId}/stage:
+    parameters:
+      - $ref: "#/components/parameters/ContactBookId"
+      - $ref: "#/components/parameters/ContactId"
+    post:
+      tags: [contacts]
+      operationId: changeContactStage
+      summary: Move the lead stage (new in 0.31.0)
+      description: Any stage may move to any other; every move is logged (`STAGE_CHANGED`, with the note). The same stage is a no-op.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [stage]
+              additionalProperties: false
+              properties:
+                stage: { $ref: "#/components/schemas/ContactStage" }
+                note: { type: string, maxLength: 5000 }
+      responses:
+        "200":
+          description: The contact.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContactBody" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/ContactNotFound" }
+  /v1/agent/organisations/{id}/contacts/{contactId}/owner:
+    parameters:
+      - $ref: "#/components/parameters/ContactBookId"
+      - $ref: "#/components/parameters/ContactId"
+    post:
+      tags: [contacts]
+      operationId: changeContactOwner
+      summary: Reassign the relationship owner (new in 0.31.0)
+      description: |
+        OWNER and MANAGER, or the contact's current owner (`403` otherwise, and in a personal
+        book). `user_id` must be an active OWNER, MANAGER or AGENT of the organisation (see
+        `.../contacts/assignees`); `null` gives the contact to nobody. Logged in the activity log
+        (`OWNER_CHANGED`) and the audit trail (`CONTACT_OWNER_CHANGED`, before and after).
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              additionalProperties: false
+              properties: { user_id: { type: [string, "null"], format: uuid } }
+      responses:
+        "200":
+          description: The contact.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContactBody" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/ContactNotFound" }
+  /v1/agent/organisations/{id}/contacts/{contactId}/listings:
+    parameters:
+      - $ref: "#/components/parameters/ContactBookId"
+      - $ref: "#/components/parameters/ContactId"
+    post:
+      tags: [contacts]
+      operationId: linkContactListing
+      summary: Link a listing (new in 0.31.0)
+      description: A listing of the same organisation (or the direct owner's own), any status; otherwise `404 LISTING_NOT_FOUND`.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [listing_id]
+              additionalProperties: false
+              properties: { listing_id: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The contact.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContactBody" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`CONTACT_NOT_FOUND` or `LISTING_NOT_FOUND`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+  /v1/agent/organisations/{id}/contacts/{contactId}/listings/{listingId}:
+    parameters:
+      - $ref: "#/components/parameters/ContactBookId"
+      - $ref: "#/components/parameters/ContactId"
+      - { name: listingId, in: path, required: true, schema: { type: string, format: uuid } }
+    delete:
+      tags: [contacts]
+      operationId: unlinkContactListing
+      summary: Unlink a listing (new in 0.31.0)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "204": { description: Unlinked. }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`CONTACT_NOT_FOUND` or `LISTING_NOT_FOUND` (not linked)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+  /v1/agent/organisations/{id}/contacts/{contactId}/timeline:
+    parameters:
+      - $ref: "#/components/parameters/ContactBookId"
+      - $ref: "#/components/parameters/ContactId"
+    get:
+      tags: [contacts]
+      operationId: getContactTimeline
+      summary: A contact's timeline, newest first (new in 0.31.0)
+      description: |
+        Notes, the activity log (creation, edits, stage and owner changes, reminders, listing
+        links, merges) and the linked property requests, business enquiries and appointments.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The entries.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/ContactTimelineEntry" } }
+        "404": { $ref: "#/components/responses/ContactNotFound" }
+
   /v1/invitations/{token}:
     parameters:
       - $ref: "#/components/parameters/InvitationToken"
@@ -9925,7 +10553,7 @@ paths:
       description: |
         SUPER_ADMIN, PLATFORM_ADMIN, CONTENT_ADMIN and MARKET_ADMIN (who changes only the rows of
         its own market). `creatable`: rows may be added (property types, listing features,
-        service trades, regions, cities, suburbs); every other set's codes drive behaviour and can
+        service trades, regions, cities, suburbs and, from 0.31.0, contact sources); every other set's codes drive behaviour and can
         only be relabelled, reordered, deactivated and reactivated. Nothing is ever deleted.
       security:
         - cookieSession: []
@@ -10350,6 +10978,23 @@ components:
       schema:
         type: string
         enum: [DRAFT, SENT_FOR_SIGNING, SIGNED, DECLINED, CANCELLED, EXPIRED]
+    ContactBookId:
+      name: id
+      in: path
+      required: true
+      description: |
+        The organisation whose contact book it is, or, for an approved direct owner's personal
+        book, the owner's own user ID.
+      schema:
+        type: string
+        format: uuid
+    ContactId:
+      name: contactId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
     OrganisationId:
       name: id
       in: path
@@ -10666,6 +11311,56 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
+    ContactNotFound:
+      description: "`CONTACT_NOT_FOUND`: no such contact, or the book is not the caller's (another organisation always gets this)."
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    ContactMerged:
+      description: "`CONTACT_MERGED`: the contact is a tombstone of a merge; change the contact in `merged_into`."
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    ContactDuplicate:
+      description: |
+        `CONTACT_DUPLICATE`: another live contact of the book has one of the emails or phones.
+        `error.details.duplicates` names them. Send `?allow_duplicate=true` to keep both.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error, trace_id]
+            properties:
+              error:
+                type: object
+                required: [code, message, details]
+                properties:
+                  code: { type: string, enum: [CONTACT_DUPLICATE] }
+                  message: { type: string }
+                  details:
+                    type: object
+                    required: [duplicates]
+                    properties:
+                      duplicates:
+                        type: array
+                        items:
+                          type: object
+                          required: [id, name]
+                          properties:
+                            id: { type: string, format: uuid }
+                            name: { type: string }
+              trace_id: { type: string }
     OrganisationNotFound:
       description: "`ORGANISATION_NOT_FOUND`: no such organisation, or the caller is not an active member of it."
       headers:
@@ -12394,6 +13089,8 @@ components:
         - onboarding_documents
         - organisation_kinds
         - price_periods
+        - contact_types
+        - contact_sources
 
     ReferenceGroup:
       type: object
@@ -13916,7 +14613,7 @@ components:
           format: uuid
         action:
           type: string
-          enum: [INVITATION_CREATED, INVITATION_CANCELLED, INVITATION_ACCEPTED, JOIN_REQUEST_APPROVED, JOIN_REQUEST_DECLINED, JOIN_REQUEST_CHANGES_REQUESTED, MEMBER_ROLE_CHANGED, MEMBER_JOB_TITLE_CHANGED, MEMBER_SUSPENDED, MEMBER_REACTIVATED, MEMBER_REMOVED, REQUEST_ASSIGNED, REQUEST_UNASSIGNED]
+          enum: [INVITATION_CREATED, INVITATION_CANCELLED, INVITATION_ACCEPTED, JOIN_REQUEST_APPROVED, JOIN_REQUEST_DECLINED, JOIN_REQUEST_CHANGES_REQUESTED, MEMBER_ROLE_CHANGED, MEMBER_JOB_TITLE_CHANGED, MEMBER_SUSPENDED, MEMBER_REACTIVATED, MEMBER_REMOVED, REQUEST_ASSIGNED, REQUEST_UNASSIGNED, CONTACT_OWNER_CHANGED, CONTACTS_MERGED, CONTACTS_IMPORTED, CONTACTS_EXPORTED]
         action_label:
           type: string
         actor:
@@ -13938,7 +14635,7 @@ components:
           properties:
             type:
               type: string
-              enum: [MEMBER, INVITATION, JOIN_REQUEST, PROPERTY_REQUEST]
+              enum: [MEMBER, INVITATION, JOIN_REQUEST, PROPERTY_REQUEST, CONTACT, CONTACT_BOOK]
             id:
               type: string
               format: uuid
@@ -16620,3 +17317,232 @@ components:
               market_code: { type: [string, "null"] }
               total: { type: string, description: Sum of the recorded payments, two decimals. }
               payments: { type: integer }
+    ContactStage:
+      type: string
+      enum: [NEW, CONTACTED, VIEWING_REQUESTED, VIEWING_CONFIRMED, NEGOTIATING, CLOSED, UNSUCCESSFUL]
+      description: "Lead stage (labels: New, Contacted, Viewing requested, Viewing confirmed, Negotiating, Closed, Unsuccessful)."
+    ContactMarketingPermission:
+      type: object
+      required: [granted, granted_at, source, recorded_by, recorded_by_name]
+      properties:
+        granted: { type: boolean }
+        granted_at: { type: string, format: date-time, description: When the permission (granted or refused) was recorded. }
+        source: { type: string, description: How it was given, in the agent's words. }
+        recorded_by: { type: [string, "null"], format: uuid }
+        recorded_by_name: { type: [string, "null"] }
+    Contact:
+      type: object
+      required: [id, name, emails, phones, type, type_label, stage, stage_label, tags, owner_user_id, owner_name, source, source_label,
+        marketing_permission, last_contact_at, created_at, updated_at, merged_into, linked_listings, reminders_due, open_reminders,
+        next_reminder_at, created_by]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        emails: { type: array, items: { type: string, format: email }, description: Lower-cased. }
+        phones: { type: array, items: { type: string, example: "+263771234567" }, description: E.164. }
+        type: { type: string, description: "A `contact_types` code." }
+        type_label: { type: string }
+        stage: { $ref: "#/components/schemas/ContactStage" }
+        stage_label: { type: string }
+        tags: { type: array, items: { type: string }, description: Lower-cased. }
+        owner_user_id: { type: [string, "null"], format: uuid, description: The relationship owner (a field, not a visibility rule). }
+        owner_name: { type: [string, "null"] }
+        source: { type: [string, "null"], description: "A `contact_sources` code." }
+        source_label: { type: [string, "null"] }
+        marketing_permission:
+          oneOf:
+            - { $ref: "#/components/schemas/ContactMarketingPermission" }
+            - { type: "null" }
+        last_contact_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        merged_into: { type: [string, "null"], format: uuid, description: "Set on a tombstone: the contact it was merged into." }
+        linked_listings:
+          type: array
+          items:
+            type: object
+            required: [id, title, reference, slug]
+            properties:
+              id: { type: string, format: uuid }
+              title: { type: string }
+              reference: { type: string }
+              slug: { type: [string, "null"] }
+        reminders_due: { type: integer, description: Open reminders due now (overdue included). }
+        open_reminders: { type: integer }
+        next_reminder_at: { type: [string, "null"], format: date-time }
+        created_by: { type: [string, "null"], format: uuid }
+    ContactBody:
+      type: object
+      required: [contact, linked_items, reminders]
+      properties:
+        contact: { $ref: "#/components/schemas/Contact" }
+        linked_items:
+          type: array
+          description: The linked property requests, business enquiries and appointments, newest first.
+          items:
+            type: object
+            required: [kind, id, reference, type, status, title, listing_id, created_at, auto, linked_at]
+            properties:
+              kind: { type: string, enum: [PROPERTY_REQUEST, BUSINESS_ENQUIRY, APPOINTMENT] }
+              id: { type: string, format: uuid }
+              reference: { type: string }
+              type: { type: string, description: "The request type, the enquiry's service or the appointment type." }
+              status: { type: string, description: "The request's lead stage, the enquiry's or the appointment's status." }
+              title: { type: string }
+              listing_id: { type: [string, "null"], format: uuid }
+              created_at: { type: string, format: date-time }
+              auto: { type: boolean, description: Linked by matching an email or phone (false when linked by a person). }
+              linked_at: { type: string, format: date-time }
+        reminders:
+          type: array
+          items: { $ref: "#/components/schemas/ContactReminder" }
+    ContactPage:
+      type: object
+      required: [items, page, page_size, total, total_pages, stage_counts]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Contact" } }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer }
+        total_pages: { type: integer }
+        stage_counts:
+          type: object
+          additionalProperties: { type: integer }
+          description: Every stage, counting the contacts that match the other filters.
+    ContactCreate:
+      type: object
+      required: [name, type]
+      additionalProperties: false
+      properties:
+        name: { type: string, maxLength: 200 }
+        emails: { type: array, maxItems: 10, items: { type: string } }
+        phones: { type: array, maxItems: 10, items: { type: string }, description: "E.164, or a national number of the organisation's market." }
+        type: { type: string }
+        tags: { type: array, maxItems: 20, items: { type: string, maxLength: 40 } }
+        owner_user_id: { type: [string, "null"], format: uuid }
+        source: { type: [string, "null"] }
+        stage: { $ref: "#/components/schemas/ContactStage" }
+        marketing_permission:
+          type: object
+          required: [granted]
+          additionalProperties: false
+          properties:
+            granted: { type: boolean }
+            source: { type: string, maxLength: 120 }
+        notes: { type: string, maxLength: 5000, description: The first note. }
+    ContactPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string, maxLength: 200 }
+        emails: { type: array, items: { type: string } }
+        phones: { type: array, items: { type: string } }
+        type: { type: string }
+        tags: { type: array, items: { type: string } }
+        source: { type: [string, "null"] }
+        marketing_permission:
+          type: [object, "null"]
+          required: [granted]
+          additionalProperties: false
+          properties:
+            granted: { type: boolean }
+            source: { type: string, maxLength: 120 }
+        last_contact_at: { type: [string, "null"], format: date-time }
+    ContactNote:
+      type: object
+      required: [id, contact_id, text, author, created_at, merged_from]
+      properties:
+        id: { type: string, format: uuid }
+        contact_id: { type: string, format: uuid }
+        text: { type: string }
+        author:
+          type: [object, "null"]
+          properties: { user_id: { type: string, format: uuid }, name: { type: string } }
+        created_at: { type: string, format: date-time }
+        merged_from: { type: [string, "null"], format: uuid, description: The contact the note was written on before a merge. }
+    ContactReminder:
+      type: object
+      required: [id, contact_id, due_at, text, done, done_at, created_by, created_at, overdue]
+      properties:
+        id: { type: string, format: uuid }
+        contact_id: { type: string, format: uuid }
+        due_at: { type: string, format: date-time }
+        text: { type: string }
+        done: { type: boolean }
+        done_at: { type: [string, "null"], format: date-time }
+        created_by:
+          type: [object, "null"]
+          properties: { user_id: { type: string, format: uuid }, name: { type: string } }
+        created_at: { type: string, format: date-time }
+        overdue: { type: boolean }
+    DueContactReminder:
+      allOf:
+        - { $ref: "#/components/schemas/ContactReminder" }
+        - type: object
+          required: [contact]
+          properties:
+            contact:
+              type: object
+              required: [id, name, owner]
+              properties:
+                id: { type: string, format: uuid }
+                name: { type: string }
+                owner:
+                  type: [object, "null"]
+                  properties: { user_id: { type: string, format: uuid }, name: { type: string } }
+    ContactTimelineEntry:
+      type: object
+      required: [id, kind, at, actor, data]
+      properties:
+        id: { type: string, format: uuid }
+        kind:
+          type: string
+          enum: [NOTE_ADDED, CREATED, EDITED, STAGE_CHANGED, OWNER_CHANGED, REMINDER_ADDED, REMINDER_DONE, REMINDER_REOPENED,
+            LISTING_LINKED, LISTING_UNLINKED, MERGED, MERGED_INTO, PROPERTY_REQUEST, BUSINESS_ENQUIRY, APPOINTMENT]
+          description: Render an unknown kind generically (its `label`); kinds may be added.
+        at: { type: string, format: date-time }
+        actor_name: { type: string, description: Absent for the system. }
+        actor:
+          type: [object, "null"]
+          properties: { user_id: { type: string, format: uuid }, name: { type: string } }
+        label: { type: string, description: "A sentence to show, for example `Stage changed from New to Contacted`." }
+        text: { type: string, description: "A note's, a reminder's or a stage change's text." }
+        ref:
+          type: object
+          required: [kind, id]
+          properties:
+            kind: { type: string, enum: [PROPERTY_REQUEST, BUSINESS_ENQUIRY, APPOINTMENT, LISTING, CONTACT] }
+            id: { type: string, format: uuid }
+            reference: { type: string }
+        data: { type: object, additionalProperties: true, description: The raw details as logged. }
+    ContactImportReport:
+      type: object
+      required: [dry_run, total_rows, summary, rows]
+      properties:
+        dry_run: { type: boolean }
+        total_rows: { type: integer }
+        summary:
+          type: object
+          required: [create, duplicate, error]
+          properties:
+            create: { type: integer }
+            duplicate: { type: integer }
+            error: { type: integer }
+            created: { type: integer, description: Real runs only. }
+        rows:
+          type: array
+          items:
+            type: object
+            required: [row, status, name, email, phone, emails, phones]
+            properties:
+              row: { type: integer, description: The line of the file (the header is line 1). }
+              status: { type: string, enum: [CREATE, DUPLICATE, ERROR, CREATED, SKIPPED] }
+              name: { type: string }
+              email: { type: [string, "null"] }
+              phone: { type: [string, "null"] }
+              emails: { type: array, items: { type: string } }
+              phones: { type: array, items: { type: string } }
+              duplicate_of: { type: array, items: { type: string, format: uuid } }
+              duplicate_of_row: { type: integer }
+              errors: { type: object, additionalProperties: { type: string } }
+              contact_id: { type: string, format: uuid }

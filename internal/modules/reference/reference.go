@@ -43,6 +43,11 @@ const (
 	// SetPricePeriods: what a price is charged per ("per month", "per night").
 	// A listing's price_period is one of these codes, or null for a sale price.
 	SetPricePeriods = "price_periods"
+	// SetContactTypes and SetContactSources: how an agent classifies a
+	// contact of their contact book (buyer, tenant, landlord, owner, other)
+	// and where it came from (enquiry, walk-in, referral, ...).
+	SetContactTypes   = "contact_types"
+	SetContactSources = "contact_sources"
 )
 
 // Sets returns every set code in the order the API lists them.
@@ -50,7 +55,7 @@ func Sets() []string {
 	return []string{
 		SetDealTypes, SetPropertyCategories, SetPropertyTypes, SetRequestTypes, SetContactMethods,
 		SetAccountRoles, SetDirectoryKinds, SetServiceTrades, SetRegions, SetCities, SetSuburbs, SetListingFeatures,
-		SetOnboardingDocuments, SetOrganisationKinds, SetPricePeriods,
+		SetOnboardingDocuments, SetOrganisationKinds, SetPricePeriods, SetContactTypes, SetContactSources,
 	}
 }
 

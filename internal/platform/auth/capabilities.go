@@ -272,3 +272,49 @@ func (p *Principal) MayReviewListing(marketCode string) bool {
 	codes, all, ok := p.ListingReviewMarkets()
 	return ok && (all || slices.Contains(codes, marketCode))
 }
+
+// Contact books (the agent CRM, API 0.31.0). A book belongs to an
+// organisation, or (a personal book) to an approved direct owner, whose book
+// is addressed with their own user ID in place of an organisation ID.
+//
+//   - read: any member (STAFF included) of an organisation whose kind takes
+//     enquiries or consultations (KindTakesConsultations: the kinds that
+//     manage listings, and service providers);
+//   - write (create, edit, notes, reminders, stage, listings, merge): its
+//     OWNER, MANAGER and AGENT;
+//   - manage (reassign any contact, import, export): its OWNER and MANAGER.
+//
+// The direct owner reads and writes their own book; nobody else sees it.
+// Everybody else, platform administrators included, sees no book at all.
+
+// MayReadContacts reports whether the caller may read the organisation's contact book.
+func (p *Principal) MayReadContacts(organisationID uuid.UUID) bool {
+	m, ok := p.membership(organisationID)
+	return ok && KindTakesConsultations(m.OrganisationKind)
+}
+
+// MayWriteContacts reports whether the caller may change the organisation's contact book.
+func (p *Principal) MayWriteContacts(organisationID uuid.UUID) bool {
+	m, ok := p.membership(organisationID)
+	return ok && KindTakesConsultations(m.OrganisationKind) && RoleHoldsLeads(m.Role)
+}
+
+// MayManageContacts reports whether the caller may reassign any contact of
+// the organisation, and import and export its book.
+func (p *Principal) MayManageContacts(organisationID uuid.UUID) bool {
+	m, ok := p.membership(organisationID)
+	return ok && KindTakesConsultations(m.OrganisationKind) && (m.Role == RoleOwner || m.Role == RoleManager)
+}
+
+// OwnsContactBook reports whether bookID is the caller's personal contact
+// book: their own user ID, while they are an approved direct owner.
+func (p *Principal) OwnsContactBook(bookID uuid.UUID) bool {
+	return p != nil && bookID == p.UserID && p.IsDirectOwner()
+}
+
+// MembershipMarket returns the market code of the caller's membership of the
+// organisation, or "" when the caller is not a member of it.
+func (p *Principal) MembershipMarket(organisationID uuid.UUID) string {
+	m, _ := p.membership(organisationID)
+	return m.MarketCode
+}

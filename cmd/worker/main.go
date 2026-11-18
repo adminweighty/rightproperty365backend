@@ -20,6 +20,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/agreements"
 	"rightproperty365.com/backend/internal/modules/analytics"
 	"rightproperty365.com/backend/internal/modules/appointments"
+	"rightproperty365.com/backend/internal/modules/crm"
 	"rightproperty365.com/backend/internal/modules/leases"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/markets"
@@ -149,6 +150,16 @@ func run() error {
 	go app.RunAnalyticsJobs(ctx, analyticsSvc, logger)
 	logger.Info("analytics jobs scheduled", slog.Duration("interval", app.AnalyticsJobInterval),
 		slog.Int("raw_retention_days", cfg.AnalyticsRawRetentionDays))
+
+	// The agent CRM: a new property request, business enquiry or appointment
+	// is linked to the contacts of its organisation that share its email or
+	// phone (after any other handler of the same event; idempotent), and
+	// every minute the reminders that fell due get a CONTACT_REMINDER_DUE
+	// event (acknowledged: nothing is sent for it yet).
+	crmSvc := app.CRMService(crm.NewPostgresStore(pool), crm.NewPostgresItems(pool), listingStore, nil,
+		reference.NewPostgresStore(pool), nil, logger, nil)
+	crmSvc.Register(dispatcher)
+	go app.RunCRMJobs(ctx, crmSvc)
 
 	// Search index: listing events keep Elasticsearch in step. With the
 	// database search driver there is no index, and the events are acknowledged.

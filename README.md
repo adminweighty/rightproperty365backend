@@ -282,6 +282,9 @@ All configuration comes from environment variables. For local development you ma
 | PUT, DELETE | `/v1/me/saved-listings/{listingId}` | Save a public listing (idempotent, `created` flag) / remove a save (always `204`) |
 | POST | `/v1/analytics/events` | Browser analytics events (public; see "Listing analytics", 0.30.0) |
 | GET | `/v1/analytics/listings/{id}`, `/v1/analytics/organisations/{orgId}` | A listing's / an organisation's figures, owner-scoped (404 otherwise) |
+| GET, POST | `/v1/agent/organisations/{id}/contacts` | The organisation's contact book: list (filters, `stage_counts`) / create (duplicate check); see "Agent CRM", 0.31.0 |
+| GET, PATCH, DELETE | `/v1/agent/organisations/{id}/contacts/{contactId}` | One contact / edit / soft delete; `.../notes`, `.../reminders[/{rid}]`, `.../stage`, `.../owner`, `.../listings[/{listingId}]`, `.../timeline` |
+| GET, POST | `/v1/agent/organisations/{id}/contacts/reminders`, `/tags`, `/assignees`, `/export.csv`, `/merge`, `/import`, `/from-request/{requestId}` | Due reminders, tags, who may own contacts, CSV export and import (OWNER and MANAGER), merge, one-click contact |
 | GET | `/v1/admin/overview` | Counts an administrator starts from, sections by platform role |
 | GET, POST | `/v1/admin/routing-exceptions`, `/{id}/resolve` | Requests nobody could receive, and marking one as dealt with |
 | POST | `/v1/appointments` | A signed-in customer asks for a viewing or a consultation |
@@ -443,6 +446,69 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 change; follow-up dates and reminders; editing or deleting a note; listing analytics, conversion
 funnels and response-time KPIs (no event data exists); seeker favourites, saved searches and
 alerts.
+
+## Agent CRM: contact books (API 0.31.0)
+
+Migration `0030`, module `internal/modules/crm` (BR-004, FR-014). Routes under
+`/v1/agent/organisations/{id}/contacts` (the OpenAPI tag `contacts`).
+
+- **Whose book.** An organisation's; or, for an approved direct owner (landlord, property
+  seller), a personal book addressed with their own user ID in place of `{id}`. Who may do what
+  is in `auth/capabilities.go` (`MayReadContacts`, `MayWriteContacts`, `MayManageContacts`,
+  `OwnsContactBook`): every member of an organisation whose kind takes enquiries reads (STAFF
+  included; the book is shared, the relationship owner is a field, not a visibility rule);
+  OWNER, MANAGER and AGENT write (create, edit, notes, reminders, stage, listings, merge,
+  one-click contact); OWNER and MANAGER, or the contact's current owner, reassign; OWNER and
+  MANAGER import and export (not in a personal book). **Anyone else, platform administrators
+  included, gets `404 CONTACT_NOT_FOUND` from every endpoint** (each has a wrong-organisation test).
+- **Normalisation** (`crm/normalize.go`, no network): emails trimmed and lower-cased; phones to
+  E.164. A number in international form (`+` or `00`) is accepted for any country (8 to 15
+  digits; a `(0)` after the country code is dropped); a national number is read in the
+  organisation's market (a direct owner's: their latest listing's) for ZW, ZA, BW, ZM, MZ, NA,
+  MW, KE, TZ, UG, NG, GH, AE, GB, IE, US, CA, AU and IN (trunk prefix and lengths per country).
+  Other countries' national numbers are refused with "must start with + and the country code".
+- **Duplicates.** Create (and an edit that adds an email or phone) answers `409
+  CONTACT_DUPLICATE` with `error.details.duplicates` (`[{id, name}]`) when a live contact of the
+  same book shares a normalised email or phone, unless `?allow_duplicate=true`. Merge
+  (`POST .../merge {keep_id, merge_ids}`) moves emails, phones, tags, notes (`merged_from`),
+  reminders, links and the activity log onto `keep` and leaves the others as tombstones
+  (`merged_into`, readable, `409 CONTACT_MERGED` on change, out of the list).
+- **Automatic links.** `PROPERTY_REQUEST_CREATED`, `BUSINESS_ENQUIRY_CREATED` and
+  `APPOINTMENT_REQUESTED` are also handled by the CRM in the worker (`outbox.Also`, idempotent):
+  the item is linked to the live contacts of its organisation (or direct owner) whose email or
+  phone equals the customer's entered email or phone, or their verified account email, after
+  normalisation (phones read in the item's market). Creating or editing a contact links what
+  already matches. Only links; nothing is merged. Without a database the API does this
+  in-process.
+- **Timeline** (`GET .../{contactId}/timeline`, newest first): notes (`NOTE_ADDED`), the activity
+  log (`CREATED`, `EDITED`, `STAGE_CHANGED`, `OWNER_CHANGED`, `REMINDER_ADDED`, `REMINDER_DONE`,
+  `REMINDER_REOPENED`, `LISTING_LINKED`, `LISTING_UNLINKED`, `MERGED`, `MERGED_INTO`) and the
+  linked `PROPERTY_REQUEST`, `BUSINESS_ENQUIRY` and `APPOINTMENT` items, each with a `label`,
+  `text`, `ref` and the raw `data`.
+- **Lead stages** NEW, CONTACTED, VIEWING_REQUESTED, VIEWING_CONFIRMED, NEGOTIATING, CLOSED,
+  UNSUCCESSFUL (a fixed enum, labels in code; any stage to any other, each move logged).
+  **Types and sources** are the reference sets `contact_types` and `contact_sources`
+  (admin-editable; sources may also be added).
+- **Import** (`POST .../import`, multipart field `file`, UTF-8 CSV, 2 MB and 5,000 rows at most):
+  `?dry_run=true` reports per row `CREATE`, `DUPLICATE` (of a contact, or of an earlier row) or
+  `ERROR` (per field); a real run creates exactly those rows (`CREATED`), skips duplicates
+  (`SKIPPED`) and never overwrites. **Export** (`GET .../export.csv`): live contacts, formula-safe
+  cells, `Content-Disposition: attachment`.
+- **Audit.** Reassignments (`CONTACT_OWNER_CHANGED`), merges (`CONTACTS_MERGED`), real imports
+  (`CONTACTS_IMPORTED`) and exports (`CONTACTS_EXPORTED`, written before any row is sent) go to
+  `organisation_audit_events` in the same transaction, shown by `GET .../audit`.
+- **Reminders.** `GET .../contacts/reminders?due=today|overdue|week[&mine=true]` for the
+  dashboard (market-local day). Every minute the worker writes `CONTACT_REMINDER_DUE` to the
+  outbox for each reminder that fell due (once; acknowledged, no email yet).
+- **Sample data.** Sample Estates has 8 contacts across the stages (tags, notes, an overdue
+  reminder on Nyasha Banda, Tariro Moyo auto-linked to sample appointment 6, the duplicate pair
+  Tendai Marufu / T. Marufu to merge); Second Street Realty has 2 (one shares Tariro's email, for
+  the isolation test).
+
+**Not verified / follow-ups:** migration `0030` and `crm/postgres.go` have only run where
+`RP365_TEST_DATABASE_URL` is set (the store contract test skips otherwise). No email for due
+reminders; applications are not yet linked (no applications module); a direct owner cannot
+import or export (the audit trail belongs to organisations).
 
 ## Listing analytics (API 0.30.0)
 
@@ -2901,6 +2967,7 @@ internal/modules/subscriptions     /v1/me/subscription-plans, /v1/me/subscriptio
 internal/modules/reports           /v1/admin/reports/summary and the CSV exports (postgres + memory)
 internal/modules/saved             /v1/me/saved-listings[/ids|/{listingId}]: a customer's saved listings and their snapshots (postgres + memory)
 internal/modules/analytics         /v1/analytics/* and /v1/admin/analytics/summary: events, bots, rollups, reports (postgres + memory)
+internal/modules/crm               /v1/agent/organisations/{id}/contacts/*: contact books, duplicates, merge, import/export, links (postgres + memory)
 internal/platform/adminaudit       the administrators' audit trail (admin_audit_events)
 internal/platform/orgaudit         an organisation's team audit trail (organisation_audit_events)
 internal/platform/imaging          image helpers for the re-encoded uploads (profile logos, listing photos)
@@ -2996,6 +3063,13 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0030_agent_crm` (API 0.31.0): `contacts` (organisation_id XOR book_user_id, stage CHECK,
+  `marketing` jsonb, `deleted_at`, `merged_into`), `contact_emails` / `contact_phones`
+  (normalised, indexed per book), `contact_tags`, `contact_notes`, `contact_reminders`,
+  `contact_events` (activity log) and `contact_links` (kind + id); widens the
+  `organisation_audit_events` action and target CHECKs and the reference set CHECK, and adds the
+  `contact_types` and `contact_sources` rows. The down migration drops the tables and loses every
+  contact book and the contact audit records.
 - `0029_listing_analytics` (API 0.30.0): `analytics_events` (raw events; `event_id` primary key,
   `local_day date`, `network cidr` CHECK IPv4 /24 or IPv6 /48 only, enum CHECKs, server events
   without session or network; indexes on `occurred_at`, `(market_code, local_day)`,
@@ -3194,7 +3268,7 @@ The worker handles `PROPERTY_REQUEST_CREATED`, `BUSINESS_ENQUIRY_CREATED`, `USER
 `PASSWORD_CHANGED` and `ADMIN_SIGNED_IN` by sending the notification emails described under
 "Email"; each email is keyed on the event ID and recipient, so a redelivered event sends nothing
 twice. `PROPERTY_REQUEST_STAGE_CHANGED` and `PROPERTY_REQUEST_EXCEPTION_RESOLVED` (identifiers
-and stages only), `LISTING_SAVED` and `LISTING_UNSAVED` (identifiers only) are acknowledged without sending anything: no email exists for them yet. `LISTING_SAVED`, `PROPERTY_REQUEST_CREATED`, `APPOINTMENT_REQUESTED`, `APPOINTMENT_CONFIRMED` and `LISTING_RELISTED` are also recorded as server-side analytics events (after the email handler, `outbox.Chain`: a transient failure of either retries both, each idempotent). Every 15 minutes the worker recomputes the analytics rollups and applies `ANALYTICS_RAW_RETENTION_DAYS` (see "Listing analytics"). A handler can mark a failure permanent, which dead-letters the event at once. **The worker
+and stages only), `LISTING_SAVED` and `LISTING_UNSAVED` (identifiers only) are acknowledged without sending anything: no email exists for them yet. `LISTING_SAVED`, `PROPERTY_REQUEST_CREATED`, `APPOINTMENT_REQUESTED`, `APPOINTMENT_CONFIRMED` and `LISTING_RELISTED` are also recorded as server-side analytics events (after the email handler, `outbox.Chain`: a transient failure of either retries both, each idempotent). The same three creation events link the new item to the matching contacts of its organisation (see "Agent CRM"), and every minute the worker writes `CONTACT_REMINDER_DUE` for due contact reminders (acknowledged). Every 15 minutes the worker recomputes the analytics rollups and applies `ANALYTICS_RAW_RETENTION_DAYS` (see "Listing analytics"). A handler can mark a failure permanent, which dead-letters the event at once. **The worker
 sends real email when `RESEND_API_KEY` is set.** Without `DATABASE_URL` in development the worker
 logs that it is idle and waits for shutdown (the API then handles the events in-process).
 

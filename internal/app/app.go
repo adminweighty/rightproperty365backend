@@ -19,6 +19,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/availability"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
+	"rightproperty365.com/backend/internal/modules/crm"
 	"rightproperty365.com/backend/internal/modules/dashboard"
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/health"
@@ -155,6 +156,12 @@ const (
 	// 50 events; the per-session and per-network bot rule is separate.
 	analyticsEventsPerMinute = 120
 	analyticsEventsBurst     = 60
+
+	// Per-IP limit on changing contact books (create, edit, notes,
+	// reminders, stage, owner, listings, merge, import, from-request), its
+	// own bucket: bursts of 60, refilled at 60 per minute.
+	contactChangesPerMinute = 60
+	contactChangesBurst     = 60
 )
 
 // uploadPath matches POST /v1/me/onboarding/{role}/documents and logoPath
@@ -170,7 +177,13 @@ var (
 	agreementDocumentPath = regexp.MustCompile(`^/v1/me/agreements/[^/]+/document$`)
 	// submitPath is POST /v1/signing/{token}/submit (adopted images).
 	submitPath = regexp.MustCompile(`^/v1/signing/[^/]+/submit$`)
+	// contactImportPath is POST /v1/agent/organisations/{id}/contacts/import (a CSV of up to 2 MB).
+	contactImportPath = regexp.MustCompile(`^/v1/agent/organisations/[^/]+/contacts/import$`)
 )
+
+func isContactImport(r *http.Request) bool {
+	return r.Method == http.MethodPost && contactImportPath.MatchString(r.URL.Path)
+}
 
 func isPDFUpload(r *http.Request) bool {
 	return (r.Method == http.MethodPut && agreementDocumentPath.MatchString(r.URL.Path)) || (r.Method == http.MethodPost && r.URL.Path == "/v1/verify")
@@ -185,7 +198,8 @@ func isLogoUpload(r *http.Request) bool {
 }
 
 func isUpload(r *http.Request) bool {
-	return (r.Method == http.MethodPost && uploadPath.MatchString(r.URL.Path)) || isLogoUpload(r) || isPhotoUpload(r) || isPDFUpload(r)
+	return (r.Method == http.MethodPost && uploadPath.MatchString(r.URL.Path)) || isLogoUpload(r) || isPhotoUpload(r) || isPDFUpload(r) ||
+		isContactImport(r)
 }
 
 // Deps is everything the router needs.
@@ -243,6 +257,12 @@ type Deps struct {
 	// Analytics holds the raw analytics events and the daily rollups (API
 	// 0.30.0). The raw retention is Config.AnalyticsRawRetentionDays.
 	Analytics analytics.Store
+
+	// CRM holds the contact books (API 0.31.0); CRMItems reads the property
+	// requests, business enquiries and appointments contacts are linked to
+	// (crm.PostgresItems, or MemoryCRMItems without a database).
+	CRM      crm.Store
+	CRMItems crm.Items
 
 	// Optional overrides used by tests.
 	Now    func() time.Time
@@ -311,6 +331,12 @@ func NewRouter(d Deps) (http.Handler, error) {
 	}
 	analyticsH := analytics.NewHandler(AnalyticsService(d.Analytics, d.Listings, d.Markets, cfg.AnalyticsRawRetentionDays, logger, d.Now), logger)
 	analyticsLimiter := httpx.NewRateLimiter(analyticsEventsPerMinute, analyticsEventsBurst)
+	// The agent CRM: an organisation's (or a direct owner's) contact book.
+	if d.CRM == nil || d.CRMItems == nil {
+		return nil, errNoCRM
+	}
+	crmH := crm.NewHandler(CRMService(d.CRM, d.CRMItems, d.Listings, d.Identity, d.Reference, d.Teams, logger, d.Now), logger)
+	contactLimiter := httpx.NewRateLimiter(contactChangesPerMinute, contactChangesBurst)
 	directorySvc := directory.NewService(d.Directory, vocab, listingsSvc)
 	directorySvc.SetPlaces(geography)
 	// Logos are kept in the object storage and served by the API itself.
@@ -510,6 +536,8 @@ func NewRouter(d Deps) (http.Handler, error) {
 				return agreements.MaxSignatureBodyBytes
 			case r.Method == http.MethodPost && r.URL.Path == "/v1/analytics/events":
 				return analytics.MaxBodyBytes
+			case isContactImport(r):
+				return crm.MaxImportBodyBytes
 			case isUpload(r):
 				return onboarding.MaxUploadBodyBytes
 			}
@@ -959,6 +987,35 @@ func NewRouter(d Deps) (http.Handler, error) {
 			r.With(teamLimiter.Middleware).Post("/join-requests/{requestId}/approve", teamsH.ApproveJoinRequest)
 			r.With(teamLimiter.Middleware).Post("/join-requests/{requestId}/decline", teamsH.DeclineJoinRequest)
 			r.Get("/audit", teamsH.Audit)
+
+			// The organisation's contact book (the agent CRM). {id} is the
+			// organisation, or an approved direct owner's own user ID for their
+			// personal book. The handlers answer 404 CONTACT_NOT_FOUND to
+			// anyone else (auth.MayReadContacts / OwnsContactBook) and 403 to a
+			// member whose role may not change, import or export it.
+			r.Route("/contacts", func(r chi.Router) {
+				r.Get("/", crmH.List)
+				r.With(contactLimiter.Middleware).Post("/", crmH.Create)
+				r.Get("/reminders", crmH.Reminders)
+				r.Get("/tags", crmH.Tags)
+				r.Get("/assignees", crmH.Assignees)
+				r.Get("/export.csv", crmH.Export)
+				r.With(contactLimiter.Middleware).Post("/merge", crmH.Merge)
+				r.With(uploadLimiter.Middleware).Post("/import", crmH.Import)
+				r.With(contactLimiter.Middleware).Post("/from-request/{requestId}", crmH.FromRequest)
+				r.Get("/{contactId}", crmH.Get)
+				r.With(contactLimiter.Middleware).Patch("/{contactId}", crmH.Patch)
+				r.With(contactLimiter.Middleware).Delete("/{contactId}", crmH.Delete)
+				r.Get("/{contactId}/notes", crmH.Notes)
+				r.With(contactLimiter.Middleware).Post("/{contactId}/notes", crmH.AddNote)
+				r.With(contactLimiter.Middleware).Post("/{contactId}/reminders", crmH.AddReminder)
+				r.With(contactLimiter.Middleware).Patch("/{contactId}/reminders/{reminderId}", crmH.PatchReminder)
+				r.With(contactLimiter.Middleware).Post("/{contactId}/stage", crmH.Stage)
+				r.With(contactLimiter.Middleware).Post("/{contactId}/owner", crmH.Owner)
+				r.With(contactLimiter.Middleware).Post("/{contactId}/listings", crmH.LinkListing)
+				r.With(contactLimiter.Middleware).Delete("/{contactId}/listings/{listingId}", crmH.UnlinkListing)
+				r.Get("/{contactId}/timeline", crmH.Timeline)
+			})
 		})
 
 		// An invitation link: what it is for (anyone holding the link), and

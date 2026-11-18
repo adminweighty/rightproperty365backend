@@ -23,6 +23,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/availability"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
+	"rightproperty365.com/backend/internal/modules/crm"
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/health"
 	"rightproperty365.com/backend/internal/modules/identity"
@@ -126,6 +127,9 @@ func run() error {
 		savedStore saved.Store
 		// analyticsStore holds the raw analytics events and the rollups.
 		analyticsStore analytics.Store
+		// crmStore holds the contact books; crmItems reads what contacts link to.
+		crmStore crm.Store
+		crmItems crm.Items
 		// memSubscriptions is set without a database (its expiry sweep runs here).
 		memSubscriptions *subscriptions.MemoryStore
 	)
@@ -217,6 +221,13 @@ func run() error {
 		savedStore = memSaved
 		memAnalytics := analytics.NewMemoryStore()
 		analyticsStore = memAnalytics
+		// Contact books: the sample ones, audited into the team audit trail.
+		memCRM := crm.NewMemoryStore()
+		memCRM.SetAuditSink(memTeams.AuditSink())
+		devseed.SeedMemoryCRM(memCRM, time.Now())
+		crmStore = memCRM
+		crmItems = app.MemoryCRMItems{Requests: memRequests, Enquiries: memEnquiries, Appointments: memAppointments,
+			Identity: memIdentity, Listings: memListings}
 		memAgreements := agreements.NewMemoryStore()
 		agreementStore = memAgreements
 		if err := devseed.SeedMemoryAgreements(ctx, memAgreements, memLeases, files, time.Now()); err != nil {
@@ -279,8 +290,26 @@ func run() error {
 			}()
 		}
 		go app.RunAnalyticsJobs(ctx, memAnalyticsSvc, logger)
+		// New requests, enquiries and appointments are linked to the
+		// contacts that share their email or phone; due reminders are swept.
+		memCRMSvc := app.CRMService(memCRM, crmItems, memListings, memIdentity, referenceStore, memTeams, logger, nil)
+		go app.RunCRMJobs(ctx, memCRMSvc)
+		link := func(ev outbox.Event) {
+			if !slices.Contains(crm.OutboxEventTypes(), ev.Type) {
+				return
+			}
+			go func() {
+				hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+				defer cancel()
+				if err := memCRMSvc.HandleOutbox(hctx, ev); err != nil {
+					logger.Error("in-process contact linking failed (development; not retried)",
+						slog.String("event_type", ev.Type), slog.String("error", err.Error()))
+				}
+			}()
+		}
 		sink := func(ev outbox.Event) {
 			record(ev)
+			link(ev)
 			go func() {
 				hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 				defer cancel()
@@ -357,6 +386,7 @@ func run() error {
 		reportStore = reports.NewPostgresStore(pool)
 		savedStore = saved.NewPostgresStore(pool)
 		analyticsStore = analytics.NewPostgresStore(pool)
+		crmStore, crmItems = crm.NewPostgresStore(pool), crm.NewPostgresItems(pool)
 		adminAuditLog = adminaudit.PostgresLog{Q: pool}
 	}
 
@@ -412,6 +442,8 @@ func run() error {
 		AdminAudit:    adminAuditLog,
 		Saved:         savedStore,
 		Analytics:     analyticsStore,
+		CRM:           crmStore,
+		CRMItems:      crmItems,
 	})
 	if err != nil {
 		return err

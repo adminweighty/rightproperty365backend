@@ -200,6 +200,8 @@ func ReferenceItems() map[string][]reference.Item {
 	}
 	// Short stays, price periods and the United Kingdom, after the baseline.
 	addBackendReference(sets)
+	// The agent CRM's contact types and sources (migration 0030).
+	addCRMReference(sets)
 	return sets
 }
 
