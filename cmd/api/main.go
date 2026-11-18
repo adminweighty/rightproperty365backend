@@ -33,6 +33,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
 	"rightproperty365.com/backend/internal/modules/reports"
+	"rightproperty365.com/backend/internal/modules/saved"
 	"rightproperty365.com/backend/internal/modules/subscriptions"
 	"rightproperty365.com/backend/internal/modules/teams"
 	"rightproperty365.com/backend/internal/platform/adminaudit"
@@ -120,6 +121,8 @@ func run() error {
 		subscriptionStore subscriptions.Store
 		reportStore       reports.Store
 		adminAuditLog     adminaudit.Log
+		// savedStore holds the listings customers saved.
+		savedStore saved.Store
 		// memSubscriptions is set without a database (its expiry sweep runs here).
 		memSubscriptions *subscriptions.MemoryStore
 	)
@@ -205,6 +208,10 @@ func run() error {
 		if err := devseed.SeedMemoryLeases(ctx, memLeases, files, time.Now()); err != nil {
 			return fmt.Errorf("seed sample leases: %w", err)
 		}
+		// Saved listings: the sample tenant has two, one of them expired.
+		memSaved := saved.NewMemoryStore()
+		devseed.SeedMemorySaved(memSaved, time.Now())
+		savedStore = memSaved
 		memAgreements := agreements.NewMemoryStore()
 		agreementStore = memAgreements
 		if err := devseed.SeedMemoryAgreements(ctx, memAgreements, memLeases, files, time.Now()); err != nil {
@@ -221,7 +228,7 @@ func run() error {
 		subscriptionStore = memSubscriptions
 		accountStore = accounts.NewMemoryStore(accounts.MemoryDeps{Identity: memIdentity, Listings: memListings, Teams: memTeams,
 			Directory: memDirectory, Audit: memAudit, CancelSubscriptions: memSubscriptions.CancelForDeletedUser,
-			DeleteSignature: memAgreements.DeleteSavedSignature})
+			DeleteSignature: memAgreements.DeleteSavedSignature, DeleteSavedListings: memSaved.DeleteUser})
 		reportStore = app.MemoryReports(app.MemoryReportStores{Identity: memIdentity, Onboarding: memOnboarding, Listings: memListings,
 			Requests: memRequests, Enquiries: memEnquiries, Leases: memLeases, Agreements: memAgreements, Subscriptions: memSubscriptions,
 			Markets: marketStore})
@@ -320,6 +327,7 @@ func run() error {
 		accountStore = accounts.NewPostgresStore(pool)
 		subscriptionStore = subscriptions.NewPostgresStore(pool)
 		reportStore = reports.NewPostgresStore(pool)
+		savedStore = saved.NewPostgresStore(pool)
 		adminAuditLog = adminaudit.PostgresLog{Q: pool}
 	}
 
@@ -373,6 +381,7 @@ func run() error {
 		Subscriptions: subscriptionStore,
 		Reports:       reportStore,
 		AdminAudit:    adminAuditLog,
+		Saved:         savedStore,
 	})
 	if err != nil {
 		return err

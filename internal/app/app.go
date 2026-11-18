@@ -29,6 +29,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
 	"rightproperty365.com/backend/internal/modules/reports"
+	"rightproperty365.com/backend/internal/modules/saved"
 	"rightproperty365.com/backend/internal/modules/subscriptions"
 	"rightproperty365.com/backend/internal/modules/teams"
 	"rightproperty365.com/backend/internal/modules/trust"
@@ -229,6 +230,9 @@ type Deps struct {
 	Reports       reports.Store
 	AdminAudit    adminaudit.Log
 
+	// Saved holds the listings customers saved (API 0.27.0).
+	Saved saved.Store
+
 	// Optional overrides used by tests.
 	Now    func() time.Time
 	Hasher *identity.Hasher
@@ -282,6 +286,12 @@ func NewRouter(d Deps) (http.Handler, error) {
 	}
 	manageH := listings.NewManageHandler(listings.NewManager(listingsSvc, manageStore, d.Files, logger), logger)
 	listingLimiter := httpx.NewRateLimiter(listingChangesPerMinute, listingChangesBurst)
+	// Saved listings: a customer's hearts. Whether a listing may be saved
+	// (public right now) is the listings service's own rule.
+	if d.Saved == nil {
+		return nil, errors.New("app: no saved-listings store")
+	}
+	savedH := saved.NewHandler(saved.NewService(d.Saved, listingsSvc, d.Now), logger)
 	directorySvc := directory.NewService(d.Directory, vocab, listingsSvc)
 	directorySvc.SetPlaces(geography)
 	// Logos are kept in the object storage and served by the API itself.
@@ -593,6 +603,17 @@ func NewRouter(d Deps) (http.Handler, error) {
 			r.Use(auth.RequireAuth)
 			r.Get("/", requestsH.Mine)
 			r.Get("/{id}", requestsH.MineOne)
+		})
+
+		// Saved listings (FR-016): any customer-scope session (an admin
+		// session gets 403). Saving and removing share the listing-changes
+		// bucket (60 a minute per IP).
+		r.Route("/me/saved-listings", func(r chi.Router) {
+			r.Use(auth.RequireAuth)
+			r.Get("/", savedH.List)
+			r.Get("/ids", savedH.IDs)
+			r.With(listingLimiter.Middleware).Put("/{listingId}", savedH.Save)
+			r.With(listingLimiter.Middleware).Delete("/{listingId}", savedH.Remove)
 		})
 
 		// The lister's side: the listings the caller may manage, creating and

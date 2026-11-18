@@ -35,6 +35,8 @@ type MemoryDeps struct {
 	CancelSubscriptions func(userID uuid.UUID, at time.Time) int
 	// DeleteSignature removes the user's saved signature (nil: nothing to do).
 	DeleteSignature func(userID uuid.UUID)
+	// DeleteSavedListings removes the user's saved listings (nil: nothing to do).
+	DeleteSavedListings func(userID uuid.UUID)
 	// Now is the clock used for listing expiry in the detail (nil: time.Now).
 	Now func() time.Time
 }
@@ -272,6 +274,9 @@ func (s *MemoryStore) Delete(ctx context.Context, d Deletion) (Deleted, error) {
 	}
 	if s.deps.DeleteSignature != nil {
 		s.deps.DeleteSignature(d.UserID)
+	}
+	if s.deps.DeleteSavedListings != nil {
+		s.deps.DeleteSavedListings(d.UserID)
 	}
 	s.deps.Audit.Append(d.Audit)
 	return out, nil

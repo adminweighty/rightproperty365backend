@@ -541,6 +541,16 @@ func (r Record) Public(now time.Time) bool {
 	return r.Status == StatusPublished && r.ExpiresAt.After(now) && r.Advertiser.Verified
 }
 
+// EffectiveStatus is the status as the advertiser sees it: a PUBLISHED
+// listing whose publication period is over is EXPIRED. (ManagedListing
+// embeds Record and uses the same rule.)
+func (r Record) EffectiveStatus(now time.Time) string {
+	if r.Status == StatusPublished && !r.ExpiresAt.After(now) {
+		return StatusExpired
+	}
+	return r.Status
+}
+
 // EverPublished reports whether the listing has been public at some point, so
 // that saying "no longer available" about it reveals nothing new.
 func (r Record) EverPublished() bool {

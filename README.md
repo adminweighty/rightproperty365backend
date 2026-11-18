@@ -277,6 +277,8 @@ All configuration comes from environment variables. For local development you ma
 | GET | `/v1/agent/organisations/{id}/members` | The members of an organisation, read-only (its OWNER and MANAGER) |
 | GET | `/v1/me/dashboard` | One role-aware summary for the signed-in account: kind, counters, next actions, recent items |
 | GET | `/v1/me/property-requests`, `/{id}` | The requests this account sent, in the customer's own terms |
+| GET | `/v1/me/saved-listings`, `/ids` | The listings this account saved, newest first, with a snapshot for those no longer public; the IDs of those still public (see "Saved properties", 0.27.0) |
+| PUT, DELETE | `/v1/me/saved-listings/{listingId}` | Save a public listing (idempotent, `created` flag) / remove a save (always `204`) |
 | GET | `/v1/admin/overview` | Counts an administrator starts from, sections by platform role |
 | GET, POST | `/v1/admin/routing-exceptions`, `/{id}/resolve` | Requests nobody could receive, and marking one as dealt with |
 | POST | `/v1/appointments` | A signed-in customer asks for a viewing or a consultation |
@@ -437,6 +439,51 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 change; follow-up dates and reminders; editing or deleting a note; listing analytics, conversion
 funnels and response-time KPIs (no event data exists); seeker favourites, saved searches and
 alerts.
+
+## Saved properties (API 0.27.0)
+
+Migration `0026`, module `internal/modules/saved` (FR-016 "Saved", the first part of the customer
+activity dashboard; Enquired, Applied, Viewings and Consultations are the existing
+`/v1/me/property-requests` and `/v1/me/appointments`).
+
+| Method | Path | What |
+| --- | --- | --- |
+| PUT | `/v1/me/saved-listings/{listingId}` | Save a listing that is public right now. Idempotent: `200 {saved, saved_at, created}`; `created` is `false` when it was already saved and `saved_at` stays the first save. Anything not public now is `404 LISTING_NOT_FOUND` |
+| DELETE | `/v1/me/saved-listings/{listingId}` | `204`, always: also for an unknown id, a listing that was not saved, or one that is no longer public |
+| GET | `/v1/me/saved-listings?page=&page_size=` | Newest saved first (`page_size` 24 by default, at most 100): `{items, page, page_size, total, total_pages}` |
+| GET | `/v1/me/saved-listings/ids` | `{ids}`: every saved listing that is public right now, newest first, at most 1000 (for the hearts on cards) |
+
+- **Who** – any **customer-scope** session, whatever its roles (agents too). An admin-scope
+  session gets `403 FORBIDDEN`, signed out `401`. One account never sees or removes another's
+  saves (a test checks it). `PUT` and `DELETE` share the listing-changes rate-limit bucket (60
+  a minute per IP).
+- **Public now** is the listings module's own rule (`listings.Record.Public`: PUBLISHED,
+  unexpired, verified advertiser), read through `listings.Service.CardStates`, which also gives
+  the effective status (`Record.EffectiveStatus`) and the presented card (category, city and
+  country labels, photos).
+- **History** – each save keeps a snapshot of the card (`slug, reference, title, category,
+  price, price_period, city, country, photo`), taken at save time and refreshed whenever the list
+  is read while the listing is public. When the listing stops being public the item shows that
+  snapshot with `available: false`, `listing.slug: null` and a reason: `EXPIRED`, `LET`, `SOLD`,
+  or `WITHDRAWN` for everything else (archived, closed, paused, back in review, advertiser no
+  longer verified). Labels: "Listing expired", "Let", "Sold", "No longer listed" (there is no
+  reference set for listing statuses, so they are fixed in `saved/model.go`). The web never links
+  an unavailable item to its listing or into search (FR-016's acceptance test).
+- **Events** – `LISTING_SAVED` / `LISTING_UNSAVED` (aggregate `listing`, payload `{user_id,
+  listing_id, at}`) are written in the same transaction as the change, and only when something
+  changed (saving twice writes one event). Nothing is emailed; the worker acknowledges them until
+  analytics consumes them.
+- **Caching** – the catalogue (`/v1/listings`, `/v1/listings/{slug}`) stays unpersonalised; the
+  saved endpoints answer `Cache-Control: private, no-store`.
+- **Account deletion** – deleting an account (by an administrator or `DELETE /v1/me`) deletes its
+  saves in the deletion transaction: the `users` row is anonymised, not deleted, so the `ON DELETE
+  CASCADE` of `saved_listings.user_id` only covers a hard delete. No events are written for it.
+- **Sample data** – the sample tenant (`tenant@example.test`) has two saves: a public sample
+  listing (saved two days ago) and the EXPIRED listing `…000000000099` (saved while it was public),
+  so the "Saved" tab shows one unavailable item.
+
+**Not verified:** migration `0026` and `internal/modules/saved/postgres.go` have only run where
+`RP365_TEST_DATABASE_URL` points at a database (`TestPostgresStore` skips otherwise).
 
 ## Administrators' area: accounts, subscriptions, reference data, reports (API 0.25.0)
 
@@ -2628,6 +2675,7 @@ internal/modules/teams             /v1/agent/organisations/{id}/members, /invita
 internal/modules/accounts          /v1/admin/users (suspend, reactivate, delete), /v1/admin/audit, DELETE /v1/me (postgres + memory)
 internal/modules/subscriptions     /v1/me/subscription-plans, /v1/me/subscriptions, /v1/admin/subscription-plans, /v1/admin/subscriptions; the expiry sweep (postgres + memory)
 internal/modules/reports           /v1/admin/reports/summary and the CSV exports (postgres + memory)
+internal/modules/saved             /v1/me/saved-listings[/ids|/{listingId}]: a customer's saved listings and their snapshots (postgres + memory)
 internal/platform/adminaudit       the administrators' audit trail (admin_audit_events)
 internal/platform/orgaudit         an organisation's team audit trail (organisation_audit_events)
 internal/platform/imaging          image helpers for the re-encoded uploads (profile logos, listing photos)
@@ -2723,6 +2771,12 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0026_saved_listings` (API 0.27.0): `saved_listings (user_id, listing_id, saved_at, snapshot
+  jsonb, snapshot_at)`, primary key `(user_id, listing_id)`, index `saved_listings_user_saved_idx`
+  on `(user_id, saved_at DESC)`. `user_id` references `users` `ON DELETE CASCADE` (account
+  deletion, which anonymises the row, deletes the saves itself); `listing_id` references
+  `listings` without a cascade (kept as history; only never-published listings can be deleted).
+  A new table only. The down migration drops it and loses every save.
 - `0025_templates_and_stamps` (API 0.26.0): lease templates owned by organisations
   (`lease_templates.organisation_id`, `NULL` for a sample; index
   `lease_templates_organisation_idx`), `lease_templates_review_check` relaxed so approval no longer
@@ -2897,7 +2951,7 @@ The worker handles `PROPERTY_REQUEST_CREATED`, `BUSINESS_ENQUIRY_CREATED`, `USER
 `PASSWORD_CHANGED` and `ADMIN_SIGNED_IN` by sending the notification emails described under
 "Email"; each email is keyed on the event ID and recipient, so a redelivered event sends nothing
 twice. `PROPERTY_REQUEST_STAGE_CHANGED` and `PROPERTY_REQUEST_EXCEPTION_RESOLVED` (identifiers
-and stages only) are acknowledged without sending anything: no email exists for them yet. A handler can mark a failure permanent, which dead-letters the event at once. **The worker
+and stages only), `LISTING_SAVED` and `LISTING_UNSAVED` (identifiers only) are acknowledged without sending anything: no email exists for them yet. A handler can mark a failure permanent, which dead-letters the event at once. **The worker
 sends real email when `RESEND_API_KEY` is set.** Without `DATABASE_URL` in development the worker
 logs that it is idle and waits for shutdown (the API then handles the events in-process).
 

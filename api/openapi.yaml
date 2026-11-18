@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.26.1
+  version: 0.27.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,27 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Saved properties (new in 0.27.0)
+    - **Customers save listings** (FR-016 "Saved", part of the customer activity dashboard):
+      `PUT /v1/me/saved-listings/{listingId}` (idempotent; `created` says whether it was new and
+      `saved_at` stays the first save), `DELETE /v1/me/saved-listings/{listingId}` (always `204`,
+      also for a listing that is no longer public), `GET /v1/me/saved-listings` (newest first,
+      paged) and `GET /v1/me/saved-listings/ids` (the saved listings that are public right now,
+      for the hearts on cards; at most 1000). Any **customer-scope** session, whatever its roles
+      (agents too); an admin-scope session gets `403`, signed out `401`. Only a listing that is
+      public right now can be saved (`404 LISTING_NOT_FOUND` otherwise).
+    - **History is kept when a listing goes.** A saved listing that expires, is let, sold or
+      withdrawn stays in the list with `available: false`, `unavailable_reason` (`EXPIRED`,
+      `LET`, `SOLD`, `WITHDRAWN`) and `unavailable_label`, shown from a snapshot of its card
+      taken at save time or when it was last seen public, with `listing.slug: null`: it is never
+      linked back to the listing or into search.
+    - **The public catalogue stays unpersonalised.** `GET /v1/listings`, `GET /v1/listings/{slug}`
+      and the other cached responses say nothing about saves; a client reads `/ids` itself.
+    - Outbox events `LISTING_SAVED` and `LISTING_UNSAVED` (aggregate `listing`, payload
+      `{user_id, listing_id, at}`) are written only when a save is added or removed. No email is
+      sent. Deleting an account removes its saved listings (no events).
+    - Migration 0026 (additive: table `saved_listings`).
 
     Lease templates and stamps (new in 0.26.0)
     - **Lease templates are owned by organisations.** Agencies and landlords design their own:
@@ -5835,6 +5856,160 @@ paths:
         "504":
           $ref: "#/components/responses/Timeout"
 
+  /v1/me/saved-listings:
+    get:
+      tags: [account]
+      operationId: listMySavedListings
+      summary: The listings this account saved (new in 0.27.0)
+      description: |
+        Newest saved first. Any **customer-scope** session (`403 FORBIDDEN` for an admin-scope
+        session, `401` signed out). Every save is listed, whether or not its listing is still
+        public:
+
+        - `available: true`: the listing is public right now; `listing` is its current card and
+          `listing.slug` is set. Reading the list refreshes the stored snapshot.
+        - `available: false`: `listing` is the snapshot taken at save time or when the listing
+          was last seen public, `listing.slug` is **null**, and `unavailable_reason` /
+          `unavailable_label` say why (`EXPIRED`, `LET`, `SOLD`; everything else - archived,
+          closed, paused, back in review, or an advertiser no longer verified - is `WITHDRAWN`).
+          Never link such an item to the listing or into search.
+
+        `Cache-Control: private, no-store`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100000, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 24 }
+      responses:
+        "200":
+          description: One page (possibly empty).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SavedListingPage"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/me/saved-listings/ids:
+    get:
+      tags: [account]
+      operationId: listMySavedListingIds
+      summary: The IDs of this account's saved listings that are public now (new in 0.27.0)
+      description: |
+        Every saved listing that is **public right now**, newest saved first, at most 1000. For
+        the "Saved" state of the hearts on listing cards and the listing page: read it in the
+        browser once per page view (the catalogue responses are cached and never personalised).
+        Same access as `GET /v1/me/saved-listings`. `Cache-Control: private, no-store`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The IDs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SavedListingIds"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/me/saved-listings/{listingId}:
+    parameters:
+      - name: listingId
+        in: path
+        required: true
+        description: The listing's `id` (as in `Listing.id`).
+        schema: { type: string, format: uuid }
+    put:
+      tags: [account]
+      operationId: saveListing
+      summary: Save a listing (new in 0.27.0)
+      description: |
+        Idempotent. Only a listing that is **publicly visible right now** can be saved; any
+        other (unknown, not published, expired, from an advertiser who is not verified, or an id
+        that is not a UUID) is `404 LISTING_NOT_FOUND`. Saving a listing that is already saved
+        changes nothing: `created` is `false` and `saved_at` is still the first save. No request
+        body. Writes `LISTING_SAVED` to the outbox when the save is new. Any customer-scope
+        session (`403` for an admin-scope session). Per-IP rate limit shared with listing changes
+        (bursts of 60, 60 a minute).
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: Saved (now or before).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SaveListingResult"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: "`FORBIDDEN` (an admin-scope session) or `CSRF_ORIGIN` (cookie without an allowed Origin)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404":
+          description: "`LISTING_NOT_FOUND`: no such listing, or it is not public right now."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+    delete:
+      tags: [account]
+      operationId: unsaveListing
+      summary: Remove a saved listing (new in 0.27.0)
+      description: |
+        Idempotent: `204` whether or not the listing was saved (an unknown id too), and whatever
+        the listing's status now. Writes `LISTING_UNSAVED` to the outbox only when a save was
+        removed. Same access and rate limit as `PUT`.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "204":
+          description: Not saved (any more).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: "`FORBIDDEN` (an admin-scope session) or `CSRF_ORIGIN` (cookie without an allowed Origin)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
   /v1/admin/listings:
     get:
       tags: [admin, listings]
@@ -10487,6 +10662,83 @@ components:
         trace_id:
           type: string
           description: Same value as the `X-Request-Id` response header.
+
+    SaveListingResult:
+      type: object
+      description: New in 0.27.0. The answer of `PUT /v1/me/saved-listings/{listingId}`.
+      required: [saved, saved_at, created]
+      additionalProperties: false
+      properties:
+        saved: { type: boolean, const: true }
+        saved_at: { type: string, format: date-time, description: The first time this account saved the listing (UTC). }
+        created: { type: boolean, description: "`true` when this request saved it; `false` when it was already saved." }
+
+    SavedListingIds:
+      type: object
+      description: New in 0.27.0.
+      required: [ids]
+      additionalProperties: false
+      properties:
+        ids:
+          type: array
+          maxItems: 1000
+          description: The saved listings that are public right now, newest saved first.
+          items: { type: string, format: uuid }
+
+    SavedListingPage:
+      type: object
+      description: New in 0.27.0. One page of saved listings, newest saved first.
+      required: [items, page, page_size, total, total_pages]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/SavedListing" }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1, maximum: 100 }
+        total: { type: integer, minimum: 0 }
+        total_pages: { type: integer, minimum: 0 }
+
+    SavedListing:
+      type: object
+      description: |
+        New in 0.27.0. One saved listing. When `available` is `false`, `listing` is the snapshot
+        taken at save time or when the listing was last seen public, and `listing.slug` is null.
+      required: [listing_id, saved_at, available, unavailable_reason, unavailable_label, listing]
+      additionalProperties: false
+      properties:
+        listing_id: { type: string, format: uuid }
+        saved_at: { type: string, format: date-time, examples: ["2026-11-18T10:00:00Z"] }
+        available: { type: boolean, description: Whether the listing is public right now. }
+        unavailable_reason:
+          type: [string, "null"]
+          enum: [EXPIRED, LET, SOLD, WITHDRAWN, null]
+          description: Null when available. Everything not public other than expired, let or sold is `WITHDRAWN`.
+        unavailable_label:
+          type: [string, "null"]
+          enum: [Listing expired, Let, Sold, No longer listed, null]
+          description: How to show the reason; null when available.
+        listing: { $ref: "#/components/schemas/SavedListingCard" }
+
+    SavedListingCard:
+      type: object
+      description: New in 0.27.0. The card of a saved listing (current when available, else the snapshot).
+      required: [slug, reference, title, category, price, price_period, city, country, photo]
+      additionalProperties: false
+      properties:
+        slug: { type: [string, "null"], description: "Set only when the listing is available; null otherwise." }
+        reference: { type: string, examples: [RP-ZW-10001] }
+        title: { type: string }
+        category: { $ref: "#/components/schemas/Coded" }
+        price: { $ref: "#/components/schemas/Money" }
+        price_period: { type: [string, "null"], enum: [month, night, null] }
+        city: { $ref: "#/components/schemas/Place" }
+        country: { $ref: "#/components/schemas/Country" }
+        photo:
+          description: The first photo, or null.
+          oneOf:
+            - $ref: "#/components/schemas/Photo"
+            - type: "null"
 
     Coded:
       type: object

@@ -421,6 +421,11 @@ func (s *PostgresStore) Delete(ctx context.Context, d Deletion) (Deleted, error)
 		if _, err := tx.Exec(ctx, `DELETE FROM user_signatures WHERE user_id = $1`, d.UserID); err != nil {
 			return fmt.Errorf("delete saved signature: %w", err)
 		}
+		// The users row is anonymised, not deleted, so its ON DELETE CASCADE
+		// does not fire: the saved listings (migration 0026) go here.
+		if _, err := tx.Exec(ctx, `DELETE FROM saved_listings WHERE user_id = $1`, d.UserID); err != nil {
+			return fmt.Errorf("delete saved listings: %w", err)
+		}
 		return adminaudit.Insert(ctx, tx, d.Audit)
 	})
 	return out, err

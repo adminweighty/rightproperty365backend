@@ -24,6 +24,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/onboarding"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
+	"rightproperty365.com/backend/internal/modules/saved"
 	"rightproperty365.com/backend/internal/modules/subscriptions"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/database"
@@ -124,6 +125,13 @@ func run() error {
 	// Nothing sends an email for them yet, so they are acknowledged: without a
 	// handler the dispatcher would retry and then dead-letter them.
 	for _, t := range propertyrequests.WorkEventTypes() {
+		dispatcher.Register(t, outbox.HandlerFunc(func(context.Context, outbox.Event) error { return nil }))
+	}
+
+	// Saves and removals of saved listings are recorded for analytics
+	// (counted server-side later); nothing is sent for them, so they are
+	// acknowledged.
+	for _, t := range saved.EventTypes() {
 		dispatcher.Register(t, outbox.HandlerFunc(func(context.Context, outbox.Event) error { return nil }))
 	}
 

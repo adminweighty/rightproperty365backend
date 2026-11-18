@@ -262,15 +262,6 @@ type ManagedListing struct {
 	AllPhotos []StoredPhoto
 }
 
-// EffectiveStatus is the status as the advertiser sees it: a PUBLISHED
-// listing whose publication period is over is EXPIRED.
-func (m ManagedListing) EffectiveStatus(now time.Time) string {
-	if m.Status == StatusPublished && !m.ExpiresAt.After(now) {
-		return StatusExpired
-	}
-	return m.Status
-}
-
 // WorkingContent is what the editor shows: the revision's content for a
 // published listing that has one, else the listing's own.
 func (m ManagedListing) WorkingContent() Content {
