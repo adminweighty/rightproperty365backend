@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.33.0
+  version: 0.34.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,31 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Agent ledger / books (new in 0.34.0)
+    - **What it is** (BR-012, FR-026 to FR-029, FSD section 6): an organisation's (or an approved
+      direct owner's) own cashbook under `/v1/agent/organisations/{id}/ledger`, private to it and
+      separate from the platform's subscription invoices. A **cashbook, not double-entry**.
+    - **Money is exact**: `amount` is a decimal **string**, positive, with at most the currency's
+      ISO 4217 minor-unit decimals (USD 2, JPY 0, KWD 3); a JSON number is `400 INVALID_JSON`.
+      Answers carry exactly that many decimals. One book holds many currencies; **every total is
+      per currency** (each total object carries `currency`), nothing ever adds two currencies and
+      no consolidated conversion exists.
+    - **Posted means immutable**: there is no PATCH and no DELETE on entries. `POST .../reverse`
+      posts a `REVERSAL` (the original keeps `reversed_by`); `POST .../correct` reverses and posts
+      the corrected entry (`correction_of`) in one transaction. The database refuses UPDATE of what
+      was posted and every DELETE. A TRANSFER is an OUT / IN pair; an OPENING_BALANCE is allowed once
+      per currency, method and branch (`409 LEDGER_OPENING_BALANCE_EXISTS`).
+    - **No false verification** (FR-028): manual entries are `USER_RECORDED_UNVERIFIED` ("Recorded by
+      you, not verified"); `RECONCILED` ("Marked reconciled by your team") is the organisation's own
+      mark against its own statement. `GATEWAY_CONFIRMED` is reserved: there is no gateway and a body
+      that sends `status` or `gateway_reference` is refused.
+    - **Reports**: cashbook (opening + in - out = closing, by method or branch), categories, a
+      contact's statement, receivables / payables ageing (0-30, 31-60, 61-90, 90+) and CSV exports
+      (OWNER and MANAGER only, audited). OWNER and MANAGER do everything; an AGENT records entries
+      and corrects their own unreconciled ones; STAFF read; anybody else `404 BOOK_NOT_FOUND` on every
+      route. Every post, reversal, correction, reconciliation, attachment, attachment download and
+      export is in the organisation audit trail.
 
     Showroom and venue hourly rental (new in 0.33.0)
     - **Eligibility** (BR-007): the `property_types` reference rows gain `hourly_bookable`
@@ -642,6 +667,10 @@ tags:
     description: |
       The agent CRM (new in 0.31.0): an organisation's (or a direct owner's) private contact
       book. 404 `CONTACT_NOT_FOUND` for anyone else.
+  - name: ledger
+    description: |
+      The agent ledger / books (new in 0.34.0): an organisation's (or a direct owner's) own cashbook, per
+      currency, with immutable posted entries. 404 `BOOK_NOT_FOUND` for anyone else.
   - name: venues
     description: |
       Showroom and venue hourly rental (new in 0.33.0): hourly settings, public availability
@@ -12132,8 +12161,458 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
 
+  /v1/agent/organisations/{id}/ledger/options:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+    get:
+      tags: [ledger]
+      operationId: ledgerOptions
+      summary: Types, methods, statuses, currencies, categories and branches of a book (new in 0.34.0)
+      description: Everything the entry form's selects need, and the caller's rights. Any reader.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { description: The options., content: { application/json: { schema: { $ref: "#/components/schemas/LedgerOptions" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/LedgerNotFound" }
+  /v1/agent/organisations/{id}/ledger/entries:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+    get:
+      tags: [ledger]
+      operationId: ledgerEntriesList
+      summary: The book's entries (new in 0.34.0)
+      description: |
+        Newest first by effective date then `recorded_at` (`order=asc` for oldest first). Reversed entries
+        and their reversals are included unless `include_reversed=false`. Any reader.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      parameters:
+        - { name: currency, in: query, schema: { type: string, pattern: "^[A-Z]{3}$" } }
+        - { name: type, in: query, schema: { $ref: "#/components/schemas/LedgerEntryType" } }
+        - { name: category, in: query, schema: { type: string } }
+        - { name: method, in: query, schema: { $ref: "#/components/schemas/LedgerMethod" } }
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/LedgerStatus" } }
+        - { name: from, in: query, schema: { type: string, format: date }, description: Effective date, inclusive. }
+        - { name: to, in: query, schema: { type: string, format: date }, description: Effective date, inclusive. }
+        - { name: branch, in: query, schema: { type: string }, description: Exact branch label (case-insensitive); empty for entries without one. }
+        - { name: contact_id, in: query, schema: { type: string, format: uuid } }
+        - { name: listing_id, in: query, schema: { type: string, format: uuid } }
+        - { name: lease_id, in: query, schema: { type: string, format: uuid } }
+        - { name: q, in: query, schema: { type: string }, description: Description or reference contains (case-insensitive). }
+        - { name: include_reversed, in: query, schema: { type: boolean, default: true } }
+        - { name: order, in: query, schema: { type: string, enum: [desc, asc], default: desc } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
+      responses:
+        "200": { description: One page., content: { application/json: { schema: { $ref: "#/components/schemas/LedgerEntryPage" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/LedgerNotFound" }
+    post:
+      tags: [ledger]
+      operationId: ledgerEntriesCreate
+      summary: Record and post an entry (new in 0.34.0)
+      description: |
+        OWNER, MANAGER and AGENT (STAFF `403`). Posted at once with status `USER_RECORDED_UNVERIFIED`. A TRANSFER
+        posts an OUT / IN pair (`created` has both legs). Links (contact, listing, lease) must belong to the same
+        book, otherwise `400`. Audited (`LEDGER_ENTRY_CREATED`).
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/LedgerEntryInput" } } }
+      responses:
+        "201": { description: Posted., content: { application/json: { schema: { $ref: "#/components/schemas/LedgerPosted" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/LedgerNotFound" }
+        "409": { $ref: "#/components/responses/LedgerConflict" }
+  /v1/agent/organisations/{id}/ledger/entries/{entryId}:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - $ref: "#/components/parameters/LedgerEntryID"
+    get:
+      tags: [ledger]
+      operationId: ledgerEntriesGet
+      summary: One entry with its notes, attachments and linked entries (new in 0.34.0)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { description: The entry., content: { application/json: { schema: { $ref: "#/components/schemas/LedgerEntryDetail" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/LedgerNotFound" }
+  /v1/agent/organisations/{id}/ledger/entries/{entryId}/reverse:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - $ref: "#/components/parameters/LedgerEntryID"
+    post:
+      tags: [ledger]
+      operationId: ledgerEntriesReverse
+      summary: Reverse a posted entry (new in 0.34.0)
+      description: |
+        Posts a REVERSAL (same amount, the other direction, `reversal_of` the original) dated the original's effective
+        date unless `effective_date` is given (not earlier). Both legs of a transfer are reversed together. OWNER and
+        MANAGER any entry; an AGENT their own unreconciled ones. Audited (`LEDGER_ENTRY_REVERSED`).
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 500 }
+                effective_date: { type: string, format: date }
+      responses:
+        "201": { description: Reversed., content: { application/json: { schema: { $ref: "#/components/schemas/LedgerPosted" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/LedgerNotFound" }
+        "409": { $ref: "#/components/responses/LedgerConflict" }
+  /v1/agent/organisations/{id}/ledger/entries/{entryId}/correct:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - $ref: "#/components/parameters/LedgerEntryID"
+    post:
+      tags: [ledger]
+      operationId: ledgerEntriesCorrect
+      summary: Correct a posted entry (reversal plus new entry, one transaction; new in 0.34.0)
+      description: |
+        FR-027: the predecessor stays (with `reversed_by` and `corrected_by`), the reversal and the corrected entry
+        (`correction_of`) are posted together. Same rights as reverse. Audited (`LEDGER_ENTRY_CORRECTED` and
+        `LEDGER_ENTRY_CREATED`).
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/LedgerEntryInput"
+                - type: object
+                  required: [reason]
+                  properties:
+                    reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        "201": { description: Corrected., content: { application/json: { schema: { $ref: "#/components/schemas/LedgerPosted" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/LedgerNotFound" }
+        "409": { $ref: "#/components/responses/LedgerConflict" }
+  /v1/agent/organisations/{id}/ledger/entries/{entryId}/reconcile:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - $ref: "#/components/parameters/LedgerEntryID"
+    post:
+      tags: [ledger]
+      operationId: ledgerEntriesReconcile
+      summary: Mark an entry reconciled against the organisation's own statement, or take the mark back (new in 0.34.0)
+      description: OWNER and MANAGER. Never a bank verification. Audited (`LEDGER_ENTRY_RECONCILED` / `LEDGER_ENTRY_UNRECONCILED`).
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reconciled]
+              properties:
+                reconciled: { type: boolean }
+                note: { type: [string, "null"], maxLength: 500 }
+      responses:
+        "200":
+          description: The entry.
+          content:
+            application/json:
+              schema: { type: object, required: [entry], properties: { entry: { $ref: "#/components/schemas/LedgerEntry" } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/LedgerNotFound" }
+  /v1/agent/organisations/{id}/ledger/entries/{entryId}/notes:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - $ref: "#/components/parameters/LedgerEntryID"
+    post:
+      tags: [ledger]
+      operationId: ledgerEntriesAddNote
+      summary: Add a note (append-only; new in 0.34.0)
+      description: OWNER and MANAGER on any entry, an AGENT on their own.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false, required: [text], properties: { text: { type: string, minLength: 1, maxLength: 5000 } } }
+      responses:
+        "201":
+          description: Added.
+          content:
+            application/json:
+              schema: { type: object, required: [note], properties: { note: { $ref: "#/components/schemas/LedgerNote" } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/LedgerNotFound" }
+  /v1/agent/organisations/{id}/ledger/entries/{entryId}/attachments:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - $ref: "#/components/parameters/LedgerEntryID"
+    post:
+      tags: [ledger]
+      operationId: ledgerEntriesAttach
+      summary: Attach evidence (pdf, jpg, png or webp; 10 MB; new in 0.34.0)
+      description: |
+        Multipart with one part `file`. The type is sniffed from the content (as onboarding documents); the file is
+        kept in the private object storage. OWNER and MANAGER on any entry, an AGENT on their own. Audited
+        (`LEDGER_ATTACHMENT_ADDED`).
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: { type: object, required: [file], properties: { file: { type: string, format: binary } } }
+      responses:
+        "201":
+          description: Attached.
+          content:
+            application/json:
+              schema: { type: object, required: [attachment], properties: { attachment: { $ref: "#/components/schemas/LedgerAttachment" } } }
+        "400": { description: "`VALIDATION_FAILED` or `UNSUPPORTED_FILE_TYPE`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/LedgerNotFound" }
+        "413": { description: "`FILE_TOO_LARGE`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+  /v1/agent/organisations/{id}/ledger/entries/{entryId}/attachments/{attachmentId}:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - $ref: "#/components/parameters/LedgerEntryID"
+      - { name: attachmentId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [ledger]
+      operationId: ledgerEntriesAttachment
+      summary: Download an attachment (audited; new in 0.34.0)
+      description: "Any reader. `Content-Disposition: attachment`, sandboxed. Audited (`LEDGER_ATTACHMENT_VIEWED`)."
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The file.
+          content:
+            application/pdf: { schema: { type: string, format: binary } }
+            image/jpeg: { schema: { type: string, format: binary } }
+            image/png: { schema: { type: string, format: binary } }
+            image/webp: { schema: { type: string, format: binary } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/LedgerNotFound" }
+  /v1/agent/organisations/{id}/ledger/reports/cashbook:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - $ref: "#/components/parameters/LedgerFrom"
+      - $ref: "#/components/parameters/LedgerTo"
+      - $ref: "#/components/parameters/LedgerCurrency"
+      - $ref: "#/components/parameters/LedgerBranch"
+      - { name: by, in: query, schema: { type: string, enum: [method, branch] } }
+    get:
+      tags: [ledger]
+      operationId: ledgerCashbook
+      summary: The cashbook, per currency (new in 0.34.0)
+      description: Opening balance, the period's entries with a running balance, and the closing balance, per currency. Never combined.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { description: The cashbook., content: { application/json: { schema: { $ref: "#/components/schemas/LedgerCashbook" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/LedgerNotFound" }
+  /v1/agent/organisations/{id}/ledger/reports/categories:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - $ref: "#/components/parameters/LedgerFrom"
+      - $ref: "#/components/parameters/LedgerTo"
+      - $ref: "#/components/parameters/LedgerCurrency"
+      - $ref: "#/components/parameters/LedgerBranch"
+    get:
+      tags: [ledger]
+      operationId: ledgerCategoriesReport
+      summary: Totals per category, IN and OUT, per currency (new in 0.34.0)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { description: The report., content: { application/json: { schema: { $ref: "#/components/schemas/LedgerCategoriesReport" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/LedgerNotFound" }
+  /v1/agent/organisations/{id}/ledger/reports/statement:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - { name: contact_id, in: query, required: true, schema: { type: string, format: uuid } }
+      - $ref: "#/components/parameters/LedgerFrom"
+      - $ref: "#/components/parameters/LedgerTo"
+      - $ref: "#/components/parameters/LedgerCurrency"
+      - $ref: "#/components/parameters/LedgerBranch"
+    get:
+      tags: [ledger]
+      operationId: ledgerStatement
+      summary: A contact's statement, per currency (new in 0.34.0)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { description: The statement., content: { application/json: { schema: { $ref: "#/components/schemas/LedgerStatement" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/LedgerNotFound" }
+  /v1/agent/organisations/{id}/ledger/reports/receivables:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - { name: as_of, in: query, schema: { type: string, format: date }, description: Defaults to today (UTC). }
+      - { name: side, in: query, schema: { type: string, enum: [RECEIVABLE, PAYABLE], default: RECEIVABLE } }
+      - { name: contact_id, in: query, schema: { type: string, format: uuid } }
+      - $ref: "#/components/parameters/LedgerCurrency"
+      - $ref: "#/components/parameters/LedgerBranch"
+    get:
+      tags: [ledger]
+      operationId: ledgerReceivables
+      summary: Open receivables (or payables) and arrears ageing, per currency (new in 0.34.0)
+      description: Buckets 0-30, 31-60, 61-90 and 90+ days after the due (effective) date. Until tenancies exist only RECEIVABLE / PAYABLE entries count.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { description: The ageing., content: { application/json: { schema: { $ref: "#/components/schemas/LedgerReceivables" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/LedgerNotFound" }
+  /v1/agent/organisations/{id}/ledger/reports/export.csv:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - { name: report, in: query, required: true, schema: { type: string, enum: [cashbook, entries, categories, statement] } }
+    get:
+      tags: [ledger]
+      operationId: ledgerExport
+      summary: Export a report as CSV (OWNER and MANAGER, audited; new in 0.34.0)
+      description: |
+        Takes the query of that report (`entries`: the filters of `GET .../entries` without paging, at most 50 000 rows).
+        Every row has a `currency` column; nothing is summed across currencies. Text cells starting with `= + - @`
+        are prefixed with `'`. Audited (`LEDGER_EXPORTED`). AGENT and STAFF `403`.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: 'The CSV, with `Content-Disposition: attachment; filename="ledger-<report>-<from>-<to>.csv"`.'
+          content: { text/csv: { schema: { type: string } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/LedgerNotFound" }
+  /v1/agent/organisations/{id}/ledger/categories:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+    get:
+      tags: [ledger]
+      operationId: ledgerCategoriesList
+      summary: The book's categories (defaults created on first use; new in 0.34.0)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      parameters:
+        - { name: active, in: query, schema: { type: boolean } }
+      responses:
+        "200":
+          description: The categories.
+          content:
+            application/json:
+              schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: "#/components/schemas/LedgerCategory" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/LedgerNotFound" }
+    post:
+      tags: [ledger]
+      operationId: ledgerCategoriesCreate
+      summary: Add a category (OWNER and MANAGER; new in 0.34.0)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [label, kind]
+              properties:
+                code: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,39}$", description: Made from the label when omitted. }
+                label: { type: string, minLength: 1, maxLength: 80 }
+                kind: { type: string, enum: [IN, OUT, ANY] }
+                active: { type: boolean, default: true }
+      responses:
+        "201":
+          description: Added.
+          content:
+            application/json:
+              schema: { type: object, required: [category], properties: { category: { $ref: "#/components/schemas/LedgerCategory" } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/LedgerNotFound" }
+        "409": { $ref: "#/components/responses/LedgerConflict" }
+  /v1/agent/organisations/{id}/ledger/categories/{code}:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - { name: code, in: path, required: true, schema: { type: string } }
+    patch:
+      tags: [ledger]
+      operationId: ledgerCategoriesUpdate
+      summary: Rename, deactivate or re-kind a category (OWNER and MANAGER; never deleted; new in 0.34.0)
+      description: "`kind` may change only while no entry uses the category."
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                label: { type: string, minLength: 1, maxLength: 80 }
+                kind: { type: string, enum: [IN, OUT, ANY] }
+                active: { type: boolean }
+      responses:
+        "200":
+          description: The category.
+          content:
+            application/json:
+              schema: { type: object, required: [category], properties: { category: { $ref: "#/components/schemas/LedgerCategory" } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/LedgerNotFound" }
 components:
   parameters:
+    LedgerBookID:
+      name: id
+      in: path
+      required: true
+      description: The organisation, or an approved direct owner's own user ID (their personal book).
+      schema: { type: string, format: uuid }
+    LedgerEntryID:
+      name: entryId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    LedgerFrom:
+      name: from
+      in: query
+      description: Effective date, inclusive. Defaults to the first day of the month of `to`.
+      schema: { type: string, format: date }
+    LedgerTo:
+      name: to
+      in: query
+      description: Effective date, inclusive. Defaults to today (UTC).
+      schema: { type: string, format: date }
+    LedgerCurrency:
+      name: currency
+      in: query
+      description: Only this ISO 4217 currency.
+      schema: { type: string, pattern: "^[A-Z]{3}$" }
+    LedgerBranch:
+      name: branch
+      in: query
+      description: Only this branch label (case-insensitive); empty for entries without a branch.
+      schema: { type: string }
     UserId:
       name: id
       in: path
@@ -12405,6 +12884,21 @@ components:
         type: string
 
   responses:
+    LedgerNotFound:
+      description: |
+        `BOOK_NOT_FOUND` (not the caller's book: another organisation, a consumer, an administrator; answered before
+        any validation), `LEDGER_ENTRY_NOT_FOUND`, `LEDGER_ATTACHMENT_NOT_FOUND` or `LEDGER_CATEGORY_NOT_FOUND`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    LedgerConflict:
+      description: |
+        `LEDGER_ENTRY_ALREADY_REVERSED` (`details.reversed_by`), `LEDGER_ENTRY_NOT_REVERSIBLE` (a REVERSAL),
+        `LEDGER_OPENING_BALANCE_EXISTS` (`details`: `existing_entry_id`, `currency`, `method`, `branch`) or
+        `LEDGER_CATEGORY_EXISTS`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/LedgerErrorEnvelope" }
     UserNotFound:
       description: "`USER_NOT_FOUND`."
       content:
@@ -19345,4 +19839,344 @@ components:
               type: object
               description: "SLOT_UNAVAILABLE / SLOT_TAKEN: {reason}; QUOTE_EXPIRED: {expired_at}; INVALID_BOOKING_TRANSITION: {from, action, allowed}."
               additionalProperties: true
+        trace_id: { type: string }
+    LedgerAmount:
+      type: string
+      pattern: "^-?[0-9]+(\\.[0-9]+)?$"
+      description: An exact decimal with exactly the currency's ISO 4217 minor-unit decimals ("700.00" USD, "5000" JPY, "1.250" KWD). Never a number.
+    LedgerEntryType:
+      type: string
+      enum: [INCOME, EXPENSE, RENT_RECEIVED, COMMISSION, DEPOSIT_HELD, DEPOSIT_RETURNED, TRANSFER, OPENING_BALANCE, RECEIVABLE, PAYABLE, REVERSAL]
+      description: "`REVERSAL` is posted by the API only."
+    LedgerMethod:
+      type: string
+      enum: [CASH, BANK, MOBILE_MONEY, OTHER]
+    LedgerStatus:
+      type: string
+      enum: [USER_RECORDED_UNVERIFIED, RECONCILED, GATEWAY_CONFIRMED]
+      description: "`GATEWAY_CONFIRMED` is reserved and never set (there is no gateway)."
+    LedgerPersonRef:
+      type: object
+      required: [user_id, name]
+      properties:
+        user_id: { type: [string, "null"], format: uuid }
+        name: { type: string }
+    LedgerEntry:
+      type: object
+      required: [id, type, type_label, direction, category, category_label, method, method_label, amount, signed_amount, currency,
+        minor_unit, effective_date, recorded_at, author, status, status_label, reconciliation, description, reference, branch, contact,
+        listing, lease, tenancy_id, reversal_of, reversed_by, correction_of, corrected_by, transfer_pair, settles, reason, is_reversed,
+        cash, note_count, attachment_count, can]
+      properties:
+        id: { type: string, format: uuid }
+        type: { $ref: "#/components/schemas/LedgerEntryType" }
+        type_label: { type: string }
+        direction: { type: string, enum: [IN, OUT] }
+        category: { type: [string, "null"] }
+        category_label: { type: [string, "null"] }
+        method: { type: [string, "null"], enum: [CASH, BANK, MOBILE_MONEY, OTHER, null] }
+        method_label: { type: [string, "null"] }
+        amount: { $ref: "#/components/schemas/LedgerAmount" }
+        signed_amount: { $ref: "#/components/schemas/LedgerAmount" }
+        currency: { type: string, pattern: "^[A-Z]{3}$" }
+        minor_unit: { type: integer }
+        effective_date: { type: string, format: date }
+        recorded_at: { type: string, format: date-time }
+        author: { $ref: "#/components/schemas/LedgerPersonRef" }
+        status: { $ref: "#/components/schemas/LedgerStatus" }
+        status_label: { type: string, description: '"Recorded by you, not verified" or "Marked reconciled by your team".' }
+        reconciliation:
+          type: [object, "null"]
+          required: [at, by, note]
+          properties:
+            at: { type: string, format: date-time }
+            by: { $ref: "#/components/schemas/LedgerPersonRef" }
+            note: { type: [string, "null"] }
+        description: { type: string }
+        reference: { type: string }
+        branch: { type: [string, "null"] }
+        contact: { type: [object, "null"], required: [id, name], properties: { id: { type: string, format: uuid }, name: { type: string } } }
+        listing:
+          type: [object, "null"]
+          required: [id, title, reference]
+          properties: { id: { type: string, format: uuid }, title: { type: string }, reference: { type: string } }
+        lease: { type: [object, "null"], required: [id, reference], properties: { id: { type: string, format: uuid }, reference: { type: string } } }
+        tenancy_id: { type: "null" }
+        reversal_of: { type: [string, "null"], format: uuid }
+        reversed_by: { type: [string, "null"], format: uuid }
+        correction_of: { type: [string, "null"], format: uuid }
+        corrected_by: { type: [string, "null"], format: uuid }
+        transfer_pair: { type: [string, "null"], format: uuid }
+        settles: { type: [string, "null"], format: uuid }
+        reason: { type: [string, "null"] }
+        is_reversed: { type: boolean }
+        cash: { type: boolean, description: false for RECEIVABLE / PAYABLE (and their reversals). }
+        note_count: { type: integer }
+        attachment_count: { type: integer }
+        can:
+          type: object
+          required: [reverse, correct, reconcile, note, attach]
+          properties:
+            reverse: { type: boolean }
+            correct: { type: boolean }
+            reconcile: { type: boolean }
+            note: { type: boolean }
+            attach: { type: boolean }
+    LedgerEntryInput:
+      type: object
+      required: [type, amount, currency, effective_date]
+      properties:
+        type: { type: string, enum: [INCOME, EXPENSE, RENT_RECEIVED, COMMISSION, DEPOSIT_HELD, DEPOSIT_RETURNED, TRANSFER, OPENING_BALANCE, RECEIVABLE, PAYABLE] }
+        direction: { type: [string, "null"], enum: [IN, OUT, null], description: Required for OPENING_BALANCE; fixed by every other type. }
+        category: { type: [string, "null"], description: Defaults per type (rent, commission, deposit, other-income, other-expense); required for RECEIVABLE / PAYABLE. }
+        method: { type: [string, "null"], enum: [CASH, BANK, MOBILE_MONEY, OTHER, null], description: Required, except null for RECEIVABLE / PAYABLE. }
+        amount: { type: string, description: 'Positive decimal string with at most the currency''s minor-unit decimals, e.g. "123.45".' }
+        currency: { type: string, pattern: "^[A-Z]{3}$" }
+        effective_date: { type: string, format: date }
+        description: { type: [string, "null"], maxLength: 500 }
+        reference: { type: [string, "null"], maxLength: 120 }
+        contact_id: { type: [string, "null"], format: uuid }
+        listing_id: { type: [string, "null"], format: uuid }
+        lease_id: { type: [string, "null"], format: uuid }
+        tenancy_id: { type: "null", description: Tenancies do not exist yet. }
+        branch: { type: [string, "null"], maxLength: 80 }
+        notes: { type: [string, "null"], maxLength: 5000, description: A first note. }
+        transfer_to:
+          type: [object, "null"]
+          description: TRANSFER only (required there); another method, another branch or both.
+          properties:
+            method: { type: [string, "null"], enum: [CASH, BANK, MOBILE_MONEY, OTHER, null] }
+            branch: { type: [string, "null"] }
+        settles: { type: [string, "null"], format: uuid, description: The RECEIVABLE (IN) or PAYABLE (OUT) this payment settles; same currency; at most its outstanding. }
+        status: { description: Refused (VALIDATION_FAILED). }
+        gateway_reference: { description: Refused (VALIDATION_FAILED). }
+    LedgerEntryPage:
+      type: object
+      required: [items, page, page_size, total, total_pages]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/LedgerEntry" } }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer }
+        total_pages: { type: integer }
+    LedgerNote:
+      type: object
+      required: [id, text, author, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        text: { type: string }
+        author: { $ref: "#/components/schemas/LedgerPersonRef" }
+        created_at: { type: string, format: date-time }
+    LedgerAttachment:
+      type: object
+      required: [id, file_name, content_type, size, uploaded_by, uploaded_at, download_path]
+      properties:
+        id: { type: string, format: uuid }
+        file_name: { type: string }
+        content_type: { type: string, enum: [application/pdf, image/jpeg, image/png, image/webp] }
+        size: { type: integer }
+        uploaded_by: { $ref: "#/components/schemas/LedgerPersonRef" }
+        uploaded_at: { type: string, format: date-time }
+        download_path: { type: string }
+    LedgerEntryDetail:
+      type: object
+      required: [entry, notes, attachments, related]
+      properties:
+        entry: { $ref: "#/components/schemas/LedgerEntry" }
+        notes: { type: array, items: { $ref: "#/components/schemas/LedgerNote" } }
+        attachments: { type: array, items: { $ref: "#/components/schemas/LedgerAttachment" } }
+        related: { type: array, items: { $ref: "#/components/schemas/LedgerEntry" }, description: The reversal / original, the correction / corrected, the transfer pair, settled or settling entries. }
+    LedgerPosted:
+      type: object
+      required: [entry, created]
+      properties:
+        entry: { $ref: "#/components/schemas/LedgerEntry" }
+        created: { type: array, items: { $ref: "#/components/schemas/LedgerEntry" } }
+        updated: { type: array, items: { $ref: "#/components/schemas/LedgerEntry" }, description: Reverse and correct only - the originals. }
+    LedgerCategory:
+      type: object
+      required: [code, label, kind, active, default, used, sort_order]
+      properties:
+        code: { type: string }
+        label: { type: string }
+        kind: { type: string, enum: [IN, OUT, ANY] }
+        active: { type: boolean }
+        default: { type: boolean }
+        used: { type: boolean }
+        sort_order: { type: integer }
+    LedgerOptions:
+      type: object
+      required: [types, methods, statuses, currencies, categories, branches, permissions]
+      properties:
+        types:
+          type: array
+          items:
+            type: object
+            required: [code, label, direction, cash, category]
+            properties:
+              code: { type: string }
+              label: { type: string }
+              direction: { type: [string, "null"], enum: [IN, OUT, null] }
+              cash: { type: boolean }
+              category: { type: [string, "null"] }
+        methods: { type: array, items: { type: object, required: [code, label], properties: { code: { type: string }, label: { type: string } } } }
+        statuses:
+          type: array
+          items: { type: object, required: [code, label, settable], properties: { code: { type: string }, label: { type: string }, settable: { type: boolean, const: false } } }
+        currencies: { type: array, items: { type: object, required: [code, minor_unit], properties: { code: { type: string }, minor_unit: { type: integer } } } }
+        categories: { type: array, items: { $ref: "#/components/schemas/LedgerCategory" } }
+        branches: { type: array, items: { type: string } }
+        permissions:
+          type: object
+          required: [write, manage, export]
+          properties: { write: { type: boolean }, manage: { type: boolean }, export: { type: boolean } }
+    LedgerTotals:
+      type: object
+      required: [currency, minor_unit, in, out, net, entry_count]
+      properties:
+        currency: { type: string }
+        minor_unit: { type: integer }
+        in: { $ref: "#/components/schemas/LedgerAmount" }
+        out: { $ref: "#/components/schemas/LedgerAmount" }
+        net: { $ref: "#/components/schemas/LedgerAmount" }
+        entry_count: { type: integer }
+    LedgerCashLine:
+      type: object
+      required: [entry, currency, minor_unit, in, out, running_balance]
+      properties:
+        entry: { $ref: "#/components/schemas/LedgerEntry" }
+        currency: { type: string }
+        minor_unit: { type: integer }
+        in: { $ref: "#/components/schemas/LedgerAmount" }
+        out: { $ref: "#/components/schemas/LedgerAmount" }
+        running_balance: { $ref: "#/components/schemas/LedgerAmount" }
+    LedgerBalances:
+      type: object
+      required: [currency, minor_unit, opening_balance, in, out, net, closing_balance, entry_count]
+      properties:
+        currency: { type: string }
+        minor_unit: { type: integer }
+        opening_balance: { $ref: "#/components/schemas/LedgerAmount" }
+        in: { $ref: "#/components/schemas/LedgerAmount" }
+        out: { $ref: "#/components/schemas/LedgerAmount" }
+        net: { $ref: "#/components/schemas/LedgerAmount" }
+        closing_balance: { $ref: "#/components/schemas/LedgerAmount" }
+        entry_count: { type: integer }
+    LedgerCashbook:
+      type: object
+      required: [from, to, by, currencies]
+      properties:
+        from: { type: string, format: date }
+        to: { type: string, format: date }
+        by: { type: [string, "null"], enum: [method, branch, null] }
+        currencies:
+          type: array
+          items:
+            allOf:
+              - $ref: "#/components/schemas/LedgerBalances"
+              - type: object
+                required: [groups, entries]
+                properties:
+                  groups:
+                    type: [array, "null"]
+                    items:
+                      allOf:
+                        - $ref: "#/components/schemas/LedgerBalances"
+                        - type: object
+                          required: [key, label]
+                          properties: { key: { type: [string, "null"] }, label: { type: string } }
+                  entries: { type: array, items: { $ref: "#/components/schemas/LedgerCashLine" } }
+    LedgerCategoriesReport:
+      type: object
+      required: [from, to, currencies]
+      properties:
+        from: { type: string, format: date }
+        to: { type: string, format: date }
+        currencies:
+          type: array
+          items:
+            type: object
+            required: [currency, minor_unit, categories, total]
+            properties:
+              currency: { type: string }
+              minor_unit: { type: integer }
+              categories:
+                type: array
+                items:
+                  allOf:
+                    - $ref: "#/components/schemas/LedgerTotals"
+                    - type: object
+                      required: [category, label]
+                      properties: { category: { type: [string, "null"] }, label: { type: string } }
+              total: { $ref: "#/components/schemas/LedgerTotals" }
+    LedgerStatement:
+      type: object
+      required: [from, to, contact, currencies]
+      properties:
+        from: { type: string, format: date }
+        to: { type: string, format: date }
+        contact: { type: object, required: [id, name], properties: { id: { type: string, format: uuid }, name: { type: string } } }
+        currencies:
+          type: array
+          items:
+            allOf:
+              - $ref: "#/components/schemas/LedgerBalances"
+              - type: object
+                required: [receivable_outstanding, payable_outstanding, entries]
+                properties:
+                  receivable_outstanding: { $ref: "#/components/schemas/LedgerAmount" }
+                  payable_outstanding: { $ref: "#/components/schemas/LedgerAmount" }
+                  entries: { type: array, items: { $ref: "#/components/schemas/LedgerCashLine" } }
+    LedgerReceivables:
+      type: object
+      required: [as_of, side, currencies]
+      properties:
+        as_of: { type: string, format: date }
+        side: { type: string, enum: [RECEIVABLE, PAYABLE] }
+        currencies:
+          type: array
+          items:
+            type: object
+            required: [currency, minor_unit, outstanding, count, buckets, items]
+            properties:
+              currency: { type: string }
+              minor_unit: { type: integer }
+              outstanding: { $ref: "#/components/schemas/LedgerAmount" }
+              count: { type: integer }
+              buckets:
+                type: array
+                items:
+                  type: object
+                  required: [currency, minor_unit, bucket, outstanding, count]
+                  properties:
+                    currency: { type: string }
+                    minor_unit: { type: integer }
+                    bucket: { type: string, enum: ["0-30", "31-60", "61-90", "90+"] }
+                    outstanding: { $ref: "#/components/schemas/LedgerAmount" }
+                    count: { type: integer }
+              items:
+                type: array
+                items:
+                  type: object
+                  required: [entry, currency, minor_unit, amount, settled, outstanding, days_overdue, bucket]
+                  properties:
+                    entry: { $ref: "#/components/schemas/LedgerEntry" }
+                    currency: { type: string }
+                    minor_unit: { type: integer }
+                    amount: { $ref: "#/components/schemas/LedgerAmount" }
+                    settled: { $ref: "#/components/schemas/LedgerAmount" }
+                    outstanding: { $ref: "#/components/schemas/LedgerAmount" }
+                    days_overdue: { type: integer }
+                    bucket: { type: string, enum: ["0-30", "31-60", "61-90", "90+"] }
+    LedgerErrorEnvelope:
+      type: object
+      required: [error, trace_id]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, enum: [LEDGER_ENTRY_ALREADY_REVERSED, LEDGER_ENTRY_NOT_REVERSIBLE, LEDGER_OPENING_BALANCE_EXISTS, LEDGER_CATEGORY_EXISTS] }
+            message: { type: string }
+            details: { type: object, additionalProperties: true }
         trace_id: { type: string }

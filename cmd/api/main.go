@@ -29,6 +29,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/health"
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/leases"
+	"rightproperty365.com/backend/internal/modules/ledger"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/modules/notifications"
@@ -136,6 +137,8 @@ func run() error {
 		applicationStore applications.Store
 		// venueStore holds the hourly settings, quotes and hourly bookings.
 		venueStore venues.Store
+		// ledgerStore holds the agent books.
+		ledgerStore ledger.Store
 		// memSubscriptions is set without a database (its expiry sweep runs here).
 		memSubscriptions *subscriptions.MemoryStore
 	)
@@ -249,6 +252,14 @@ func run() error {
 		memVenues.SetAuditSink(memTeams.AuditSink())
 		devseed.SeedMemoryVenues(memVenues, time.Now())
 		venueStore = memVenues
+		// The agent books: the sample ones; every post, reversal, correction,
+		// reconciliation, attachment and export is audited into the team audit trail.
+		memLedger := ledger.NewMemoryStore()
+		memLedger.SetAuditSink(memTeams.AuditSink())
+		if err := devseed.SeedMemoryLedger(memLedger, time.Now()); err != nil {
+			return fmt.Errorf("seed sample books: %w", err)
+		}
+		ledgerStore = memLedger
 		crmItems = app.MemoryCRMItems{Requests: memRequests, Enquiries: memEnquiries, Appointments: memAppointments,
 			Identity: memIdentity, Listings: memListings, Applications: memApplications}
 		memAgreements := agreements.NewMemoryStore()
@@ -421,6 +432,7 @@ func run() error {
 		crmStore, crmItems = crm.NewPostgresStore(pool), crm.NewPostgresItems(pool)
 		applicationStore = applications.NewPostgresStore(pool)
 		venueStore = venues.NewPostgresStore(pool)
+		ledgerStore = ledger.NewPostgresStore(pool)
 		adminAuditLog = adminaudit.PostgresLog{Q: pool}
 	}
 
@@ -480,6 +492,7 @@ func run() error {
 		CRMItems:      crmItems,
 		Applications:  applicationStore,
 		Venues:        venueStore,
+		Ledger:        ledgerStore,
 	})
 	if err != nil {
 		return err

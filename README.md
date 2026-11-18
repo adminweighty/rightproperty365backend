@@ -193,6 +193,10 @@ onboarding applications (their roles were granted by the seed, not by a review).
 from `joining.agent@example.test` (Jamie Joiner, same `DEV_SEED_PASSWORD`), decided by Rudo Moyo or
 Ruvimbo Chari on the team page, or by an administrator. See docs/sample-accounts.md.
 
+**Ledger samples** (Sample Estates, API 0.34.0): opening balances in USD (cash, bank) and ZAR,
+a month of rent, commissions, expenses and a deposit, one corrected entry, one reconciled entry,
+one cash-to-bank transfer and two receivables. See "Agent ledger / books" below.
+
 Registering a new account in development does not send email: the API **logs** the link, e.g.
 `"msg":"DEV MAIL (not sent): verify-email link", "link":"http://localhost:3000/verify-email?token=..."`.
 
@@ -255,6 +259,7 @@ All configuration comes from environment variables. For local development you ma
 | POST | `/v1/venues/{listingId}/quotes` | Public itemised quote (enquiry mode, no payment) |
 | GET, POST | `/v1/me/venue-bookings`, `/v1/me/venue-bookings/{id}` (+ `/cancel`, `/reschedule`, `/accept`) | A customer's hourly bookings |
 | GET, POST | `/v1/agent/organisations/{id}/venue-bookings[/{bookingId}]` (+ `/confirm`, `/decline`, `/cancel`, `/propose`, `/complete`, `/no-show`), `/v1/me/hosted-venue-bookings` | Hourly bookings a host received |
+| GET, POST, PATCH | `/v1/agent/organisations/{id}/ledger/*` (`/options`, `/entries[/{entryId}]` + `/reverse`, `/correct`, `/reconcile`, `/notes`, `/attachments`; `/reports/*`, `/categories`) | The agent ledger / books, per currency (API 0.34.0) |
 | GET | `/v1/trust/summary` | How many advertisers are verified and how many listings are public (public, cacheable) |
 | POST | `/v1/property-requests` | The single entry point for every customer enquiry (guest or signed-in) |
 | POST | `/v1/business-enquiries` | The only way to contact a directory profile (guest or signed-in) |
@@ -456,6 +461,90 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 change; follow-up dates and reminders; editing or deleting a note; listing analytics, conversion
 funnels and response-time KPIs (no event data exists); seeker favourites, saved searches and
 alerts.
+
+## Agent ledger / books (API 0.34.0)
+
+Migration `0033`, module `internal/modules/ledger` (BR-012, FR-026 to FR-029, FSD section 6;
+decision D-05: **a cashbook, not double-entry**). Routes under
+`/v1/agent/organisations/{id}/ledger` (OpenAPI tag `ledger`): `/options`, `/entries` (list,
+post), `/entries/{entryId}` (+ `/reverse`, `/correct`, `/reconcile`, `/notes`, `/attachments`,
+`/attachments/{attachmentId}`), `/reports/cashbook`, `/reports/categories`,
+`/reports/statement`, `/reports/receivables`, `/reports/export.csv`, `/categories`
+(+ `PATCH /categories/{code}`). The exact JSON is the 0.34 contract's "Response shapes".
+
+- **Whose books.** An organisation's (any kind that takes enquiries or consultations, as the
+  CRM), or an approved direct owner's personal book addressed with their own user ID. Private
+  to them, and not the platform's subscription revenue. Branches are a free-text `branch` label
+  on each entry (case-insensitive in filters, cashbook `by=branch`). Rights in
+  `auth/capabilities.go`: OWNER and MANAGER read, write, reverse/correct any entry, reconcile,
+  export and manage categories (`MayManageLedger`); an AGENT reads, records, and reverses,
+  corrects, notes and attaches to **their own** entries while unreconciled
+  (`MayCorrectLedgerEntry`); STAFF read. Anybody else, platform administrators included, gets
+  `404 BOOK_NOT_FOUND` on every route, before any validation (tested on every endpoint).
+- **Money** (`internal/platform/money`, shared with the venue quotes): exact decimals with
+  `math/big` (shopspring/decimal is not a dependency), never a float. `amount` is a positive
+  decimal **string** with at most the currency's ISO 4217 minor-unit decimals (USD 2, JPY 0,
+  KWD 3); a JSON number is `400 INVALID_JSON`. Stored as `numeric(20,4)`, answered with exactly
+  the minor-unit decimals (half-even, which only ever pads). Currencies are the ISO 4217 codes of
+  the countries in reference data. **Every total is per currency**: each accumulator is keyed by
+  currency (and panics if fed another one), every total object carries `currency`, and no
+  consolidated conversion is built. A test walks every report's JSON and fails if a total lacks a
+  currency or a figure equals a USD figure plus a ZAR one (`ledger/ledgertest`).
+- **Posted entries are immutable** (FR-027). No PATCH, no DELETE. `reverse` posts a `REVERSAL`
+  (same amount, other direction, `reversal_of`; dated the original's date unless later) and marks
+  the original `reversed_by`; `correct` reverses and posts the corrected entry (`correction_of`;
+  the original gets `corrected_by`) in **one transaction**. A transfer leg is reversed together
+  with its pair. The trigger `ledger_entries_guard` refuses DELETE / TRUNCATE and any UPDATE of
+  the book, type, direction, amount, currency, method, category, effective date, recorded_at,
+  author, texts, `reversal_of`, `correction_of`, `settles_entry_id`; `reversed_by`,
+  `corrected_by` and `transfer_pair` are set once. Only the reconciliation fields and the
+  contact / listing / lease links (ON DELETE SET NULL) may change. Books and authors reference
+  organisations and users ON DELETE RESTRICT.
+- **Types.** INCOME, EXPENSE, RENT_RECEIVED, COMMISSION, DEPOSIT_HELD, DEPOSIT_RETURNED (fixed
+  directions and default categories), OPENING_BALANCE (IN or OUT; **once per currency, method and
+  branch** while not reversed: a partial unique index, `409 LEDGER_OPENING_BALANCE_EXISTS`; it is
+  corrected by reversing it), TRANSFER (an OUT / IN pair between methods or branches, linked both
+  ways through `transfer_pair`), and the memo types RECEIVABLE / PAYABLE (no method; never in a
+  cashbook balance) that cash entries settle (`settles`, same currency, at most the outstanding,
+  checked again under a row lock). Methods CASH, BANK, MOBILE_MONEY, OTHER. Links to a contact
+  (CRM), listing or lease must be the same book's (`400`); `tenancy_id` must be null (tenancies do
+  not exist yet).
+- **No false verification** (FR-028, BR-012). Manual entries are `USER_RECORDED_UNVERIFIED`
+  ("Recorded by you, not verified"). `RECONCILED` ("Marked reconciled by your team") is the
+  organisation's own mark against its own statement, set and cleared by OWNER / MANAGER.
+  `GATEWAY_CONFIRMED` is reserved: there is no gateway, a body with `status` or
+  `gateway_reference` is refused, and a CHECK refuses it without a gateway reference.
+- **Reports** (FR-029), computed in Go from the book's entries: the cashbook (opening, the
+  period's entries with a running balance, closing; `by=method|branch`), totals per category, a
+  contact's statement (with the receivables / payables outstanding), receivables or payables
+  ageing (0-30, 31-60, 61-90, 90+ days after the due date) and CSV exports
+  (`report=cashbook|entries|categories|statement`; OWNER and MANAGER; every row has a currency;
+  formula-like cells are prefixed with `'`). A REVERSAL counts against its original's column, so
+  opening + in - out = closing always holds.
+- **Attachments**: pdf, jpg, png, webp, sniffed from the content as onboarding documents and
+  application files are, 10 MB, 20 per entry, in the private object storage (`ledger/...` keys);
+  downloads only through the API (`Content-Disposition: attachment`, sandbox CSP).
+- **Audit.** Every post, reversal, correction, (un)reconciliation, attachment, attachment
+  download and export is an `organisation_audit_events` row (`LEDGER_*`, target `LEDGER_ENTRY` or
+  `LEDGER_BOOK`) in the same transaction. A direct owner's book has no organisation trail: the
+  same events are written to the log (`audit=true`), as for applications.
+- **Categories** per book, created from the defaults on first use (rent, commission, deposit,
+  maintenance, utilities, advertising, salaries, fees, other-income, other-expense), each IN, OUT
+  or ANY; OWNER / MANAGER add, rename and deactivate them; never deleted; `kind` fixed once used.
+- **Sample data** (Sample Estates; IDs `…a9xx`): opening balances USD cash 500.00, USD bank
+  12,000.00 and ZAR bank 25,000.00 (Johannesburg branch); rent received, a deposit held,
+  commissions (USD and ZAR) and expenses over the last month; a rent payment entered as 70.00 and
+  corrected to 700.00 (a reversal plus a new entry); one reconciled rent payment; a 600.00
+  cash-to-bank transfer; an overdue management-fee receivable and a rent receivable partly
+  settled. Second Street Realty has one opening balance (the isolation tests). In Postgres the
+  samples are written once (entries can never be deleted); a re-seed only restores their contact
+  and listing links.
+
+**Not verified / follow-ups:** migration `0033` and `ledger/postgres.go` have only run where
+`RP365_TEST_DATABASE_URL` is set. Tenancy-based arrears (feature 10), bank imports and matching,
+gateway confirmation, consolidated conversion and double-entry are not built. Reports load the
+whole book's entries up to the period's end into memory (fine at agency scale; a SQL aggregation
+is the next step for large books).
 
 ## Showroom and venue hourly rental (API 0.33.0)
 
@@ -3129,8 +3218,10 @@ internal/modules/reports           /v1/admin/reports/summary and the CSV exports
 internal/modules/saved             /v1/me/saved-listings[/ids|/{listingId}]: a customer's saved listings and their snapshots (postgres + memory)
 internal/modules/analytics         /v1/analytics/* and /v1/admin/analytics/summary: events, bots, rollups, reports (postgres + memory)
 internal/modules/crm               /v1/agent/organisations/{id}/contacts/*: contact books, duplicates, merge, import/export, links (postgres + memory)
+internal/modules/ledger            /v1/agent/organisations/{id}/ledger/*: the agent books, reports per currency, immutable entries (postgres + memory)
 internal/platform/adminaudit       the administrators' audit trail (admin_audit_events)
 internal/platform/orgaudit         an organisation's team audit trail (organisation_audit_events)
+internal/platform/money            exact decimal amounts and the ISO 4217 minor units (math/big)
 internal/platform/imaging          image helpers for the re-encoded uploads (profile logos, listing photos)
 migrations/    embedded SQL (NNNN_name.up.sql / .down.sql)
 api/openapi.yaml             OpenAPI 3.1 contract
@@ -3224,6 +3315,14 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0033_agent_ledger` (API 0.34.0): `ledger_categories` (per book: organisation_id XOR
+  book_user_id, generated `book_id`), `ledger_entries` (amount `numeric(20,4)` > 0, `char(3)`
+  currency, the reversal / correction / transfer / settlement self-links, the guard trigger
+  `ledger_entries_guard` refusing UPDATE of what was posted and DELETE / TRUNCATE, the CHECK that
+  GATEWAY_CONFIRMED needs a `gateway_reference`, the partial unique index of one live opening
+  balance per book, currency, method and branch), `ledger_entry_notes` and `ledger_attachments`;
+  widens the `organisation_audit_events` action and target CHECKs (`LEDGER_*`, `LEDGER_ENTRY`,
+  `LEDGER_BOOK`). The down migration drops the tables (LOSES every book).
 - `0032_venue_hourly` (API 0.33.0): `CREATE EXTENSION IF NOT EXISTS btree_gist`; adds
   `reference_items.hourly_bookable` (false on property types, NULL elsewhere) and the hourly
   property types (showroom, event-space, hall, conference-room, studio; office flagged);

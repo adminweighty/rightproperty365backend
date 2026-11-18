@@ -4,27 +4,18 @@ import (
 	"math/big"
 	"regexp"
 	"strings"
+
+	"rightproperty365.com/backend/internal/platform/money"
 )
 
 // Money is exact: every amount is a *big.Rat while it is worked on and a
 // decimal string with exactly the currency's minor-unit decimals when it is
 // stored or sent. A float never touches an amount.
 
-// minorUnits are the ISO 4217 exponents that are not 2.
-var minorUnits = map[string]int{
-	"BIF": 0, "CLP": 0, "DJF": 0, "GNF": 0, "ISK": 0, "JPY": 0, "KMF": 0, "KRW": 0, "PYG": 0,
-	"RWF": 0, "UGX": 0, "UYI": 0, "VND": 0, "VUV": 0, "XAF": 0, "XOF": 0, "XPF": 0,
-	"BHD": 3, "IQD": 3, "JOD": 3, "KWD": 3, "LYD": 3, "OMR": 3, "TND": 3,
-}
-
 // MinorUnit returns how many decimals an amount in the currency has (2 for
-// most currencies, 0 for JPY, 3 for KWD).
-func MinorUnit(currency string) int {
-	if n, ok := minorUnits[strings.ToUpper(currency)]; ok {
-		return n
-	}
-	return 2
-}
+// most currencies, 0 for JPY, 3 for KWD): the ISO 4217 table of
+// internal/platform/money.
+func MinorUnit(currency string) int { return money.MinorUnit(currency) }
 
 var decimalRe = regexp.MustCompile(`^[0-9]{1,12}(\.[0-9]{1,6})?$`)
 

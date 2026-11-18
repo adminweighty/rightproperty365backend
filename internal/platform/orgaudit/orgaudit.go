@@ -59,6 +59,16 @@ const (
 	ActionVenueBookingTimeProposed = "VENUE_BOOKING_TIME_PROPOSED"
 	ActionVenueBookingCompleted    = "VENUE_BOOKING_COMPLETED"
 	ActionVenueBookingNoShow       = "VENUE_BOOKING_NO_SHOW"
+	// The agent ledger (API 0.34.0, FR-027): every post, reversal, correction,
+	// reconciliation, attachment, attachment download and export.
+	ActionLedgerEntryCreated      = "LEDGER_ENTRY_CREATED"
+	ActionLedgerEntryReversed     = "LEDGER_ENTRY_REVERSED"
+	ActionLedgerEntryCorrected    = "LEDGER_ENTRY_CORRECTED"
+	ActionLedgerEntryReconciled   = "LEDGER_ENTRY_RECONCILED"
+	ActionLedgerEntryUnreconciled = "LEDGER_ENTRY_UNRECONCILED"
+	ActionLedgerAttachmentAdded   = "LEDGER_ATTACHMENT_ADDED"
+	ActionLedgerAttachmentViewed  = "LEDGER_ATTACHMENT_VIEWED"
+	ActionLedgerExported          = "LEDGER_EXPORTED"
 )
 
 var actionLabels = map[string]string{
@@ -87,6 +97,14 @@ var actionLabels = map[string]string{
 	ActionVenueBookingTimeProposed:   "New time proposed for an hourly booking",
 	ActionVenueBookingCompleted:      "Hourly booking completed",
 	ActionVenueBookingNoShow:         "Hourly booking marked as a no-show",
+	ActionLedgerEntryCreated:         "Ledger entry recorded",
+	ActionLedgerEntryReversed:        "Ledger entry reversed",
+	ActionLedgerEntryCorrected:       "Ledger entry corrected",
+	ActionLedgerEntryReconciled:      "Ledger entry marked reconciled",
+	ActionLedgerEntryUnreconciled:    "Ledger entry marked not reconciled",
+	ActionLedgerAttachmentAdded:      "Ledger attachment added",
+	ActionLedgerAttachmentViewed:     "Ledger attachment downloaded",
+	ActionLedgerExported:             "Ledger exported",
 }
 
 // Actions returns every action, in a stable order.
@@ -121,6 +139,11 @@ const (
 	TargetApplication = "APPLICATION"
 	// TargetVenueBooking is one hourly booking (labelled with its reference).
 	TargetVenueBooking = "VENUE_BOOKING"
+	// TargetLedgerEntry is one ledger entry (labelled "<TYPE> <amount>
+	// <currency> <date>"); TargetLedgerBook the whole book (an export; its ID
+	// is the organisation's).
+	TargetLedgerEntry = "LEDGER_ENTRY"
+	TargetLedgerBook  = "LEDGER_BOOK"
 )
 
 // Event is one audit record.

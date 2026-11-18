@@ -32,6 +32,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/health"
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/leases"
+	"rightproperty365.com/backend/internal/modules/ledger"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/modules/onboarding"
@@ -279,6 +280,8 @@ type env struct {
 	apps *applications.MemoryStore
 	// venues holds the hourly settings and bookings (the showroom samples).
 	venues *venues.MemoryStore
+	// ledger holds the agent books (the samples).
+	ledger *ledger.MemoryStore
 	files  *storage.Local
 	mail   *captureMailer
 	logs   *bytes.Buffer
@@ -366,6 +369,11 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 	e.venues = venues.NewMemoryStore()
 	e.venues.SetAuditSink(e.team.AuditSink())
 	devseed.SeedMemoryVenues(e.venues, e.now)
+	e.ledger = ledger.NewMemoryStore()
+	e.ledger.SetAuditSink(e.team.AuditSink())
+	if err := devseed.SeedMemoryLedger(e.ledger, e.now); err != nil {
+		t.Fatal(err)
+	}
 	if err := devseed.SeedApplicationFiles(context.Background(), e.files); err != nil {
 		t.Fatal(err)
 	}
@@ -423,6 +431,7 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		CRM: e.crm, CRMItems: e.crmItems,
 		Applications: e.apps,
 		Venues:       e.venues,
+		Ledger:       e.ledger,
 		Now:          func() time.Time { return e.now },
 		Hasher:       &hasher,
 	})

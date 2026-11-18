@@ -380,3 +380,50 @@ func (p *Principal) MaySeeAllVenueBookings(organisationID uuid.UUID) bool {
 func (p *Principal) MayHandleVenueBooking(organisationID uuid.UUID, agentUserID *uuid.UUID) bool {
 	return p.MayReadApplication(organisationID, agentUserID)
 }
+
+// Agent ledgers / books (API 0.34.0, BR-012, FR-026 to FR-029). A book
+// belongs to an organisation whose kind takes enquiries or consultations
+// (as contact books do), or (a personal book) to an approved direct owner,
+// addressed with their own user ID (OwnsContactBook).
+//
+//   - read (entries, reports, attachments, categories): any member, STAFF
+//     included;
+//   - write (record entries; reverse, correct, note and attach to the
+//     entries they recorded themselves while unreconciled): its OWNER,
+//     MANAGER and AGENT;
+//   - manage (reverse and correct any entry, reconcile, export, manage
+//     categories): its OWNER and MANAGER.
+//
+// The direct owner reads, writes and manages their own book. Anybody else,
+// platform administrators included, sees no book (404 BOOK_NOT_FOUND).
+
+// MayReadLedger reports whether the caller may read the organisation's books.
+func (p *Principal) MayReadLedger(organisationID uuid.UUID) bool {
+	return p.MayReadContacts(organisationID)
+}
+
+// MayWriteLedger reports whether the caller may record entries in the
+// organisation's books.
+func (p *Principal) MayWriteLedger(organisationID uuid.UUID) bool {
+	return p.MayWriteContacts(organisationID)
+}
+
+// MayManageLedger reports whether the caller may reverse and correct any
+// entry of the organisation's books, reconcile, export and manage categories.
+func (p *Principal) MayManageLedger(organisationID uuid.UUID) bool {
+	return p.MayManageContacts(organisationID)
+}
+
+// MayCorrectLedgerEntry reports whether the caller may reverse or correct
+// one entry given who recorded it and whether it is reconciled: a manager
+// any entry; an AGENT only their own unreconciled ones.
+func (p *Principal) MayCorrectLedgerEntry(organisationID uuid.UUID, authorUserID *uuid.UUID, reconciled bool) bool {
+	if p.MayManageLedger(organisationID) {
+		return true
+	}
+	return p.MayWriteLedger(organisationID) && authorUserID != nil && *authorUserID == p.UserID && !reconciled
+}
+
+// OwnsLedgerBook reports whether bookID is the caller's personal book: their
+// own user ID, while they are an approved direct owner.
+func (p *Principal) OwnsLedgerBook(bookID uuid.UUID) bool { return p.OwnsContactBook(bookID) }

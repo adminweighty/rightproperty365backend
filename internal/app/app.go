@@ -26,6 +26,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/health"
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/leases"
+	"rightproperty365.com/backend/internal/modules/ledger"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/modules/onboarding"
@@ -180,6 +181,9 @@ const (
 	venueQuotesBurst      = 30
 	venueChangesPerMinute = 60
 	venueChangesBurst     = 60
+	// Ledger writes (entries, reversals, notes, attachments) per member.
+	ledgerChangesPerMinute = 120
+	ledgerChangesBurst     = 120
 )
 
 // uploadPath matches POST /v1/me/onboarding/{role}/documents and logoPath
@@ -199,6 +203,8 @@ var (
 	contactImportPath = regexp.MustCompile(`^/v1/agent/organisations/[^/]+/contacts/import$`)
 	// applicationFilePath is POST /v1/me/applications/{id}/files (10 MB, as onboarding documents).
 	applicationFilePath = regexp.MustCompile(`^/v1/me/applications/[^/]+/files$`)
+	// ledgerAttachmentPath is POST /v1/agent/organisations/{id}/ledger/entries/{entryId}/attachments (10 MB).
+	ledgerAttachmentPath = regexp.MustCompile(`^/v1/agent/organisations/[^/]+/ledger/entries/[^/]+/attachments$`)
 )
 
 func isContactImport(r *http.Request) bool {
@@ -219,7 +225,8 @@ func isLogoUpload(r *http.Request) bool {
 
 func isUpload(r *http.Request) bool {
 	return (r.Method == http.MethodPost && uploadPath.MatchString(r.URL.Path)) || isLogoUpload(r) || isPhotoUpload(r) || isPDFUpload(r) ||
-		isContactImport(r) || (r.Method == http.MethodPost && applicationFilePath.MatchString(r.URL.Path))
+		isContactImport(r) || (r.Method == http.MethodPost && applicationFilePath.MatchString(r.URL.Path)) ||
+		(r.Method == http.MethodPost && ledgerAttachmentPath.MatchString(r.URL.Path))
 }
 
 // Deps is everything the router needs.
@@ -291,6 +298,10 @@ type Deps struct {
 	// Venues holds the hourly settings, quotes and hourly bookings of the
 	// showrooms and venues (API 0.33.0).
 	Venues venues.Store
+
+	// Ledger holds the agent books (API 0.34.0); their attachments are kept
+	// in Files.
+	Ledger ledger.Store
 
 	// Optional overrides used by tests.
 	Now    func() time.Time
@@ -385,6 +396,13 @@ func NewRouter(d Deps) (http.Handler, error) {
 	venueQuoteLimiter := httpx.NewRateLimiter(venueQuotesPerMinute, venueQuotesBurst)
 	venueLimiter := httpx.NewRateLimiter(venueChangesPerMinute, venueChangesBurst)
 	orgVenues, ownerVenues := venuesH.Organisation("id"), venuesH.DirectOwner()
+	// The agent ledger / books (BR-012, FR-026..029): a cashbook per
+	// organisation (or direct owner), per currency, never consolidated.
+	if d.Ledger == nil {
+		return nil, errors.New("app: no ledger store")
+	}
+	ledgerH := ledger.NewHandler(LedgerService(d.Ledger, d.Files, d.CRM, d.Listings, d.Leases, d.Markets, logger, d.Now), logger)
+	ledgerLimiter := httpx.NewRateLimiter(ledgerChangesPerMinute, ledgerChangesBurst)
 	directorySvc := directory.NewService(d.Directory, vocab, listingsSvc)
 	directorySvc.SetPlaces(geography)
 	// Logos are kept in the object storage and served by the API itself.
@@ -1144,6 +1162,12 @@ func NewRouter(d Deps) (http.Handler, error) {
 			// Hourly bookings (FR-025): OWNER and MANAGER all, the listing's
 			// assigned AGENT their own; 404 for anybody else (another
 			// organisation, STAFF). Every host decision is audited.
+			// The organisation's books (the agent ledger). {id} is the
+			// organisation, or an approved direct owner's own user ID for their
+			// personal book. 404 BOOK_NOT_FOUND to anyone else on every route
+			// (auth.MayReadLedger / OwnsLedgerBook); 403 to a member whose role
+			// may not do it. No PATCH and no DELETE on entries.
+			r.Route("/ledger", func(r chi.Router) { ledgerH.Routes(r, ledgerLimiter.Middleware) })
 			r.Route("/venue-bookings", func(r chi.Router) {
 				r.Get("/", orgVenues.List)
 				r.Get("/{bookingId}", orgVenues.Get)
