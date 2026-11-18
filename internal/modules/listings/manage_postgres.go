@@ -88,12 +88,14 @@ func duplicate(err error) bool {
 // listingArgs are the values of the content columns, in the order of
 // contentColumns.
 const contentColumns = `title, price_amount, currency_code, deal, category, property_type, price_period, city_code, suburb_code,
-	bedrooms, bathrooms, floor_area_m2, land_area_m2, summary, description, max_guests, min_nights, city_name, region_name`
+	bedrooms, bathrooms, floor_area_m2, land_area_m2, summary, description, max_guests, min_nights, city_name, region_name,
+	youtube_video_id, youtube_start_seconds`
 
 func contentArgs(r Record) []any {
 	return []any{r.Title, nullText(r.Price.Amount), r.Price.Currency, nullText(r.Deal), nullText(r.Category), nullText(r.PropertyType),
 		nullText(r.PricePeriod), nullText(r.City), nullText(r.Suburb), r.Bedrooms, r.Bathrooms, r.FloorArea, r.LandArea,
-		nullText(r.Summary), nullText(r.Description), r.MaxGuests, r.MinNights, nullText(r.CityName), nullText(r.RegionName)}
+		nullText(r.Summary), nullText(r.Description), r.MaxGuests, r.MinNights, nullText(r.CityName), nullText(r.RegionName),
+		nullText(r.YouTubeVideoID), r.YouTubeStartSeconds}
 }
 
 func revisionJSON(r *Revision) (*string, *string, error) {
@@ -145,7 +147,7 @@ func (s *PostgresStore) CreateListing(ctx context.Context, m ManagedListing, ch 
 		                      slug, reference, created_by, revision, revision_status, published_at, expires_at, featured, `+contentColumns+`)
 		VALUES ($1, (SELECT id FROM markets WHERE code = $2), $3::text::listing_status, $4, $5, $6, $7, $8,
 		        $9, $10, $11, $12::jsonb, $13, $14, $15, false,
-		        $16, $17::text::numeric, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34)`,
+		        $16, $17::text::numeric, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36)`,
 		args...); err != nil {
 		if duplicate(err) {
 			return ErrDuplicate
@@ -342,7 +344,8 @@ func (s *PostgresStore) SaveListing(ctx context.Context, m ManagedListing, expec
 		       review_reason = $12, revision = $13::jsonb, revision_status = $14, agent_user_id = $15,
 		       title = $16, price_amount = $17::text::numeric, currency_code = $18, deal = $19, category = $20, property_type = $21,
 		       price_period = $22, city_code = $23, suburb_code = $24, bedrooms = $25, bathrooms = $26, floor_area_m2 = $27,
-		       land_area_m2 = $28, summary = $29, description = $30, max_guests = $31, min_nights = $32, city_name = $33, region_name = $34
+		       land_area_m2 = $28, summary = $29, description = $30, max_guests = $31, min_nights = $32, city_name = $33, region_name = $34,
+		       youtube_video_id = $35, youtube_start_seconds = $36
 		WHERE id = $1`, args...); err != nil {
 		if duplicate(err) {
 			return nil, ErrDuplicate

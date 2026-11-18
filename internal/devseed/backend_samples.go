@@ -119,6 +119,15 @@ func backendListing(n int, market, reference, slug, image string, width, height 
 	return l
 }
 
+// Video ids of the sample video tours: well-known public videos that have
+// been on YouTube for many years (Big Buck Bunny by the Blender Foundation,
+// and "Me at the zoo", the first YouTube video). They stand in for real
+// property tours; the seed stores the ids only and never calls YouTube.
+const (
+	SampleYouTubeVideoID  = "aqz-KE-bpKQ"
+	SampleYouTubeVideoID2 = "jNQXAC9IVRw"
+)
+
 // BackendListings returns the six sample listings added on the backend:
 // three in the United Kingdom, priced in GBP (a sale, a monthly rent and a
 // short stay), two short stays in Zimbabwe, priced in USD per night and
@@ -134,6 +143,8 @@ func BackendListings() []SampleListing {
 	london.Summary = "Sample listing: a terraced family house on a quiet street in Kensington."
 	london.Description = "A sample listing for the United Kingdom market. Three bedrooms over three floors, a private garden and a study, a short walk from the park and the Underground."
 	london.Features, london.Image.Alt = []string{"Private garden", "Study", "Fibre ready"}, "Terraced house with a small front garden"
+	// A video tour (FR-011): a stand-in public video, starting 30 seconds in.
+	london.YouTubeVideoID, london.YouTubeStartSeconds = SampleYouTubeVideoID, guests(30)
 
 	manchester := backendListing(20, MarketUK, "RP-GB-10002", "two-bedroom-apartment-northern-quarter", "listing-apartment-avenues.jpg", 1200, 800, "2026-10-18T08:00:00Z")
 	manchester.Title, manchester.Deal, manchester.Category, manchester.PropertyType = "Two-bedroom apartment in a converted warehouse", "rent", "residential", "Apartment"
@@ -163,6 +174,7 @@ func BackendListings() []SampleListing {
 	falls.Summary = "Sample listing: a self-catering lodge let by the night in Victoria Falls."
 	falls.Description = "A sample short stay. A thatched four-bedroom lodge with a swimming pool and a veranda, ten minutes from the Falls. Sleeps eight. Minimum stay two nights."
 	falls.Features, falls.Image.Alt = []string{"Swimming pool", "Thatched roof", "Veranda", "Borehole"}, "Thatched house in a garden"
+	falls.YouTubeVideoID = SampleYouTubeVideoID2
 
 	harare := backendListing(23, MarketCode, "RP-ZW-10020", "garden-guest-house-avondale", "listing-cottage-greystone-park.jpg", 1200, 900, "2026-10-12T08:00:00Z")
 	harare.Title, harare.Deal, harare.Category, harare.PropertyType = "Garden guest house with a private entrance", "rent", listings.CategoryShortStay, "Guest house"

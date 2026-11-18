@@ -108,6 +108,8 @@ func present(r Record, labels map[string]map[string]string) Listing {
 		AdvertiserVerified: r.Advertiser.Verified, AdvertiserVerifiedAt: utcTime(r.Advertiser.VerifiedAt),
 		ListingReviewed: r.ReviewedAt != nil, ListingReviewedAt: utcTime(r.ReviewedAt),
 	}
+	l.Video = videoOf(r.YouTubeVideoID, r.YouTubeStartSeconds)
+	l.HasVideo = l.Video != nil
 	for i := range l.Photos {
 		if l.Photos[i].Variants == nil {
 			l.Photos[i].Variants = []PhotoVariant{}

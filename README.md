@@ -485,6 +485,56 @@ activity dashboard; Enquired, Applied, Viewings and Consultations are the existi
 **Not verified:** migration `0026` and `internal/modules/saved/postgres.go` have only run where
 `RP365_TEST_DATABASE_URL` points at a database (`TestPostgresStore` skips otherwise).
 
+## YouTube video tours (API 0.28.0)
+
+Migration `0027`, `internal/modules/listings` (BR-013, FR-011). An advertiser links one YouTube
+video to a listing; the public listing page plays it in YouTube's own embedded player.
+
+- **Input** – `youtube_url` in `POST /v1/me/listings` and `PATCH /v1/me/listings/{id}` (a string;
+  `null` or `""` removes the video). `listings.ParseYouTubeURL` (`youtube.go`, a pure function
+  with a table test) takes the video id from a watch or share link: `http` / `https` only; the
+  hosts `youtube.com`, `www.youtube.com`, `m.youtube.com`, `music.youtube.com`, `youtu.be`,
+  `youtube-nocookie.com` and `www.youtube-nocookie.com`, matched exactly; the paths
+  `/watch?v=ID`, `youtu.be/ID`, `/shorts/ID`, `/embed/ID`, `/live/ID` and `/v/ID`; an id of
+  exactly 11 characters of `A-Z a-z 0-9 _ -`. `t=` or `start=` (`90`, `90s`, `1m30s`, `1h2m3s`,
+  at most 24 hours) becomes the start time. Everything else is `400 VALIDATION_FAILED` with
+  `fields.youtube_url` = "must be a link to a YouTube video": other hosts and look-alikes
+  (`youtube.com.evil.test`, `evilyoutube.com`), user information (`https://youtube.com@evil.test/...`),
+  ports, percent-encoded hosts or paths, playlists without a video, channels and `@handles`,
+  `javascript:`, `data:`, `ftp:`, `<iframe>` and any other markup or whitespace inside the link.
+- **Stored** – only `listings.youtube_video_id` and `listings.youtube_start_seconds` (and the same
+  two keys in a pending revision's jsonb `Content`); never the link as typed. The editor's
+  `content` returns `youtube_url` (canonical: `https://www.youtube.com/watch?v=ID`, plus `&t=Ns`
+  when the video starts later so that sending it back keeps the start), `youtube_video_id` and
+  `youtube_start_seconds`. A video is optional: `completeness` never asks for one.
+- **Review** – a video is listing content. On a draft it changes at once; on a published listing
+  it goes into the revision like any other edit and is public only after a reviewer approves
+  it. `GET /v1/admin/listings/{id}` shows the id and link in `content` and `live`, and
+  `youtube_url` in `changes`.
+- **Public** – `Listing.video` is `{provider: "YOUTUBE", id, start_seconds, embed_url, watch_url,
+  thumbnail_url}` or `null`; `Listing.has_video` is on every listing, so on search results, and on
+  `SavedListingCard` (snapshots saved before 0.28.0 read `false` until refreshed). `embed_url` is
+  `https://www.youtube-nocookie.com/embed/ID?rel=0&modestbranding=1` (`&start=N` when set);
+  `thumbnail_url` is `https://i.ytimg.com/vi/ID/hqdefault.jpg`.
+- **No call to YouTube, ever.** The API makes no oEmbed request and checks no thumbnail; it does
+  not know whether a video is public, removed, geo-blocked or embeddable. The browser does: the web
+  shows a poster and a "Watch on YouTube" fallback, and loads the player only when the viewer
+  presses play.
+- **Search** – both adapters return `has_video` (it comes from the database row). The
+  Elasticsearch document gains the boolean `has_video` (mapping version **6**): **run
+  `cmd/reindex` once after the deploy** (see "Search"). There is no `has_video` filter yet.
+- **Sample data** – two backend sample listings have a video, as stand-ins for real tours: the
+  London house (`RP-GB-10001`, Big Buck Bunny `aqz-KE-bpKQ`, starting at 30 seconds) and the
+  Victoria Falls lodge (`RP-ZW-10019`, "Me at the zoo" `jNQXAC9IVRw`). The seed stores the ids only.
+
+**Not built:** more than one video per listing; other providers (Vimeo, Matterport); a
+`has_video` search filter; any server-side check that a video still exists.
+
+**Not verified:** migration `0027` and the new columns in `postgres.go` / `manage_postgres.go` /
+`devseed/postgres.go` have only run where `RP365_TEST_DATABASE_URL` points at a database
+(`TestPostgresStoreKeepsTheVideo` skips otherwise); the Elasticsearch mapping has only been
+checked against the fake cluster of the tests.
+
 ## Administrators' area: accounts, subscriptions, reference data, reports (API 0.25.0)
 
 Migration `0024`, modules `internal/modules/accounts`, `subscriptions`, `reports` and
@@ -1594,7 +1644,7 @@ marking sold or let, and closing (the statuses exist, nothing sets them); packag
 number of active listings; a scheduled expiry job and the expiry reminder emails (expiry is still
 decided at query time); presigned direct-to-S3 uploads (photos go through the API, 15 MB each);
 cropping, a chosen cover photo other than the first, captions other than `alt`; AVIF / WebP
-output; malware scanning of uploads; YouTube links and floor plans; moderation of a reviewer's own
+output; malware scanning of uploads; floor plans (YouTube video tours: 0.28.0); moderation of a reviewer's own
 organisation's listings (nothing stops a reviewer from approving a listing of an organisation
 they belong to); a per-field change history (the timeline records steps, `changes` shows the
 pending diff only); a diff for a resubmission after "changes requested" (only edits of published
@@ -1635,6 +1685,13 @@ The API and the worker each log one line at startup naming the driver:
 `search driver selected: database (...)` or `search driver selected: elasticsearch (...)`.
 
 **PostgreSQL stays the source of truth.**
+
+> **After deploying YouTube video tours (mapping version 6), run `cmd/reindex` once.** Documents
+> now carry the boolean `has_video`. The mapping is strict, so until the index is rebuilt the old
+> index **refuses every new or changed document** (the worker's index events fail and are
+> retried). Searches keep working meanwhile, and `has_video` on results is right at once with
+> either driver: it is read from the database with every hit, not from the index. The database
+> driver needs only migration `0027`.
 
 > **After deploying verified advertisers (mapping version 5), run `cmd/reindex` once.** Documents
 > now carry `advertiser_verified` (one boolean) and every search excludes the documents that say
@@ -1687,8 +1744,8 @@ The API and the worker each log one line at startup naming the driver:
 
 **The index.** One index per environment behind an alias, with an explicit, strict mapping
 (`internal/modules/listings/es_mapping.json`): `keyword` for codes (deal, category, property type,
-city, suburb, region, features, market — the country —, currency, advertiser type), a `boolean`
-`has_photos`, `text` with a `keyword` and a `search_as_you_type`
+city, suburb, region, features, market — the country —, currency, advertiser type), the `boolean`s
+`has_photos` and `has_video`, `text` with a `keyword` and a `search_as_you_type`
 sub-field for title, suburb and city labels, `scaled_float` for the price with the currency kept
 separately, integers for bedrooms and bathrooms, dates, a `version`, and a `geo_point` `location`
 that is mapped but unused. **A document holds public listing data only** — no customer, no contact
@@ -2771,6 +2828,10 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0027_listing_youtube` (API 0.28.0): `listings.youtube_video_id text` (CHECK
+  `^[A-Za-z0-9_-]{11}$`) and `listings.youtube_start_seconds integer` (CHECK `>= 0`, and only with a
+  video), both nullable. Pending revisions carry the same keys in their jsonb. Two nullable
+  columns only. The down migration drops them and loses every listing's video.
 - `0026_saved_listings` (API 0.27.0): `saved_listings (user_id, listing_id, saved_at, snapshot
   jsonb, snapshot_at)`, primary key `(user_id, listing_id)`, index `saved_listings_user_saved_idx`
   on `(user_id, saved_at DESC)`. `user_id` references `users` `ON DELETE CASCADE` (account

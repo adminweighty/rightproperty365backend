@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.27.0
+  version: 0.28.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,39 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    YouTube video tours (new in 0.28.0)
+    - **A listing may link one YouTube video** (BR-013, FR-011). The editor sends
+      `youtube_url` in `POST /v1/me/listings` and `PATCH /v1/me/listings/{id}` (a string, or
+      `null` / `""` to remove it). The server parses the video id from a watch or share link of
+      an **allowlisted host only** (`youtube.com`, `www.youtube.com`, `m.youtube.com`,
+      `music.youtube.com`, `youtu.be`, `youtube-nocookie.com`, `www.youtube-nocookie.com`;
+      `http` or `https`; paths `/watch?v=ID`, `youtu.be/ID`, `/shorts/ID`, `/embed/ID`,
+      `/live/ID`, `/v/ID`; the id is 11 characters of `A-Z a-z 0-9 _ -`). A `t=` or `start=`
+      (`90`, `90s`, `1m30s`, `1h2m3s`, at most 24 hours) is kept as the start time. Anything
+      else - another host (look-alikes such as `youtube.com.evil.test` included), a playlist, a
+      channel or handle, `<iframe>` or other markup, `javascript:`, user information, a port,
+      percent-encoding - is `400 VALIDATION_FAILED` with `error.fields.youtube_url` = "must be
+      a link to a YouTube video".
+    - **Only the reference is stored**: `youtube_video_id` and `youtube_start_seconds`.
+      `ListingContent` returns both plus `youtube_url`, the canonical link
+      `https://www.youtube.com/watch?v=ID` (with `&t=Ns` when the video starts later, so that
+      sending it back keeps the start), never the link as typed. A video is optional:
+      `completeness` never asks for one.
+    - **Reviewed like any content.** On a published listing the change goes into its pending
+      changes and becomes public only with their approval; the reviewer's view
+      (`GET /v1/admin/listings/{id}`) shows the video id and link in `content` / `live` and
+      `youtube_url` in `changes`.
+    - **Public listing.** `Listing.video` is `{provider: YOUTUBE, id, start_seconds,
+      embed_url, watch_url, thumbnail_url}` or null, and `Listing.has_video` (so also on every
+      search result, and on `SavedListingCard`) says whether there is one. `embed_url` is the
+      privacy-enhanced player `https://www.youtube-nocookie.com/embed/ID?rel=0&modestbranding=1`
+      (`&start=N` when set). **The server never contacts YouTube** (no oEmbed, no thumbnail
+      check): whether a video is still available, public or embeddable is known only in the
+      browser, which shows a fallback when it is not.
+    - Migration 0027 (additive: `listings.youtube_video_id` and
+      `listings.youtube_start_seconds`, with CHECK constraints). Search index mapping version 6
+      (`has_video`): rebuild the Elasticsearch index with `cmd/reindex` after the deploy.
 
     Saved properties (new in 0.27.0)
     - **Customers save listings** (FR-016 "Saved", part of the customer activity dashboard):
@@ -10720,10 +10753,30 @@ components:
           description: How to show the reason; null when available.
         listing: { $ref: "#/components/schemas/SavedListingCard" }
 
+    ListingVideo:
+      type: object
+      description: |
+        New in 0.28.0. A YouTube video tour. The server never contacts YouTube: the video may be
+        removed, private, geo-blocked or not embeddable, which only the browser finds out (show a
+        poster from `thumbnail_url` and fall back to a link to `watch_url`). Load the player only
+        when the viewer presses play.
+      required: [provider, id, start_seconds, embed_url, watch_url, thumbnail_url]
+      additionalProperties: false
+      properties:
+        provider: { type: string, enum: [YOUTUBE] }
+        id: { type: string, pattern: "^[A-Za-z0-9_-]{11}$", examples: [aqz-KE-bpKQ] }
+        start_seconds: { type: [integer, "null"], minimum: 0 }
+        embed_url:
+          type: string
+          description: The privacy-enhanced iframe address (youtube-nocookie, rel=0), with start when set.
+          examples: ["https://www.youtube-nocookie.com/embed/aqz-KE-bpKQ?rel=0&modestbranding=1&start=30"]
+        watch_url: { type: string, examples: ["https://www.youtube.com/watch?v=aqz-KE-bpKQ"] }
+        thumbnail_url: { type: string, examples: ["https://i.ytimg.com/vi/aqz-KE-bpKQ/hqdefault.jpg"] }
+
     SavedListingCard:
       type: object
       description: New in 0.27.0. The card of a saved listing (current when available, else the snapshot).
-      required: [slug, reference, title, category, price, price_period, city, country, photo]
+      required: [slug, reference, title, category, price, price_period, city, country, photo, has_video]
       additionalProperties: false
       properties:
         slug: { type: [string, "null"], description: "Set only when the listing is available; null otherwise." }
@@ -10739,6 +10792,7 @@ components:
           oneOf:
             - $ref: "#/components/schemas/Photo"
             - type: "null"
+        has_video: { type: boolean, description: "New in 0.28.0. Whether the listing has a video tour (false in a card saved before 0.28.0 until it is refreshed)." }
 
     Coded:
       type: object
@@ -10832,12 +10886,22 @@ components:
         features: { type: [array, "null"], maxItems: 30, items: { type: string } }
         max_guests: { type: [integer, "null"], minimum: 1, maximum: 100, description: Short stays only; required to submit one. }
         min_nights: { type: [integer, "null"], minimum: 1, maximum: 365, description: Short stays only. }
+        youtube_url:
+          type: [string, "null"]
+          maxLength: 2048
+          description: |
+            New in 0.28.0. A YouTube watch or share link of the video tour; `null` or `""` removes it.
+            Allowlisted hosts and paths only (see "YouTube video tours"); otherwise `400
+            VALIDATION_FAILED` on `youtube_url`: "must be a link to a YouTube video". Only the id
+            and the start time (`t=` / `start=`) are kept.
+          examples: ["https://youtu.be/aqz-KE-bpKQ?t=1m30s"]
 
     ListingContent:
       type: object
       description: New in 0.22.0. The content in the shape a PATCH sends it back (codes, not labels).
       required: [title, summary, description, deal, category, property_type, price, price_period, country, city, suburb,
-                 city_name, region_name, bedrooms, bathrooms, floor_area, land_area, features, max_guests, min_nights]
+                 city_name, region_name, bedrooms, bathrooms, floor_area, land_area, features, max_guests, min_nights,
+                 youtube_url, youtube_video_id, youtube_start_seconds]
       properties:
         title: { type: string }
         summary: { type: string }
@@ -10864,6 +10928,12 @@ components:
         features: { type: array, items: { type: string } }
         max_guests: { type: [integer, "null"] }
         min_nights: { type: [integer, "null"] }
+        youtube_url:
+          type: [string, "null"]
+          description: "New in 0.28.0. The canonical watch link `https://www.youtube.com/watch?v=ID` (with `&t=Ns` when the video starts later); never the link as typed. Null without a video."
+          examples: ["https://www.youtube.com/watch?v=aqz-KE-bpKQ&t=90s"]
+        youtube_video_id: { type: [string, "null"], pattern: "^[A-Za-z0-9_-]{11}$", description: New in 0.28.0. }
+        youtube_start_seconds: { type: [integer, "null"], minimum: 0, description: "New in 0.28.0. Where the video starts, in seconds; null at the beginning." }
 
     ManagedPhoto:
       type: object
@@ -11286,7 +11356,7 @@ components:
       type: object
       description: A public listing. The same object is used in search results, on the detail endpoint and on profiles.
       required: [id, slug, reference, title, deal, category, property_type, price, price_period, suburb, city, region, country, market_code,
-                 bedrooms, bathrooms, floor_area, land_area, max_guests, min_nights, summary, description, features, featured, photos, advertiser,
+                 bedrooms, bathrooms, floor_area, land_area, max_guests, min_nights, summary, description, features, featured, photos, video, has_video, advertiser,
                  verification, published_at, expires_at, updated_at, availability]
       additionalProperties: false
       properties:
@@ -11344,6 +11414,12 @@ components:
           description: In display order; the first is the cover. May be empty.
           items:
             $ref: "#/components/schemas/Photo"
+        video:
+          description: "New in 0.28.0. The listing's YouTube video tour, or null."
+          oneOf:
+            - $ref: "#/components/schemas/ListingVideo"
+            - type: "null"
+        has_video: { type: boolean, description: "New in 0.28.0. Whether `video` is set (for a badge on cards)." }
         advertiser:
           $ref: "#/components/schemas/ListingAdvertiser"
         verification:

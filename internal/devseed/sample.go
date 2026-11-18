@@ -61,6 +61,11 @@ type SampleListing struct {
 		Verified bool   `json:"verified"`
 	} `json:"advertiser"`
 	Featured bool `json:"featured"`
+
+	// YouTubeVideoID and YouTubeStartSeconds are a video tour (backend
+	// samples only): a well-known public video id. The seed never calls YouTube.
+	YouTubeVideoID      string `json:"youtubeVideoId,omitempty"`
+	YouTubeStartSeconds *int   `json:"youtubeStartSeconds,omitempty"`
 }
 
 // SampleOffering is one service a profile describes in detail.

@@ -69,6 +69,7 @@ func ListingRecords(now time.Time) []listings.Record {
 			CityName: l.CityName, RegionName: l.RegionName,
 			Bedrooms: l.Bedrooms, Bathrooms: l.Bathrooms, FloorArea: l.FloorArea, LandArea: l.LandArea,
 			MaxGuests: l.MaxGuests, MinNights: l.MinNights,
+			YouTubeVideoID: l.YouTubeVideoID, YouTubeStartSeconds: l.YouTubeStartSeconds,
 			Summary: l.Summary, Description: l.Description, Featured: l.Featured,
 			Photos: []listings.Photo{{URL: PhotoPathPrefix + l.Image.File, Alt: l.Image.Alt, Width: l.Image.Width, Height: l.Image.Height}},
 			Status: listings.StatusPublished, PublishedAt: published, ExpiresAt: published.AddDate(0, 0, PublicationDays), UpdatedAt: published,

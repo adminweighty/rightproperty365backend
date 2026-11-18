@@ -31,7 +31,7 @@ const (
 var patchFields = []string{
 	"title", "summary", "description", "deal", "category", "property_type", "price", "price_period",
 	"country", "city", "suburb", "city_name", "region_name", "bedrooms", "bathrooms", "floor_area", "land_area",
-	"features", "max_guests", "min_nights",
+	"features", "max_guests", "min_nights", "youtube_url",
 }
 
 // htmlRe finds markup: a "<" that starts a tag, a comment or a declaration.
@@ -136,6 +136,26 @@ func applyPatch(c *Content, patch map[string]json.RawMessage, fields map[string]
 	num("land_area", &c.LandArea)
 	num("max_guests", &c.MaxGuests)
 	num("min_nights", &c.MinNights)
+	// The video: a YouTube link, parsed to its id and start time; null or
+	// "" removes it. The link itself is never stored.
+	if v, ok := patch["youtube_url"]; ok {
+		var link string
+		switch {
+		case isNull(v):
+			c.YouTubeVideoID, c.YouTubeStartSeconds = "", nil
+		case json.Unmarshal(v, &link) != nil:
+			fields["youtube_url"] = "must be a string or null"
+		case strings.TrimSpace(link) == "":
+			c.YouTubeVideoID, c.YouTubeStartSeconds = "", nil
+		default:
+			id, start, err := ParseYouTubeURL(link)
+			if err != nil {
+				fields["youtube_url"] = MsgNotYouTubeVideo
+				break
+			}
+			c.YouTubeVideoID, c.YouTubeStartSeconds = id, start
+		}
+	}
 	if v, ok := patch["features"]; ok {
 		var list []string
 		switch {
@@ -314,6 +334,14 @@ func (s *Service) validateContent(ctx context.Context, c Content, g Geography, f
 		}
 	}
 
+	// Video (the database's CHECK constraints of migration 0027).
+	if c.YouTubeVideoID != "" && !ValidYouTubeID(c.YouTubeVideoID) {
+		fields["youtube_url"] = MsgNotYouTubeVideo
+	}
+	if s := c.YouTubeStartSeconds; s != nil && (*s < 0 || *s > MaxYouTubeStartSeconds || c.YouTubeVideoID == "") {
+		fields["youtube_url"] = MsgNotYouTubeVideo
+	}
+
 	// Price.
 	if c.PriceAmount != "" {
 		amount, err := ParseAmount(c.PriceAmount)
@@ -446,6 +474,7 @@ func completeness(c Content, photos []StoredPhoto, alts map[string]string, g Geo
 	if c.Category == CategoryShortStay && c.MaxGuests == nil {
 		need("max_guests", "Say how many guests the place sleeps.")
 	}
+	// A video tour is optional (BR-013): no video is never missing.
 	if len(photos) < MinPhotosToSubmit {
 		need("photos", fmt.Sprintf("Add at least %d photo.", MinPhotosToSubmit))
 	}

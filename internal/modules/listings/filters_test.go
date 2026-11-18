@@ -386,11 +386,11 @@ func TestMappingVersionAndNewFields(t *testing.T) {
 	if err := json.Unmarshal(IndexMapping, &mapping); err != nil {
 		t.Fatal(err)
 	}
-	if mapping.Mappings.Meta.Version != MappingVersion || MappingVersion != 5 {
+	if mapping.Mappings.Meta.Version != MappingVersion || MappingVersion != 6 {
 		t.Fatalf("mapping _meta version %d, code says %d: raise both together and note the reindex", mapping.Mappings.Meta.Version, MappingVersion)
 	}
 	for field, want := range map[string]string{
-		"market": "keyword", "region": "keyword", "advertiser_type": "keyword", "advertiser_verified": "boolean", "has_photos": "boolean",
+		"market": "keyword", "region": "keyword", "advertiser_type": "keyword", "advertiser_verified": "boolean", "has_photos": "boolean", "has_video": "boolean",
 		"floor_area": "integer", "land_area": "integer", "published_at": "date", "city_name": "text", "region_name": "text",
 	} {
 		if got := mapping.Mappings.Properties[field].Type; got != want {

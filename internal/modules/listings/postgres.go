@@ -58,7 +58,7 @@ const recordColumns = `
 	o.name, COALESCE(o.kind::text, ''), COALESCE(o.status = 'ACTIVE', false),
 	ag.verified_at, COALESCE(ag.logo_checksum, ''), COALESCE(ag.logo_width, 0), COALESCE(ag.logo_height, 0),
 	COALESCE(at.specialism, ''), COALESCE(at.logo_checksum, ''), COALESCE(at.logo_width, 0), COALESCE(at.logo_height, 0),
-	su.full_name, sr.approved_at, l.reviewed_at, l.reviewed_by`
+	su.full_name, sr.approved_at, l.reviewed_at, l.reviewed_by, COALESCE(l.youtube_video_id, ''), l.youtube_start_seconds`
 
 // recordFrom joins who advertises the listing, read with the listing every
 // time: the organisation and its own profile, the assigned agent's profile,
@@ -109,7 +109,8 @@ func scanRecord(row pgx.CollectableRow) (Record, error) {
 		&r.Status, &publishedAt, &expiresAt, &r.UpdatedAt, &r.OrganisationID, &r.AgentUserID, &r.SellerUserID,
 		&sellerName, &r.CityName, &r.RegionName, &agKind, &agSlug, &agName, &agVerified, &atSlug, &atNm, &atVerified, &r.Features, &photos,
 		&orgName, &orgKind, &orgActive, &agVerifiedAt, &agChecksum, &agWidth, &agHeight,
-		&atSpecialism, &atChecksum, &atWidth, &atHigh, &ownerName, &ownerApprovedAt, &r.ReviewedAt, &r.ReviewedBy); err != nil {
+		&atSpecialism, &atChecksum, &atWidth, &atHigh, &ownerName, &ownerApprovedAt, &r.ReviewedAt, &r.ReviewedBy,
+		&r.YouTubeVideoID, &r.YouTubeStartSeconds); err != nil {
 		return Record{}, err
 	}
 	if v, ok := new(big.Rat).SetString(priceText); priceText != "" && ok {

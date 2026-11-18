@@ -85,6 +85,9 @@ type Snapshot struct {
 	City        listings.Place   `json:"city"`
 	Country     listings.Country `json:"country"`
 	Photo       *listings.Photo  `json:"photo"`
+	// HasVideo says the listing has a video tour (0.28.0; false in a
+	// snapshot stored before).
+	HasVideo bool `json:"has_video"`
 }
 
 // SnapshotOf builds the card from a listing's public form: its first photo
@@ -93,7 +96,7 @@ func SnapshotOf(l listings.Listing) Snapshot {
 	slug := l.Slug
 	s := Snapshot{
 		Slug: &slug, Reference: l.Reference, Title: l.Title, Category: l.Category, Price: l.Price,
-		City: l.City, Country: l.Country,
+		City: l.City, Country: l.Country, HasVideo: l.HasVideo,
 	}
 	if l.PricePeriod != nil {
 		period := *l.PricePeriod

@@ -99,6 +99,11 @@ type Content struct {
 	Features     []string `json:"features"`
 	MaxGuests    *int     `json:"max_guests"`
 	MinNights    *int     `json:"min_nights"`
+	// YouTubeVideoID is the id of the listing's YouTube video tour ("" for
+	// none) and YouTubeStartSeconds where it starts (nil: at the beginning).
+	// They are parsed from the youtube_url of a PATCH (ParseYouTubeURL).
+	YouTubeVideoID      string `json:"youtube_video_id,omitempty"`
+	YouTubeStartSeconds *int   `json:"youtube_start_seconds,omitempty"`
 }
 
 // ContentOf returns the editable content of a record.
@@ -109,6 +114,7 @@ func ContentOf(r Record) Content {
 		City: r.City, Suburb: r.Suburb, CityName: r.CityName, RegionName: r.RegionName,
 		Bedrooms: copyInt(r.Bedrooms), Bathrooms: copyInt(r.Bathrooms), FloorArea: copyInt(r.FloorArea), LandArea: copyInt(r.LandArea),
 		Features: append([]string{}, r.Features...), MaxGuests: copyInt(r.MaxGuests), MinNights: copyInt(r.MinNights),
+		YouTubeVideoID: r.YouTubeVideoID, YouTubeStartSeconds: copyInt(r.YouTubeStartSeconds),
 	}
 }
 
@@ -119,6 +125,7 @@ func (c Content) ApplyTo(r *Record) {
 	r.PricePeriod, r.MarketCode, r.City, r.Suburb, r.CityName, r.RegionName = c.PricePeriod, c.MarketCode, c.City, c.Suburb, c.CityName, c.RegionName
 	r.Bedrooms, r.Bathrooms, r.FloorArea, r.LandArea = copyInt(c.Bedrooms), copyInt(c.Bathrooms), copyInt(c.FloorArea), copyInt(c.LandArea)
 	r.Features, r.MaxGuests, r.MinNights = append([]string{}, c.Features...), copyInt(c.MaxGuests), copyInt(c.MinNights)
+	r.YouTubeVideoID, r.YouTubeStartSeconds = c.YouTubeVideoID, copyInt(c.YouTubeStartSeconds)
 }
 
 func copyInt(p *int) *int {

@@ -39,6 +39,13 @@ type ContentView struct {
 	Features     []string  `json:"features"`
 	MaxGuests    *int      `json:"max_guests"`
 	MinNights    *int      `json:"min_nights"`
+	// YouTubeURL is the canonical watch link of the video tour
+	// (https://www.youtube.com/watch?v=ID, with &t=Ns when it starts later),
+	// never the link as typed; null without a video. YouTubeVideoID and
+	// YouTubeStartSeconds are what is stored.
+	YouTubeURL          *string `json:"youtube_url"`
+	YouTubeVideoID      *string `json:"youtube_video_id"`
+	YouTubeStartSeconds *int    `json:"youtube_start_seconds"`
 }
 
 func opt(s string) *string {
@@ -50,7 +57,14 @@ func opt(s string) *string {
 
 func contentView(c Content) ContentView {
 	features := append([]string{}, c.Features...)
+	var video *string
+	var start *int
+	if c.YouTubeVideoID != "" {
+		link := youTubeEditURL(c.YouTubeVideoID, c.YouTubeStartSeconds)
+		video, start = &link, copyInt(c.YouTubeStartSeconds)
+	}
 	return ContentView{
+		YouTubeURL: video, YouTubeVideoID: opt(c.YouTubeVideoID), YouTubeStartSeconds: start,
 		Title: c.Title, Summary: c.Summary, Description: c.Description, Deal: opt(c.Deal), Category: opt(c.Category),
 		PropertyType: opt(c.PropertyType), Price: PriceView{Amount: opt(c.PriceAmount), Currency: opt(c.Currency)},
 		PricePeriod: opt(c.PricePeriod), Country: opt(c.MarketCode), City: opt(c.City), Suburb: opt(c.Suburb),
@@ -234,7 +248,7 @@ func diff(before, after Content) []FieldChange {
 	a, b := contentMap(contentView(before)), contentMap(contentView(after))
 	for _, field := range []string{"title", "summary", "description", "deal", "category", "property_type", "price", "price_period",
 		"country", "city", "suburb", "city_name", "region_name", "bedrooms", "bathrooms", "floor_area", "land_area",
-		"features", "max_guests", "min_nights"} {
+		"features", "max_guests", "min_nights", "youtube_url"} {
 		if !reflect.DeepEqual(a[field], b[field]) {
 			out = append(out, FieldChange{Field: field, Before: a[field], After: b[field]})
 		}

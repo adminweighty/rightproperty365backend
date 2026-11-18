@@ -425,6 +425,11 @@ type Listing struct {
 	Featured    bool       `json:"featured"`
 	Photos      []Photo    `json:"photos"`
 	Advertiser  Advertiser `json:"advertiser"`
+
+	// Video is the listing's YouTube video tour, null when it has none;
+	// HasVideo says whether it has one (for the cards of a search).
+	Video    *Video `json:"video"`
+	HasVideo bool   `json:"has_video"`
 	// Verification says which checks stand behind the listing.
 	Verification Verification `json:"verification"`
 	PublishedAt  time.Time    `json:"published_at"`
@@ -503,6 +508,10 @@ type Record struct {
 	Featured    bool
 	Photos      []Photo
 	Advertiser  Advertiser
+	// YouTubeVideoID is the id of the listing's YouTube video tour ("" for
+	// none); YouTubeStartSeconds where it starts (nil: at the beginning).
+	YouTubeVideoID      string
+	YouTubeStartSeconds *int
 
 	Status      string
 	PublishedAt time.Time

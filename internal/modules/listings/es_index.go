@@ -57,7 +57,8 @@ type ESTransport interface {
 //	4  city_name, region_name (free-text places of a listing in a country
 //	   without reference places; city and suburb may now be absent)
 //	5  advertiser_verified (only listings of a verified advertiser are public)
-const MappingVersion = 5
+//	6  has_video (the listing has a YouTube video tour)
+const MappingVersion = 6
 
 // IndexMapping is the explicit mapping of a listings index.
 //
@@ -100,6 +101,8 @@ type Document struct {
 	// every hit.
 	AdvertiserVerified bool `json:"advertiser_verified"`
 	HasPhotos          bool `json:"has_photos"`
+	// HasVideo says the listing has a YouTube video tour (never which).
+	HasVideo bool `json:"has_video"`
 	// MaxGuests and MinNights are set for short stays only.
 	MaxGuests *int `json:"max_guests,omitempty"`
 	MinNights *int `json:"min_nights,omitempty"`
@@ -172,6 +175,7 @@ func BuildDocument(r Record, labels map[string]map[string]string) Document {
 	}
 	return Document{
 		Region: labels[keyCityRegion][r.City], AdvertiserType: advertiser, AdvertiserVerified: r.Advertiser.Verified, HasPhotos: len(r.Photos) > 0,
+		HasVideo: ValidYouTubeID(r.YouTubeVideoID),
 		CityName: r.CityName, RegionName: r.RegionName,
 		MaxGuests: r.MaxGuests, MinNights: r.MinNights, Keywords: labels[keyCategoryKeywords][r.Category],
 		ID: r.ID.String(), Slug: r.Slug, Reference: r.Reference, Title: r.Title, Summary: r.Summary, Description: r.Description,
