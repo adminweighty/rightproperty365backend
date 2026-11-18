@@ -239,6 +239,7 @@ All configuration comes from environment variables. For local development you ma
 | `ADMIN_SESSION_IDLE_TTL` | `30m` | Administrator inactivity timeout (Go duration; must not exceed `ADMIN_SESSION_TTL`) |
 | `ANALYTICS_RAW_RETENTION_DAYS` | `90` | Days raw analytics events are kept before the worker deletes them (7..3650); rollups are kept. See "Listing analytics" |
 | `STORAGE_DRIVER`, `STORAGE_LOCAL_DIR`, `S3_*` | | Private file storage for onboarding documents: see "File storage". **Staging and production must use `STORAGE_DRIVER=s3`** |
+| `FCM_PROJECT_ID`, `FCM_SERVICE_ACCOUNT_JSON`, `FCM_SERVICE_ACCOUNT_FILE` | _(empty)_ | Push through FCM: see "Notifications and push". Without them push is **disabled** in staging/production (one log line, never a startup failure) and logged in development. The key is a secret, never logged |
 | `ADMINCTL_PASSWORD` | _(empty)_ | `cmd/adminctl` only: the administrator password, as an alternative to stdin |
 
 ## Endpoints
@@ -259,6 +260,10 @@ All configuration comes from environment variables. For local development you ma
 | POST | `/v1/venues/{listingId}/quotes` | Public itemised quote (enquiry mode, no payment) |
 | GET, POST | `/v1/me/venue-bookings`, `/v1/me/venue-bookings/{id}` (+ `/cancel`, `/reschedule`, `/accept`) | A customer's hourly bookings |
 | GET, POST | `/v1/agent/organisations/{id}/venue-bookings[/{bookingId}]` (+ `/confirm`, `/decline`, `/cancel`, `/propose`, `/complete`, `/no-show`), `/v1/me/hosted-venue-bookings` | Hourly bookings a host received |
+| GET, POST, DELETE | `/v1/me/devices`, `/v1/me/devices/{deviceId}` | Push devices (API 0.35.0) |
+| GET, POST | `/v1/me/notifications` (+ `/unread-count`, `/{id}/read`, `/read-all`) | In-app notifications and the unread badge |
+| GET, PUT | `/v1/me/notification-preferences` | Email and push per type (essential types locked on) |
+| GET | `/v1/admin/notifications/health` | Delivery counts, dead-letter backlog, oldest unattempted push |
 | GET, POST, PATCH | `/v1/agent/organisations/{id}/ledger/*` (`/options`, `/entries[/{entryId}]` + `/reverse`, `/correct`, `/reconcile`, `/notes`, `/attachments`; `/reports/*`, `/categories`) | The agent ledger / books, per currency (API 0.34.0) |
 | GET | `/v1/trust/summary` | How many advertisers are verified and how many listings are public (public, cacheable) |
 | POST | `/v1/property-requests` | The single entry point for every customer enquiry (guest or signed-in) |
@@ -461,6 +466,80 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 change; follow-up dates and reminders; editing or deleting a note; listing analytics, conversion
 funnels and response-time KPIs (no event data exists); seeker favourites, saved searches and
 alerts.
+
+## Notifications and push (API 0.35.0)
+
+FR-044, FR-045, FR-062, FR-064, FR-065 and FR-003. The code is in `internal/modules/inapp`: devices, in-app notifications, preferences, delivery records and the push sender. The FCM adapter is in `internal/platform/push`. The template-to-notification mapping is in `internal/modules/notifications/inapp.go`.
+
+- **In-app notifications.** The worker creates them from the outbox events the email path already handles, for the same recipients. Only known accounts get one: a guest has no inbox.
+  - There is **one per (event, recipient)**. The unique key `notifications(source_event_id, user_id)` enforces it, so a redelivered event creates nothing twice.
+  - The types:
+    - NEW_LEAD: a property request, or one assigned to you
+    - NEW_ENQUIRY
+    - APPOINTMENT_REQUESTED, APPOINTMENT_CONFIRMED, APPOINTMENT_CANCELLED, APPOINTMENT_RESCHEDULED
+    - APPLICATION_RECEIVED, APPLICATION_UPDATED
+    - VENUE_BOOKING_REQUESTED, VENUE_BOOKING_CONFIRMED, VENUE_BOOKING_DECLINED, VENUE_BOOKING_CANCELLED, VENUE_BOOKING_RESCHEDULED
+    - LISTING_REVIEWED
+    - SUBSCRIPTION_INVOICE, SUBSCRIPTION_ACTIVATED, SUBSCRIPTION_EXPIRED, SUBSCRIPTION_UPDATED (rejected or cancelled)
+    - ACCOUNT: suspended or reactivated
+    - SECURITY: password changed, administrator sign-in
+    - TEAM_INVITATION: created on the request path, when the invited address belongs to an account
+  - Receipts of your own action, the welcome email and the onboarding emails have no in-app item.
+- **Safe text only.** A notification has a fixed title, plus the reference and the listing's place, for example `PR-ZW-10001 · Borrowdale`.
+  - It never contains a name, phone, email, message, reason or answer.
+  - `TestInAppTextHasNoPersonalData` renders every template against the seed to check this.
+  - Links are pages the web has. Each page checks sign-in and ownership itself.
+- **Push** goes through FCM HTTP v1, which also carries APNs.
+  - A notification queues one `PENDING` push per device of the recipient that has push consent, provided push is on for the type.
+  - The push sender (in the worker; in the API process when there is no database) sends after the commit:
+    - The data is `{type, link, notification_id}`, and the APNs badge is the unread count.
+    - More than 5 pushes to one device within a minute become one summary push. A device that has already had 5 in the window waits until the window has passed.
+    - Statuses are `PENDING`, `ATTEMPTED`, `PROVIDER_ACCEPTED`, `FAILED` (retried at `next_attempt_at`; 30 s doubling, 6 tries) and `DEAD`.
+    - **No status means "delivered".** The provider accepting a push is not a person seeing it.
+    - During an FCM outage the inbox still fills, and the queued pushes go out when FCM recovers.
+  - Email deliveries of a notification are recorded too, as `EMAIL` rows.
+- **Devices** (`/v1/me/devices`) are removed:
+  - on logout of the session that registered them, and for the optional `device_token` of `POST /v1/auth/logout`;
+  - on account deletion (deleted explicitly, because the users row is anonymised);
+  - when FCM answers `UNREGISTERED`, `SENDER_ID_MISMATCH` or `INVALID_ARGUMENT` about the token.
+- **Preferences** (`/v1/me/notification-preferences`) set email and push per type. In-app is always on.
+  - ACCOUNT, SECURITY and SUBSCRIPTION_INVOICE are essential and cannot be turned off (400 on that item).
+  - Every change is stored with `changed_at` and its source (`X-Client` header: `web`, `app`, otherwise `api`), and is kept in `notification_preference_changes`.
+  - **The notification emails of non-essential types now check the preference before sending.**
+- **Health.** `GET /v1/admin/notifications/health` (SUPER_ADMIN, PLATFORM_ADMIN, SUPPORT) returns:
+  - counts by channel and status;
+  - the dead-letter backlog;
+  - the oldest unattempted push.
+
+### Configuration (push)
+
+| Variable | Notes |
+| --- | --- |
+| `FCM_PROJECT_ID` | The Firebase project id (this project: `rightproperty365`). |
+| `FCM_SERVICE_ACCOUNT_JSON` | The service-account key JSON. **A secret**: it is never logged or echoed in an error. |
+| `FCM_SERVICE_ACCOUNT_FILE` | Alternatively, the path of the key file, for example a mounted Kubernetes Secret. The JSON variable wins when both are set. |
+
+The OAuth token is a signed RS256 JWT exchanged at Google's token endpoint (plain `crypto/rsa`, no SDK). It is cached until a minute before it expires.
+
+At startup the API and the worker each log **one line** naming the pusher:
+- `push provider selected: fcm` when the credentials are set;
+- the log pusher in development, which sends nothing and logs the safe text only;
+- `push disabled: …` in staging and production without usable credentials. **This is never a startup failure:** in-app notifications and email continue, and no push is queued.
+
+### What you must supply
+
+Already done:
+- the Firebase project `rightproperty365`;
+- the Android and iOS apps, both `com.rightproperty365.rightproperty365`;
+- the APNs auth key, uploaded to Firebase.
+
+Still to supply:
+1. **A service-account JSON key** with the **Firebase Cloud Messaging API Admin** role (Google Cloud console → IAM → Service accounts → create a key). Never commit it.
+2. **A Kubernetes Secret** holding the key, mounted or exposed to **both the api and the worker** Deployments. Either set `FCM_SERVICE_ACCOUNT_JSON` from the secret, or mount it as a file and set `FCM_SERVICE_ACCOUNT_FILE`. Set `FCM_PROJECT_ID=rightproperty365` on both. For example:
+   `kubectl create secret generic rp365-fcm --from-file=service-account.json=./key.json`
+3. Run migration `0034_notifications_push`.
+
+The website registers no device; there is no web push in this slice.
 
 ## Agent ledger / books (API 0.34.0)
 
@@ -3315,6 +3394,13 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0034_notifications_push` (API 0.35.0): `user_devices` (unique `token`, `session_id` of the
+  registering session), `notifications` (unique `(source_event_id, user_id)`: one per event and
+  recipient; safe text; `read_at`), `notification_deliveries` (PUSH per device / EMAIL; PENDING,
+  ATTEMPTED, PROVIDER_ACCEPTED, FAILED, DEAD; unique `(notification_id, channel, target)`;
+  `device_id` ON DELETE SET NULL), `notification_preferences` (email / push per user and type with
+  `changed_at` and `source`) and `notification_preference_changes` (the history). New tables only;
+  the down migration drops them (LOSES devices, notifications, delivery records and preferences).
 - `0033_agent_ledger` (API 0.34.0): `ledger_categories` (per book: organisation_id XOR
   book_user_id, generated `book_id`), `ledger_entries` (amount `numeric(20,4)` > 0, `char(3)`
   currency, the reversal / correction / transfer / settlement self-links, the guard trigger
@@ -3544,7 +3630,7 @@ The worker handles `PROPERTY_REQUEST_CREATED`, `BUSINESS_ENQUIRY_CREATED`, `USER
 `PASSWORD_CHANGED` and `ADMIN_SIGNED_IN` by sending the notification emails described under
 "Email"; each email is keyed on the event ID and recipient, so a redelivered event sends nothing
 twice. `PROPERTY_REQUEST_STAGE_CHANGED` and `PROPERTY_REQUEST_EXCEPTION_RESOLVED` (identifiers
-and stages only), `LISTING_SAVED` and `LISTING_UNSAVED` (identifiers only) are acknowledged without sending anything: no email exists for them yet. `LISTING_SAVED`, `PROPERTY_REQUEST_CREATED`, `APPOINTMENT_REQUESTED`, `APPOINTMENT_CONFIRMED` and `LISTING_RELISTED` are also recorded as server-side analytics events (after the email handler, `outbox.Chain`: a transient failure of either retries both, each idempotent). The same three creation events link the new item to the matching contacts of its organisation (see "Agent CRM"), and every minute the worker writes `CONTACT_REMINDER_DUE` for due contact reminders (acknowledged). Every 15 minutes the worker recomputes the analytics rollups and applies `ANALYTICS_RAW_RETENTION_DAYS` (see "Listing analytics"). The four application events send their emails, `APPLICATION_SUBMITTED` is also linked by the CRM and counted as `application_submit`, and every hour the worker runs the application retention job and removes deleted application files from the object storage (the worker opens the file storage for this; see "Questionnaires and applications"). A handler can mark a failure permanent, which dead-letters the event at once. **The worker
+and stages only), `LISTING_SAVED` and `LISTING_UNSAVED` (identifiers only) are acknowledged without sending anything: no email exists for them yet. `LISTING_SAVED`, `PROPERTY_REQUEST_CREATED`, `APPOINTMENT_REQUESTED`, `APPOINTMENT_CONFIRMED` and `LISTING_RELISTED` are also recorded as server-side analytics events (after the email handler, `outbox.Chain`: a transient failure of either retries both, each idempotent). The same three creation events link the new item to the matching contacts of its organisation (see "Agent CRM"), and every minute the worker writes `CONTACT_REMINDER_DUE` for due contact reminders (acknowledged). Every 15 minutes the worker recomputes the analytics rollups and applies `ANALYTICS_RAW_RETENTION_DAYS` (see "Listing analytics"). The four application events send their emails, `APPLICATION_SUBMITTED` is also linked by the CRM and counted as `application_submit`, and every hour the worker runs the application retention job and removes deleted application files from the object storage (the worker opens the file storage for this; see "Questionnaires and applications"). Every notification email's recipient with an account also gets one in-app notification per event (unique per event and recipient), and the worker's push sender sends the queued pushes after the commit (see "Notifications and push"); the emails of non-essential types follow the recipient's preferences. A handler can mark a failure permanent, which dead-letters the event at once. **The worker
 sends real email when `RESEND_API_KEY` is set.** Without `DATABASE_URL` in development the worker
 logs that it is idle and waits for shutdown (the API then handles the events in-process).
 

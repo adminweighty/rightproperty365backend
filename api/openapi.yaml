@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.34.0
+  version: 0.35.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,26 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Notifications and push (new in 0.35.0)
+    - **In-app notifications** (FR-062): after the commit, the worker turns outbox events into one
+      notification per (event, recipient), enforced by a unique key: a redelivered event never
+      creates a second one. Recipients are the people the email already goes to (known accounts).
+      Text is **safe text only**: a fixed title, the reference and the place
+      (`PR-ZW-10001 · Borrowdale`), never a name, phone, email, message or answer. `link` is a
+      relative web path; the page checks sign-in and ownership.
+    - **Push** (FCM HTTP v1, which carries APNs): one push per opted-in device, data
+      `{type, link, notification_id}`, the APNs badge is the unread count. More than 5 to one device
+      in a minute become one summary push. Delivery records say PENDING, ATTEMPTED,
+      PROVIDER_ACCEPTED, FAILED or DEAD (6 tries, exponential backoff); **never "delivered"**: the
+      provider accepting a push is not a person seeing it. During an outage the inbox still fills.
+    - **Devices** (`/v1/me/devices`): removed on logout of the session that registered them (and the
+      optional `device_token` of `POST /v1/auth/logout`), on account deletion, and when FCM reports
+      the token UNREGISTERED or invalid.
+    - **Preferences** (`/v1/me/notification-preferences`, FR-003): email and push per type; in-app is
+      always on; essential types (account, security, subscription invoices) cannot be turned off.
+      Changes are timestamped, source-attributed (`X-Client`, allowed by CORS) and apply from the
+      next send; the notification emails of non-essential types follow them.
 
     Agent ledger / books (new in 0.34.0)
     - **What it is** (BR-012, FR-026 to FR-029, FSD section 6): an organisation's (or an approved
@@ -667,6 +687,11 @@ tags:
     description: |
       The agent CRM (new in 0.31.0): an organisation's (or a direct owner's) private contact
       book. 404 `CONTACT_NOT_FOUND` for anyone else.
+  - name: notifications
+    description: |
+      The notification centre (new in 0.35.0): push devices, in-app notifications with the
+      unread badge, and email / push preferences per type. 404 for another user's device or
+      notification.
   - name: ledger
     description: |
       The agent ledger / books (new in 0.34.0): an organisation's (or a direct owner's) own cashbook, per
@@ -3966,7 +3991,14 @@ paths:
       summary: Sign out
       description: |
         Revokes the current session (cookie or bearer) and clears the cookie. Answers `204` even
-        when nobody is signed in. No request body.
+        when nobody is signed in. The body is optional (new in 0.35.0): `{"device_token": "…"}`
+        removes that push token when it is the caller's; the push devices this session registered
+        are removed in any case (FR-045). An empty or unreadable body is ignored.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, properties: { device_token: { type: string } } }
       security:
         - {}
         - cookieSession: []
@@ -12580,6 +12612,197 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/LedgerNotFound" }
+  /v1/me/devices:
+    get:
+      tags: [notifications]
+      operationId: listDevices
+      summary: The caller's push devices (new in 0.35.0)
+      description: The token itself is never returned; `token_hint` is its last 4 characters.
+      responses:
+        "200":
+          description: The devices, newest first.
+          content:
+            application/json:
+              schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: "#/components/schemas/Device" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+    post:
+      tags: [notifications]
+      operationId: registerDevice
+      summary: Register or refresh a push token (new in 0.35.0)
+      description: |
+        Upserts on `token`: `201` for a new token, `200` when it was already registered (updated, and
+        moved to this user when it belonged to another; the previous user's queued pushes to it are
+        dead-lettered). The device is tied to the calling session: that session's logout removes it.
+        Either scope.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, platform, app_version, push_consent]
+              properties:
+                token: { type: string, minLength: 1, maxLength: 4096, description: The FCM registration token (FCM carries APNs). }
+                platform: { type: string, enum: [IOS, ANDROID, WEB] }
+                app_version: { type: string, minLength: 1, maxLength: 40 }
+                locale: { type: string, maxLength: 35 }
+                push_consent: { type: boolean }
+      responses:
+        "200": { description: Already registered (updated)., content: { application/json: { schema: { $ref: "#/components/schemas/DeviceID" } } } }
+        "201": { description: Registered., content: { application/json: { schema: { $ref: "#/components/schemas/DeviceID" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    delete:
+      tags: [notifications]
+      operationId: deleteDeviceByToken
+      summary: Remove one of the caller's tokens (new in 0.35.0)
+      parameters:
+        - { name: token, in: query, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Removed. }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/DeviceNotFound" }
+  /v1/me/devices/{deviceId}:
+    delete:
+      tags: [notifications]
+      operationId: deleteDevice
+      summary: Remove one of the caller's devices (new in 0.35.0)
+      parameters:
+        - { name: deviceId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Removed. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/DeviceNotFound" }
+  /v1/me/notifications:
+    get:
+      tags: [notifications]
+      operationId: listNotifications
+      summary: The caller's in-app notifications (new in 0.35.0)
+      description: Newest first, 20 a page. Safe text only (a reference and a place); `link` is a relative web path whose page checks sign-in and ownership.
+      parameters:
+        - { name: unread, in: query, schema: { type: boolean }, description: Only the unread ones. }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, unread_count, page, page_size, total]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Notification" } }
+                  unread_count: { type: integer }
+                  page: { type: integer }
+                  page_size: { type: integer, const: 20 }
+                  total: { type: integer }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /v1/me/notifications/unread-count:
+    get:
+      tags: [notifications]
+      operationId: unreadNotificationCount
+      summary: The unread badge (new in 0.35.0)
+      description: Cheap; the website polls it every 60 s while the tab is visible.
+      responses:
+        "200": { description: The count., content: { application/json: { schema: { type: object, required: [unread_count], properties: { unread_count: { type: integer } } } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /v1/me/notifications/{id}/read:
+    post:
+      tags: [notifications]
+      operationId: markNotificationRead
+      summary: Mark one notification read (new in 0.35.0)
+      description: Idempotent (`read_at` keeps its first value).
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The notification and the new unread count.
+          content:
+            application/json:
+              schema: { type: object, required: [notification, unread_count], properties: { notification: { $ref: "#/components/schemas/Notification" }, unread_count: { type: integer } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotificationNotFound" }
+  /v1/me/notifications/read-all:
+    post:
+      tags: [notifications]
+      operationId: markAllNotificationsRead
+      summary: Mark every notification read (new in 0.35.0)
+      responses:
+        "200": { description: How many were marked., content: { application/json: { schema: { type: object, required: [marked, unread_count], properties: { marked: { type: integer }, unread_count: { type: integer, const: 0 } } } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /v1/me/notification-preferences:
+    get:
+      tags: [notifications]
+      operationId: getNotificationPreferences
+      summary: Email and push choices per notification type (new in 0.35.0)
+      responses:
+        "200": { description: Every type in display order., content: { application/json: { schema: { $ref: "#/components/schemas/NotificationPreferences" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+    put:
+      tags: [notifications]
+      operationId: setNotificationPreferences
+      summary: Change email and push choices (new in 0.35.0)
+      description: |
+        Omitted fields keep their value. Essential types (`ACCOUNT`, `SECURITY`, `SUBSCRIPTION_INVOICE`)
+        cannot be turned off and in-app is always on: `400 VALIDATION_FAILED` with
+        `fields["items[i].email"]` or `fields["items[i].push"]` starting `PREFERENCE_ESSENTIAL:`
+        (or `items[i].in_app`, and `items[i].type` for an unknown or repeated type); nothing is
+        applied then. Every actual change is recorded with its time and source (`X-Client`: `web`;
+        `app`, `ios` or `android` give `app`; anything else `api`) and applies from the next send.
+      parameters:
+        - { name: X-Client, in: header, schema: { type: string }, description: "`web`, `app`, `ios` or `android`." }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  maxItems: 50
+                  items: { type: object, required: [type], properties: { type: { type: string }, email: { type: boolean }, push: { type: boolean }, in_app: { type: boolean, const: true } } }
+      responses:
+        "200": { description: Every type after the change., content: { application/json: { schema: { $ref: "#/components/schemas/NotificationPreferences" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /v1/admin/notifications/health:
+    get:
+      tags: [admin, notifications]
+      operationId: notificationHealth
+      summary: Notification delivery health (new in 0.35.0, FR-065)
+      description: |
+        SUPER_ADMIN, PLATFORM_ADMIN and SUPPORT. Counts of delivery records by channel and status
+        (`PROVIDER_ACCEPTED` means the provider took the message, never that a person saw it), the
+        dead-letter backlog and the oldest unattempted push (PENDING, or FAILED waiting for a retry).
+        `push.provider` is this API process's configuration.
+      responses:
+        "200":
+          description: The health.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [push, deliveries, dead_letter_backlog, oldest_unattempted_at, oldest_unattempted_age_seconds, notifications_last_24h, unread_total, generated_at]
+                properties:
+                  push: { type: object, properties: { enabled: { type: boolean }, provider: { type: string, enum: [fcm, log, disabled] } } }
+                  deliveries:
+                    type: object
+                    description: "`PUSH` and `EMAIL`, each with a count per status (PENDING, ATTEMPTED, PROVIDER_ACCEPTED, FAILED, DEAD)."
+                    additionalProperties: { type: object, additionalProperties: { type: integer } }
+                  dead_letter_backlog: { type: integer }
+                  oldest_unattempted_at: { type: [string, "null"], format: date-time }
+                  oldest_unattempted_age_seconds: { type: [integer, "null"] }
+                  notifications_last_24h: { type: integer }
+                  unread_total: { type: integer }
+                  generated_at: { type: string, format: date-time }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
 components:
   parameters:
     LedgerBookID:
@@ -12884,6 +13107,12 @@ components:
         type: string
 
   responses:
+    DeviceNotFound:
+      description: "`DEVICE_NOT_FOUND`: not one of the caller's devices."
+      content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } }
+    NotificationNotFound:
+      description: "`NOTIFICATION_NOT_FOUND`: not one of the caller's notifications."
+      content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } }
     LedgerNotFound:
       description: |
         `BOOK_NOT_FOUND` (not the caller's book: another organisation, a consumer, an administrator; answered before
@@ -13354,6 +13583,53 @@ components:
             $ref: "#/components/schemas/ErrorEnvelope"
 
   schemas:
+    DeviceID:
+      type: object
+      required: [device_id]
+      properties: { device_id: { type: string, format: uuid } }
+    Device:
+      type: object
+      required: [id, platform, app_version, locale, push_consent, token_hint, created_at, last_seen_at]
+      properties:
+        id: { type: string, format: uuid }
+        platform: { type: string, enum: [IOS, ANDROID, WEB] }
+        app_version: { type: string }
+        locale: { type: [string, "null"] }
+        push_consent: { type: boolean }
+        token_hint: { type: string, description: "The token's last 4 characters after an ellipsis." }
+        created_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+    Notification:
+      type: object
+      required: [id, type, title, body, link, reference, created_at, read_at]
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string, description: "A type of the preference catalogue, e.g. NEW_LEAD." }
+        title: { type: string, maxLength: 120 }
+        body: { type: string, maxLength: 200, description: "Safe text, e.g. the reference and the place." }
+        link: { type: string, description: "A relative web path, e.g. /agent/requests/{id}." }
+        reference: { type: [string, "null"] }
+        created_at: { type: string, format: date-time }
+        read_at: { type: [string, "null"], format: date-time }
+    NotificationPreferences:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [type, label, essential, essential_reason, email, push, in_app, changed_at, source]
+            properties:
+              type: { type: string }
+              label: { type: string }
+              essential: { type: boolean }
+              essential_reason: { type: [string, "null"], description: Why an essential type is always on (null otherwise). }
+              email: { type: boolean }
+              push: { type: boolean }
+              in_app: { type: boolean, const: true }
+              changed_at: { type: [string, "null"], format: date-time }
+              source: { type: [string, "null"], enum: [web, app, api, null] }
     ErrorEnvelope:
       type: object
       required: [error, trace_id]

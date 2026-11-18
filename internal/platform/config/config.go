@@ -128,6 +128,15 @@ type Config struct {
 	S3SecretKey    Secret
 	S3Region       string
 	S3UsePathStyle bool
+
+	// Push (FCM HTTP v1, API 0.35.0). FCMProjectID is FCM_PROJECT_ID; the
+	// service account is FCM_SERVICE_ACCOUNT_JSON (a secret: formats as
+	// "[redacted]") or the path FCM_SERVICE_ACCOUNT_FILE (read by push.Open).
+	// None is required: without them push is disabled (staging, production)
+	// or logged (development); that is never a startup failure.
+	FCMProjectID          string
+	FCMServiceAccountJSON Secret
+	FCMServiceAccountFile string
 }
 
 // Storage drivers (STORAGE_DRIVER).
@@ -491,6 +500,11 @@ func FromLookup(get func(string) string) (Config, error) {
 	default:
 		errs = append(errs, errors.New("STORAGE_DRIVER must be local or s3"))
 	}
+
+	// Push: nothing here can fail; push.Open decides and logs one line.
+	cfg.FCMProjectID = val("FCM_PROJECT_ID", "")
+	cfg.FCMServiceAccountJSON = Secret(val("FCM_SERVICE_ACCOUNT_JSON", ""))
+	cfg.FCMServiceAccountFile = val("FCM_SERVICE_ACCOUNT_FILE", "")
 
 	if len(errs) > 0 {
 		return Config{}, fmt.Errorf("invalid configuration: %w", errors.Join(errs...))

@@ -59,7 +59,8 @@ func (h *Handlers) applicationNotes(ctx context.Context, ev outbox.Event, add fu
 	if err != nil {
 		return err
 	}
-	d := mail.Data{Reference: n.Reference, ListingTitle: n.ListingTitle, ListingRef: n.ListingReference, When: occurredAt(ev)}
+	d := mail.Data{Reference: n.Reference, ListingTitle: n.ListingTitle, ListingRef: n.ListingReference, When: occurredAt(ev),
+		Place: h.placeOf(ctx, &n.ListingID)}
 	applicant := Person{UserID: n.ApplicantUserID, Name: n.ApplicantName, Email: n.ApplicantEmail}
 	toApplicant := func(template, status string) error {
 		if n.ApplicantUserID == nil {

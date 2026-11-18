@@ -25,6 +25,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/health"
 	"rightproperty365.com/backend/internal/modules/identity"
+	"rightproperty365.com/backend/internal/modules/inapp"
 	"rightproperty365.com/backend/internal/modules/leases"
 	"rightproperty365.com/backend/internal/modules/ledger"
 	"rightproperty365.com/backend/internal/modules/listings"
@@ -303,6 +304,11 @@ type Deps struct {
 	// in Files.
 	Ledger ledger.Store
 
+	// Inbox is the notification centre (API 0.35.0): devices, in-app
+	// notifications, preferences and the delivery health. Logging out
+	// removes the session's devices through it.
+	Inbox *inapp.Service
+
 	// Optional overrides used by tests.
 	Now    func() time.Time
 	Hasher *identity.Hasher
@@ -449,6 +455,12 @@ func NewRouter(d Deps) (http.Handler, error) {
 
 	secure := cfg.Env != config.EnvDevelopment
 	identityH := identity.NewHandler(identitySvc, logger, secure)
+	if d.Inbox == nil {
+		return nil, errors.New("app: no notification centre")
+	}
+	// Signing out removes the push devices the session registered (FR-045).
+	identityH.SetLogoutHook(d.Inbox.OnLogout)
+	inboxH := inapp.NewHandler(d.Inbox, logger)
 	// Countries with their listing counts: every country can be used, and
 	// ?has_listings=true is what the public's country lists show.
 	marketsH := markets.NewHandler(d.Markets, listingsSvc.CountByCountry, logger)
@@ -705,6 +717,9 @@ func NewRouter(d Deps) (http.Handler, error) {
 		})
 
 		r.With(auth.RequireAuth).Get("/me", identityH.Me)
+		// The notification centre: devices, in-app notifications and
+		// preferences (API 0.35.0).
+		notificationRoutes(r, inboxH)
 		// Deleting one's own account, confirmed with the password. It shares
 		// the sign-in bucket (a password is checked).
 		r.With(auth.RequireAuth, authLimiter.Middleware).Delete("/me", accountsH.DeleteSelf)
@@ -1008,6 +1023,9 @@ func NewRouter(d Deps) (http.Handler, error) {
 					r.Post("/{id}/delete", accountsH.Delete)
 				})
 			})
+			// Notification delivery health (FR-065): counts by status, the
+			// dead-letter backlog and the oldest unattempted push.
+			r.With(auth.RequirePlatformRole(inapp.AdminRoles()...)).Get("/notifications/health", inboxH.Health)
 			// The administrators' audit trail: SUPER_ADMIN and PLATFORM_ADMIN.
 			r.With(auth.RequirePlatformRole(accounts.AuditRoles()...)).Get("/audit", accountsH.Audit)
 

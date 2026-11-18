@@ -13,6 +13,7 @@ import (
 
 	"rightproperty365.com/backend/internal/modules/applications"
 	"rightproperty365.com/backend/internal/modules/appointments"
+	"rightproperty365.com/backend/internal/modules/inapp"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/platform/adminaudit"
@@ -438,6 +439,12 @@ func (s *PostgresStore) Delete(ctx context.Context, d Deletion) (Deleted, error)
 		// events cascade; quotes that used them are unlinked).
 		if _, err := tx.Exec(ctx, `DELETE FROM venue_bookings WHERE customer_user_id = $1`, d.UserID); err != nil {
 			return fmt.Errorf("delete venue bookings: %w", err)
+		}
+		// Push devices, in-app notifications (their deliveries cascade) and
+		// notification preferences (migration 0034): the same, never by
+		// cascade here (FR-045: tokens are revoked on deletion).
+		if err := inapp.DeleteUserTx(ctx, tx, d.UserID); err != nil {
+			return err
 		}
 		return adminaudit.Insert(ctx, tx, d.Audit)
 	})

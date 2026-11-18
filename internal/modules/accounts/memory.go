@@ -43,6 +43,9 @@ type MemoryDeps struct {
 	// DeleteVenueBookings removes the user's hourly venue bookings (nil:
 	// nothing to do).
 	DeleteVenueBookings func(userID uuid.UUID)
+	// DeleteNotifications removes the user's push devices, in-app
+	// notifications and notification preferences (nil: nothing to do).
+	DeleteNotifications func(userID uuid.UUID)
 	// Now is the clock used for listing expiry in the detail (nil: time.Now).
 	Now func() time.Time
 }
@@ -289,6 +292,9 @@ func (s *MemoryStore) Delete(ctx context.Context, d Deletion) (Deleted, error) {
 	}
 	if s.deps.DeleteVenueBookings != nil {
 		s.deps.DeleteVenueBookings(d.UserID)
+	}
+	if s.deps.DeleteNotifications != nil {
+		s.deps.DeleteNotifications(d.UserID)
 	}
 	s.deps.Audit.Append(d.Audit)
 	return out, nil

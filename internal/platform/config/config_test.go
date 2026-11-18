@@ -611,3 +611,24 @@ func TestAnalyticsRawRetentionDays(t *testing.T) {
 		}
 	}
 }
+
+// Push settings are optional and the service account never prints.
+func TestFCMSettings(t *testing.T) {
+	cfg, err := FromLookup(func(k string) string {
+		return map[string]string{"FCM_PROJECT_ID": "rightproperty365", "FCM_SERVICE_ACCOUNT_JSON": `{"private_key":"SECRET-KEY"}`,
+			"FCM_SERVICE_ACCOUNT_FILE": "/var/run/secrets/fcm/key.json"}[k]
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.FCMProjectID != "rightproperty365" || cfg.FCMServiceAccountFile != "/var/run/secrets/fcm/key.json" ||
+		cfg.FCMServiceAccountJSON.Reveal() != `{"private_key":"SECRET-KEY"}` {
+		t.Fatalf("cfg = %+v", cfg)
+	}
+	if s := fmt.Sprintf("%v %+v", cfg.FCMServiceAccountJSON, cfg); strings.Contains(s, "SECRET-KEY") {
+		t.Fatalf("the service account printed: %s", s)
+	}
+	if _, err := FromLookup(func(string) string { return "" }); err != nil {
+		t.Fatalf("push settings must never be required: %v", err)
+	}
+}

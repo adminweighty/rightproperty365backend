@@ -1,13 +1,18 @@
 package identity
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/google/uuid"
 
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/httpx"
@@ -31,6 +36,34 @@ type Handler struct {
 	svc          *Service
 	logger       *slog.Logger
 	secureCookie bool
+	// onLogout runs before a session is revoked: it removes the push
+	// devices the session registered and the given device token (FR-045).
+	onLogout func(ctx context.Context, userID, sessionID uuid.UUID, deviceToken string) error
+}
+
+// SetLogoutHook sets what runs before a signed-in session is revoked.
+func (h *Handler) SetLogoutHook(hook func(ctx context.Context, userID, sessionID uuid.UUID, deviceToken string) error) {
+	h.onLogout = hook
+}
+
+// logoutDeviceToken reads the optional body {"device_token": "..."} of a
+// logout. An empty or unreadable body is no token: signing out never fails
+// because of its body.
+func logoutDeviceToken(r *http.Request) string {
+	if r.Body == nil {
+		return ""
+	}
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 8<<10))
+	if err != nil || strings.TrimSpace(string(raw)) == "" {
+		return ""
+	}
+	var in struct {
+		DeviceToken string `json:"device_token"`
+	}
+	if json.Unmarshal(raw, &in) != nil {
+		return ""
+	}
+	return strings.TrimSpace(in.DeviceToken)
 }
 
 // NewHandler builds the handler. secureCookie must be true everywhere except
@@ -304,6 +337,14 @@ func (h *Handler) AdminLoginResend(w http.ResponseWriter, r *http.Request) {
 // bearer), clears the cookie and answers 204 even when nobody is signed in.
 func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 	if p := auth.FromContext(r.Context()); p != nil {
+		if h.onLogout != nil {
+			// The devices go first: a session that is gone could not remove
+			// them on a retry.
+			if err := h.onLogout(r.Context(), p.UserID, p.SessionID, logoutDeviceToken(r)); err != nil {
+				httpx.WriteInternalError(w, r, h.logger, err)
+				return
+			}
+		}
 		if err := h.svc.Logout(r.Context(), p.SessionID); err != nil {
 			httpx.WriteInternalError(w, r, h.logger, err)
 			return

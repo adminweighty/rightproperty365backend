@@ -184,6 +184,11 @@ type Data struct {
 	PlanName  string
 	Period    string
 	RefundDue bool
+
+	// Place is the listing's suburb (else city) as the public sees it. No
+	// template renders it: it is the place of the in-app and push text
+	// built from the same data (API 0.35.0).
+	Place string
 }
 
 // LocalDateTime writes an instant in an IANA time zone and names the zone,

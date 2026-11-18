@@ -35,6 +35,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/identity"
+	"rightproperty365.com/backend/internal/modules/inapp"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/onboarding"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
@@ -163,6 +164,11 @@ func NewSender(cfg config.Config, logger *slog.Logger) (mail.Sender, error) {
 type AccountMailer struct {
 	svc      *mail.Service
 	renderer *mail.Renderer
+	// inbox and userByEmail make an invitation to an existing account an
+	// in-app notification too (see SetInbox).
+	inbox       *inapp.Service
+	userByEmail func(ctx context.Context, email string) (uuid.UUID, bool)
+	logger      *slog.Logger
 }
 
 // NewAccountMailer builds the mailer for verification and reset emails.
@@ -201,10 +207,18 @@ func (m *AccountMailer) SendAccountExists(ctx context.Context, to, name string) 
 // (/invitations/{token}); it is only rendered into the message, and the
 // notification key is random.
 func (m *AccountMailer) SendInvitation(ctx context.Context, to string, inv teams.InvitationMail) error {
-	return m.send(ctx, "team-invitation", to, mail.Data{
+	if err := m.send(ctx, "team-invitation", to, mail.Data{
 		Path: PathInvitation + url.PathEscape(inv.Token), OrganisationName: inv.OrganisationName, RoleName: inv.RoleLabel,
 		JobTitle: inv.JobTitle, ActorName: inv.InviterName, ExpiresOn: inv.ExpiresAt,
-	})
+	}); err != nil {
+		return err
+	}
+	// The email is the invitation; the in-app item is a pointer to it, so
+	// failing to create it never fails the invitation.
+	if err := m.notifyInvitation(ctx, to, inv); err != nil && m.logger != nil {
+		m.logger.WarnContext(ctx, "could not create the invitation's in-app notification", slog.String("error", err.Error()))
+	}
+	return nil
 }
 
 // SendSigning implements agreements.Mailer: a recipient's signing link
@@ -282,6 +296,13 @@ type Handlers struct {
 	application func(ctx context.Context, id uuid.UUID) (applications.Notice, error)
 	// venue loads the hourly booking behind a venue booking event.
 	venue func(ctx context.Context, id uuid.UUID) (venues.BookingNotice, error)
+	// inbox is the notification centre (API 0.35.0): the in-app notification
+	// of each (event, recipient), its push deliveries, and the preferences
+	// the emails consult. Nil: email only, no preference check.
+	inbox *inapp.Service
+	// place names a listing's place (suburb, else city) for the in-app and
+	// push text. Nil leaves the place out.
+	place func(ctx context.Context, listingID uuid.UUID) string
 }
 
 // SetListingSource supplies the listing behind a listing review event (the
@@ -328,7 +349,8 @@ func (h *Handlers) listingReviewNotes(ctx context.Context, ev outbox.Event, add 
 	}
 	t := listingReviewTemplates[ev.Type]
 	d := mail.Data{Path: PathMyListings, ListingTitle: r.Title, ListingRef: r.Reference, StatusText: t.status,
-		Reason: mail.SafePreview(payload.Reason, listings.MaxReasonLength), Edit: payload.ReviewKind == listings.ReviewKindEdit, When: occurredAt(ev)}
+		Reason: mail.SafePreview(payload.Reason, listings.MaxReasonLength), Edit: payload.ReviewKind == listings.ReviewKindEdit, When: occurredAt(ev),
+		Place: h.placeOf(ctx, &r.ID)}
 	if ev.Type == listings.EventListingApproved && !d.Edit {
 		d.ExpiresOn = r.ExpiresAt
 	}
@@ -377,7 +399,7 @@ func (h *Handlers) appointmentNotes(ctx context.Context, ev outbox.Event, add fu
 		Reference: a.Reference, AppointmentType: mail.AppointmentTypeName(a.Type),
 		ListingTitle: a.ListingTitle, ListingRef: a.ListingReference,
 		AppointmentTime: mail.LocalDateTime(start, a.Timezone), StatusText: appointments.StatusLabel(payload.To),
-		When: occurredAt(ev),
+		When: occurredAt(ev), Place: h.placeOf(ctx, a.ListingID),
 	}
 	if payload.ProposedStartUTC != nil {
 		d.ProposedTime = mail.LocalDateTime(*payload.ProposedStartUTC, a.Timezone)
@@ -511,16 +533,38 @@ func (h *Handlers) Register(d *outbox.Dispatcher) {
 // backoff. When every remaining failure is terminal (the provider rejected
 // the message), the error is marked permanent and the event is dead-lettered.
 func (h *Handlers) Handle(ctx context.Context, ev outbox.Event) error {
-	notes, err := h.build(ctx, ev)
+	plans, err := h.build(ctx, ev)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return outbox.Permanent(fmt.Errorf("event %s: %w", ev.Type, err))
 		}
 		return err
 	}
+	// The in-app notifications first: they are the durable record, and a
+	// failure here is retried with the event (the unique key makes the
+	// retry create nothing twice).
+	if err := h.notifyInApp(ctx, ev, plans); err != nil {
+		return err
+	}
 	var transient, terminal error
-	for _, n := range notes {
-		switch err := h.svc.Deliver(ctx, n); {
+	for _, p := range plans {
+		if p.to.Email == "" {
+			continue // nobody to write to
+		}
+		allowed, err := h.emailAllowed(ctx, p)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			continue // the recipient switched this type's email off (FR-003, FR-044)
+		}
+		n, err := h.note(ev, p.template, p.recipient, p.to, p.data)
+		if err != nil {
+			return err
+		}
+		err = h.svc.Deliver(ctx, n)
+		h.recordEmail(ctx, ev, p, err)
+		switch {
 		case err == nil:
 		case errors.Is(err, mail.ErrTerminal):
 			terminal = err
@@ -567,17 +611,21 @@ func occurredAt(ev outbox.Event) time.Time {
 	return ev.CreatedAt
 }
 
-func (h *Handlers) build(ctx context.Context, ev outbox.Event) ([]mail.Notification, error) {
-	var notes []mail.Notification
+// plan is one message an event calls for: an email (when the person has an
+// address and allows it) and, for a known account, an in-app notification.
+type plan struct {
+	template, recipient string
+	to                  Person
+	data                mail.Data
+}
+
+func (h *Handlers) build(ctx context.Context, ev outbox.Event) ([]plan, error) {
+	var notes []plan
 	add := func(template, recipient string, to Person, d mail.Data) error {
 		if to.Email == "" {
 			return nil // nobody to write to
 		}
-		n, err := h.note(ev, template, recipient, to, d)
-		if err != nil {
-			return err
-		}
-		notes = append(notes, n)
+		notes = append(notes, plan{template: template, recipient: recipient, to: to, data: d})
 		return nil
 	}
 
@@ -605,7 +653,7 @@ func (h *Handlers) build(ctx context.Context, ev outbox.Event) ([]mail.Notificat
 		}
 		for _, r := range info.Recipients {
 			if err := add("property-request-new", recipientKey(r), r, mail.Data{
-				Name: r.Name, Path: PathInbox, Reference: info.Reference, RequestType: requestType,
+				Name: r.Name, Path: PathInbox, Reference: info.Reference, RequestType: requestType, Place: h.placeOf(ctx, &info.ListingID),
 				ListingTitle: listingTitle, ListingRef: listingRef, Stay: stay,
 				Preview: mail.SafePreview(info.Message, previewLength), When: info.CreatedAt,
 			}); err != nil {
@@ -643,6 +691,7 @@ func (h *Handlers) build(ctx context.Context, ev outbox.Event) ([]mail.Notificat
 		for _, r := range people {
 			if err := add("property-request-assigned", recipientKey(r), r, mail.Data{
 				Name: r.Name, Path: PathInbox, Reference: info.Reference, RequestType: mail.RequestTypeName(info.RequestType),
+				Place:        h.placeOf(ctx, &info.ListingID),
 				ListingTitle: listingTitle, ListingRef: listingRef, ActorName: actorName,
 				Preview: mail.SafePreview(info.Message, previewLength), When: occurredAt(ev),
 			}); err != nil {

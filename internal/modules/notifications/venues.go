@@ -63,7 +63,8 @@ func (h *Handlers) venueNotes(ctx context.Context, ev outbox.Event, add func(tem
 		start, end = b.Start, b.End
 	}
 	d := mail.Data{Reference: b.Reference, ListingTitle: b.ListingTitle, ListingRef: b.ListingReference,
-		AppointmentTime: mail.LocalSlot(start, end, b.TimeZone), StatusText: venues.StatusLabel(payload.To), When: occurredAt(ev)}
+		AppointmentTime: mail.LocalSlot(start, end, b.TimeZone), StatusText: venues.StatusLabel(payload.To), When: occurredAt(ev),
+		Place: h.placeOf(ctx, &b.ListingID)}
 	total := b.Pricing
 	if payload.ProposedStart != nil && payload.ProposedEnd != nil {
 		d.ProposedTime = mail.LocalSlot(*payload.ProposedStart, *payload.ProposedEnd, b.TimeZone)

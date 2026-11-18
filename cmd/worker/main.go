@@ -23,6 +23,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/crm"
 	"rightproperty365.com/backend/internal/modules/identity"
+	"rightproperty365.com/backend/internal/modules/inapp"
 	"rightproperty365.com/backend/internal/modules/leases"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/markets"
@@ -39,6 +40,7 @@ import (
 	"rightproperty365.com/backend/internal/platform/logging"
 	"rightproperty365.com/backend/internal/platform/mail"
 	"rightproperty365.com/backend/internal/platform/outbox"
+	"rightproperty365.com/backend/internal/platform/push"
 	"rightproperty365.com/backend/internal/platform/storage"
 )
 
@@ -140,6 +142,24 @@ func run() error {
 	// Hourly venue bookings: the emails read the booking at send time.
 	handlers.SetVenueSource(app.VenueNotices(venues.NewPostgresStore(pool), listingStore, markets.NewPostgresStore(pool),
 		reference.NewPostgresStore(pool), logger))
+
+	// The notification centre (API 0.35.0): every notification email's
+	// recipient who has an account also gets one in-app notification per
+	// event (unique per event and recipient), pushed to their opted-in
+	// devices by the push sender below, after the commit. The emails of
+	// non-essential types follow the recipient's preferences. Without FCM
+	// credentials push is disabled (one log line) and the inbox still fills.
+	pusher := push.Open(cfg, logger)
+	pushProvider := ""
+	if pusher != nil {
+		pushProvider = pusher.Name()
+	}
+	inboxStore := inapp.NewPostgresStore(pool)
+	handlers.SetInbox(inapp.NewService(inboxStore, pushProvider, logger, nil))
+	handlers.SetPlaceLookup(app.ListingPlace(listingStore, reference.NewPostgresStore(pool), logger))
+	if pusher != nil {
+		go inapp.NewSender(inboxStore, pusher, logger, nil).Run(ctx)
+	}
 
 	dispatcher := outbox.NewDispatcher(outbox.NewPostgresQueue(pool), logger, outbox.Config{})
 	handlers.Register(dispatcher)

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -166,5 +167,30 @@ func TestLoggedPathHidesInvitationTokens(t *testing.T) {
 		if got := LoggedPath(in); got != want {
 			t.Fatalf("LoggedPath(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// The web sends X-Client on preference changes (API 0.35.0: the change's
+// source); a browser preflight must allow it.
+func TestCORSPreflightAllowsXClient(t *testing.T) {
+	h := CORS([]string{"http://localhost:3000"})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	req := httptest.NewRequest(http.MethodOptions, "/v1/me/notification-preferences", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	req.Header.Set("Access-Control-Request-Method", http.MethodPut)
+	req.Header.Set("Access-Control-Request-Headers", "content-type, x-client")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	allowed := strings.Split(rec.Header().Get("Access-Control-Allow-Headers"), ",")
+	found := false
+	for _, a := range allowed {
+		if strings.EqualFold(strings.TrimSpace(a), "X-Client") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Access-Control-Allow-Headers = %q, want X-Client", rec.Header().Get("Access-Control-Allow-Headers"))
 	}
 }

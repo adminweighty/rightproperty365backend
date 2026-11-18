@@ -31,6 +31,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/health"
 	"rightproperty365.com/backend/internal/modules/identity"
+	"rightproperty365.com/backend/internal/modules/inapp"
 	"rightproperty365.com/backend/internal/modules/leases"
 	"rightproperty365.com/backend/internal/modules/ledger"
 	"rightproperty365.com/backend/internal/modules/listings"
@@ -282,11 +283,14 @@ type env struct {
 	venues *venues.MemoryStore
 	// ledger holds the agent books (the samples).
 	ledger *ledger.MemoryStore
-	files  *storage.Local
-	mail   *captureMailer
-	logs   *bytes.Buffer
-	now    time.Time
-	seq    int
+	// inbox holds devices, in-app notifications and preferences (empty).
+	inbox    *inapp.MemoryStore
+	inboxSvc *inapp.Service
+	files    *storage.Local
+	mail     *captureMailer
+	logs     *bytes.Buffer
+	now      time.Time
+	seq      int
 	// captchaSeq numbers the registration questions the tests ask for.
 	captchaSeq int
 	// twoStepLogin turns off the helper that completes the sign-in code step
@@ -398,6 +402,8 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		t.Fatal(err)
 	}
 	e.saved = saved.NewMemoryStore()
+	e.inbox = inapp.NewMemoryStore()
+	e.inboxSvc = inapp.NewService(e.inbox, "log", logger, func() time.Time { return e.now })
 	e.analytics = analytics.NewMemoryStore()
 	devseed.SeedMemorySaved(e.saved, e.now)
 	e.accounts = accounts.NewMemoryStore(accounts.MemoryDeps{Identity: e.identity, Listings: e.listings, Teams: e.team, Directory: e.directory,
@@ -405,6 +411,7 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		DeleteSavedListings: e.saved.DeleteUser,
 		EraseApplications:   func(u uuid.UUID, at time.Time) { e.apps.EraseApplicant(u, at) },
 		DeleteVenueBookings: e.venues.DeleteCustomer,
+		DeleteNotifications: e.inbox.DeleteUser,
 		Now:                 func() time.Time { return e.now }})
 	reportStore := MemoryReports(MemoryReportStores{Identity: e.identity, Onboarding: e.onboard, Listings: e.listings, Requests: e.requests,
 		Enquiries: e.enquiries, Leases: e.leases, Agreements: e.agree, Subscriptions: e.subs, Markets: e.marketStore,
@@ -432,6 +439,7 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		Applications: e.apps,
 		Venues:       e.venues,
 		Ledger:       e.ledger,
+		Inbox:        e.inboxSvc,
 		Now:          func() time.Time { return e.now },
 		Hasher:       &hasher,
 	})

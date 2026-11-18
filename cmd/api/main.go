@@ -28,6 +28,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/health"
 	"rightproperty365.com/backend/internal/modules/identity"
+	"rightproperty365.com/backend/internal/modules/inapp"
 	"rightproperty365.com/backend/internal/modules/leases"
 	"rightproperty365.com/backend/internal/modules/ledger"
 	"rightproperty365.com/backend/internal/modules/listings"
@@ -48,6 +49,7 @@ import (
 	"rightproperty365.com/backend/internal/platform/logging"
 	"rightproperty365.com/backend/internal/platform/mail"
 	"rightproperty365.com/backend/internal/platform/outbox"
+	"rightproperty365.com/backend/internal/platform/push"
 	"rightproperty365.com/backend/internal/platform/storage"
 )
 
@@ -90,6 +92,19 @@ func run() error {
 		return err
 	}
 	var deliveryLog mail.DeliveryLog
+
+	// Push (API 0.35.0): one line names the pusher (fcm, log in development,
+	// or disabled). Without a service account push is off; that is never a
+	// startup failure, and the key is never logged. With a database the
+	// worker sends the pushes; this process queues them for the invitations
+	// it sends from the request path and reports the provider to the
+	// health endpoint.
+	pusher := push.Open(cfg, logger)
+	pushProvider := ""
+	if pusher != nil {
+		pushProvider = pusher.Name()
+	}
+	var inboxSvc *inapp.Service
 
 	// Object storage: onboarding documents (private) and profile logos
 	// (public, but only ever served by the API).
@@ -262,6 +277,12 @@ func run() error {
 		ledgerStore = memLedger
 		crmItems = app.MemoryCRMItems{Requests: memRequests, Enquiries: memEnquiries, Appointments: memAppointments,
 			Identity: memIdentity, Listings: memListings, Applications: memApplications}
+		// The notification centre, and its push sender in this process.
+		memInbox := inapp.NewMemoryStore()
+		inboxSvc = inapp.NewService(memInbox, pushProvider, logger, nil)
+		if pusher != nil {
+			go inapp.NewSender(memInbox, pusher, logger, nil).Run(ctx)
+		}
 		memAgreements := agreements.NewMemoryStore()
 		agreementStore = memAgreements
 		if err := devseed.SeedMemoryAgreements(ctx, memAgreements, memLeases, files, time.Now()); err != nil {
@@ -280,7 +301,7 @@ func run() error {
 			Directory: memDirectory, Audit: memAudit, CancelSubscriptions: memSubscriptions.CancelForDeletedUser,
 			DeleteSignature: memAgreements.DeleteSavedSignature, DeleteSavedListings: memSaved.DeleteUser,
 			EraseApplications:   func(userID uuid.UUID, at time.Time) { memApplications.EraseApplicant(userID, at) },
-			DeleteVenueBookings: memVenues.DeleteCustomer})
+			DeleteVenueBookings: memVenues.DeleteCustomer, DeleteNotifications: memInbox.DeleteUser})
 		reportStore = app.MemoryReports(app.MemoryReportStores{Identity: memIdentity, Onboarding: memOnboarding, Listings: memListings,
 			Requests: memRequests, Enquiries: memEnquiries, Leases: memLeases, Agreements: memAgreements, Subscriptions: memSubscriptions,
 			Markets: marketStore})
@@ -309,6 +330,10 @@ func run() error {
 		handlers.SetSubscriptionSource(memSubscriptions.Subscription)
 		handlers.SetApplicationSource(app.ApplicationNotices(memApplications, memListings, referenceStore, memIdentity, logger))
 		handlers.SetVenueSource(app.VenueNotices(memVenues, memListings, marketStore, referenceStore, logger))
+		// In-app notifications (and their pushes) for the same recipients,
+		// and the preferences the emails consult.
+		handlers.SetInbox(inboxSvc)
+		handlers.SetPlaceLookup(app.ListingPlace(memListings, referenceStore, logger))
 		// Server-side analytics events (saves, enquiries, viewing requests,
 		// confirmations, relists) are recorded here too, and the rollups run
 		// in this process.
@@ -434,6 +459,7 @@ func run() error {
 		venueStore = venues.NewPostgresStore(pool)
 		ledgerStore = ledger.NewPostgresStore(pool)
 		adminAuditLog = adminaudit.PostgresLog{Q: pool}
+		inboxSvc = inapp.NewService(inapp.NewPostgresStore(pool), pushProvider, logger, nil)
 	}
 
 	// Search engine. Elasticsearch only proposes listing IDs: every hit is
@@ -461,6 +487,14 @@ func run() error {
 	// Verification and password-reset emails are sent from the request path
 	// (their links are credentials and never go through the outbox).
 	mailer := notifications.NewAccountMailer(mail.NewService(sender, deliveryLog, logger), renderer)
+	// An invitation to an existing account is also an in-app notification.
+	mailer.SetInbox(inboxSvc, func(ctx context.Context, email string) (uuid.UUID, bool) {
+		u, err := identityStore.UserByEmail(ctx, identity.NormalizeEmail(email))
+		if err != nil || u.Status != identity.StatusActive {
+			return uuid.Nil, false
+		}
+		return u.ID, true
+	}, logger)
 
 	handler, err := app.NewRouter(app.Deps{
 		Config:        cfg,
@@ -493,6 +527,7 @@ func run() error {
 		Applications:  applicationStore,
 		Venues:        venueStore,
 		Ledger:        ledgerStore,
+		Inbox:         inboxSvc,
 	})
 	if err != nil {
 		return err
