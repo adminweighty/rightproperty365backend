@@ -16,6 +16,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/accounts"
 	"rightproperty365.com/backend/internal/modules/agreements"
 	"rightproperty365.com/backend/internal/modules/analytics"
+	"rightproperty365.com/backend/internal/modules/applications"
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/availability"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
@@ -162,6 +163,13 @@ const (
 	// own bucket: bursts of 60, refilled at 60 per minute.
 	contactChangesPerMinute = 60
 	contactChangesBurst     = 60
+
+	// Per-IP limit on changing forms, listing intake and applications
+	// (autosave, submit, withdraw, status, request-info, notes), its own
+	// bucket: bursts of 60, refilled at 60 per minute. File uploads share the
+	// upload bucket.
+	applicationChangesPerMinute = 60
+	applicationChangesBurst     = 60
 )
 
 // uploadPath matches POST /v1/me/onboarding/{role}/documents and logoPath
@@ -179,6 +187,8 @@ var (
 	submitPath = regexp.MustCompile(`^/v1/signing/[^/]+/submit$`)
 	// contactImportPath is POST /v1/agent/organisations/{id}/contacts/import (a CSV of up to 2 MB).
 	contactImportPath = regexp.MustCompile(`^/v1/agent/organisations/[^/]+/contacts/import$`)
+	// applicationFilePath is POST /v1/me/applications/{id}/files (10 MB, as onboarding documents).
+	applicationFilePath = regexp.MustCompile(`^/v1/me/applications/[^/]+/files$`)
 )
 
 func isContactImport(r *http.Request) bool {
@@ -199,7 +209,7 @@ func isLogoUpload(r *http.Request) bool {
 
 func isUpload(r *http.Request) bool {
 	return (r.Method == http.MethodPost && uploadPath.MatchString(r.URL.Path)) || isLogoUpload(r) || isPhotoUpload(r) || isPDFUpload(r) ||
-		isContactImport(r)
+		isContactImport(r) || (r.Method == http.MethodPost && applicationFilePath.MatchString(r.URL.Path))
 }
 
 // Deps is everything the router needs.
@@ -263,6 +273,10 @@ type Deps struct {
 	// (crm.PostgresItems, or MemoryCRMItems without a database).
 	CRM      crm.Store
 	CRMItems crm.Items
+
+	// Applications holds the questionnaires, listing intakes and
+	// applications (API 0.32.0); their files are kept in Files.
+	Applications applications.Store
 
 	// Optional overrides used by tests.
 	Now    func() time.Time
@@ -337,6 +351,15 @@ func NewRouter(d Deps) (http.Handler, error) {
 	}
 	crmH := crm.NewHandler(CRMService(d.CRM, d.CRMItems, d.Listings, d.Identity, d.Reference, d.Teams, logger, d.Now), logger)
 	contactLimiter := httpx.NewRateLimiter(contactChangesPerMinute, contactChangesBurst)
+	// Questionnaires and applications (BR-010, FR-015, FR-017..019). A
+	// listing says whether it takes applications (`applications`).
+	if d.Applications == nil {
+		return nil, errors.New("app: no applications store")
+	}
+	applicationsSvc := ApplicationsService(d.Applications, d.Files, listingsSvc, d.Listings, d.Identity, logger, d.Now)
+	listingsSvc.SetIntake(applicationIntake{svc: applicationsSvc})
+	applicationsH := applications.NewHandler(applicationsSvc, logger)
+	applicationLimiter := httpx.NewRateLimiter(applicationChangesPerMinute, applicationChangesBurst)
 	directorySvc := directory.NewService(d.Directory, vocab, listingsSvc)
 	directorySvc.SetPlaces(geography)
 	// Logos are kept in the object storage and served by the API itself.
@@ -582,6 +605,9 @@ func NewRouter(d Deps) (http.Handler, error) {
 		// A short stay's calendar as the public sees it: available or not
 		// per night, never why.
 		r.Get("/listings/{slug}/availability", availabilityH.Public)
+		// The questionnaire of a listing, for the preview (public; 404 when
+		// the listing takes no applications).
+		r.Get("/listings/{slug}/application-form", applicationsH.PublicForm)
 		r.Get("/directory", directoryH.Kinds)
 		r.Get("/directory/{kind}", directoryH.List)
 		r.Get("/directory/{kind}/{slug}", directoryH.Get)
@@ -696,6 +722,24 @@ func NewRouter(d Deps) (http.Handler, error) {
 			r.Get("/{id}/availability", availabilityH.Calendar)
 			r.With(calendarLimiter.Middleware).Put("/{id}/availability", availabilityH.Change)
 			r.With(calendarLimiter.Middleware).Patch("/{id}/stay-rules", availabilityH.StayRules)
+			// The listing's questionnaire and intake (whoever may edit the listing).
+			r.Get("/{id}/applications-intake", applicationsH.GetIntake)
+			r.With(applicationLimiter.Middleware).Put("/{id}/applications-intake", applicationsH.PutIntake)
+		})
+
+		// A customer's own applications (FR-015): any customer-scope session;
+		// another applicant's application is 404.
+		r.Route("/me/applications", func(r chi.Router) {
+			r.Use(auth.RequireAuth)
+			r.Get("/", applicationsH.Mine)
+			r.With(applicationLimiter.Middleware).Post("/", applicationsH.Start)
+			r.Get("/{applicationId}", applicationsH.MineOne)
+			r.With(applicationLimiter.Middleware).Patch("/{applicationId}", applicationsH.Autosave)
+			r.With(uploadLimiter.Middleware).Post("/{applicationId}/files", applicationsH.Upload)
+			r.Get("/{applicationId}/files/{fileId}", applicationsH.MyFile)
+			r.With(applicationLimiter.Middleware).Delete("/{applicationId}/files/{fileId}", applicationsH.DeleteMyFile)
+			r.With(applicationLimiter.Middleware).Post("/{applicationId}/submit", applicationsH.Submit)
+			r.With(applicationLimiter.Middleware).Post("/{applicationId}/withdraw", applicationsH.Withdraw)
 		})
 
 		// Leases: the approved templates on offer, and drafting. The service
@@ -1015,6 +1059,30 @@ func NewRouter(d Deps) (http.Handler, error) {
 				r.With(contactLimiter.Middleware).Post("/{contactId}/listings", crmH.LinkListing)
 				r.With(contactLimiter.Middleware).Delete("/{contactId}/listings/{listingId}", crmH.UnlinkListing)
 				r.Get("/{contactId}/timeline", crmH.Timeline)
+			})
+
+			// Screening questionnaires (FR-017, FR-018). {id} is the
+			// organisation, or an approved direct owner's own user ID. OWNER and
+			// MANAGER manage, AGENT reads (403 for STAFF), 404 FORM_NOT_FOUND
+			// for anybody else (auth.MayReadForms / MayManageForms).
+			r.Route("/forms", func(r chi.Router) {
+				r.Get("/", applicationsH.ListForms)
+				r.With(applicationLimiter.Middleware).Post("/", applicationsH.CreateForm)
+				r.Get("/{formId}", applicationsH.GetForm)
+				r.With(applicationLimiter.Middleware).Patch("/{formId}", applicationsH.EditForm)
+				r.With(applicationLimiter.Middleware).Post("/{formId}/publish", applicationsH.PublishForm)
+				r.With(applicationLimiter.Middleware).Post("/{formId}/retire", applicationsH.RetireForm)
+			})
+			// Applications received (FR-015): OWNER and MANAGER all, the
+			// listing's assigned AGENT their own; 404 for anybody else. Every
+			// read of the answers and every file download is audited.
+			r.Route("/applications", func(r chi.Router) {
+				r.Get("/", applicationsH.Received)
+				r.Get("/{applicationId}", applicationsH.ReceivedOne)
+				r.Get("/{applicationId}/files/{fileId}", applicationsH.ReceivedFile)
+				r.With(applicationLimiter.Middleware).Post("/{applicationId}/status", applicationsH.SetStatus)
+				r.With(applicationLimiter.Middleware).Post("/{applicationId}/request-info", applicationsH.RequestInfo)
+				r.With(applicationLimiter.Middleware).Post("/{applicationId}/notes", applicationsH.AddNote)
 			})
 		})
 

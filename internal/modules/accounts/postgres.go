@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"rightproperty365.com/backend/internal/modules/applications"
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
@@ -425,6 +426,12 @@ func (s *PostgresStore) Delete(ctx context.Context, d Deletion) (Deleted, error)
 		// does not fire: the saved listings (migration 0026) go here.
 		if _, err := tx.Exec(ctx, `DELETE FROM saved_listings WHERE user_id = $1`, d.UserID); err != nil {
 			return fmt.Errorf("delete saved listings: %w", err)
+		}
+		// Applications (migration 0031): drafts are deleted; the others are
+		// withdrawn when open, their answers and files erased (the objects are
+		// queued for the worker) and the applicant unlinked.
+		if _, _, err := applications.EraseApplicantTx(ctx, tx, d.UserID, d.At); err != nil {
+			return err
 		}
 		return adminaudit.Insert(ctx, tx, d.Audit)
 	})

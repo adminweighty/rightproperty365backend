@@ -17,6 +17,7 @@ var kindOfEvent = map[string]string{
 	"PROPERTY_REQUEST_CREATED": KindPropertyRequest,
 	"BUSINESS_ENQUIRY_CREATED": KindBusinessEnquiry,
 	"APPOINTMENT_REQUESTED":    KindAppointment,
+	"APPLICATION_SUBMITTED":    KindApplication,
 }
 
 // HandleOutbox links the item an outbox event announces to the contacts of
@@ -30,6 +31,7 @@ func (s *Service) HandleOutbox(ctx context.Context, ev outbox.Event) error {
 		RequestID     *uuid.UUID `json:"request_id"`
 		EnquiryID     *uuid.UUID `json:"enquiry_id"`
 		AppointmentID *uuid.UUID `json:"appointment_id"`
+		ApplicationID *uuid.UUID `json:"application_id"`
 	}
 	if len(ev.Payload) > 0 {
 		if err := json.Unmarshal(ev.Payload, &body); err != nil {
@@ -37,7 +39,7 @@ func (s *Service) HandleOutbox(ctx context.Context, ev outbox.Event) error {
 		}
 	}
 	id := ev.AggregateID
-	for _, p := range []*uuid.UUID{body.RequestID, body.EnquiryID, body.AppointmentID} {
+	for _, p := range []*uuid.UUID{body.RequestID, body.EnquiryID, body.AppointmentID, body.ApplicationID} {
 		if p != nil && *p != uuid.Nil {
 			id = *p
 			break

@@ -1,0 +1,15 @@
+{{define "subject"}}Application sent: {{.Reference}}{{end}}
+{{define "heading"}}{{if .Edit}}Application resubmitted{{else}}Application sent{{end}}{{end}}
+{{define "button"}}View your application{{end}}
+{{define "why"}}You are receiving this because you applied for a property on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+{{if .Edit}}We have sent your updated application, with the information that was asked for, to the advertiser.{{else}}We have sent your application to the advertiser.{{end}}
+
+Reference: {{.Reference}}
+{{if .ListingTitle}}Property: {{.ListingTitle}}
+{{end}}{{if .ListingRef}}Listing reference: {{.ListingRef}}
+{{end}}Status: {{.StatusText}}
+Sent: {{date .When}}
+
+Keep this reference. You can follow your application, see its status and withdraw it from your account. Only you and the advertiser can see it.{{end}}

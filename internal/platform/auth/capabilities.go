@@ -312,6 +312,49 @@ func (p *Principal) OwnsContactBook(bookID uuid.UUID) bool {
 	return p != nil && bookID == p.UserID && p.IsDirectOwner()
 }
 
+// Questionnaires and applications (API 0.32.0). Forms and received
+// applications belong to an organisation whose kind manages listings, or to
+// an approved direct owner (addressed with their own user ID, as contact
+// books are: OwnsContactBook).
+//
+//   - forms: its OWNER and MANAGER create, edit, publish and retire them;
+//     its AGENT reads them; STAFF may not (403); anybody else sees none (404).
+//   - received applications: its OWNER and MANAGER see every one; an AGENT
+//     those of the listings they are the assigned agent of; nobody else any
+//     (404), STAFF included.
+//
+// The direct owner manages their own forms and sees the applications to
+// their own listings.
+
+// MayReadForms reports whether the caller may read the organisation's forms.
+func (p *Principal) MayReadForms(organisationID uuid.UUID) bool {
+	return p.MayManageListings(organisationID)
+}
+
+// MayManageForms reports whether the caller may create, edit, publish and
+// retire the organisation's forms.
+func (p *Principal) MayManageForms(organisationID uuid.UUID) bool {
+	m, ok := p.membership(organisationID)
+	return ok && KindManagesListings(m.OrganisationKind) && (m.Role == RoleOwner || m.Role == RoleManager)
+}
+
+// MaySeeAllApplications reports whether the caller sees every application
+// the organisation received (OWNER and MANAGER).
+func (p *Principal) MaySeeAllApplications(organisationID uuid.UUID) bool {
+	return p.MayManageForms(organisationID)
+}
+
+// MayReadApplication reports whether the caller may read one application
+// the organisation received, given the listing's assigned agent: OWNER and
+// MANAGER always, an AGENT when they are that agent.
+func (p *Principal) MayReadApplication(organisationID uuid.UUID, agentUserID *uuid.UUID) bool {
+	if p.MaySeeAllApplications(organisationID) {
+		return true
+	}
+	m, ok := p.membership(organisationID)
+	return ok && KindManagesListings(m.OrganisationKind) && m.Role == RoleAgent && agentUserID != nil && *agentUserID == p.UserID
+}
+
 // MembershipMarket returns the market code of the caller's membership of the
 // organisation, or "" when the caller is not a member of it.
 func (p *Principal) MembershipMarket(organisationID uuid.UUID) string {

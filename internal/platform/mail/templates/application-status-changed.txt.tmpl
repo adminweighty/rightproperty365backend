@@ -1,0 +1,15 @@
+{{define "subject"}}Application update: {{.Reference}}{{end}}
+{{define "heading"}}Application update{{end}}
+{{define "button"}}View your application{{end}}
+{{define "why"}}You are receiving this because you applied for a property on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+The advertiser has updated your application.
+
+Reference: {{.Reference}}
+{{if .ListingTitle}}Property: {{.ListingTitle}}
+{{end}}{{if .ListingRef}}Listing reference: {{.ListingRef}}
+{{end}}Status: {{.StatusText}}
+Updated: {{date .When}}
+
+You can see the whole history of your application in your account. If you have questions, contact the advertiser.{{end}}

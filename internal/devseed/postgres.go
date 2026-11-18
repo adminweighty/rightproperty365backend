@@ -410,6 +410,12 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 		return err
 	}
 
+	// The sample questionnaire (two versions), its intakes on two rent
+	// listings and the tenant's applications (needs migration 0031).
+	if err := seedPostgresApplications(ctx, tx, files, now); err != nil {
+		return err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}

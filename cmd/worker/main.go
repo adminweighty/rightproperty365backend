@@ -19,8 +19,10 @@ import (
 	"rightproperty365.com/backend/internal/modules/accounts"
 	"rightproperty365.com/backend/internal/modules/agreements"
 	"rightproperty365.com/backend/internal/modules/analytics"
+	"rightproperty365.com/backend/internal/modules/applications"
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/crm"
+	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/leases"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/markets"
@@ -36,6 +38,7 @@ import (
 	"rightproperty365.com/backend/internal/platform/logging"
 	"rightproperty365.com/backend/internal/platform/mail"
 	"rightproperty365.com/backend/internal/platform/outbox"
+	"rightproperty365.com/backend/internal/platform/storage"
 )
 
 func main() {
@@ -121,6 +124,18 @@ func run() error {
 	subscriptionStore := subscriptions.NewPostgresStore(pool)
 	handlers.SetSubscriptionSource(subscriptionStore.Subscription)
 
+	// Questionnaires and applications: the emails read the application at
+	// send time; the retention job erases answers and files past their
+	// form's retention period and removes deleted files' objects, so the
+	// worker opens the object storage (it never serves a file).
+	files, err := storage.Open(cfg, logger)
+	if err != nil {
+		return err
+	}
+	applicationStore := applications.NewPostgresStore(pool)
+	handlers.SetApplicationSource(app.ApplicationNotices(applicationStore, listingStore, reference.NewPostgresStore(pool),
+		identity.NewPostgresStore(pool), logger))
+
 	dispatcher := outbox.NewDispatcher(outbox.NewPostgresQueue(pool), logger, outbox.Config{})
 	handlers.Register(dispatcher)
 
@@ -160,6 +175,15 @@ func run() error {
 		reference.NewPostgresStore(pool), nil, logger, nil)
 	crmSvc.Register(dispatcher)
 	go app.RunCRMJobs(ctx, crmSvc)
+
+	// Application retention, every hour: final applications past their
+	// form version's retention_days keep a tombstone only (each erasure is
+	// logged); then the purge of deleted files' objects.
+	applicationSvc := app.ApplicationsService(applicationStore, files,
+		listings.NewService(listingStore, listingStore, reference.NewService(reference.NewPostgresStore(pool), nil)), listingStore,
+		identity.NewPostgresStore(pool), logger, nil)
+	go app.RunApplicationJobs(ctx, applicationSvc)
+	logger.Info("application retention job scheduled", slog.Duration("interval", applications.RetentionInterval))
 
 	// Search index: listing events keep Elasticsearch in step. With the
 	// database search driver there is no index, and the events are acknowledged.

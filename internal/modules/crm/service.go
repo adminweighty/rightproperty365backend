@@ -1298,7 +1298,8 @@ const (
 )
 
 func itemLabel(it Item) string {
-	what := map[string]string{KindPropertyRequest: "Property request", KindBusinessEnquiry: "Business enquiry", KindAppointment: "Appointment"}[it.Kind]
+	what := map[string]string{KindPropertyRequest: "Property request", KindBusinessEnquiry: "Business enquiry", KindAppointment: "Appointment",
+		KindApplication: "Application"}[it.Kind]
 	label := what + " " + it.Reference
 	if it.Title != "" {
 		label += ": " + it.Title
@@ -1570,7 +1571,9 @@ func visible(a access, it Item) bool {
 	if a.manage {
 		return true
 	}
-	if it.Kind == KindBusinessEnquiry { // the enquiry inbox shows members their own only
+	// The enquiry inbox shows members their own only; so does the
+	// applications inbox (the assigned agent's listings).
+	if it.Kind == KindBusinessEnquiry || it.Kind == KindApplication {
 		return it.AssignedUserID != nil && *it.AssignedUserID == a.p.UserID
 	}
 	return it.AssignedUserID == nil || *it.AssignedUserID == a.p.UserID

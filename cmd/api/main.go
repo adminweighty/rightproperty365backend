@@ -20,6 +20,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/accounts"
 	"rightproperty365.com/backend/internal/modules/agreements"
 	"rightproperty365.com/backend/internal/modules/analytics"
+	"rightproperty365.com/backend/internal/modules/applications"
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/availability"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
@@ -130,6 +131,8 @@ func run() error {
 		// crmStore holds the contact books; crmItems reads what contacts link to.
 		crmStore crm.Store
 		crmItems crm.Items
+		// applicationStore holds the questionnaires, intakes and applications.
+		applicationStore applications.Store
 		// memSubscriptions is set without a database (its expiry sweep runs here).
 		memSubscriptions *subscriptions.MemoryStore
 	)
@@ -226,8 +229,19 @@ func run() error {
 		memCRM.SetAuditSink(memTeams.AuditSink())
 		devseed.SeedMemoryCRM(memCRM, time.Now())
 		crmStore = memCRM
+		// Questionnaires and applications: the sample form (two versions),
+		// attached to two rent listings, and the sample tenant's applications.
+		// Views are audited into the team audit trail.
+		memApplications := applications.NewMemoryStore()
+		memApplications.SetAuditSink(memTeams.AuditSink())
+		memApplications.SetListingTitles(app.MemoryListingTitles(memListings))
+		devseed.SeedMemoryApplications(memApplications, time.Now())
+		if err := devseed.SeedApplicationFiles(ctx, files); err != nil {
+			return fmt.Errorf("seed sample application file: %w", err)
+		}
+		applicationStore = memApplications
 		crmItems = app.MemoryCRMItems{Requests: memRequests, Enquiries: memEnquiries, Appointments: memAppointments,
-			Identity: memIdentity, Listings: memListings}
+			Identity: memIdentity, Listings: memListings, Applications: memApplications}
 		memAgreements := agreements.NewMemoryStore()
 		agreementStore = memAgreements
 		if err := devseed.SeedMemoryAgreements(ctx, memAgreements, memLeases, files, time.Now()); err != nil {
@@ -244,7 +258,8 @@ func run() error {
 		subscriptionStore = memSubscriptions
 		accountStore = accounts.NewMemoryStore(accounts.MemoryDeps{Identity: memIdentity, Listings: memListings, Teams: memTeams,
 			Directory: memDirectory, Audit: memAudit, CancelSubscriptions: memSubscriptions.CancelForDeletedUser,
-			DeleteSignature: memAgreements.DeleteSavedSignature, DeleteSavedListings: memSaved.DeleteUser})
+			DeleteSignature: memAgreements.DeleteSavedSignature, DeleteSavedListings: memSaved.DeleteUser,
+			EraseApplications: func(userID uuid.UUID, at time.Time) { memApplications.EraseApplicant(userID, at) }})
 		reportStore = app.MemoryReports(app.MemoryReportStores{Identity: memIdentity, Onboarding: memOnboarding, Listings: memListings,
 			Requests: memRequests, Enquiries: memEnquiries, Leases: memLeases, Agreements: memAgreements, Subscriptions: memSubscriptions,
 			Markets: marketStore})
@@ -271,6 +286,7 @@ func run() error {
 		handlers.SetListingSource(app.ListingRecord(memListings))
 		handlers.SetSuspensionReasons(app.SuspensionReasons(accountStore))
 		handlers.SetSubscriptionSource(memSubscriptions.Subscription)
+		handlers.SetApplicationSource(app.ApplicationNotices(memApplications, memListings, referenceStore, memIdentity, logger))
 		// Server-side analytics events (saves, enquiries, viewing requests,
 		// confirmations, relists) are recorded here too, and the rollups run
 		// in this process.
@@ -325,6 +341,10 @@ func run() error {
 		memOnboarding.SetOutboxSink(sink)
 		memAppointments.SetOutboxSink(sink)
 		memSubscriptions.SetOutboxSink(sink)
+		memApplications.SetOutboxSink(sink)
+		// The application retention job (and the purge of deleted files).
+		go app.RunApplicationJobs(ctx, app.ApplicationsService(memApplications, files,
+			listings.NewService(memListings, memListings, reference.NewService(referenceStore, nil)), memListings, memIdentity, logger, nil))
 		// The listing store also writes search-index events; without a worker
 		// only the review emails are handled.
 		memListings.SetOutboxSink(func(ev outbox.Event) {
@@ -387,6 +407,7 @@ func run() error {
 		savedStore = saved.NewPostgresStore(pool)
 		analyticsStore = analytics.NewPostgresStore(pool)
 		crmStore, crmItems = crm.NewPostgresStore(pool), crm.NewPostgresItems(pool)
+		applicationStore = applications.NewPostgresStore(pool)
 		adminAuditLog = adminaudit.PostgresLog{Q: pool}
 	}
 
@@ -444,6 +465,7 @@ func run() error {
 		Analytics:     analyticsStore,
 		CRM:           crmStore,
 		CRMItems:      crmItems,
+		Applications:  applicationStore,
 	})
 	if err != nil {
 		return err

@@ -134,6 +134,19 @@ func SampleData(name string) Data {
 		d.Path, d.Reason = "/", "Several customers reported listings that ask for a deposit before a viewing."
 	case "account-reactivated":
 		d.Path = "/sign-in"
+	case "application-submitted", "application-new", "application-more-info", "application-status-changed":
+		d.Reference, d.ListingTitle, d.ListingRef = "RPA-APP-2026-000042", "Two-bedroom flat in Avondale", "RP-ZW-10004"
+		switch name {
+		case "application-submitted":
+			d.Path, d.StatusText = "/account/applications", "Submitted"
+		case "application-new":
+			d.Name, d.Path = "Tendai Ncube", "/agent/applications"
+		case "application-more-info":
+			d.Path, d.StatusText = "/account/applications", "More information requested"
+			d.Message = SafePreview("Please upload your two most recent payslips and tell us when you would like to move in.", 500)
+		case "application-status-changed":
+			d.Path, d.StatusText = "/account/applications", "Shortlisted"
+		}
 	case "subscription-invoice", "subscription-activated", "subscription-rejected", "subscription-cancelled", "subscription-expired":
 		d.Name, d.Path, d.InvoiceNumber, d.PlanName, d.Period, d.Amount = "Tendai Ncube", "/account/subscriptions", "RPS-2026-000042", "Agent Starter", "3 months", "USD 30.00"
 		switch name {

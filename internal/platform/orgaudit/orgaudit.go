@@ -48,6 +48,10 @@ const (
 	ActionContactsMerged      = "CONTACTS_MERGED"
 	ActionContactsImported    = "CONTACTS_IMPORTED"
 	ActionContactsExported    = "CONTACTS_EXPORTED"
+	// Applications (API 0.32.0, FR-018): every read of an application's
+	// answers and every download of one of its files.
+	ActionApplicationViewed     = "APPLICATION_VIEWED"
+	ActionApplicationFileViewed = "APPLICATION_FILE_VIEWED"
 )
 
 var actionLabels = map[string]string{
@@ -68,6 +72,8 @@ var actionLabels = map[string]string{
 	ActionContactsMerged:             "Contacts merged",
 	ActionContactsImported:           "Contacts imported",
 	ActionContactsExported:           "Contacts exported",
+	ActionApplicationViewed:          "Application viewed",
+	ActionApplicationFileViewed:      "Application file downloaded",
 }
 
 // Actions returns every action, in a stable order.
@@ -98,6 +104,8 @@ const (
 	// the whole book (an import or an export; its ID is the organisation's).
 	TargetContact     = "CONTACT"
 	TargetContactBook = "CONTACT_BOOK"
+	// TargetApplication is one application (labelled with its reference).
+	TargetApplication = "APPLICATION"
 )
 
 // Event is one audit record.

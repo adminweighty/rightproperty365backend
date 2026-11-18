@@ -607,6 +607,19 @@ const (
 		FROM appointments a
 		JOIN markets m ON m.id = a.market_id
 		LEFT JOIN users u ON u.id = a.customer_user_id`
+	// applicationItems: submitted applications (never a DRAFT); the customer
+	// is the applicant's account (migration 0031).
+	applicationItems = `
+		SELECT ap.id, COALESCE(ap.reference, ''), 'APPLICATION', ap.status, COALESCE(l.title, ap.listing_snapshot->>'title', ''), ap.listing_id,
+		       ap.organisation_id,
+		       CASE WHEN ap.organisation_id IS NOT NULL THEN l.agent_user_id END,
+		       CASE WHEN ap.organisation_id IS NULL THEN ap.owner_user_id END,
+		       apf.market_code, COALESCE(u.full_name, ap.applicant_name, ''), COALESCE(u.email, ''), COALESCE(u.phone, ''),
+		       CASE WHEN u.email_verified_at IS NOT NULL THEN u.email ELSE '' END, COALESCE(ap.last_submitted_at, ap.created_at)
+		FROM applications ap
+		JOIN forms apf ON apf.id = ap.form_id
+		LEFT JOIN listings l ON l.id = ap.listing_id
+		LEFT JOIN users u ON u.id = ap.applicant_user_id`
 )
 
 func itemQuery(kind string) (query, alias string, ok bool) {
@@ -617,6 +630,8 @@ func itemQuery(kind string) (query, alias string, ok bool) {
 		return enquiryItems, "e", true
 	case KindAppointment:
 		return appointmentItems, "a", true
+	case KindApplication:
+		return applicationItems, "ap", true
 	}
 	return "", "", false
 }
@@ -635,7 +650,11 @@ func (s *PostgresItems) Item(ctx context.Context, kind string, id uuid.UUID) (It
 	if !ok {
 		return Item{}, ErrItemNotFound
 	}
-	it, err := scanItem(kind, s.pool.QueryRow(ctx, q+` WHERE `+alias+`.id = $1`, id))
+	where := ` WHERE ` + alias + `.id = $1`
+	if kind == KindApplication {
+		where += ` AND ap.status <> 'DRAFT'`
+	}
+	it, err := scanItem(kind, s.pool.QueryRow(ctx, q+where, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Item{}, ErrItemNotFound
 	}
@@ -654,9 +673,16 @@ func (s *PostgresItems) Candidates(ctx context.Context, book Book, emails, phone
 		if kind == KindAppointment {
 			emailCol, phoneCol = "a.customer_email", "a.customer_phone"
 		}
+		if kind == KindApplication {
+			emailCol, phoneCol = "u.email", "u.phone"
+		}
 		var bookCond string
 		var bookID uuid.UUID
 		switch {
+		case kind == KindApplication && book.OrganisationID != nil:
+			bookCond, bookID = "ap.status <> 'DRAFT' AND ap.organisation_id = $1", *book.OrganisationID
+		case kind == KindApplication && book.UserID != nil:
+			bookCond, bookID = "ap.status <> 'DRAFT' AND ap.organisation_id IS NULL AND ap.owner_user_id = $1", *book.UserID
 		case book.OrganisationID != nil:
 			bookCond, bookID = nameAlias+".recipient_organisation_id = $1", *book.OrganisationID
 		case book.UserID != nil && kind != KindBusinessEnquiry:

@@ -80,11 +80,15 @@ const (
 	KindPropertyRequest = "PROPERTY_REQUEST"
 	KindBusinessEnquiry = "BUSINESS_ENQUIRY"
 	KindAppointment     = "APPOINTMENT"
-	KindListing         = "LISTING"
+	// KindApplication is a submitted application to a listing (API 0.32.0).
+	KindApplication = "APPLICATION"
+	KindListing     = "LISTING"
 )
 
 // ItemKinds are the kinds linked automatically (and that /from-request accepts).
-func ItemKinds() []string { return []string{KindPropertyRequest, KindBusinessEnquiry, KindAppointment} }
+func ItemKinds() []string {
+	return []string{KindPropertyRequest, KindBusinessEnquiry, KindAppointment, KindApplication}
+}
 
 // Activity log entries (contact_events.kind).
 const (
@@ -121,7 +125,7 @@ const (
 
 // OutboxEventTypes are the outbox events that link items to contacts.
 func OutboxEventTypes() []string {
-	return []string{"PROPERTY_REQUEST_CREATED", "BUSINESS_ENQUIRY_CREATED", "APPOINTMENT_REQUESTED"}
+	return []string{"PROPERTY_REQUEST_CREATED", "BUSINESS_ENQUIRY_CREATED", "APPOINTMENT_REQUESTED", "APPLICATION_SUBMITTED"}
 }
 
 // Limits.
@@ -370,7 +374,8 @@ type Store interface {
 	ClaimDueReminders(ctx context.Context, now time.Time, limit int) ([]Reminder, error)
 }
 
-// Item is a property request, business enquiry or appointment as the CRM
+// Item is a property request, business enquiry, appointment or submitted
+// application as the CRM
 // sees it: who it reached and how to reach its customer.
 type Item struct {
 	Kind      string

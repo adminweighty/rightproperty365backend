@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"rightproperty365.com/backend/internal/modules/applications"
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
@@ -23,9 +24,12 @@ import (
 //	APPOINTMENT_REQUESTED    -> viewing_request (an appointment for a listing)
 //	APPOINTMENT_CONFIRMED    -> appointment_confirm (for a listing)
 //	LISTING_RELISTED         -> listing_relist
+//	APPLICATION_SUBMITTED    -> application_submit (a first submission;
+//	                            a resubmission after a request for more
+//	                            information is not counted again)
 func OutboxEventTypes() []string {
 	return []string{saved.EventListingSaved, propertyrequests.EventPropertyRequestCreated, appointments.EventRequested,
-		appointments.EventConfirmed, listings.EventListingRelisted}
+		appointments.EventConfirmed, listings.EventListingRelisted, applications.EventTypeSubmitted}
 }
 
 // AppointmentListing returns the listing an appointment is about (nil for a
@@ -59,6 +63,7 @@ type eventBody struct {
 	At            *time.Time `json:"at"`
 	OccurredAt    *time.Time `json:"occurred_at"`
 	CreatedAt     *time.Time `json:"created_at"`
+	Resubmission  bool       `json:"resubmission"`
 }
 
 func (b eventBody) when(fallback time.Time) time.Time {
@@ -85,6 +90,11 @@ func (r *Recorder) Handle(ctx context.Context, ev outbox.Event) error {
 		eventType = TypeListingSave
 	case propertyrequests.EventPropertyRequestCreated:
 		eventType = TypeEnquirySubmit
+	case applications.EventTypeSubmitted:
+		if body.Resubmission {
+			return nil
+		}
+		eventType = TypeApplicationSubmit
 	case listings.EventListingRelisted:
 		eventType = TypeListingRelist
 		if listing == nil {

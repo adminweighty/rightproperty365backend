@@ -24,7 +24,30 @@ type Service struct {
 	// calendar is the availability calendar of the short stays; nil means
 	// none (no availability on listings, no check_in / check_out search).
 	calendar Calendar
-	now      func() time.Time
+	// intake supplies the applications summary; nil means none.
+	intake Intake
+	now    func() time.Time
+}
+
+// SetIntake gives the Service the application intake behind a listing's
+// `applications`.
+func (s *Service) SetIntake(i Intake) { s.intake = i }
+
+// withApplications sets `applications` on the listings that take them.
+func (s *Service) withApplications(ctx context.Context, records []Record, out []Listing) error {
+	if s.intake == nil || len(records) == 0 {
+		return nil
+	}
+	summaries, err := s.intake.ApplicationSummaries(ctx, records)
+	if err != nil {
+		return fmt.Errorf("load application intake: %w", err)
+	}
+	for i := range out {
+		if summary, ok := summaries[out[i].ID]; ok {
+			out[i].Applications = &summary
+		}
+	}
+	return nil
 }
 
 // SetCalendar gives the Service the availability calendar behind a
@@ -269,6 +292,9 @@ func (s *Service) Present(ctx context.Context, records []Record) ([]Listing, err
 	if err := s.withAvailability(ctx, records, out); err != nil {
 		return nil, err
 	}
+	if err := s.withApplications(ctx, records, out); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
@@ -301,6 +327,9 @@ func (s *Service) Find(ctx context.Context, q Query) (Page, error) {
 		}
 	}
 	if err := s.withAvailability(ctx, shown, page.Items); err != nil {
+		return Page{}, err
+	}
+	if err := s.withApplications(ctx, shown, page.Items); err != nil {
 		return Page{}, err
 	}
 	// A hit the source of truth refused (the index was behind) is not counted either.

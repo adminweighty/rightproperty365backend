@@ -443,6 +443,22 @@ type Listing struct {
 	// lister last changed the calendar and the first night that is free.
 	// The calendar itself is GET /v1/listings/{slug}/availability.
 	Availability *AvailabilitySummary `json:"availability"`
+	// Applications says whether the listing takes applications now (API
+	// 0.32.0); null when no questionnaire is attached (always for short stays).
+	Applications *ApplicationsSummary `json:"applications"`
+}
+
+// ApplicationsSummary is what a public listing says about its application
+// intake: whether it is open, when it closes and the questionnaire's name.
+type ApplicationsSummary struct {
+	Open     bool       `json:"open"`
+	ClosesAt *time.Time `json:"closes_at"`
+	FormName *string    `json:"form_name"`
+}
+
+// Intake supplies the ApplicationsSummary of listings (the applications module).
+type Intake interface {
+	ApplicationSummaries(ctx context.Context, records []Record) (map[uuid.UUID]ApplicationsSummary, error)
 }
 
 // AvailabilitySummary is what a listing says about its availability

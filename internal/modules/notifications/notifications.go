@@ -31,6 +31,7 @@ import (
 
 	"rightproperty365.com/backend/internal/modules/accounts"
 	"rightproperty365.com/backend/internal/modules/agreements"
+	"rightproperty365.com/backend/internal/modules/applications"
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/identity"
@@ -276,6 +277,8 @@ type Handlers struct {
 	suspensionReason func(ctx context.Context, userID uuid.UUID) (string, error)
 	// subscription loads the subscription behind a subscription event.
 	subscription func(ctx context.Context, id uuid.UUID) (subscriptions.Subscription, error)
+	// application loads the application behind an application event.
+	application func(ctx context.Context, id uuid.UUID) (applications.Notice, error)
 }
 
 // SetListingSource supplies the listing behind a listing review event (the
@@ -470,7 +473,7 @@ func EventTypes() []string {
 		identity.EventPasswordChanged,
 		identity.EventAdminSignedIn,
 	}, onboarding.EventTypes()...), append(append(append(appointments.EventTypes(), listings.ReviewEventTypes()...),
-		accounts.EventTypes()...), subscriptions.EventTypes()...)...)
+		accounts.EventTypes()...), append(subscriptions.EventTypes(), applications.OutboxEventTypes()...)...)...)
 }
 
 // PathOnboarding is the web page where an applicant fills in an application.
@@ -733,6 +736,11 @@ func (h *Handlers) build(ctx context.Context, ev outbox.Event) ([]mail.Notificat
 
 	case subscriptions.EventRequested, subscriptions.EventActivated, subscriptions.EventRejected, subscriptions.EventCancelled, subscriptions.EventExpired:
 		if err := h.subscriptionNotes(ctx, ev, add); err != nil {
+			return nil, err
+		}
+
+	case applications.EventTypeSubmitted, applications.EventTypeInfoRequested, applications.EventTypeStatusChanged, applications.EventTypeWithdrawn:
+		if err := h.applicationNotes(ctx, ev, add); err != nil {
 			return nil, err
 		}
 

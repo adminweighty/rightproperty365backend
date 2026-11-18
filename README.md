@@ -285,6 +285,11 @@ All configuration comes from environment variables. For local development you ma
 | GET, POST | `/v1/agent/organisations/{id}/contacts` | The organisation's contact book: list (filters, `stage_counts`) / create (duplicate check); see "Agent CRM", 0.31.0 |
 | GET, PATCH, DELETE | `/v1/agent/organisations/{id}/contacts/{contactId}` | One contact / edit / soft delete; `.../notes`, `.../reminders[/{rid}]`, `.../stage`, `.../owner`, `.../listings[/{listingId}]`, `.../timeline` |
 | GET, POST | `/v1/agent/organisations/{id}/contacts/reminders`, `/tags`, `/assignees`, `/export.csv`, `/merge`, `/import`, `/from-request/{requestId}` | Due reminders, tags, who may own contacts, CSV export and import (OWNER and MANAGER), merge, one-click contact |
+| GET, POST, PATCH | `/v1/agent/organisations/{id}/forms`, `/{formId}`, `/{formId}/publish`, `/{formId}/retire` | Screening questionnaires, versioned (see "Questionnaires and applications", 0.32.0) |
+| GET, PUT | `/v1/me/listings/{id}/applications-intake` | A listing's questionnaire and intake (OPEN, PAUSED, CLOSED) |
+| GET | `/v1/listings/{slug}/application-form` | The questionnaire of a public listing (preview) |
+| GET, POST, PATCH | `/v1/me/applications`, `/{applicationId}`, `/files[/{fileId}]`, `/submit`, `/withdraw` | The customer's own applications: start, autosave, files, submit, withdraw |
+| GET, POST | `/v1/agent/organisations/{id}/applications`, `/{applicationId}`, `/files/{fileId}`, `/status`, `/request-info`, `/notes` | Applications received (reads audited) |
 | GET | `/v1/admin/overview` | Counts an administrator starts from, sections by platform role |
 | GET, POST | `/v1/admin/routing-exceptions`, `/{id}/resolve` | Requests nobody could receive, and marking one as dealt with |
 | POST | `/v1/appointments` | A signed-in customer asks for a viewing or a consultation |
@@ -447,6 +452,79 @@ change; follow-up dates and reminders; editing or deleting a note; listing analy
 funnels and response-time KPIs (no event data exists); seeker favourites, saved searches and
 alerts.
 
+## Questionnaires and applications (API 0.32.0)
+
+Migration `0031`, module `internal/modules/applications` (BR-010, FR-015, FR-017 to FR-019).
+Routes: `/v1/agent/organisations/{id}/forms` and `.../applications` (OpenAPI tags `forms` and
+`applications`), `/v1/me/listings/{id}/applications-intake`, `/v1/listings/{slug}/application-form`
+and `/v1/me/applications`. The response shapes are in the 0.32 contract's "Response shapes".
+
+- **Forms.** A form belongs to an organisation whose kind manages listings, or (with `{id}` =
+  their own user ID) to an approved direct owner. OWNER and MANAGER manage, AGENT reads, STAFF
+  `403`, anybody else `404 FORM_NOT_FOUND` (`auth.MayReadForms` / `MayManageForms`). Fields:
+  short and long text, number, date, single and multiple choice, file; `required`, min / max
+  (value, selections), lengths, dates, `accept` (pdf, jpg, png, webp, heic, docx) and
+  `max_files` (at most 5), and `visible_if` on an EARLIER choice field. Each form has a
+  purpose, a privacy notice, `retention_days` (30 to 3650), a country and an optional expiry.
+  Keys that look like government IDs or other sensitive data (passport, national ID, ID
+  number, social security, bank account, BVN, tax number, driving licence, health, religion,
+  card numbers) give `warnings`, never a block (`applications/forms.go`).
+- **Versions** follow lease templates: a DRAFT is edited in place, editing a PUBLISHED version
+  creates the next DRAFT (`201`, `409 FORM_DRAFT_EXISTS` when there is one), publishing retires
+  the previous version and moves the listings attached to it. **A version with a submitted
+  application never changes**: the service only ever edits drafts, the memory store refuses it,
+  and the trigger `forms_frozen_after_submission` refuses any content change or delete in the
+  database. An application keeps `form_id` and shows exactly its version's questions.
+- **Intake** (FR-019): one questionnaire per listing; OPEN, PAUSED or CLOSED with an optional
+  `closes_at`; only a PUBLISHED, unexpired form of the listing's organisation and country;
+  sale, rent and commercial listings (a short stay is `400 LISTING_NOT_ELIGIBLE`). Whoever may
+  edit the listing may change it. Every public listing has `applications`
+  (`{open, closes_at, form_name}` or null).
+- **Applying.** Signed-in customer sessions only. `POST /v1/me/applications` is idempotent per
+  customer, listing and form version; not OPEN is `409 APPLICATIONS_CLOSED` with
+  `error.details.reason` (PAUSED, CLOSED, CLOSES_AT_PASSED, FORM_EXPIRED, FORM_RETIRED, NONE)
+  and a sentence in `message`. Autosave merges and checks each answer; submit checks every
+  required visible answer (a hidden field is not required and its answer is dropped), removes
+  files no longer answered, and gives the reference `RPA-APP-<year>-<6 digits>`
+  (`application_reference_seq`). Files are checked like onboarding documents: sniffed from the
+  content (HEIC by its `ftyp` brand, DOCX as a zip with `word/document.xml`, macro documents
+  refused), 10 MB, private storage keys `applications/<random>`, served only by the API as
+  attachments. A disallowed type is `400 UNSUPPORTED_FILE_TYPE`.
+- **States.** DRAFT > SUBMITTED > UNDER_REVIEW / MORE_INFO / SHORTLISTED / ACCEPTED / REJECTED;
+  UNDER_REVIEW > MORE_INFO / SHORTLISTED / ACCEPTED / REJECTED; SHORTLISTED > ACCEPTED /
+  REJECTED; any non-final state > WITHDRAWN (the applicant); anything else `409
+  INVALID_APPLICATION_TRANSITION` (`details: {from, to, allowed}`). `request-info` moves to
+  MORE_INFO; the applicant edits and resubmits (allowed even when intake has closed since).
+- **Privacy.** The applicant sees their own (another applicant's is `404`); the receiving side
+  is OWNER and MANAGER, the listing's assigned AGENT, or the direct owner (`auth.MayReadApplication`);
+  everybody else `404`. DRAFTs are never shown to the receiving side, notes never to the
+  applicant. Every `GET .../applications/{id}` writes `APPLICATION_VIEWED` and every file
+  download `APPLICATION_FILE_VIEWED` to `organisation_audit_events` (a direct owner has no
+  organisation audit: the read is a log line).
+- **Notifications** (outbox, emails through the templates `application-submitted`,
+  `application-new`, `application-more-info`, `application-status-changed`, all triggered):
+  `APPLICATION_SUBMITTED` (applicant, with the reference; the listing's agent, else the
+  organisation's owners and managers, or the direct owner: the property-request audience),
+  `APPLICATION_INFO_REQUESTED`, `APPLICATION_STATUS_CHANGED` (an email for SHORTLISTED,
+  ACCEPTED, REJECTED) and `APPLICATION_WITHDRAWN` (no email). `APPLICATION_SUBMITTED` is also
+  linked by the CRM to matching contacts (timeline kind `APPLICATION`) and recorded as the
+  server-side analytics event `application_submit` (not again for a resubmission).
+- **Retention.** Every hour the worker erases the answers and files of applications whose final
+  state is older than their form version's `retention_days`; the row stays as a tombstone
+  (reference, status, dates, listing) with an `ERASED` timeline entry, and each erasure is
+  logged (`audit=true`). Deleting an account (self-service or by an administrator) deletes the
+  person's drafts and withdraws, erases and unlinks (`Deleted applicant`) the others, in the
+  account transaction. Removed files go to `application_file_purges`; the worker (or the API
+  right away) deletes the objects, so a transaction never touches the storage.
+- **Sample data.** Sample Estates' "Rental application": version 1 RETIRED (with the tenant's
+  SUBMITTED application `RPA-APP-2026-900001`, a pets question with "Describe them" shown only
+  for "yes", and a proof-of-income file), version 2 PUBLISHED (adds smoking and a previous
+  landlord) and attached to two rent listings; tenant@example.test also has a DRAFT on version 2.
+
+**Not verified / follow-ups:** migration `0031` and `applications/postgres.go` have only run
+where `RP365_TEST_DATABASE_URL` is set. Abandoned drafts are not expired. No push
+notifications yet (the outbox events are kept for them).
+
 ## Agent CRM: contact books (API 0.31.0)
 
 Migration `0030`, module `internal/modules/crm` (BR-004, FR-014). Routes under
@@ -507,8 +585,8 @@ Migration `0030`, module `internal/modules/crm` (BR-004, FR-014). Routes under
 
 **Not verified / follow-ups:** migration `0030` and `crm/postgres.go` have only run where
 `RP365_TEST_DATABASE_URL` is set (the store contract test skips otherwise). No email for due
-reminders; applications are not yet linked (no applications module); a direct owner cannot
-import or export (the audit trail belongs to organisations).
+reminders; a direct owner cannot import or export (the audit trail belongs to organisations).
+Since 0.32.0 submitted applications are linked too (kind `APPLICATION`).
 
 ## Listing analytics (API 0.30.0)
 
@@ -2509,6 +2587,10 @@ Every template that `mail.Templates()` marks as triggered (template names in bra
 | Subscription not approved (`subscription-rejected`; with the reason) | `POST /v1/admin/subscriptions/{id}/reject` | outbox `SUBSCRIPTION_REJECTED` |
 | Subscription cancelled (`subscription-cancelled`; by an administrator, with the reason) | `POST /v1/admin/subscriptions/{id}/cancel` (a subscriber withdrawing their own pending request is not emailed) | outbox `SUBSCRIPTION_CANCELLED` |
 | Subscription ended (`subscription-expired`) | An active subscription's end passed (the subscription sweep, every 5 minutes) | outbox `SUBSCRIPTION_EXPIRED` |
+| Application sent (`application-submitted`; to the applicant, with the reference; "resubmitted" after more information) | `POST /v1/me/applications/{id}/submit` | outbox `APPLICATION_SUBMITTED` |
+| New application (`application-new`; to the listing's agent, otherwise the organisation's owners and managers, or the direct owner; no answers or contact details) | same | same event |
+| More information needed (`application-more-info`; with the request, contact details hidden) | `POST .../applications/{id}/request-info` | outbox `APPLICATION_INFO_REQUESTED` |
+| Application update (`application-status-changed`; shortlisted, accepted or not successful) | `POST .../applications/{id}/status` | outbox `APPLICATION_STATUS_CHANGED` |
 
 **Designed, written and tested, but NOT sent** (`Triggered: false` in `mail.Templates()`):
 
@@ -3063,6 +3145,14 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0031_questionnaires_applications` (API 0.32.0): `forms` (versions of a family, one DRAFT and
+  one PUBLISHED at most, organisation_id XOR owner_user_id, `sections` jsonb, retention 30 to
+  3650 days) with the trigger `forms_frozen_after_submission`, `listing_application_intake`,
+  `applications` (answers and listing snapshot jsonb, one per applicant, listing and version;
+  `application_reference_seq`), `application_files`, `application_file_purges`,
+  `application_events` and `application_notes`; widens the `contact_links` kind CHECK
+  (APPLICATION) and the `organisation_audit_events` action and target CHECKs. The down migration
+  drops the tables and loses every questionnaire and application (stored objects stay).
 - `0030_agent_crm` (API 0.31.0): `contacts` (organisation_id XOR book_user_id, stage CHECK,
   `marketing` jsonb, `deleted_at`, `merged_into`), `contact_emails` / `contact_phones`
   (normalised, indexed per book), `contact_tags`, `contact_notes`, `contact_reminders`,
@@ -3268,7 +3358,7 @@ The worker handles `PROPERTY_REQUEST_CREATED`, `BUSINESS_ENQUIRY_CREATED`, `USER
 `PASSWORD_CHANGED` and `ADMIN_SIGNED_IN` by sending the notification emails described under
 "Email"; each email is keyed on the event ID and recipient, so a redelivered event sends nothing
 twice. `PROPERTY_REQUEST_STAGE_CHANGED` and `PROPERTY_REQUEST_EXCEPTION_RESOLVED` (identifiers
-and stages only), `LISTING_SAVED` and `LISTING_UNSAVED` (identifiers only) are acknowledged without sending anything: no email exists for them yet. `LISTING_SAVED`, `PROPERTY_REQUEST_CREATED`, `APPOINTMENT_REQUESTED`, `APPOINTMENT_CONFIRMED` and `LISTING_RELISTED` are also recorded as server-side analytics events (after the email handler, `outbox.Chain`: a transient failure of either retries both, each idempotent). The same three creation events link the new item to the matching contacts of its organisation (see "Agent CRM"), and every minute the worker writes `CONTACT_REMINDER_DUE` for due contact reminders (acknowledged). Every 15 minutes the worker recomputes the analytics rollups and applies `ANALYTICS_RAW_RETENTION_DAYS` (see "Listing analytics"). A handler can mark a failure permanent, which dead-letters the event at once. **The worker
+and stages only), `LISTING_SAVED` and `LISTING_UNSAVED` (identifiers only) are acknowledged without sending anything: no email exists for them yet. `LISTING_SAVED`, `PROPERTY_REQUEST_CREATED`, `APPOINTMENT_REQUESTED`, `APPOINTMENT_CONFIRMED` and `LISTING_RELISTED` are also recorded as server-side analytics events (after the email handler, `outbox.Chain`: a transient failure of either retries both, each idempotent). The same three creation events link the new item to the matching contacts of its organisation (see "Agent CRM"), and every minute the worker writes `CONTACT_REMINDER_DUE` for due contact reminders (acknowledged). Every 15 minutes the worker recomputes the analytics rollups and applies `ANALYTICS_RAW_RETENTION_DAYS` (see "Listing analytics"). The four application events send their emails, `APPLICATION_SUBMITTED` is also linked by the CRM and counted as `application_submit`, and every hour the worker runs the application retention job and removes deleted application files from the object storage (the worker opens the file storage for this; see "Questionnaires and applications"). A handler can mark a failure permanent, which dead-letters the event at once. **The worker
 sends real email when `RESEND_API_KEY` is set.** Without `DATABASE_URL` in development the worker
 logs that it is idle and waits for shutdown (the API then handles the events in-process).
 

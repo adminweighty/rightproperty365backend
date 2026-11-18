@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"rightproperty365.com/backend/internal/modules/applications"
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/crm"
@@ -93,6 +94,8 @@ type MemoryCRMItems struct {
 	Appointments *appointments.MemoryStore
 	Identity     identity.Store
 	Listings     listings.Store
+	// Applications are the submitted applications (API 0.32.0; nil: none).
+	Applications *applications.MemoryStore
 }
 
 func (m MemoryCRMItems) accountEmail(ctx context.Context, userID *uuid.UUID) string {
@@ -166,6 +169,50 @@ func (m MemoryCRMItems) all(ctx context.Context) ([]crm.Item, error) {
 				it.OrganisationID, it.AssignedUserID = a.OrganisationID, a.AssignedUserID
 			} else if a.RecipientType == appointments.RecipientSeller {
 				it.DirectOwnerUserID = a.AssignedUserID
+			}
+			out = append(out, it)
+		}
+	}
+	if m.Applications != nil {
+		list := m.Applications.AllApplications()
+		agents := map[uuid.UUID]*uuid.UUID{}
+		if m.Listings != nil && len(list) > 0 {
+			var ids []uuid.UUID
+			for _, a := range list {
+				if !slices.Contains(ids, a.ListingID) {
+					ids = append(ids, a.ListingID)
+				}
+			}
+			records, err := m.Listings.ByIDs(ctx, ids)
+			if err != nil {
+				return nil, err
+			}
+			for _, r := range records {
+				agents[r.ID] = r.AgentUserID
+			}
+		}
+		for _, a := range list {
+			if a.Status == applications.StatusDraft {
+				continue
+			}
+			listing := a.ListingID
+			it := crm.Item{Kind: crm.KindApplication, ID: a.ID, Reference: a.Reference, Type: "APPLICATION", Status: a.Status,
+				Title: a.Listing.Title, ListingID: &listing, Name: a.ApplicantName, CreatedAt: a.CreatedAt}
+			if a.LastSubmittedAt != nil {
+				it.CreatedAt = *a.LastSubmittedAt
+			}
+			if a.ApplicantUserID != nil && m.Identity != nil {
+				if u, err := m.Identity.UserByID(ctx, *a.ApplicantUserID); err == nil {
+					it.Name, it.Email = u.Name, u.Email
+					if u.Verified() {
+						it.AccountEmail = u.Email
+					}
+				}
+			}
+			if a.OrganisationID != nil {
+				it.OrganisationID, it.AssignedUserID = a.OrganisationID, agents[a.ListingID]
+			} else {
+				it.DirectOwnerUserID = a.OwnerUserID
 			}
 			out = append(out, it)
 		}

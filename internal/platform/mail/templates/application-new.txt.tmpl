@@ -1,0 +1,14 @@
+{{define "subject"}}New application: {{.Reference}}{{end}}
+{{define "heading"}}{{if .Edit}}Application resubmitted{{else}}New application{{end}}{{end}}
+{{define "button"}}Open your applications{{end}}
+{{define "why"}}You are receiving this because an application was sent to you on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+{{if .Edit}}An applicant has answered your request for more information and resubmitted their application.{{else}}A customer has applied for one of your listings.{{end}}
+
+Reference: {{.Reference}}
+{{if .ListingTitle}}Property: {{.ListingTitle}}
+{{end}}{{if .ListingRef}}Listing reference: {{.ListingRef}}
+{{end}}Received: {{date .When}}
+
+The answers, the documents and the applicant's details are in your applications inbox. They are not included in this email, and every time they are opened it is recorded.{{end}}

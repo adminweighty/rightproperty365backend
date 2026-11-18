@@ -83,6 +83,10 @@ func Templates() []Template {
 		{"subscription-rejected", "Subscription request not approved (to the requester)", true},
 		{"subscription-cancelled", "Subscription cancelled by an administrator (to the requester)", true},
 		{"subscription-expired", "Subscription ended (to the requester)", true},
+		{"application-submitted", "Application sent or resubmitted, with its reference (to the applicant)", true},
+		{"application-new", "New or resubmitted application (to the agent, or the organisation's owners and managers, or the direct owner)", true},
+		{"application-more-info", "More information asked for an application (to the applicant)", true},
+		{"application-status-changed", "Application shortlisted, accepted or not successful (to the applicant)", true},
 
 		{"request-update", "Reply or status update to the customer", false},
 		{"listing-expiring", "Listing expiring in 14, 7 or 1 days", false},

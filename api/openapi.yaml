@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.31.0
+  version: 0.32.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,46 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Questionnaires and applications (new in 0.32.0)
+    - **Screening questionnaires** (BR-010, FR-017, FR-018) under
+      `/v1/agent/organisations/{id}/forms`: versioned forms (DRAFT, PUBLISHED, RETIRED) with
+      sections and fields (short and long text, number, date, single and multiple choice, file),
+      required flags, min / max limits and `visible_if` (only on an EARLIER choice field). Each
+      form has a purpose, a privacy notice, a retention period (30 to 3650 days), a country and
+      an optional expiry. Editing a PUBLISHED form creates the next DRAFT version (lease
+      templates' pattern); publishing retires the previous version and moves the listings to
+      the new one. A version with a submitted application never changes again (also a database
+      trigger). Fields that look like government IDs or other sensitive data carry `warnings`
+      (never a block). OWNER and MANAGER manage, AGENT reads, STAFF `403`, anybody else `404
+      FORM_NOT_FOUND`; an approved direct owner uses their own user ID as `{id}`.
+    - **One questionnaire per listing** (FR-019): `GET` / `PUT /v1/me/listings/{id}/applications-intake`
+      attaches a PUBLISHED form of the listing's organisation and country and sets intake OPEN,
+      PAUSED or CLOSED (optional `closes_at`). Sale, rent and commercial listings only (a short
+      stay is `400 LISTING_NOT_ELIGIBLE`). Every public listing gains `applications`
+      (`{open, closes_at, form_name}` or null), and `GET /v1/listings/{slug}/application-form`
+      is the public preview.
+    - **Applications** (FR-015): a signed-in customer starts a DRAFT (`POST /v1/me/applications`,
+      idempotent per listing and form version), autosaves answers, uploads private files (PDF,
+      JPEG, PNG, WebP, HEIC, DOCX by content, 10 MB, at most 5 per question), and submits: the
+      answers are checked against the form version, honouring `visible_if` (a hidden question
+      is not required and its answer is dropped), and the application gets a reference
+      `RPA-APP-<year>-<6 digits>`. Intake that is not OPEN is `409 APPLICATIONS_CLOSED` with
+      `error.details.reason`. States: DRAFT > SUBMITTED > UNDER_REVIEW > MORE_INFO >
+      SHORTLISTED / ACCEPTED / REJECTED / WITHDRAWN; anything else is `409
+      INVALID_APPLICATION_TRANSITION`. An application always shows the exact questions of its
+      version.
+    - **Privacy.** The applicant sees only their own; the receiving organisation (OWNER, MANAGER,
+      the listing's assigned AGENT) or direct owner sees only what it received; everybody else
+      gets `404`. Every read of an application's answers (`APPLICATION_VIEWED`) and every file
+      download (`APPLICATION_FILE_VIEWED`) is written to the organisation audit trail. Files
+      are served only by the API. After the form's retention period a final application keeps
+      a tombstone only (reference, status, dates, listing); deleting an account deletes its
+      drafts and anonymises its other applications.
+    - Emails (submitted, more information, shortlisted / accepted / not successful, and a new
+      application to the same audience as property requests) go through the outbox; a
+      submitted application links to the matching CRM contact (timeline kind `APPLICATION`)
+      and counts as the `application_submit` analytics event.
 
     Agent CRM: contact books (new in 0.31.0)
     - **A private contact book per organisation** (BR-004, FR-014) under
@@ -566,6 +606,14 @@ tags:
     description: |
       The agent CRM (new in 0.31.0): an organisation's (or a direct owner's) private contact
       book. 404 `CONTACT_NOT_FOUND` for anyone else.
+  - name: forms
+    description: |
+      Screening questionnaires (new in 0.32.0): versioned forms of an organisation or a direct
+      owner, and the questionnaire attached to a listing.
+  - name: applications
+    description: |
+      Applications to listings (new in 0.32.0): the customer's own, and those an organisation
+      received. Private: 404 for anybody else; reads of answers and files are audited.
   - name: property-requests
   - name: business-enquiries
   - name: appointments
@@ -6723,6 +6771,577 @@ paths:
         "504":
           $ref: "#/components/responses/Timeout"
 
+  /v1/listings/{slug}/application-form:
+    parameters:
+      - { name: slug, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [forms]
+      operationId: getListingApplicationForm
+      summary: The questionnaire of a public listing (public, new in 0.32.0)
+      description: |
+        The PUBLISHED form version attached to the listing and its intake, for the preview. A
+        PAUSED or CLOSED intake still returns the form (show why). `404
+        APPLICATION_FORM_NOT_FOUND` when the listing takes no applications.
+      responses:
+        "200":
+          description: The form and the intake.
+          content:
+            application/json:
+              schema: { type: object, required: [form, intake], properties: { form: { $ref: "#/components/schemas/PublicForm" }, intake: { $ref: "#/components/schemas/IntakeState" } } }
+        "404": { description: "`APPLICATION_FORM_NOT_FOUND`: no questionnaire attached, or the listing is not public (`LISTING_NOT_FOUND`).", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+
+  /v1/me/listings/{id}/applications-intake:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [forms]
+      operationId: getApplicationIntake
+      summary: A listing's questionnaire and intake (new in 0.32.0)
+      description: Whoever may manage the listing. `status` is effective (OPEN reads CLOSED once `closes_at` passed or the form expired or was retired); `stored_status` is what was set.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The intake.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApplicationIntake" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`LISTING_NOT_FOUND`: not a listing the caller manages.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+
+    put:
+      tags: [forms]
+      operationId: putApplicationIntake
+      summary: Attach a questionnaire and set the intake (new in 0.32.0)
+      description: |
+        Whoever may edit the listing (an AGENT who only reads it gets `403`). Only a PUBLISHED,
+        unexpired form of the listing's organisation (or direct owner) and country. Send
+        `{form_id: null, status: NONE}` to detach. A short stay is `400 LISTING_NOT_ELIGIBLE`.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              additionalProperties: false
+              properties:
+                form_id: { type: [string, "null"], format: uuid }
+                status: { type: string, enum: [OPEN, PAUSED, CLOSED, NONE] }
+                closes_at: { type: [string, "null"], format: date-time }
+      responses:
+        "200":
+          description: The intake.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApplicationIntake" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "`LISTING_NOT_FOUND`: not a listing the caller manages.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+
+  /v1/me/applications:
+    get:
+      tags: [applications]
+      operationId: listMyApplications
+      summary: The caller's own applications (new in 0.32.0)
+      description: Newest first. Items carry `form` as `{id, family_id, version, name}` and no `answers`, `files` or `missing_required`.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      parameters:
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/ApplicationStatus" } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema: { type: object, required: [items, page, page_size, total, total_pages], properties: { items: { type: array, items: { $ref: "#/components/schemas/ApplicantApplication" } }, page: { type: integer }, page_size: { type: integer }, total: { type: integer }, total_pages: { type: integer } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+    post:
+      tags: [applications]
+      operationId: startApplication
+      summary: Start (or resume) an application (new in 0.32.0)
+      description: A DRAFT on the listing's current form version; `200` with the existing one for the same listing and version. Not OPEN is `409 APPLICATIONS_CLOSED`.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [listing_id], additionalProperties: false, properties: { listing_id: { type: string, format: uuid } } }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { type: object, required: [application, created], properties: { application: { $ref: "#/components/schemas/ApplicantApplication" }, created: { type: boolean } } }
+        "200":
+          description: The existing application.
+          content:
+            application/json:
+              schema: { type: object, required: [application, created], properties: { application: { $ref: "#/components/schemas/ApplicantApplication" }, created: { type: boolean } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "`LISTING_NOT_FOUND`: no such public listing.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409":
+          description: "`APPLICATIONS_CLOSED` (`error.details = {reason, closes_at}`; reason PAUSED, CLOSED, CLOSES_AT_PASSED, FORM_EXPIRED, FORM_RETIRED or NONE), or `APPLICATION_NOT_EDITABLE`."
+          content: { application/json: { schema: { $ref: "#/components/schemas/ApplicationErrorEnvelope" } } }
+
+  /v1/me/applications/{applicationId}:
+    parameters:
+      - { name: applicationId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [applications]
+      operationId: getMyApplication
+      summary: One of the caller's applications (new in 0.32.0)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The application, with the exact form version.
+          content:
+            application/json:
+              schema: { type: object, required: [application], properties: { application: { $ref: "#/components/schemas/ApplicantApplication" } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`APPLICATION_NOT_FOUND`: no such application, or not the caller's (another applicant or organisation always gets this).", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+
+    patch:
+      tags: [applications]
+      operationId: autosaveApplication
+      summary: Autosave answers (new in 0.32.0)
+      description: DRAFT or MORE_INFO only. Answers are merged (`null` removes one) and each is checked against its field; missing required answers are allowed until submit. Errors are keyed `answers.<key>`.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [answers], additionalProperties: false, properties: { answers: { type: object, additionalProperties: true } } }
+      responses:
+        "200":
+          description: The application.
+          content:
+            application/json:
+              schema: { type: object, required: [application], properties: { application: { $ref: "#/components/schemas/ApplicantApplication" } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`APPLICATION_NOT_FOUND`: no such application, or not the caller's (another applicant or organisation always gets this).", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409":
+          description: "`APPLICATIONS_CLOSED` (`error.details = {reason, closes_at}`; reason PAUSED, CLOSED, CLOSES_AT_PASSED, FORM_EXPIRED, FORM_RETIRED or NONE), or `APPLICATION_NOT_EDITABLE`."
+          content: { application/json: { schema: { $ref: "#/components/schemas/ApplicationErrorEnvelope" } } }
+
+  /v1/me/applications/{applicationId}/files:
+    parameters:
+      - { name: applicationId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [applications]
+      operationId: uploadApplicationFile
+      summary: Upload a private file for a file question (new in 0.32.0)
+      description: |
+        Multipart with one part `file`; `?field=` names the question. The type is read from the
+        content (never the name): PDF, JPEG, PNG, WebP, HEIC or DOCX, within the question's
+        `accept` (`400 UNSUPPORTED_FILE_TYPE` otherwise); at most 10 MB (`413 FILE_TOO_LARGE`)
+        and the question's `max_files` (`409 TOO_MANY_FILES`). The file ID is appended to
+        `answers[field]`. Upload rate limit bucket.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      parameters:
+        - { name: field, in: query, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: { type: object, required: [file], properties: { file: { type: string, format: binary } } }
+      responses:
+        "201":
+          description: Stored.
+          content:
+            application/json:
+              schema: { type: object, required: [file_id, file, application], properties: { file_id: { type: string, format: uuid }, file: { $ref: "#/components/schemas/ApplicationFile" }, application: { $ref: "#/components/schemas/ApplicantApplication" } } }
+        "400": { description: "`UNSUPPORTED_FILE_TYPE`: not an accepted type (or `VALIDATION_FAILED`).", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`APPLICATION_NOT_FOUND`: no such application, or not the caller's (another applicant or organisation always gets this).", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "`TOO_MANY_FILES`: the question already has its maximum (or `APPLICATION_NOT_EDITABLE`).", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "413": { description: "`FILE_TOO_LARGE`: over 10 MB.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+
+  /v1/me/applications/{applicationId}/files/{fileId}:
+    parameters:
+      - { name: applicationId, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: fileId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [applications]
+      operationId: getMyApplicationFile
+      summary: One of the caller's files (new in 0.32.0)
+      description: "An attachment; never cached (private, no-store) and never sniffed (nosniff)."
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The file.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`APPLICATION_NOT_FOUND`: no such application, or not the caller's (another applicant or organisation always gets this).", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+
+    delete:
+      tags: [applications]
+      operationId: deleteMyApplicationFile
+      summary: Remove a file of an editable application (new in 0.32.0)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The application.
+          content:
+            application/json:
+              schema: { type: object, required: [application], properties: { application: { $ref: "#/components/schemas/ApplicantApplication" } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`APPLICATION_NOT_FOUND`: no such application, or not the caller's (another applicant or organisation always gets this).", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409":
+          description: "`APPLICATIONS_CLOSED` (`error.details = {reason, closes_at}`; reason PAUSED, CLOSED, CLOSES_AT_PASSED, FORM_EXPIRED, FORM_RETIRED or NONE), or `APPLICATION_NOT_EDITABLE`."
+          content: { application/json: { schema: { $ref: "#/components/schemas/ApplicationErrorEnvelope" } } }
+
+  /v1/me/applications/{applicationId}/submit:
+    parameters:
+      - { name: applicationId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [applications]
+      operationId: submitApplication
+      summary: Submit (or resubmit) an application (new in 0.32.0)
+      description: |
+        Checks every required, visible question against the application's form version (a
+        hidden question's answer is dropped) and moves it to SUBMITTED with a reference. A first
+        submission needs OPEN intake (`409 APPLICATIONS_CLOSED` with the reason); answering a
+        request for more information (MORE_INFO) does not. No body.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The submitted application.
+          content:
+            application/json:
+              schema: { type: object, required: [application], properties: { application: { $ref: "#/components/schemas/ApplicantApplication" } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`APPLICATION_NOT_FOUND`: no such application, or not the caller's (another applicant or organisation always gets this).", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409":
+          description: "`APPLICATIONS_CLOSED` (`error.details = {reason, closes_at}`; reason PAUSED, CLOSED, CLOSES_AT_PASSED, FORM_EXPIRED, FORM_RETIRED or NONE), or `APPLICATION_NOT_EDITABLE`."
+          content: { application/json: { schema: { $ref: "#/components/schemas/ApplicationErrorEnvelope" } } }
+
+  /v1/me/applications/{applicationId}/withdraw:
+    parameters:
+      - { name: applicationId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [applications]
+      operationId: withdrawApplication
+      summary: Withdraw an application (new in 0.32.0)
+      description: From any non-final state. No body.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The withdrawn application.
+          content:
+            application/json:
+              schema: { type: object, required: [application], properties: { application: { $ref: "#/components/schemas/ApplicantApplication" } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`APPLICATION_NOT_FOUND`: no such application, or not the caller's (another applicant or organisation always gets this).", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409":
+          description: "`INVALID_APPLICATION_TRANSITION` (`error.details = {from, to, allowed}`)."
+          content: { application/json: { schema: { $ref: "#/components/schemas/ApplicationErrorEnvelope" } } }
+
+  /v1/agent/organisations/{id}/forms:
+    parameters:
+      - $ref: "#/components/parameters/ApplicationBookId"
+    get:
+      tags: [forms]
+      operationId: listForms
+      summary: The book's forms, every version (new in 0.32.0)
+      description: OWNER, MANAGER and AGENT (`can_edit` false for AGENT); STAFF `403`; anybody else `404 FORM_NOT_FOUND`.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [DRAFT, PUBLISHED, RETIRED] } }
+        - { name: market, in: query, schema: { type: string } }
+        - { name: family_id, in: query, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Newest first.
+          content:
+            application/json:
+              schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: "#/components/schemas/Form" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "`FORM_NOT_FOUND`: no such form, or the book is not the caller's.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+
+    post:
+      tags: [forms]
+      operationId: createForm
+      summary: Create a form (version 1, DRAFT; new in 0.32.0)
+      description: OWNER and MANAGER (and the direct owner). A draft may be incomplete; publish checks completeness.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FormInput" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { type: object, required: [form], properties: { form: { $ref: "#/components/schemas/Form" } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "`FORM_NOT_FOUND`: no such form, or the book is not the caller's.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+
+  /v1/agent/organisations/{id}/forms/{formId}:
+    parameters:
+      - $ref: "#/components/parameters/ApplicationBookId"
+      - { name: formId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [forms]
+      operationId: getForm
+      summary: One form version and its family's versions (new in 0.32.0)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The form.
+          content:
+            application/json:
+              schema: { type: object, required: [form, versions], properties: { form: { $ref: "#/components/schemas/Form" }, versions: { type: array, items: { type: object, properties: { id: { type: string, format: uuid }, version: { type: integer }, status: { type: string }, published_at: { type: [string, "null"], format: date-time }, submission_count: { type: integer } } } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "`FORM_NOT_FOUND`: no such form, or the book is not the caller's.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+
+    patch:
+      tags: [forms]
+      operationId: editForm
+      summary: Edit a draft, or create the next version of a published form (new in 0.32.0)
+      description: |
+        Every field optional; `sections` replaces the whole list. A DRAFT answers `200` with
+        `new_version: false`; a PUBLISHED form answers `201` with its new DRAFT version and
+        `new_version: true` (`409 FORM_DRAFT_EXISTS` when the family has a draft). A RETIRED
+        version is `409 FORM_NOT_EDITABLE`.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FormInput" }
+      responses:
+        "200":
+          description: The edited draft.
+          content:
+            application/json:
+              schema: { type: object, required: [form, new_version], properties: { form: { $ref: "#/components/schemas/Form" }, new_version: { type: boolean } } }
+        "201":
+          description: The new draft version.
+          content:
+            application/json:
+              schema: { type: object, required: [form, new_version], properties: { form: { $ref: "#/components/schemas/Form" }, new_version: { type: boolean } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "`FORM_NOT_FOUND`: no such form, or the book is not the caller's.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "`FORM_NOT_EDITABLE`: a retired version (or `FORM_DRAFT_EXISTS`).", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+
+  /v1/agent/organisations/{id}/forms/{formId}/publish:
+    parameters:
+      - $ref: "#/components/parameters/ApplicationBookId"
+      - { name: formId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [forms]
+      operationId: publishForm
+      summary: Publish a draft (new in 0.32.0)
+      description: Needs at least one section with a field and a valid definition. The family's previous PUBLISHED version is RETIRED and the listings attached to it move to this one. `warnings` are returned, never a block. No body.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The published form.
+          content:
+            application/json:
+              schema: { type: object, required: [form], properties: { form: { $ref: "#/components/schemas/Form" } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "`FORM_NOT_FOUND`: no such form, or the book is not the caller's.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "`FORM_STATE`: not a draft.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+
+  /v1/agent/organisations/{id}/forms/{formId}/retire:
+    parameters:
+      - $ref: "#/components/parameters/ApplicationBookId"
+      - { name: formId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [forms]
+      operationId: retireForm
+      summary: Retire a form version (new in 0.32.0)
+      description: Listings attached to it read as CLOSED (`FORM_RETIRED`); its applications keep it. No body.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The retired form.
+          content:
+            application/json:
+              schema: { type: object, required: [form], properties: { form: { $ref: "#/components/schemas/Form" } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "`FORM_NOT_FOUND`: no such form, or the book is not the caller's.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "`FORM_STATE`: already retired.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+
+  /v1/agent/organisations/{id}/applications:
+    parameters:
+      - $ref: "#/components/parameters/ApplicationBookId"
+    get:
+      tags: [applications]
+      operationId: listReceivedApplications
+      summary: Applications received (new in 0.32.0)
+      description: |
+        OWNER and MANAGER see all; an AGENT those of the listings they are the assigned agent of;
+        anybody else (STAFF included) `404 ORGANISATION_NOT_FOUND`. DRAFTs are never listed.
+        `q` matches the reference, the applicant's name and the listing's title. Items carry
+        `form` as `{id, family_id, version, name}` and no answers (nothing is audited).
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      parameters:
+        - { name: listing_id, in: query, schema: { type: string, format: uuid } }
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/ApplicationStatus" } }
+        - { name: q, in: query, schema: { type: string, maxLength: 100 } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema: { type: object, required: [items, page, page_size, total, total_pages, status_counts], properties: { items: { type: array, items: { $ref: "#/components/schemas/AgentApplication" } }, page: { type: integer }, page_size: { type: integer }, total: { type: integer }, total_pages: { type: integer }, status_counts: { type: object, additionalProperties: { type: integer } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`ORGANISATION_NOT_FOUND`: the caller sees none of this book's applications.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+
+  /v1/agent/organisations/{id}/applications/{applicationId}:
+    parameters:
+      - $ref: "#/components/parameters/ApplicationBookId"
+      - { name: applicationId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [applications]
+      operationId: getReceivedApplication
+      summary: One received application, rendered against its version (new in 0.32.0)
+      description: Every read writes `APPLICATION_VIEWED` to the organisation audit trail (FR-018).
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The application.
+          content:
+            application/json:
+              schema: { type: object, required: [application], properties: { application: { $ref: "#/components/schemas/AgentApplication" } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`APPLICATION_NOT_FOUND`: no such application, or not the caller's (another applicant or organisation always gets this).", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+
+  /v1/agent/organisations/{id}/applications/{applicationId}/files/{fileId}:
+    parameters:
+      - $ref: "#/components/parameters/ApplicationBookId"
+      - { name: applicationId, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: fileId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [applications]
+      operationId: getReceivedApplicationFile
+      summary: A file of a received application (new in 0.32.0)
+      description: Writes `APPLICATION_FILE_VIEWED` to the organisation audit trail. An attachment, never cached.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The file.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`APPLICATION_NOT_FOUND`: no such application, or not the caller's (another applicant or organisation always gets this).", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+
+  /v1/agent/organisations/{id}/applications/{applicationId}/status:
+    parameters:
+      - $ref: "#/components/parameters/ApplicationBookId"
+      - { name: applicationId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [applications]
+      operationId: setApplicationStatus
+      summary: Move a received application (new in 0.32.0)
+      description: |
+        SUBMITTED > UNDER_REVIEW / SHORTLISTED / ACCEPTED / REJECTED; UNDER_REVIEW > SHORTLISTED /
+        ACCEPTED / REJECTED; SHORTLISTED > ACCEPTED / REJECTED. MORE_INFO is
+        `request-info`. A `note` is kept as an internal note. The applicant is emailed for
+        SHORTLISTED, ACCEPTED and REJECTED.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [status], additionalProperties: false, properties: { status: { type: string, enum: [UNDER_REVIEW, SHORTLISTED, ACCEPTED, REJECTED] }, note: { type: [string, "null"], maxLength: 5000 } } }
+      responses:
+        "200":
+          description: The application.
+          content:
+            application/json:
+              schema: { type: object, required: [application], properties: { application: { $ref: "#/components/schemas/AgentApplication" } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`APPLICATION_NOT_FOUND`: no such application, or not the caller's (another applicant or organisation always gets this).", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409":
+          description: "`INVALID_APPLICATION_TRANSITION` (`error.details = {from, to, allowed}`)."
+          content: { application/json: { schema: { $ref: "#/components/schemas/ApplicationErrorEnvelope" } } }
+
+  /v1/agent/organisations/{id}/applications/{applicationId}/request-info:
+    parameters:
+      - $ref: "#/components/parameters/ApplicationBookId"
+      - { name: applicationId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [applications]
+      operationId: requestApplicationInfo
+      summary: Ask the applicant for more information (new in 0.32.0)
+      description: Moves to MORE_INFO and emails the applicant, who may edit and resubmit (SUBMITTED again).
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [message], additionalProperties: false, properties: { message: { type: string, maxLength: 2000 } } }
+      responses:
+        "200":
+          description: The application.
+          content:
+            application/json:
+              schema: { type: object, required: [application], properties: { application: { $ref: "#/components/schemas/AgentApplication" } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`APPLICATION_NOT_FOUND`: no such application, or not the caller's (another applicant or organisation always gets this).", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409":
+          description: "`INVALID_APPLICATION_TRANSITION` (`error.details = {from, to, allowed}`)."
+          content: { application/json: { schema: { $ref: "#/components/schemas/ApplicationErrorEnvelope" } } }
+
+  /v1/agent/organisations/{id}/applications/{applicationId}/notes:
+    parameters:
+      - $ref: "#/components/parameters/ApplicationBookId"
+      - { name: applicationId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [applications]
+      operationId: addApplicationNote
+      summary: Add an internal note (new in 0.32.0)
+      description: Never shown to the applicant.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [text], additionalProperties: false, properties: { text: { type: string, maxLength: 5000 } } }
+      responses:
+        "201":
+          description: The note.
+          content:
+            application/json:
+              schema: { type: object, required: [note], properties: { note: { $ref: "#/components/schemas/ApplicationNote" } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`APPLICATION_NOT_FOUND`: no such application, or not the caller's (another applicant or organisation always gets this).", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+
+
   /v1/me/saved-listings:
     get:
       tags: [account]
@@ -10978,6 +11597,16 @@ components:
       schema:
         type: string
         enum: [DRAFT, SENT_FOR_SIGNING, SIGNED, DECLINED, CANCELLED, EXPIRED]
+    ApplicationBookId:
+      name: id
+      in: path
+      required: true
+      description: |
+        The organisation whose forms and applications they are, or, for an approved direct
+        owner, the owner's own user ID.
+      schema:
+        type: string
+        format: uuid
     ContactBookId:
       name: id
       in: path
@@ -12557,6 +13186,11 @@ components:
             - $ref: "#/components/schemas/ListingAvailability"
             - type: "null"
           description: "New in 0.16.0. Set for short stays; **null for every other category**. The calendar itself is `GET /v1/listings/{slug}/availability`."
+        applications:
+          oneOf:
+            - $ref: "#/components/schemas/ListingApplications"
+            - type: "null"
+          description: "New in 0.32.0. Whether the listing takes applications now; null when no questionnaire is attached (always for short stays)."
       example:
         id: 0195c0de-0000-7000-8000-000000000001
         slug: four-bedroom-family-home-borrowdale
@@ -17383,7 +18017,7 @@ components:
             type: object
             required: [kind, id, reference, type, status, title, listing_id, created_at, auto, linked_at]
             properties:
-              kind: { type: string, enum: [PROPERTY_REQUEST, BUSINESS_ENQUIRY, APPOINTMENT] }
+              kind: { type: string, enum: [PROPERTY_REQUEST, BUSINESS_ENQUIRY, APPOINTMENT, APPLICATION] }
               id: { type: string, format: uuid }
               reference: { type: string }
               type: { type: string, description: "The request type, the enquiry's service or the appointment type." }
@@ -17498,7 +18132,7 @@ components:
         kind:
           type: string
           enum: [NOTE_ADDED, CREATED, EDITED, STAGE_CHANGED, OWNER_CHANGED, REMINDER_ADDED, REMINDER_DONE, REMINDER_REOPENED,
-            LISTING_LINKED, LISTING_UNLINKED, MERGED, MERGED_INTO, PROPERTY_REQUEST, BUSINESS_ENQUIRY, APPOINTMENT]
+            LISTING_LINKED, LISTING_UNLINKED, MERGED, MERGED_INTO, PROPERTY_REQUEST, BUSINESS_ENQUIRY, APPOINTMENT, APPLICATION]
           description: Render an unknown kind generically (its `label`); kinds may be added.
         at: { type: string, format: date-time }
         actor_name: { type: string, description: Absent for the system. }
@@ -17511,7 +18145,7 @@ components:
           type: object
           required: [kind, id]
           properties:
-            kind: { type: string, enum: [PROPERTY_REQUEST, BUSINESS_ENQUIRY, APPOINTMENT, LISTING, CONTACT] }
+            kind: { type: string, enum: [PROPERTY_REQUEST, BUSINESS_ENQUIRY, APPOINTMENT, APPLICATION, LISTING, CONTACT] }
             id: { type: string, format: uuid }
             reference: { type: string }
         data: { type: object, additionalProperties: true, description: The raw details as logged. }
@@ -17546,3 +18180,227 @@ components:
               duplicate_of_row: { type: integer }
               errors: { type: object, additionalProperties: { type: string } }
               contact_id: { type: string, format: uuid }
+    ListingApplications:
+      type: object
+      required: [open, closes_at, form_name]
+      properties:
+        open: { type: boolean }
+        closes_at: { type: [string, "null"], format: date-time }
+        form_name: { type: [string, "null"] }
+    ApplicationStatus:
+      type: string
+      enum: [DRAFT, SUBMITTED, UNDER_REVIEW, MORE_INFO, SHORTLISTED, ACCEPTED, REJECTED, WITHDRAWN]
+    FormField:
+      type: object
+      required: [key, type, label, required]
+      description: Optional keys are omitted when not set.
+      properties:
+        key: { type: string, pattern: "^[a-z][a-z0-9_]{0,39}$" }
+        type: { type: string, enum: [short_text, long_text, number, date, single_choice, multiple_choice, file] }
+        label: { type: string, maxLength: 200 }
+        help: { type: string, maxLength: 500 }
+        required: { type: boolean }
+        options: { type: array, minItems: 2, maxItems: 50, items: { type: object, required: [value, label], properties: { value: { type: string }, label: { type: string } } } }
+        min: { type: number, description: "number: the value; multiple_choice: the number of selections." }
+        max: { type: number }
+        min_length: { type: integer }
+        max_length: { type: integer, description: "short_text: default 200, at most 500; long_text: default 5000, at most 10000." }
+        min_date: { type: string, format: date }
+        max_date: { type: string, format: date }
+        accept: { type: array, items: { type: string, enum: [pdf, jpg, png, webp, heic, docx] }, description: Default all six. }
+        max_files: { type: integer, minimum: 1, maximum: 5, description: Default 1. }
+        visible_if:
+          type: object
+          required: [field]
+          description: Only an EARLIER single_choice or multiple_choice field, with values among its options; set exactly one of equals and in.
+          properties:
+            field: { type: string }
+            equals: { type: string }
+            in: { type: array, items: { type: string } }
+    FormSection:
+      type: object
+      required: [key, title, description, fields]
+      properties:
+        key: { type: string }
+        title: { type: string }
+        description: { type: [string, "null"] }
+        fields: { type: array, items: { $ref: "#/components/schemas/FormField" } }
+    FormInput:
+      type: object
+      additionalProperties: false
+      description: All required on create (except expires_at and sections); all optional on PATCH.
+      properties:
+        name: { type: string, maxLength: 120 }
+        market_code: { type: string, minLength: 2, maxLength: 2 }
+        purpose: { type: string, maxLength: 2000 }
+        privacy_notice: { type: string, maxLength: 5000 }
+        retention_days: { type: integer, minimum: 30, maximum: 3650 }
+        expires_at: { type: [string, "null"], format: date-time }
+        sections: { type: array, maxItems: 20, items: { $ref: "#/components/schemas/FormSection" } }
+    Form:
+      type: object
+      required: [id, family_id, version, status, organisation_id, owner_user_id, name, market_code, purpose, privacy_notice, retention_days,
+        expires_at, sections, warnings, submission_count, locked, can_edit, created_by_name, created_at, updated_at, published_at, retired_at]
+      properties:
+        id: { type: string, format: uuid }
+        family_id: { type: string, format: uuid }
+        version: { type: integer }
+        status: { type: string, enum: [DRAFT, PUBLISHED, RETIRED] }
+        organisation_id: { type: [string, "null"], format: uuid }
+        owner_user_id: { type: [string, "null"], format: uuid }
+        name: { type: string }
+        market_code: { type: string }
+        purpose: { type: string }
+        privacy_notice: { type: string }
+        retention_days: { type: integer }
+        expires_at: { type: [string, "null"], format: date-time }
+        sections: { type: array, items: { $ref: "#/components/schemas/FormSection" } }
+        warnings:
+          type: array
+          description: Sensitive-data warnings (FR-018); never a block.
+          items: { type: object, required: [code, section, field, match, message], properties: { code: { type: string, enum: [SENSITIVE_FIELD] }, section: { type: string }, field: { type: string }, match: { type: string }, message: { type: string } } }
+        submission_count: { type: integer }
+        locked: { type: boolean, description: The version has submissions and never changes. }
+        can_edit: { type: boolean }
+        created_by_name: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        published_at: { type: [string, "null"], format: date-time }
+        retired_at: { type: [string, "null"], format: date-time }
+    PublicForm:
+      type: object
+      required: [id, family_id, version, name, market_code, purpose, privacy_notice, retention_days, expires_at, sections]
+      properties:
+        id: { type: string, format: uuid }
+        family_id: { type: string, format: uuid }
+        version: { type: integer }
+        name: { type: string }
+        market_code: { type: string }
+        purpose: { type: string }
+        privacy_notice: { type: string }
+        retention_days: { type: integer }
+        expires_at: { type: [string, "null"], format: date-time }
+        sections: { type: array, items: { $ref: "#/components/schemas/FormSection" } }
+    IntakeState:
+      type: object
+      required: [status, closes_at, closed_reason]
+      properties:
+        status: { type: string, enum: [OPEN, PAUSED, CLOSED] }
+        closes_at: { type: [string, "null"], format: date-time }
+        closed_reason: { type: [string, "null"], enum: [PAUSED, CLOSED, CLOSES_AT_PASSED, FORM_EXPIRED, FORM_RETIRED, null] }
+    ApplicationIntake:
+      type: object
+      required: [listing_id, form_id, form_version, form_name, status, stored_status, closes_at, closed_reason, eligible, updated_at]
+      properties:
+        listing_id: { type: string, format: uuid }
+        form_id: { type: [string, "null"], format: uuid }
+        form_version: { type: [integer, "null"] }
+        form_name: { type: [string, "null"] }
+        status: { type: string, enum: [OPEN, PAUSED, CLOSED, NONE] }
+        stored_status: { type: string, enum: [OPEN, PAUSED, CLOSED, NONE] }
+        closes_at: { type: [string, "null"], format: date-time }
+        closed_reason: { type: [string, "null"] }
+        eligible: { type: boolean, description: False for short stays. }
+        updated_at: { type: [string, "null"], format: date-time }
+    ApplicationFile:
+      type: object
+      required: [id, field, file_name, content_type, size, uploaded_at]
+      properties:
+        id: { type: string, format: uuid }
+        field: { type: string }
+        file_name: { type: string }
+        content_type: { type: string }
+        size: { type: integer }
+        uploaded_at: { type: string, format: date-time }
+    ApplicationTimelineEntry:
+      type: object
+      required: [id, kind, status, label, message, at]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [CREATED, SUBMITTED, RESUBMITTED, STATUS_CHANGED, INFO_REQUESTED, WITHDRAWN, ERASED] }
+        status: { type: [string, "null"] }
+        label: { type: string }
+        message: { type: [string, "null"], description: The request for more information. }
+        at: { type: string, format: date-time }
+        actor_name: { type: [string, "null"], description: The receiving side's view only. }
+    ApplicationNote:
+      type: object
+      required: [id, text, author_user_id, author_name, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        text: { type: string }
+        author_user_id: { type: [string, "null"], format: uuid }
+        author_name: { type: string }
+        created_at: { type: string, format: date-time }
+    ApplicantApplication:
+      type: object
+      required: [id, reference, status, status_label, listing_id, listing, listing_available, form, info_request, timeline, can_edit, can_submit,
+        can_withdraw, erased, created_at, updated_at, submitted_at, decided_at]
+      description: In lists, `form` is `{id, family_id, version, name}` and answers, files and missing_required are absent.
+      properties:
+        id: { type: string, format: uuid }
+        reference: { type: [string, "null"], description: "RPA-APP-<year>-<6 digits> once submitted." }
+        status: { $ref: "#/components/schemas/ApplicationStatus" }
+        status_label: { type: string }
+        listing_id: { type: string, format: uuid }
+        listing: { $ref: "#/components/schemas/SavedListingCard" }
+        listing_available: { type: boolean }
+        form: { $ref: "#/components/schemas/PublicForm" }
+        answers: { type: object, additionalProperties: true, description: "text, date and single_choice: string; number: number; multiple_choice: string[]; file: file IDs." }
+        files: { type: array, items: { $ref: "#/components/schemas/ApplicationFile" } }
+        missing_required: { type: array, items: { type: string } }
+        info_request: { type: [object, "null"], properties: { message: { type: string }, requested_at: { type: string, format: date-time } } }
+        timeline: { type: array, items: { $ref: "#/components/schemas/ApplicationTimelineEntry" } }
+        can_edit: { type: boolean }
+        can_submit: { type: boolean }
+        can_withdraw: { type: boolean }
+        erased: { type: boolean, description: Answers and files deleted (retention or account deletion). }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        submitted_at: { type: [string, "null"], format: date-time, description: The latest submission. }
+        decided_at: { type: [string, "null"], format: date-time }
+    AgentApplication:
+      allOf:
+        - $ref: "#/components/schemas/ApplicantApplication"
+        - type: object
+          required: [applicant, allowed_transitions, assigned_agent_user_id]
+          properties:
+            applicant: { type: object, properties: { user_id: { type: [string, "null"], format: uuid }, name: { type: string }, email: { type: [string, "null"] } } }
+            rendered:
+              type: array
+              items:
+                type: object
+                properties:
+                  key: { type: string }
+                  title: { type: string }
+                  description: { type: [string, "null"] }
+                  fields:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        key: { type: string }
+                        label: { type: string }
+                        type: { type: string }
+                        visible: { type: boolean }
+                        answer: {}
+                        display: { type: [string, "null"] }
+                        files: { type: array, items: { $ref: "#/components/schemas/ApplicationFile" } }
+            notes: { type: array, items: { $ref: "#/components/schemas/ApplicationNote" } }
+            allowed_transitions: { type: array, items: { type: string } }
+            assigned_agent_user_id: { type: [string, "null"], format: uuid }
+    ApplicationErrorEnvelope:
+      type: object
+      required: [error, trace_id]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, enum: [APPLICATIONS_CLOSED, INVALID_APPLICATION_TRANSITION, APPLICATION_NOT_EDITABLE, APPLICATION_CONFLICT] }
+            message: { type: string, description: Explains it in words (why intake is closed). }
+            details:
+              type: object
+              description: "APPLICATIONS_CLOSED: {reason, closes_at}; INVALID_APPLICATION_TRANSITION: {from, to, allowed}."
+              additionalProperties: true
+        trace_id: { type: string }

@@ -1,0 +1,17 @@
+{{define "subject"}}More information needed: {{.Reference}}{{end}}
+{{define "heading"}}More information needed{{end}}
+{{define "button"}}Update your application{{end}}
+{{define "why"}}You are receiving this because you applied for a property on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+The advertiser has looked at your application and needs more information before they can go on.
+
+Reference: {{.Reference}}
+{{if .ListingTitle}}Property: {{.ListingTitle}}
+{{end}}{{if .ListingRef}}Listing reference: {{.ListingRef}}
+{{end}}Status: {{.StatusText}}
+
+{{if .Message}}What they asked:
+  {{.Message}}
+
+{{end}}Open your application, add what is asked for and send it again. Your answers and documents are saved.{{end}}
