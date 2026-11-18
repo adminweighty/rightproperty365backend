@@ -746,6 +746,11 @@ func (s *Service) CreateOrgTemplate(ctx context.Context, p *auth.Principal, orgI
 	}
 	t := Template{MarketCode: source.MarketCode, Name: source.Name, LeaseKind: source.LeaseKind, Description: source.Description,
 		Sections: append([]Section{}, source.Sections...), Clauses: append([]Clause{}, source.Clauses...)}
+	// A sample's description is about the sample ("not reviewed by a
+	// lawyer..."), not about the organisation's own template.
+	if source.OrganisationID == nil {
+		t.Description = ""
+	}
 	if in.Name == nil {
 		name := "Copy of " + source.Name
 		if r := []rune(name); len(r) > MaxTemplateName {

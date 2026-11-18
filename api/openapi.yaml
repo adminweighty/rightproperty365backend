@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.26.0
+  version: 0.26.1
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -11294,7 +11294,7 @@ components:
     MyListing:
       type: object
       description: One of the caller's listings, as a summary.
-      required: [id, slug, reference, title, category, property_type, status, price, price_period, city, country, max_guests, min_nights, availability_updated_at, photo]
+      required: [id, slug, reference, title, category, property_type, status, price, price_period, city, country, max_guests, min_nights, availability_updated_at, photo, can_edit]
       additionalProperties: false
       properties:
         id: { type: string, format: uuid }
@@ -11311,6 +11311,7 @@ components:
         max_guests: { type: [integer, "null"], description: Short stays only. }
         min_nights: { type: [integer, "null"], description: Short stays only (1 when the listing does not say). }
         availability_updated_at: { type: [string, "null"], format: date-time, description: Short stays only; null when the calendar was never changed. }
+        can_edit: { type: boolean, description: "Added in 0.26.1. Whether the caller may edit this listing (and draft a lease for it): an organisation's OWNER and MANAGER may edit all its listings, an AGENT only those assigned to them." }
         photo:
           oneOf:
             - $ref: "#/components/schemas/Photo"

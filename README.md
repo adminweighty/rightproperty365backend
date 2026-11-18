@@ -284,7 +284,7 @@ All configuration comes from environment variables. For local development you ma
 | GET, POST | `/v1/inbox/appointments`, `/{id}`, `/{id}/confirm`, `/reschedule`, `/cancel`, `/complete`, `/no-show`, `/assign` | Appointments received by a professional (list, calendar and actions) |
 | GET | `/v1/inbox/summary` | Badge counts: new requests, new enquiries, appointments |
 | GET | `/v1/listings/{slug}/availability` | A short stay's calendar as the public sees it: available or not per night |
-| GET | `/v1/me/listings` | The listings the caller may manage (summaries) |
+| GET | `/v1/me/listings` | The listings the caller may manage (summaries; `can_edit` per item since 0.26.1) |
 | POST, GET, PATCH, DELETE | `/v1/me/listings`, `/v1/me/listings/{id}` | Create a draft, read, edit, delete a listing (see "Listing management") |
 | POST | `/v1/me/listings/{id}/submit`, `/archive`, `/relist` | Send for review, withdraw, bring back |
 | POST, PUT, PATCH, DELETE | `/v1/me/listings/{id}/photos`, `/photos/order`, `/photos/{photoId}` | Upload (at most 20), order, describe and delete photos |
@@ -292,15 +292,26 @@ All configuration comes from environment variables. For local development you ma
 | GET, POST | `/v1/admin/listings`, `/{id}`, `/{id}/approve`, `/request-changes`, `/reject` | Listing review queue and decisions |
 | GET, PUT | `/v1/me/listings/{id}/availability` | The lister's calendar of a short stay: read it, mark nights available, blocked or booked |
 | PATCH | `/v1/me/listings/{id}/stay-rules` | A short stay's `min_nights` and `max_guests` |
-| GET, POST, PATCH | `/v1/admin/lease-templates`, `/{id}`, `/{id}/approve`, `/{id}/retire` | The lease template library (SUPER_ADMIN, CONTENT_ADMIN) |
+| GET, POST, PATCH | `/v1/admin/lease-templates`, `/{id}`, `/{id}/approve`, `/{id}/retire` | The sample lease templates anyone may use or copy (SUPER_ADMIN, CONTENT_ADMIN) |
 | GET | `/v1/admin/leases` | Every lease, read-only (SUPER_ADMIN, SUPPORT) |
-| GET | `/v1/me/lease-templates` | The approved templates a lease can be made from |
+| GET, POST, PATCH | `/v1/me/organisations/{orgId}/lease-templates`, `/{id}`, `/{id}/publish`, `/{id}/retire`, `/{id}/events` | An organisation's own lease templates (its OWNER and MANAGER manage them, its agents read them; see "Leases") |
+| GET | `/v1/me/lease-templates` | The templates a lease can be made from: the samples and the published templates of the caller's organisations |
 | GET, POST, PATCH, DELETE | `/v1/me/leases`, `/{id}`, `/{id}/pdf`, `/{id}/send`, `/{id}/cancel`, `/{id}/events` | Draft leases and send them for signing (see "Leases") |
 | GET, POST, PATCH, PUT, DELETE | `/v1/me/agreements`, `/{id}`, `/{id}/document`, `/{id}/fields`, `/{id}/pdf`, `/{id}/send`, `/{id}/cancel`, `/{id}/recipients/{rid}/replace`, `/remind`, `/{id}/events` | Documents sent for signature (see "Agreements") |
-| GET, POST | `/v1/me/signing-requests`, `/{recipientId}/link`; GET, PUT `/v1/me/signature` | Documents waiting for the signed-in person; their saved signature |
+| GET, POST | `/v1/me/signing-requests`, `/{recipientId}/link`; GET, PUT `/v1/me/signature` | Documents waiting for the signed-in person; their saved signature, initials and stamp |
 | GET, POST | `/v1/signing/{token}`, `/pdf`, `/code`, `/submit`, `/decline` | Signing by link (no session) |
+| POST | `/v1/stamp-preview` | A generated stamp as a transparent PNG (public, no session; see "Agreements") |
 | GET, POST | `/v1/verify/{reference}`, `/v1/verify` | Check a completed document (public) |
 | GET | `/v1/admin/agreements` | Every agreement, read-only (SUPER_ADMIN, SUPPORT) |
+| DELETE | `/v1/me` | Delete one's own account, confirmed with the password (not for administrator accounts; see "Administrators' area") |
+| GET | `/v1/me/subscription-plans` | The subscription plans the caller may take |
+| GET, POST | `/v1/me/subscriptions`, `/{id}`, `/{id}/cancel`, `/{id}/renew` | The caller's subscriptions and those of the organisations they own: ask for a plan, withdraw a pending request, ask for the next period |
+| GET, POST | `/v1/admin/users`, `/{id}`, `/{id}/suspend`, `/{id}/reactivate`, `/{id}/delete` | Accounts: read (SUPER_ADMIN, PLATFORM_ADMIN, SUPPORT); suspend, reactivate, delete (SUPER_ADMIN, PLATFORM_ADMIN) |
+| GET | `/v1/admin/audit` | The administrators' audit trail (SUPER_ADMIN, PLATFORM_ADMIN) |
+| GET, POST, PATCH | `/v1/admin/subscription-plans`, `/{id}`, `/{id}/retire` | Subscription plans: read (SUPER_ADMIN, FINANCE_ADMIN, PLATFORM_ADMIN, SUPPORT); create, change, retire (SUPER_ADMIN, FINANCE_ADMIN) |
+| GET, POST | `/v1/admin/subscriptions`, `/{id}`, `/{id}/approve`, `/{id}/reject`, `/{id}/cancel` | Subscriptions: read (SUPER_ADMIN, FINANCE_ADMIN, PLATFORM_ADMIN, SUPPORT); record a payment, reject, cancel (SUPER_ADMIN, FINANCE_ADMIN) |
+| GET, POST, PATCH | `/v1/admin/reference`, `/{set}`, `/{set}/{code}`, `/{set}/{code}/deactivate`, `/reactivate` | Change reference data (SUPER_ADMIN, PLATFORM_ADMIN, CONTENT_ADMIN; MARKET_ADMIN for its own market's rows) |
+| GET | `/v1/admin/reports/summary`, `/users.csv`, `/listings.csv`, `/subscriptions.csv` | Report summary (SUPER_ADMIN, PLATFORM_ADMIN, FINANCE_ADMIN); user and listing exports (SUPER_ADMIN, PLATFORM_ADMIN); subscription export (SUPER_ADMIN, PLATFORM_ADMIN, FINANCE_ADMIN) |
 
 Every error uses one envelope, and `trace_id` equals the `X-Request-Id` response header:
 
@@ -427,15 +438,85 @@ change; follow-up dates and reminders; editing or deleting a note; listing analy
 funnels and response-time KPIs (no event data exists); seeker favourites, saved searches and
 alerts.
 
-## Leases: templates and drafting (API 0.24.0)
+## Administrators' area: accounts, subscriptions, reference data, reports (API 0.25.0)
 
-Migration `0022`, module `internal/modules/leases` (BR-011, FR-030, FR-031). Signing is the
-agreements module (see "Agreements"): `POST /v1/me/leases/{id}/send` freezes the lease, renders
-its signing copy (no watermark) and sends it as an agreement; the lease then follows it.
+Migration `0024`, modules `internal/modules/accounts`, `subscriptions`, `reports` and
+`reference` (`admin.go`), the audit trail in `internal/platform/adminaudit`. Every `/v1/admin`
+route needs an admin-scope session and one of the platform roles named below
+(`auth.RequirePlatformRole` in `internal/app/app.go`, with the role lists from each module's
+`*Roles()` helpers).
 
-- **Template library (FR-030)** – `/v1/admin/lease-templates` for SUPER_ADMIN and CONTENT_ADMIN
-  (admin-scope session). A template is one version of a family: `market_code` (the jurisdiction),
-  `name`, `lease_kind` (`RESIDENTIAL` | `COMMERCIAL`), ordered `sections` (`heading`, `text`) and
+| Area | Read | Change |
+| --- | --- | --- |
+| Accounts (`/v1/admin/users`) | SUPER_ADMIN, PLATFORM_ADMIN, SUPPORT (`accounts.ReadRoles`) | SUPER_ADMIN, PLATFORM_ADMIN (`accounts.ManageRoles`) |
+| Audit trail (`/v1/admin/audit`) | SUPER_ADMIN, PLATFORM_ADMIN (`accounts.AuditRoles`) | – (written by the actions themselves) |
+| Subscription plans (`/v1/admin/subscription-plans`) | SUPER_ADMIN, FINANCE_ADMIN, PLATFORM_ADMIN, SUPPORT (`subscriptions.ReadRoles`) | SUPER_ADMIN, FINANCE_ADMIN (`subscriptions.PlanAdminRoles`) |
+| Subscriptions (`/v1/admin/subscriptions`) | as for plans | SUPER_ADMIN, FINANCE_ADMIN (`subscriptions.DecisionRoles`) |
+| Reference data (`/v1/admin/reference`) | SUPER_ADMIN, PLATFORM_ADMIN, CONTENT_ADMIN, MARKET_ADMIN (`reference.AdminRoles`) | the same; MARKET_ADMIN only the rows of its own market |
+| Reports summary | SUPER_ADMIN, PLATFORM_ADMIN, FINANCE_ADMIN (`reports.SummaryRoles`) | – |
+| `users.csv`, `listings.csv` | SUPER_ADMIN, PLATFORM_ADMIN (`reports.PeopleExportRoles`) | – |
+| `subscriptions.csv` | SUPER_ADMIN, FINANCE_ADMIN, PLATFORM_ADMIN (`reports.SubscriptionExportRoles`) | – |
+
+- **Accounts** – `GET /v1/admin/users?q=&role=&status=&market=` and `GET /{id}`;
+  `POST /{id}/suspend {reason}`, `POST /{id}/reactivate`, `POST /{id}/delete {reason}`. Nobody
+  acts on their own account (`403 SELF_ACTION_FORBIDDEN`), and only a SUPER_ADMIN acts on an
+  account that holds a platform role (`403 ADMIN_ACCOUNT_PROTECTED`); a status that does not allow
+  the action is `409 USER_STATE_CONFLICT`. **Suspension** revokes every session at once, and
+  sign-in is refused while the account is not `ACTIVE`. **Deletion** is immediate: the account
+  is anonymised in place (never removed, so audit records, signed agreements and leases keep
+  their references), its sessions revoked, its memberships removed, its own listings withdrawn,
+  its assigned listings unassigned, its subscriptions cancelled and its saved signature removed.
+  It is refused for the only owner of an organisation that still has other members (`409
+  SOLE_OWNER`). The person is emailed when suspended, reactivated and deleted.
+- **`DELETE /v1/me {password}`** – the same deletion for the person themselves, after typing the
+  password again (`401 INVALID_PASSWORD`); an administrator account cannot use it (`403
+  ADMIN_ACCOUNT_CANNOT_SELF_DELETE`). It shares the sign-in rate limit.
+- **Subscriptions** – there is **no online payment**. `GET /v1/me/subscription-plans` lists the
+  plans the caller may take (a plan is offered to account roles the caller holds as approved, and
+  an organisation plan needs an organisation they own). `POST /v1/me/subscriptions {plan_id,
+  period, market_code?, organisation_id?}` creates a `PENDING_PAYMENT` subscription with an
+  invoice number and amount, which is emailed; at most one pending request per subscriber. The
+  subscriber sees their own and their owned organisations' subscriptions (`404` for anybody
+  else's), may withdraw a pending request (`POST /{id}/cancel`, not emailed) and, from 30 days
+  before the end, ask for the next period (`POST /{id}/renew`: a new invoice that starts when the
+  current period ends). Nothing renews by itself. The payment is made outside the platform;
+  `POST /v1/admin/subscriptions/{id}/approve {payment_reference, amount, received_on, ...}`
+  records it and makes the subscription `ACTIVE` for 3 months (`QUARTERLY`) or 12 (`YEARLY`).
+  `reject` and `cancel` take a reason and record `refund_due` (a flag and a note: no money moves).
+  Past its end a subscription is expired by the subscription sweep (every 5 minutes, in the
+  worker; in the API on in-memory stores), which emails the subscriber. A plan's limits are shown
+  with the current usage but **not enforced** (`limit_enforced: false`).
+- **Reference data** – `GET /v1/admin/reference`, `GET /{set}`, `POST /{set}` (a new row),
+  `PATCH /{set}/{code}`, `POST /{set}/{code}/deactivate` and `/reactivate`. Every set can be
+  relabelled, reordered, deactivated and reactivated; rows can be added only to property types,
+  listing features, service trades, regions, cities and suburbs. Nothing is deleted: a
+  deactivated row disappears from drop-downs and is refused in new input, while data that already
+  uses it keeps its code.
+- **Reports** – `GET /v1/admin/reports/summary?from=&to=&market=` (default the last 30 days, at
+  most about three years) and the CSV exports `users.csv`, `listings.csv`, `subscriptions.csv`.
+- **Audit trail** – every administrator action above (account suspensions, reactivations and
+  deletions, a person's own deletion, plan changes, subscription decisions, reference data
+  changes) is written to `admin_audit_events` in the same transaction, immutably;
+  `GET /v1/admin/audit?target_type=&target_id=&action=&actor_user_id=` reads it. Administrator
+  sign-ins are **not** in it: they are still only written to the process log.
+
+**Not verified:** migration `0024` and the modules' `postgres.go` have not run against a database
+here.
+
+## Leases: templates and drafting (API 0.24.0; organisation templates and stamps 0.26.0)
+
+Migrations `0022` and `0025`, module `internal/modules/leases` (BR-011, FR-030, FR-031). Signing
+is the agreements module (see "Agreements"): `POST /v1/me/leases/{id}/send` freezes the lease,
+renders its signing copy (no watermark) and sends it as an agreement; the lease then follows it.
+
+**Lease templates are owned by organisations.** Agencies and landlords design their own lease
+templates; the platform does not review or approve them, and no lawyer or administrator signs
+them off. The platform keeps a small library of **sample** templates that anyone may use as they
+are or copy and adapt. Every template in the API carries `organisation_id` (`null` for a sample),
+`source` (`SAMPLE` | `ORGANISATION`) and `can_edit` (whether the caller may manage it).
+
+- **What a template is** – one version of a family: `market_code` (the jurisdiction), `name`,
+  `lease_kind` (`RESIDENTIAL` | `COMMERCIAL`), ordered `sections` (`heading`, `text`) and
   `optional_clauses` (`code`, `title`, `text`). Text uses `{{variable}}` placeholders from a fixed
   list (`leases.Variables()`, returned as `variables` with every template list): `reference`,
   `agreement_date`, `landlord_names`, `tenant_names`, `landlord_details`, `tenant_details`,
@@ -443,30 +524,56 @@ its signing copy (no watermark) and sends it as an agreement; the lease then fol
   `rent_amount`, `rent_currency`, `rent_period`, `payment_day`, `deposit_amount`,
   `notice_period_days`, `special_conditions`. Any other placeholder (or a stray `{{`) is
   `400 VALIDATION_FAILED`.
-- **Lifecycle** – `DRAFT` (edited in place) -> `POST .../approve {legal_review: {reviewer_name,
-  organisation, reviewed_on, note?}}` -> `APPROVED` -> `POST .../retire` -> `RETIRED`. PATCH on an
-  approved template creates the family's next `DRAFT` version (`201`, at most one draft per family:
-  `409 LEASE_TEMPLATE_DRAFT_EXISTS`); approving a version retires the family's previous approved
-  version. Leases keep the version they were made from. Every step is in
-  `lease_template_events` (immutable).
-- **Offered templates** – `GET /v1/me/lease-templates?market=` returns only `APPROVED` templates;
-  a draft, retired or other-country template is refused on create (`422
-  LEASE_TEMPLATE_NOT_AVAILABLE`, `422 LEASE_MARKET_MISMATCH`).
+- **An organisation's templates (FR-030)** – `/v1/me/organisations/{orgId}/lease-templates`:
+  `GET` (every version), `POST` (a new `DRAFT`, or a copy with `copy_from_template_id`: a
+  published sample or any of this organisation's templates, named "Copy of <name>" unless a
+  `name` is sent; anything else is `400` on `copy_from_template_id`), `GET` and `PATCH /{id}`,
+  `POST /{id}/publish`, `POST /{id}/retire` and `GET /{id}/events`. Who may
+  (`leases.MayManageTemplates`): the organisation's OWNER and MANAGER, of a kind of organisation
+  that manages listings (an independent landlord owns their own organisation), create, edit,
+  publish and retire them; its other members who may create leases (AGENT) read them; any other
+  member gets `403 FORBIDDEN`, somebody who is not a member `404 ORGANISATION_NOT_FOUND`, and a
+  template of another organisation (or a sample) under this path is `404
+  LEASE_TEMPLATE_NOT_FOUND`. Publishing needs no review: the template becomes `APPROVED` (shown
+  as "Published").
+- **Sample templates** – `/v1/admin/lease-templates` for SUPER_ADMIN and CONTENT_ADMIN
+  (admin-scope session) holds the samples only (`organisation_id: null`). On
+  `POST .../approve` the body is optional: a `legal_review` (`reviewer_name`, `organisation`,
+  `reviewed_on`, `note?`) may be recorded when one exists, but none is required.
+- **Lifecycle** – `DRAFT` (edited in place) -> approve (samples) or publish (an organisation's)
+  -> `APPROVED` -> retire -> `RETIRED`. PATCH on an approved template creates the family's next
+  `DRAFT` version (`201`, at most one draft per family: `409 LEASE_TEMPLATE_DRAFT_EXISTS`);
+  approving or publishing a version retires the family's previous approved version. An
+  organisation may also retire a `DRAFT`; a sample can only be retired once approved. Leases keep
+  the version they were made from. Every step is in `lease_template_events` (immutable; a copy
+  records the template and version it was copied from).
+- **Offered templates** – `GET /v1/me/lease-templates?market=&organisation_id=` returns the
+  `APPROVED` samples plus the published templates of the organisations whose listings the caller
+  manages (only `organisation_id`'s when it is given; `400` when the caller does not manage that
+  organisation's listings). On create or change a lease accepts an approved template that is a
+  sample or belongs to the lease's organisation (`400` on `template_id` for another
+  organisation's; a lease without an organisation can use samples only); a draft, retired or
+  other-country template is refused (`422 LEASE_TEMPLATE_NOT_AVAILABLE`,
+  `422 LEASE_MARKET_MISMATCH`).
 - **Drafting (FR-031)** – `/v1/me/leases` (list, create, get, PATCH, DELETE while `DRAFT`, `pdf`,
   `cancel`, `events`). Who may: `leases.MayCreateLeases` = `Principal.ManagesListings` on a customer
   session (the dashboard's `can_manage_listings`): OWNER, MANAGER and AGENT of a listing kind of
   organisation, approved landlords and sellers; STAFF, seekers and pending professionals `403`.
   OWNER and MANAGER see and act on every lease of their organisation; an AGENT the leases they
-  created; a direct owner their own; anyone else `404`. A `listing_id` must be a listing the
-  caller may edit (`MayEditListing`) and gives the organisation, the country and the address
+  created; a direct owner their own; anyone else `404`. A lease can only be drafted for a listing
+  the caller may edit (`MayEditListing`, shown as `can_edit` on `GET /v1/me/listings` since
+  0.26.1; an AGENT's colleagues' listings are read-only); any other `listing_id` is `404
+  LISTING_NOT_FOUND`. The listing gives the organisation, the country and the address
   (suburb, city, region, country: listings have no street address). Every mandatory field is
   validated on every save (see the OpenAPI operation). References `RPL-<year>-<6 digits>` come
-  from `lease_reference_seq`.
+  from `lease_reference_seq`. `landlord_stamp: true` asks each landlord to apply their stamp as
+  well as signing (see "Agreements": generated stamps).
 - **PDF** – `github.com/go-pdf/fpdf` (MIT, pure Go) with the Go fonts
   (`golang.org/x/image/font/gofont`, BSD-3-Clause, embedded TTF; accents such as "Zoë
   Müller-Śmiałek" print as typed). Drafts carry a diagonal DRAFT watermark on every page; every
   page has a footer (reference, template name and version, page x of y) and a row of initials
-  boxes (one per party); the end has a signature block per party (signature, name, date). The
+  boxes (one per party); the end has a signature block per party (signature, name, date; with
+  `landlord_stamp`, a 40 mm stamp box beside each landlord's name and date). The
   renderer reports where those boxes are (`leases.Layout`, PDF points from the top-left), so the
   agreement's fields are placed on them. Rendering is deterministic (sorted catalogue, fixed
   dates). Stored privately under `leases/<32 hex>`; `lease_documents` keeps per kind the input
@@ -478,9 +585,10 @@ its signing copy (no watermark) and sends it as an agreement; the lease then fol
 - **Dashboard** – `organisations[].can_create_leases`, `capabilities.creates_leases`, counters
   `leases.awaiting_signatures` and `leases.drafts`.
 
-**Sample data** (memory store and `cmd/seed`, idempotent): an APPROVED "Sample residential lease"
-for Zimbabwe (`...e301`) and for the United Kingdom (`...e302`) whose legal review says "SAMPLE —
-not reviewed by a lawyer; for demonstration on staging only", and a DRAFT lease
+**Sample data** (memory store and `cmd/seed`, idempotent): an APPROVED sample template "Sample
+residential lease" for Zimbabwe (`...e301`) and for the United Kingdom (`...e302`) whose
+description and recorded legal review say "SAMPLE — not reviewed by a lawyer; for demonstration
+on staging only" (a copy made by an organisation does not keep that description), and a DRAFT lease
 `RPL-2026-900001` by `agent@example.test` on listing 2 with `tenant@example.test` as tenant and
 `landlord@example.test` as landlord.
 
@@ -488,13 +596,13 @@ not reviewed by a lawyer; for demonstration on staging only", and a DRAFT lease
 rent reviews and inventories; a currency check against the country (any ISO 4217 code is
 accepted).
 
-**Not verified:** migration `0022` and `internal/modules/leases/postgres.go` have not run against a
-database here (`RP365_TEST_DATABASE_URL` tests are skipped without one).
+**Not verified:** migrations `0022` and `0025` and `internal/modules/leases/postgres.go` have not
+run against a database here (`RP365_TEST_DATABASE_URL` tests are skipped without one).
 
-## Agreements: electronic signing (API 0.24.0)
+## Agreements: electronic signing (API 0.24.0; stamps 0.26.0)
 
-Migration `0023`, module `internal/modules/agreements` (FR-032), modelled on Adobe Acrobat Sign.
-An agreement wraps one PDF: a lease's frozen signing copy (`POST /v1/me/leases/{id}/send`) or a
+Migrations `0023` and `0025`, module `internal/modules/agreements` (FR-032), modelled on Adobe
+Acrobat Sign. An agreement wraps one PDF: a lease's frozen signing copy (`POST /v1/me/leases/{id}/send`) or a
 PDF the sender uploads (`PUT /v1/me/agreements/{id}/document`: at most 20 MB and 50 pages, must
 open without a password and import page by page). Who may send: as for leases (whoever manages
 listings; the organisation's OWNER and MANAGER see every agreement of it).
@@ -508,30 +616,64 @@ listings; the organisation's OWNER and MANAGER see every agreement of it).
   act and gets the completed copy. The sender can replace a pending recipient's address (their
   links die, a new one is sent) and remind them (a new link; earlier ones keep working).
 - **Fields** – `PUT .../fields` while `DRAFT`: SIGNATURE, INITIALS, DATE_SIGNED (filled when they
-  sign), NAME (filled), TEXT, CHECKBOX, each for a SIGNER or APPROVER, on a page, inside it, in PDF
-  points from the top-left; every SIGNER needs a SIGNATURE (`422 AGREEMENT_FIELDS_INCOMPLETE`).
+  sign), NAME (filled), TEXT, CHECKBOX and STAMP, each for a SIGNER or APPROVER, on a page, inside
+  it, in PDF points from the top-left; every SIGNER needs a SIGNATURE (`422
+  AGREEMENT_FIELDS_INCOMPLETE`). TEXT, CHECKBOX and STAMP are required unless sent with
+  `required: false`. A STAMP field is for a SIGNER only (an APPROVER has no SIGNATURE, INITIALS
+  or STAMP fields) and at least 57 x 57 points (the default is 113 x 113, 40 mm square).
   `document.pages` gives every page's width and height for pdf.js. A lease's fields are placed
   automatically: each party's INITIALS on every page's footer row, SIGNATURE, NAME and DATE_SIGNED
-  in the signature section (the lease renderer reports where).
+  in the signature section, and with `landlord_stamp` a STAMP in each landlord's stamp box (the
+  lease renderer reports where).
 - **Signing by link** – `PUBLIC_WEB_URL/sign/{token}`; `GET /v1/signing/{token}` (agreement,
   recipient, their fields with the values so far, the others' names and status, page sizes),
   `/pdf`, `POST /code` (six digits, 10 minutes, 5 tries, one every 30 s, 10 per recipient; HMAC
   keyed with the link token is stored, never the code), `POST /submit` (`code`, `consent: true`,
   `field_values`, the adopted `signature` and `initials`: TYPED in one of three embedded styles,
-  DRAWN PNG up to 200 KB, UPLOADED PNG/JPEG up to 500 KB, re-encoded), `POST /decline {reason}`.
+  DRAWN PNG up to 200 KB, UPLOADED PNG/JPEG up to 500 KB, re-encoded; and `stamp`, required when
+  the recipient has a required STAMP field), `POST /decline {reason}`. The typed styles are three
+  script fonts vendored in `internal/modules/agreements/fonts` with their SIL Open Font Licence
+  1.1 texts: Great Vibes (`FLOWING`), Kaushan Script (`BOLD`) and Allura (`CLASSIC`); a name with
+  a letter a script font lacks (Cyrillic, Greek, ...) is drawn in a Go italic face instead. Stamps
+  are set in DejaVu Sans Condensed Bold, vendored in the same folder with its licence
+  (`DejaVuSansCondensed-Bold-LICENSE.txt`), with Go Bold for a letter it lacks.
   `AUTH_DEMO_CODE` is accepted in development and staging only, as for signing in, and is
   recorded as `DEMO_CODE` (the audit report says it is not a real verification). Links: one per
   recipient, only the SHA-256 stored, valid until the expiry, read-only for 90 days after
   completion; the token never reaches the access log (`httpx.LoggedPath`). Signed-in recipients:
   `GET /v1/me/signing-requests` (matched on the verified email) and
-  `POST /v1/me/signing-requests/{recipientId}/link`; a saved signature: `GET/PUT /v1/me/signature`.
+  `POST /v1/me/signing-requests/{recipientId}/link`; a saved signature, initials and stamp:
+  `GET/PUT /v1/me/signature`.
 - **Completion** – the original pages are imported (`github.com/phpdave11/gofpdi`, MIT) into fpdf,
   every value is drawn at its place (signature images, typed signatures in the chosen style,
-  initials, dates, text, ticks), and an **Audit report** page is appended (name, reference, sender,
-  dates, original SHA-256, the history: created, emailed, viewed with IP and device, email
-  verified, signed or approved, completed). The final PDF's SHA-256 is recorded (a file cannot
+  initials, dates, text, ticks, stamps), and an **Audit report** page is appended (name,
+  reference, sender, dates, original SHA-256, the history: created, emailed, viewed with IP and
+  device, email verified, signed or approved, a "Stamp applied" line, completed). The final PDF's SHA-256 is recorded (a file cannot
   print its own); `GET /v1/verify/{reference}` (fingerprints only, no names) and `POST /v1/verify`
   (upload a copy: `match`) check it. Everybody, CCs and the sender included, is emailed.
+- **Generated stamps (0.26.0, `stamp.go`)** – a signer types the text of their company stamp and
+  the server draws it like a rubber stamp, as a transparent PNG. It is a picture of a stamp, not a
+  certificate seal: no key or certificate is involved. A stamp is `{shape, colour, top_text,
+  centre_lines, bottom_text, include_date}`: `shape` `ROUND` (the default), `OVAL` or `RECTANGLE`;
+  `colour` `BLUE` (the default), `RED`, `BLACK`, `GREEN` or `PURPLE`; `top_text` required (the
+  name on the stamp, at most 60 characters); at most 3 `centre_lines` of at most 30 characters;
+  `bottom_text` optional, at most 60. Text is trimmed and upper-cased. Round and oval stamps have
+  a double ring with the top and bottom texts following the arcs and the centre lines (and the
+  date) across the middle; a rectangle stacks the lines inside a double border. With
+  `include_date` the date is printed between two rules as `16 NOV 2026`. The ink is slightly
+  uneven on purpose, and rendering is deterministic (the same stamp and date give the same bytes).
+  - `POST /v1/stamp-preview {stamp, date?}` (public, no session, so signers by link can use it;
+    the signing links' rate limit) returns the PNG (600 px on its long side, `Cache-Control:
+    private, no-store`); `date` is `YYYY-MM-DD`, today when left out; problems are `400
+    VALIDATION_FAILED` under `stamp.*`.
+  - A signed-in user can save a stamp with their signature: `PUT /v1/me/signature` with `stamp`
+    (left out: kept; `null`: cleared). `GET /v1/signing/{token}` returns it as `saved_stamp` when
+    the caller is signed in with the recipient's address and the document has a STAMP field for
+    them.
+  - On submit, the cleaned `stamp` is stored with the recipient (`agreement_recipients.stamp`).
+    The completed PDF draws it, dated the day the signer signed, in each of their STAMP fields,
+    and the audit report adds "Stamp applied: <top text>" (by whom; generated by RightProperty365
+    from the text the signer typed).
 - **Digital seal: not applied.** `github.com/digitorus/pdfsign` was not added: it was not
   evaluated or tested here without a certificate, so no `SIGNING_SEAL_*` setting exists and the
   audit report states that no seal is applied. Tamper evidence is the recorded SHA-256.
@@ -544,10 +686,13 @@ listings; the organisation's OWNER and MANAGER see every agreement of it).
   `agreement-completed`, `agreement-declined`: sent from the request path (they carry links or
   codes), never through the outbox; a failure is logged.
 - Rate limits: signing links 20 / 20 per minute per IP, code sending 5 / 5 per minute per IP,
-  verification 10 / 10 per minute; agreement changes share the lease bucket, uploads the upload
-  bucket. Every read and PDF is `Cache-Control: private, no-store`.
+  verification 10 / 10 per minute; `POST /v1/stamp-preview` shares the signing links' limit;
+  agreement changes share the lease bucket, uploads the upload bucket. Every read and PDF is
+  `Cache-Control: private, no-store`.
 - Wording: "Signed electronically on RightProperty365"; never "legally executed"; enforceability,
-  witnessing, stamping and registration depend on the jurisdiction and are not provided.
+  witnessing, official stamping (such as stamp duty) and registration depend on the jurisdiction
+  and are not provided. The audit report says a stamp added while signing is the signer's own
+  company stamp.
 
 **Sample data**: an uploaded "Sample inventory and condition report" (`RPA-2026-900001`, drawn by
 the seed) out for signature to `tenant@example.test` (SIGNER, order 1), then
@@ -556,13 +701,12 @@ the seed) out for signature to `tenant@example.test` (SIGNER, order 1), then
 tenant. Both sent by `agent@example.test`. Nobody holds the seeded links: a signed-in recipient
 opens the document from *Documents to sign* (`POST /v1/me/signing-requests/{id}/link`).
 
-**Not built** (agreements): a digital seal; true script fonts (the three styles are the Go italic
-faces; an OFL script font can be vendored into `pdfdoc.go`); SMS, ID or knowledge-based
-verification; delegation; in-person signing; bulk send; reusable field layouts; reading the
+**Not built** (agreements): a digital seal (a certificate seal; the generated stamp is only a
+picture); uploading a scanned stamp image; SMS, ID or knowledge-based verification; delegation; in-person signing; bulk send; reusable field layouts; reading the
 uploaded PDF's own form fields; rotated pages (fields assume an unrotated MediaBox).
 
-**Not verified:** migration `0023` and `internal/modules/agreements/postgres.go` have not run
-against a database here.
+**Not verified:** migrations `0023` and `0025` and `internal/modules/agreements/postgres.go` have
+not run against a database here.
 
 ## Agency teams (API 0.23.0)
 
@@ -903,7 +1047,7 @@ holds.** A guest *asks* to stay; the lister answers and marks the nights themsel
 
 | Method | Path | Who | What |
 | --- | --- | --- | --- |
-| GET | `/v1/me/listings?category=&status=&page=&page_size=` | lister | The listings the caller may manage, as summaries. Creating and editing them: see "Listing management" (0.22.0) |
+| GET | `/v1/me/listings?category=&status=&page=&page_size=` | lister | The listings the caller may manage, as summaries. Since 0.26.1 each item has `can_edit` (`auth.MayEditListing`: an organisation's OWNER and MANAGER may edit all its listings, an AGENT only those they are the assigned agent of and sees the others read-only, a direct owner their own); a lease can only be drafted for a listing with `can_edit`. Creating and editing them: see "Listing management" (0.22.0) |
 | GET | `/v1/me/listings/{id}/availability?from=&to=` | lister | The calendar with reasons, notes and the stored ranges (default today .. +90 days; at most 366 nights) |
 | PUT | `/v1/me/listings/{id}/availability` | lister | `{"changes":[{"from","to","status":"AVAILABLE"\|"BLOCKED"\|"BOOKED","note"?}]}`: 1–50 changes, applied in order, atomically |
 | PATCH | `/v1/me/listings/{id}/stay-rules` | lister | `{min_nights?, max_guests?}` (1–365 / 1–50) |
@@ -1679,8 +1823,8 @@ So that nobody assumes these exist. They are in the updated functional specifica
 
 - replies to enquiries and a customer notification when a request moves (the eight lead
   stages, New enquiry to Closed, are built: see "Dashboards and working a request");
-- agency principals assigning leads to a person (the `ASSIGNED` stage exists, but it only
-  records the stage), follow-up dates on a lead;
+- follow-up dates on a lead (assigning a request to a member exists since 0.23.0:
+  `POST /v1/agent/property-requests/{id}/assign`, see "Agency teams");
 - reassigning a routing exception to a recipient (administrators can list and resolve them);
 - rental applications;
 - appointments beyond viewings and consultations (see "Appointments": venue and short-stay
@@ -1695,16 +1839,17 @@ So that nobody assumes these exist. They are in the updated functional specifica
   direct owner's role (requested, not started);
 - a display name a direct owner can choose (their account name is shown on their listings);
 - per-size thumbnails, cropping and moderation of logos, and a CDN (see "Logos");
-- subscription plans, and admin-recorded payments, invoices and receipts (the specification has no
-  online payment in the mobile app);
+- receipts for subscription payments (subscription plans, invoices and admin-recorded payments
+  exist since 0.25.0; there is no online payment);
 - per-country **legal texts, payment gateways and tax rules** (see "Countries": any country can
   be listed in, but none of these is configured for any country);
 - a per-city time zone for countries with several zones;
-- account deletion;
 - adaptive bot protection (registration has a simple built-in arithmetic captcha, see
   "Registration captcha"; nothing stronger), and duplicate or spam detection;
 - administrator MFA beyond the emailed sign-in code (an authenticator app or hardware key);
-- account suspension (including the "Suspended" onboarding status) and abuse reporting;
+- a "Suspended" onboarding status (applications are `DRAFT`, `SUBMITTED`, `CHANGES_REQUESTED`,
+  `APPROVED` or `REJECTED`; account suspension itself exists since 0.25.0, see "Administrators'
+  area") and abuse reporting;
 - push notifications.
 
 **Conflict with the specification, kept as the user decided:** the specification's technology
@@ -1986,30 +2131,63 @@ The log mailer (development only) sends nothing and writes one line per email, i
 
 ### What is sent today
 
+Every template that `mail.Templates()` marks as triggered (template names in brackets):
+
 | Email | Trigger | Path |
 | --- | --- | --- |
-| Confirm your email address | Register, resend verification | request |
-| Reset your password | Password-reset request (never for administrators) | request |
-| You already have an account | Register with an address that is already verified | request |
-| Your account is ready (welcome; lists the roles chosen and which are waiting for verification) | Email verified for the first time | outbox `USER_EMAIL_VERIFIED` |
-| Your password was changed | Password reset confirmed; `adminctl set-password` | outbox `PASSWORD_CHANGED` |
-| Administrator sign-in | Successful `POST /v1/admin/auth/login` | outbox `ADMIN_SIGNED_IN` |
-| Request received (to the customer, with the reference) | Property request created | outbox `PROPERTY_REQUEST_CREATED` |
-| New property request (to the assigned agent or direct seller, otherwise the organisation's owners and managers); names the listing by title and reference | Property request created | same event |
-| Enquiry received (to the customer) | Business enquiry created | outbox `BUSINESS_ENQUIRY_CREATED` |
-| New enquiry (to the named agent, otherwise the owning organisation's owners and managers) | Business enquiry created | same event |
-| New appointment request (to the assigned professional, otherwise the organisation's owners and managers) | Appointment created | outbox `APPOINTMENT_REQUESTED` |
-| Appointment confirmed (to the customer) | Confirmed by the professional, or a proposed time accepted | outbox `APPOINTMENT_CONFIRMED` |
-| New time proposed (to the customer) / The customer proposed a new time (to the professional) | A new time proposed by the other party | outbox `APPOINTMENT_RESCHEDULE_REQUESTED` |
-| Appointment cancelled (to the customer) / cancelled by the customer (to the professional) | Cancelled by the other party | outbox `APPOINTMENT_CANCELLED` |
-| Invitation to join a team (to the invited address; the link is single-use, 7 days) | `POST /v1/agent/organisations/{id}/invitations` | request |
-| A request was assigned to you (to the assignee; reference, listing, preview) | `POST /v1/agent/property-requests/{id}/assign` | outbox `PROPERTY_REQUEST_ASSIGNED` |
+| Confirm your email address (`verify-email`) | Register, resend verification | request |
+| Reset your password (`reset-password`) | Password-reset request (never for administrators) | request |
+| You already have an account (`account-exists`) | Register with an address that is already verified | request |
+| Your sign-in code (`sign-in-code`) | `POST /v1/auth/login` and `/v1/admin/auth/login` with the right password, and their `/login/resend` | request |
+| Your account is ready (`welcome`; lists the roles chosen and which are waiting for verification) | Email verified for the first time | outbox `USER_EMAIL_VERIFIED` |
+| Your password was changed (`password-changed`) | Password reset confirmed; `adminctl set-password` | outbox `PASSWORD_CHANGED` |
+| Administrator sign-in (`admin-sign-in`) | An administrator session started (`POST /v1/admin/auth/login/verify` with the right code) | outbox `ADMIN_SIGNED_IN` |
+| Request received (`property-request-received`; to the customer, with the reference) | Property request created | outbox `PROPERTY_REQUEST_CREATED` |
+| New property request (`property-request-new`; to the assigned agent or direct seller, otherwise the organisation's owners and managers); names the listing by title and reference | Property request created | same event |
+| Enquiry received (`business-enquiry-received`; to the customer) | Business enquiry created | outbox `BUSINESS_ENQUIRY_CREATED` |
+| New enquiry (`business-enquiry-new`; to the named agent, otherwise the owning organisation's owners and managers) | Business enquiry created | same event |
+| Application received (`onboarding-submitted`; to the applicant) | `POST /v1/me/onboarding/{role}/submit` | outbox `ONBOARDING_SUBMITTED` |
+| Application approved (`onboarding-approved`; to the applicant, with a link to their profile) | `POST /v1/admin/onboarding/{id}/approve` | outbox `ONBOARDING_APPROVED` |
+| Application needs changes (`onboarding-changes-requested`; with the reason) | `POST /v1/admin/onboarding/{id}/request-changes` | outbox `ONBOARDING_CHANGES_REQUESTED` |
+| Application not approved (`onboarding-rejected`; with the reason) | `POST /v1/admin/onboarding/{id}/reject` | outbox `ONBOARDING_REJECTED` |
+| New appointment request (`appointment-requested`; to the assigned professional, otherwise the organisation's owners and managers) | Appointment created | outbox `APPOINTMENT_REQUESTED` |
+| Appointment confirmed (`appointment-confirmed`; to the customer) | Confirmed by the professional, or a proposed time accepted | outbox `APPOINTMENT_CONFIRMED` |
+| New time proposed (`appointment-new-time-proposed`; to the customer) / The customer proposed a new time (`appointment-reschedule-proposed`; to the professional) | A new time proposed by the other party | outbox `APPOINTMENT_RESCHEDULE_REQUESTED` |
+| Appointment cancelled (`appointment-cancelled`; to the customer) / cancelled by the customer (`appointment-cancelled-by-customer`; to the professional) | Cancelled by the other party | outbox `APPOINTMENT_CANCELLED` |
+| Listing approved (`listing-approved`; to the advertiser: the listing's agent, else the organisation's owners and managers, or the direct owner) | `POST /v1/admin/listings/{id}/approve`, for a new listing, a relisted one or changes to a published one | outbox `LISTING_APPROVED` |
+| Listing needs changes (`listing-changes-requested`; with the reason) | `POST /v1/admin/listings/{id}/request-changes` | outbox `LISTING_CHANGES_REQUESTED` |
+| Listing not approved (`listing-rejected`; with the reason) | `POST /v1/admin/listings/{id}/reject` | outbox `LISTING_REJECTED` |
+| Invitation to join a team (`team-invitation`; to the invited address; the link is single-use, 7 days) | `POST /v1/agent/organisations/{id}/invitations` | request |
+| A request was assigned to you (`property-request-assigned`; to the assignee; reference, listing, preview) | `POST /v1/agent/property-requests/{id}/assign` | outbox `PROPERTY_REQUEST_ASSIGNED` |
+| A document to sign or approve (`agreement-signing-request`; to a recipient, with their link) | An agreement sent (`POST /v1/me/agreements/{id}/send`, `POST /v1/me/leases/{id}/send`), the next signing order reached, a recipient replaced | request |
+| Reminder (`agreement-reminder`; with a new link) | `POST /v1/me/agreements/{id}/recipients/{rid}/remind`; the reminder interval, by the agreements sweep | request / sweep |
+| Code to confirm your email address (`agreement-signing-code`) | `POST /v1/signing/{token}/code` | request |
+| Everybody signed (`agreement-completed`; to every recipient, the CCs and the sender) | The last signer or approver finishes | request |
+| A recipient declined (`agreement-declined`; to the sender) | `POST /v1/signing/{token}/decline` | request |
+| Account suspended (`account-suspended`; with the administrator's reason) | `POST /v1/admin/users/{id}/suspend` | outbox `ACCOUNT_SUSPENDED` |
+| Account reactivated (`account-reactivated`) | `POST /v1/admin/users/{id}/reactivate` | outbox `ACCOUNT_REACTIVATED` |
+| Account deleted (`account-deletion-completed`; to the address the account had) | `DELETE /v1/me`, `POST /v1/admin/users/{id}/delete` | request (the address is erased with the account) |
+| Subscription invoice to pay (`subscription-invoice`; to the requester) | `POST /v1/me/subscriptions`, `POST /v1/me/subscriptions/{id}/renew` | outbox `SUBSCRIPTION_REQUESTED` |
+| Subscription active (`subscription-activated`; payment recorded) | `POST /v1/admin/subscriptions/{id}/approve` | outbox `SUBSCRIPTION_ACTIVATED` |
+| Subscription not approved (`subscription-rejected`; with the reason) | `POST /v1/admin/subscriptions/{id}/reject` | outbox `SUBSCRIPTION_REJECTED` |
+| Subscription cancelled (`subscription-cancelled`; by an administrator, with the reason) | `POST /v1/admin/subscriptions/{id}/cancel` (a subscriber withdrawing their own pending request is not emailed) | outbox `SUBSCRIPTION_CANCELLED` |
+| Subscription ended (`subscription-expired`) | An active subscription's end passed (the subscription sweep, every 5 minutes) | outbox `SUBSCRIPTION_EXPIRED` |
 
-**Designed, written and tested, but NOT triggered by anything** (the features do not exist yet):
-reply or status update to the customer, listing expiring in 14 / 7 / 1 days, listing expired, relist
-confirmed, renewal invoice issued, payment received, account deletion requested, account deletion
-completed. Their wording about payments, invoices and deletion is a draft: the house rules say
-legal and payment wording needs sign-off per market before release.
+**Designed, written and tested, but NOT sent** (`Triggered: false` in `mail.Templates()`):
+
+- `request-update` (a reply or status update to the customer), `listing-expiring` (14 / 7 / 1
+  days) and `listing-expired`: the features behind them, replies to customers and a listing
+  expiry reminder job, are not built.
+- `listing-relisted`: relisting sends a listing that was published before back through review
+  (`Manager.Relist` in `internal/modules/listings/manage_service.go`), and the approval email
+  (`listing-approved`) tells the advertiser it is shown to customers again.
+- `renewal-invoice` and `payment-received`: superseded by `subscription-invoice` and
+  `subscription-activated`.
+- `account-deletion-requested`: deletion (`DELETE /v1/me` and the administrators' delete) is
+  immediate, so there is no request to confirm; `account-deletion-completed` is sent instead.
+
+The wording about payments, invoices and deletion is a draft: the house rules say legal and
+payment wording needs sign-off per market before release.
 
 Privacy: an email to an agent, seller or owner carries the reference, a short preview with phone
 numbers, email addresses and links removed, and a button to the inbox
@@ -2369,29 +2547,33 @@ their data with `Principal.OrganisationIDs(...)` (and `PlatformRole.MarketCode` 
 - **MFA for administrators** – the specification requires it for admin roles. Only the emailed
   sign-in code exists (see "Sign-in code"); there is no second factor on a separate device, so the
   administrator login must not be treated as production-ready.
-- **Durable audit trail** – administrator sign-ins are only written to the process log.
-- **Admin endpoints for reference data** – rows are served and enforced, but can only be changed
-  in the database.
+- **Administrator sign-ins in the durable audit trail** – `admin_audit_events` (migration `0024`)
+  records what administrators do (see "Administrators' area"), but administrator sign-ins are
+  still only written to the process log.
 - **WhatsApp and in-app notifications.** Recipients and customers are notified by email only.
 - **Bounce and complaint handling** – there is no Resend webhook endpoint, so a message that
   Resend accepted and later failed to deliver is never noticed; no suppression list.
-- **The emails for features that do not exist yet** (status updates, listing expiry and relisting,
-  invoices, payments, account deletion) are written and tested but nothing sends them.
+- **The emails nothing sends** (status updates to the customer, listing expiry, relisting, the
+  older renewal-invoice and payment-received templates, account deletion requested) are written
+  and tested but not triggered; see "What is sent today".
 - **Unsubscribe / notification preferences** – every email today is transactional.
-- **Listing and profile management** – listings and profiles are read-only: there is no API to
-  create, edit, publish, relist, verify or suspend them. They exist only as seeded rows.
-- **Photo upload and object storage (MinIO)** – photo URLs are paths to the web app's own static
-  sample images.
+- **Profile management** – directory profiles are created only by an approved onboarding
+  application or the seed; apart from their logos (`/v1/me/profiles/{kind}/{slug}/logo`) there is
+  no API to edit, verify or suspend them. (Listings are managed since 0.22.0: create, edit,
+  photos, review, archive and relist; see "Listing management".)
 - **A running search cluster** – the Elasticsearch adapter, indexing handler and `cmd/reindex` are
   written and tested against a fake, but no cluster exists and hosting/licence is an open
   decision; search runs in Postgres until then.
-- **Listing lifecycle (publish, edit, pause, relist) and an expiry job** – so nothing but the seed
-  emits listing events yet.
+- **Pausing a listing, and an expiry job** – a published listing past its `expires_at` reads as
+  `EXPIRED` at once, but no job emits `LISTING_EXPIRED` or sends expiry reminders (only the seed
+  emits that event).
 - **Metrics** – the search-fallback count is only a log field.
-- **Revoking a role or a membership, and invitations** – a membership is created only by an
-  approved onboarding application (or the development seed); nothing removes one, and an agency
-  cannot invite or confirm its own members. Platform roles are created only by `cmd/adminctl`.
-- **Account deletion** and data export.
+- **Revoking an account role or a platform role** – platform roles are created only by
+  `cmd/adminctl`, and nothing takes an approved account role away. (Memberships are managed since
+  0.23.0: an organisation's OWNER and MANAGER invite, approve join requests, change, suspend and
+  remove members; see "Agency teams".)
+- **Data export.** (Account deletion exists since 0.25.0: `DELETE /v1/me` and the
+  administrators' `POST /v1/admin/users/{id}/delete`, immediate, the row anonymised in place.)
 - **Consent preference centre** – registration consent is recorded, but there is no way to review
   or change consents (including `marketing_opt_in`) afterwards.
 - **Durable delivery of verification and reset emails** – notification emails are durable through
@@ -2435,11 +2617,20 @@ internal/modules/dashboard         GET /v1/me/dashboard, /v1/agent/organisations
 internal/modules/businessenquiries POST /v1/business-enquiries, GET /v1/inbox/business-enquiries (handler, service, store: postgres + memory)
 internal/modules/appointments      /v1/appointments, /v1/me/appointments, /v1/inbox/appointments, /v1/inbox/summary (handler, service, store: postgres + memory)
 internal/modules/notifications     outbox events -> emails; verification/reset mailer; data lookups (postgres + memory)
-internal/modules/listings          GET /v1/listings, /v1/listings/suggest, /v1/listings/{slug}; Search port (postgres + memory)
+internal/modules/listings          GET /v1/listings, /v1/listings/suggest, /v1/listings/{slug}; Search port; listing management (/v1/me/listings create, edit, photos, submit, archive, relist), /v1/listing-photos, /v1/admin/listings review (postgres + memory)
 internal/modules/directory         GET /v1/directory, /v1/directory/{kind}[/{slug}], /v1/sitemap; profile logos: the public image route and /v1/me/profiles (postgres + memory)
 internal/modules/trust             GET /v1/trust/summary: verified advertisers and public listings, counted
-internal/modules/reference         GET /v1/reference, /v1/reference/{set}; the rows other modules validate against
+internal/modules/reference         GET /v1/reference, /v1/reference/{set}; the rows other modules validate against; /v1/admin/reference (admin.go)
 internal/modules/identity          /v1/auth/*, /v1/me: accounts, sessions, tokens, roles, Mailer (store: postgres + memory)
+internal/modules/leases            /v1/me/leases, /v1/me/lease-templates, /v1/me/organisations/{orgId}/lease-templates, /v1/admin/lease-templates, /v1/admin/leases; lease PDFs (postgres + memory)
+internal/modules/agreements        /v1/me/agreements, /v1/signing/{token}, /v1/me/signature, /v1/stamp-preview, /v1/verify; signing PDFs, generated stamps, vendored fonts (postgres + memory)
+internal/modules/teams             /v1/agent/organisations/{id}/members, /invitations, /join-requests, /audit; /v1/invitations/{token} (postgres + memory)
+internal/modules/accounts          /v1/admin/users (suspend, reactivate, delete), /v1/admin/audit, DELETE /v1/me (postgres + memory)
+internal/modules/subscriptions     /v1/me/subscription-plans, /v1/me/subscriptions, /v1/admin/subscription-plans, /v1/admin/subscriptions; the expiry sweep (postgres + memory)
+internal/modules/reports           /v1/admin/reports/summary and the CSV exports (postgres + memory)
+internal/platform/adminaudit       the administrators' audit trail (admin_audit_events)
+internal/platform/orgaudit         an organisation's team audit trail (organisation_audit_events)
+internal/platform/imaging          image helpers for the re-encoded uploads (profile logos, listing photos)
 migrations/    embedded SQL (NNNN_name.up.sql / .down.sql)
 api/openapi.yaml             OpenAPI 3.1 contract
 deploy/docker/Dockerfile     one multi-stage file, targets: api, worker, migrate
@@ -2453,11 +2644,13 @@ handler, service and store interface.
 
 Deliberately no empty stubs. These will be added under `internal/modules/` as they are built:
 
-- `identity` (exists) still lacks organisation membership management, invitations and MFA — see
-  "Not built yet"
-- `listings` (exists, read-only) – listing CRUD, publication cycles, expiry/relisting
-- `media` – image/document upload to object storage (MinIO locally)
-- `billing` – plans, payments, invoices (exact decimal money + ISO 4217)
+- `identity` (exists) still lacks MFA beyond the emailed code — see "Not built yet" (membership
+  management and invitations are in `teams`)
+- `listings` (exists, with management since 0.22.0) still lacks pausing and an expiry job
+- uploads have no module of their own: each module stores its files through
+  `internal/platform/storage` (local folder or S3/MinIO)
+- `subscriptions` (exists since 0.25.0) covers plans, invoices and admin-recorded payments
+  (exact decimal money + ISO 4217); online payment and receipts are not built
 - `notifications` (exists for email) – WhatsApp and in-app delivery
 - `backoffice` – moderation, and reassigning routing exceptions (listing and resolving them is
   built in `propertyrequests`)
@@ -2530,6 +2723,22 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0025_templates_and_stamps` (API 0.26.0): lease templates owned by organisations
+  (`lease_templates.organisation_id`, `NULL` for a sample; index
+  `lease_templates_organisation_idx`), `lease_templates_review_check` relaxed so approval no longer
+  needs a legal review, `agreement_fields_type_check` widened to `STAMP`, and the jsonb columns
+  `agreement_recipients.stamp` (the stamp a signer applied) and `user_signatures.stamp` (a saved
+  stamp). Only new nullable columns and changed checks. The down migration retires organisation
+  templates first (so they are never offered as samples) and loses every saved and applied stamp
+  and the STAMP fields (a completed PDF keeps the stamp drawn on its pages).
+- `0024_admin_area` (API 0.25.0): the administrators' area. Suspension and deletion on `users`
+  (`suspended_at`, `suspension_reason`, `suspended_by`, `deleted_at`; a deleted account is
+  anonymised in place, never removed), `admin_audit_events` (immutable), `subscription_plans` and
+  `subscription_plan_prices`, `subscriptions` (at most one `PENDING_PAYMENT` per subscriber) and
+  `subscription_events` (immutable). New nullable columns, tables, a sequence and indexes; the one
+  `UPDATE` backfills `suspended_at` / `deleted_at` for accounts already suspended or deleted. The
+  down migration loses plans, subscriptions, the audit trail and suspension details, but never
+  gives a suspended or deleted account back its access or data.
 - `0023_agreements` adds only new objects, each `IF NOT EXISTS`: `agreement_reference_seq`;
   `agreements` (unique `reference`, partial indexes on both SHA-256 for verification),
   `agreement_recipients` (unique `(agreement_id, email)`), `agreement_fields`, `agreement_links`

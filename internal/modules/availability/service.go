@@ -174,6 +174,9 @@ type ListingSummary struct {
 	MinNights             *int             `json:"min_nights"`
 	AvailabilityUpdatedAt *time.Time       `json:"availability_updated_at"`
 	Photo                 *listings.Photo  `json:"photo"`
+	// CanEdit: the caller may edit the listing (auth.MayEditListing), and so
+	// draft a lease for it. An AGENT sees colleagues' listings read-only.
+	CanEdit bool `json:"can_edit"`
 }
 
 // ListingsPage is one page of the caller's listings.
@@ -265,6 +268,9 @@ func (s *Service) MyListings(ctx context.Context, p *auth.Principal, category, s
 	end := min(start+size, len(kept))
 	if out.Items, err = s.summaries(ctx, kept[start:end]); err != nil {
 		return ListingsPage{}, err
+	}
+	for i, r := range kept[start:end] {
+		out.Items[i].CanEdit = p.MayEditListing(r.OrganisationID, r.AgentUserID, r.SellerUserID)
 	}
 	return out, nil
 }

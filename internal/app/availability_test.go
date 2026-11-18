@@ -129,6 +129,7 @@ type myListingsBody struct {
 		MinNights             *int             `json:"min_nights"`
 		AvailabilityUpdatedAt *string          `json:"availability_updated_at"`
 		Photo                 *listings.Photo  `json:"photo"`
+		CanEdit               bool             `json:"can_edit"`
 	} `json:"items"`
 	Page       int `json:"page"`
 	PageSize   int `json:"page_size"`
@@ -188,6 +189,23 @@ func TestAvailabilityAuthorisation(t *testing.T) {
 	// sample listing waiting for review are there too.
 	if got := list("agent@example.test", ""); got.Total != 9 {
 		t.Fatalf("an agency's agent manages %d listings: %s", got.Total, got.slugs())
+	}
+	// ...but may edit (and draft leases for) only the ones assigned to him;
+	// the organisation's manager may edit every one.
+	editable := func(email string) int {
+		n := 0
+		for _, item := range list(email, "").Items {
+			if item.CanEdit {
+				n++
+			}
+		}
+		return n
+	}
+	if n := editable("agent@example.test"); n == 0 || n >= 9 {
+		t.Fatalf("the agent may edit %d of Sample Estates' 9 listings", n)
+	}
+	if n := editable("agency.admin@example.test"); n != 9 {
+		t.Fatalf("the manager may edit %d of 9 listings", n)
 	}
 	if got := list("agent@example.test", "?status=EXPIRED"); got.Total != 1 || got.Items[0].Slug != devseed.ExpiredListingSlug || got.Items[0].Status != "EXPIRED" {
 		t.Fatalf("status=EXPIRED: %s", got.slugs())

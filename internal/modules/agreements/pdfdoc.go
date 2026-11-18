@@ -234,9 +234,12 @@ type FinalInput struct {
 }
 
 // Statement is printed on every completed document (never "legally executed").
+// A stamp a signer adds is their own company stamp, kept apart here from
+// official stamping (such as stamp duty).
 const Statement = "Signed electronically on RightProperty365. Whether this document is enforceable, and whether it must also be " +
-	"witnessed, stamped or registered, depends on the law of the country concerned; RightProperty365 does not witness, stamp or " +
-	"register documents and does not give legal advice."
+	"witnessed, officially stamped or registered, depends on the law of the country concerned; RightProperty365 does not " +
+	"witness or register documents, does not apply official stamps or stamp duty, and does not give legal advice. A stamp " +
+	"added while signing is the signer's own company stamp."
 
 // SealNote says that no digital seal is applied (no platform certificate).
 const SealNote = "Digital seal: none. No platform certificate is configured, so this file carries no PDF digital signature; " +

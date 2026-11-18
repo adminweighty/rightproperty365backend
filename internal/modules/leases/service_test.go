@@ -44,7 +44,7 @@ func newTemplateHarness(t *testing.T) *templateHarness {
 	h.admin = &auth.Principal{UserID: uuid.New(), Name: "Content Admin"}
 	id := uuid.New()
 	h.sample = Template{ID: id, FamilyID: id, Version: 1, MarketCode: "ZW", Name: "Sample lease", LeaseKind: KindResidential,
-		Sections: []Section{{Heading: "Rent", Text: "Rent {{rent_amount}}."}}, Clauses: []Clause{}, Status: TemplateApproved,
+		Description: "SAMPLE: not reviewed by a lawyer.", Sections: []Section{{Heading: "Rent", Text: "Rent {{rent_amount}}."}}, Clauses: []Clause{}, Status: TemplateApproved,
 		ApprovedAt: &now, CreatedAt: now, UpdatedAt: now}
 	h.store.PutTemplate(h.sample)
 	return h
@@ -152,6 +152,9 @@ func TestOrganisationTemplateCopies(t *testing.T) {
 	if cp.Name != "Copy of Sample lease" || cp.Status != TemplateDraft || cp.FamilyID == h.sample.FamilyID || cp.MarketCode != "ZW" ||
 		len(cp.Sections) != 1 || cp.Source != SourceOrganisation {
 		t.Fatalf("copy %+v", cp)
+	}
+	if cp.Description != nil && *cp.Description != "" {
+		t.Fatalf("a copy of a sample keeps the sample's description %q", *cp.Description)
 	}
 	named := "Our own"
 	if cp, err := h.svc.CreateOrgTemplate(ctx, h.owner, h.org, OrgTemplateInput{CopyFromTemplateID: &from, TemplateInput: TemplateInput{Name: &named}}); err != nil || cp.Name != named {
