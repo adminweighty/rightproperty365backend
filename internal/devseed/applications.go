@@ -202,12 +202,15 @@ func seedPostgresApplications(ctx context.Context, tx pgx.Tx, files storage.Stor
 	s := ApplicationSamplesAt(now)
 	appIDs := []uuid.UUID{SubmittedApplicationID, DraftApplicationID}
 	formIDs := []uuid.UUID{RentalFormV1ID, RentalFormV2ID}
-	// The trigger keeps a form with submissions: drop the applications first.
+	// The trigger keeps a form with submissions: drop the applications first,
+	// the seeded ones and any made since on the sample forms (on a re-run
+	// against staging, testers' applications would otherwise block it).
 	for _, q := range []string{
-		`DELETE FROM contact_links WHERE kind = 'APPLICATION' AND item_id = ANY($1)`,
-		`DELETE FROM applications WHERE id = ANY($1)`,
+		`DELETE FROM contact_links WHERE kind = 'APPLICATION' AND item_id IN
+			(SELECT id FROM applications WHERE id = ANY($1) OR form_id = ANY($2))`,
+		`DELETE FROM applications WHERE id = ANY($1) OR form_id = ANY($2)`,
 	} {
-		if _, err := tx.Exec(ctx, q, appIDs); err != nil {
+		if _, err := tx.Exec(ctx, q, appIDs, formIDs); err != nil {
 			return fmt.Errorf("seed applications: %w", err)
 		}
 	}
