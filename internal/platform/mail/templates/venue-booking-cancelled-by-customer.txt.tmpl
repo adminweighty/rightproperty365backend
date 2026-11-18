@@ -1,0 +1,16 @@
+{{define "subject"}}Booking cancelled by the customer: {{.Reference}}{{end}}
+{{define "heading"}}A booking was cancelled{{end}}
+{{define "button"}}Open your hourly bookings{{end}}
+{{define "why"}}You are receiving this because a booking was made for a venue you manage on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+The customer cancelled the booking below. The time is free again.
+
+Reference: {{.Reference}}
+{{if .ListingTitle}}Venue: {{.ListingTitle}}
+{{end}}{{if .ListingRef}}Listing reference: {{.ListingRef}}
+{{end}}Time: {{.AppointmentTime}}
+{{if .Reason}}Reason: {{.Reason}}
+{{end}}Status: {{.StatusText}}
+
+Your cancellation policy applies to any deposit you agreed with the customer.{{end}}

@@ -502,8 +502,8 @@ func TestAccountNotifications(t *testing.T) {
 		}
 	})
 
-	if got := len(EventTypes()); got != 31 {
-		t.Fatalf("%d event types handled, want 31 (6 with the request assignment, the 4 onboarding events, the 7 appointment events, the 3 listing review events, the 2 account events, the 5 subscription events and the 4 application events)", got)
+	if got := len(EventTypes()); got != 39 {
+		t.Fatalf("%d event types handled, want 39 (6 with the request assignment, the 4 onboarding events, the 7 appointment events, the 3 listing review events, the 2 account events, the 5 subscription events, the 4 application events and the 8 venue booking events)", got)
 	}
 }
 

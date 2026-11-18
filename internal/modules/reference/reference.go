@@ -101,6 +101,9 @@ type Item struct {
 	// RequiresVerification is set for account roles: true means choosing the
 	// role only records a request (PENDING_VERIFICATION).
 	RequiresVerification *bool `json:"requires_verification"`
+	// HourlyBookable is set for property types: true means a listing of the
+	// type may be booked by the hour (showrooms, venues; API 0.33.0).
+	HourlyBookable *bool `json:"hourly_bookable"`
 	// Active rows are the only ones the API returns or accepts.
 	Active bool `json:"-"`
 }

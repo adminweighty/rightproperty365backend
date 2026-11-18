@@ -79,16 +79,16 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 			}
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO reference_items (set_code, code, label, singular_label, description, sort_order, market_id,
-				                             parent_code, group_code, group_label, group_sort_order, requires_verification)
-				VALUES ($1, $2, $3, $4, $5, $6, (SELECT id FROM markets WHERE code = $7), $8, $9, $10, $11, $12)
+				                             parent_code, group_code, group_label, group_sort_order, requires_verification, hourly_bookable)
+				VALUES ($1, $2, $3, $4, $5, $6, (SELECT id FROM markets WHERE code = $7), $8, $9, $10, $11, $12, $13)
 				ON CONFLICT (set_code, code) DO UPDATE
 				SET label = EXCLUDED.label, singular_label = EXCLUDED.singular_label, description = EXCLUDED.description,
 				    sort_order = EXCLUDED.sort_order, market_id = EXCLUDED.market_id, parent_code = EXCLUDED.parent_code,
 				    group_code = EXCLUDED.group_code, group_label = EXCLUDED.group_label,
 				    group_sort_order = EXCLUDED.group_sort_order, requires_verification = EXCLUDED.requires_verification,
-				    updated_at = now()`,
+				    hourly_bookable = EXCLUDED.hourly_bookable, updated_at = now()`,
 				set, it.Code, it.Label, it.SingularLabel, it.Description, it.SortOrder, it.MarketCode,
-				it.ParentCode, groupCode, groupLabel, groupSort, it.RequiresVerification); err != nil {
+				it.ParentCode, groupCode, groupLabel, groupSort, it.RequiresVerification, it.HourlyBookable); err != nil {
 				return fmt.Errorf("seed reference %s/%s: %w", set, it.Code, err)
 			}
 		}
@@ -413,6 +413,12 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 	// The sample questionnaire (two versions), its intakes on two rent
 	// listings and the tenant's applications (needs migration 0031).
 	if err := seedPostgresApplications(ctx, tx, files, now); err != nil {
+		return err
+	}
+
+	// The hourly-bookable showroom's settings and its sample bookings
+	// (needs migration 0032).
+	if err := seedPostgresVenues(ctx, tx, now); err != nil {
 		return err
 	}
 

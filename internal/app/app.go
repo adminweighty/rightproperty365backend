@@ -36,6 +36,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/subscriptions"
 	"rightproperty365.com/backend/internal/modules/teams"
 	"rightproperty365.com/backend/internal/modules/trust"
+	"rightproperty365.com/backend/internal/modules/venues"
 	"rightproperty365.com/backend/internal/platform/adminaudit"
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/config"
@@ -170,6 +171,15 @@ const (
 	// upload bucket.
 	applicationChangesPerMinute = 60
 	applicationChangesBurst     = 60
+
+	// Per-IP limit on hourly rental (API 0.33.0): public quotes in their own
+	// bucket (bursts of 30, refilled at 30 per minute), and booking requests,
+	// customer and host actions and hourly settings in another (bursts of
+	// 60, refilled at 60 per minute).
+	venueQuotesPerMinute  = 30
+	venueQuotesBurst      = 30
+	venueChangesPerMinute = 60
+	venueChangesBurst     = 60
 )
 
 // uploadPath matches POST /v1/me/onboarding/{role}/documents and logoPath
@@ -278,6 +288,10 @@ type Deps struct {
 	// applications (API 0.32.0); their files are kept in Files.
 	Applications applications.Store
 
+	// Venues holds the hourly settings, quotes and hourly bookings of the
+	// showrooms and venues (API 0.33.0).
+	Venues venues.Store
+
 	// Optional overrides used by tests.
 	Now    func() time.Time
 	Hasher *identity.Hasher
@@ -360,6 +374,17 @@ func NewRouter(d Deps) (http.Handler, error) {
 	listingsSvc.SetIntake(applicationIntake{svc: applicationsSvc})
 	applicationsH := applications.NewHandler(applicationsSvc, logger)
 	applicationLimiter := httpx.NewRateLimiter(applicationChangesPerMinute, applicationChangesBurst)
+	// Hourly rental of showrooms and venues (BR-007, FR-022..025): enquiry
+	// mode only, a table and service type of its own (VENUE_HOURLY).
+	if d.Venues == nil {
+		return nil, errors.New("app: no venue store")
+	}
+	venuesSvc := VenuesService(d.Venues, listingsSvc, d.Listings, d.Markets, d.Reference, logger, d.Now)
+	listingsSvc.SetHourlyRates(venueRates{svc: venuesSvc})
+	venuesH := venues.NewHandler(venuesSvc, logger)
+	venueQuoteLimiter := httpx.NewRateLimiter(venueQuotesPerMinute, venueQuotesBurst)
+	venueLimiter := httpx.NewRateLimiter(venueChangesPerMinute, venueChangesBurst)
+	orgVenues, ownerVenues := venuesH.Organisation("id"), venuesH.DirectOwner()
 	directorySvc := directory.NewService(d.Directory, vocab, listingsSvc)
 	directorySvc.SetPlaces(geography)
 	// Logos are kept in the object storage and served by the API itself.
@@ -608,6 +633,10 @@ func NewRouter(d Deps) (http.Handler, error) {
 		// The questionnaire of a listing, for the preview (public; 404 when
 		// the listing takes no applications).
 		r.Get("/listings/{slug}/application-form", applicationsH.PublicForm)
+		// Hourly rental (public): the availability in the venue's local
+		// time, and a stored, itemised quote (enquiry mode: no payment).
+		r.Get("/venues/{listingId}/availability", venuesH.Availability)
+		r.With(venueQuoteLimiter.Middleware).Post("/venues/{listingId}/quotes", venuesH.Quote)
 		r.Get("/directory", directoryH.Kinds)
 		r.Get("/directory/{kind}", directoryH.List)
 		r.Get("/directory/{kind}/{slug}", directoryH.Get)
@@ -725,6 +754,34 @@ func NewRouter(d Deps) (http.Handler, error) {
 			// The listing's questionnaire and intake (whoever may edit the listing).
 			r.Get("/{id}/applications-intake", applicationsH.GetIntake)
 			r.With(applicationLimiter.Middleware).Put("/{id}/applications-intake", applicationsH.PutIntake)
+			// The listing's hourly settings (whoever may edit the listing;
+			// 400 for a property type that is not hourly_bookable).
+			r.Get("/{id}/hourly", venuesH.GetSettings)
+			r.With(venueLimiter.Middleware).Put("/{id}/hourly", venuesH.PutSettings)
+		})
+
+		// A customer's hourly bookings (FR-025): another customer's is 404.
+		r.Route("/me/venue-bookings", func(r chi.Router) {
+			r.Use(auth.RequireAuth)
+			r.Get("/", venuesH.ListMine)
+			r.With(venueLimiter.Middleware).Post("/", venuesH.Request)
+			r.Get("/{bookingId}", venuesH.GetMine)
+			r.With(venueLimiter.Middleware).Post("/{bookingId}/cancel", venuesH.CancelMine)
+			r.With(venueLimiter.Middleware).Post("/{bookingId}/reschedule", venuesH.RescheduleMine)
+			r.With(venueLimiter.Middleware).Post("/{bookingId}/accept", venuesH.AcceptMine)
+		})
+		// The hourly bookings of a direct owner's (landlord's or seller's)
+		// own listings; 403 for anybody who is not an approved direct owner.
+		r.Route("/me/hosted-venue-bookings", func(r chi.Router) {
+			r.Use(auth.RequireAuth)
+			r.Get("/", ownerVenues.List)
+			r.Get("/{bookingId}", ownerVenues.Get)
+			r.With(venueLimiter.Middleware).Post("/{bookingId}/confirm", ownerVenues.Confirm)
+			r.With(venueLimiter.Middleware).Post("/{bookingId}/decline", ownerVenues.Decline)
+			r.With(venueLimiter.Middleware).Post("/{bookingId}/cancel", ownerVenues.Cancel)
+			r.With(venueLimiter.Middleware).Post("/{bookingId}/propose", ownerVenues.Propose)
+			r.With(venueLimiter.Middleware).Post("/{bookingId}/complete", ownerVenues.Complete)
+			r.With(venueLimiter.Middleware).Post("/{bookingId}/no-show", ownerVenues.NoShow)
 		})
 
 		// A customer's own applications (FR-015): any customer-scope session;
@@ -1083,6 +1140,19 @@ func NewRouter(d Deps) (http.Handler, error) {
 				r.With(applicationLimiter.Middleware).Post("/{applicationId}/status", applicationsH.SetStatus)
 				r.With(applicationLimiter.Middleware).Post("/{applicationId}/request-info", applicationsH.RequestInfo)
 				r.With(applicationLimiter.Middleware).Post("/{applicationId}/notes", applicationsH.AddNote)
+			})
+			// Hourly bookings (FR-025): OWNER and MANAGER all, the listing's
+			// assigned AGENT their own; 404 for anybody else (another
+			// organisation, STAFF). Every host decision is audited.
+			r.Route("/venue-bookings", func(r chi.Router) {
+				r.Get("/", orgVenues.List)
+				r.Get("/{bookingId}", orgVenues.Get)
+				r.With(venueLimiter.Middleware).Post("/{bookingId}/confirm", orgVenues.Confirm)
+				r.With(venueLimiter.Middleware).Post("/{bookingId}/decline", orgVenues.Decline)
+				r.With(venueLimiter.Middleware).Post("/{bookingId}/cancel", orgVenues.Cancel)
+				r.With(venueLimiter.Middleware).Post("/{bookingId}/propose", orgVenues.Propose)
+				r.With(venueLimiter.Middleware).Post("/{bookingId}/complete", orgVenues.Complete)
+				r.With(venueLimiter.Middleware).Post("/{bookingId}/no-show", orgVenues.NoShow)
 			})
 		})
 

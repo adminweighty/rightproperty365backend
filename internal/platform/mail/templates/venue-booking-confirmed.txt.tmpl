@@ -1,0 +1,18 @@
+{{define "subject"}}Booking confirmed: {{.Reference}}{{end}}
+{{define "heading"}}Your booking is confirmed{{end}}
+{{define "button"}}View your hourly bookings{{end}}
+{{define "why"}}You are receiving this because you asked to book a venue by the hour on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+The host confirmed your booking for the time below.
+
+Reference: {{.Reference}}
+{{if .ListingTitle}}Venue: {{.ListingTitle}}
+{{end}}{{if .ListingRef}}Listing reference: {{.ListingRef}}
+{{end}}Time: {{.AppointmentTime}}
+{{if .Amount}}Estimate: {{.Amount}}
+{{end}}Status: {{.StatusText}}
+
+The host will contact you to arrange payment and the deposit. No payment is taken on RightProperty365.
+
+If you can no longer come, cancel the booking from your account. The venue's cancellation policy applies.{{end}}

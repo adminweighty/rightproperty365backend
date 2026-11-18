@@ -1,0 +1,16 @@
+{{define "subject"}}New time accepted: {{.Reference}}{{end}}
+{{define "heading"}}The customer accepted your time{{end}}
+{{define "button"}}Open your hourly bookings{{end}}
+{{define "why"}}You are receiving this because a booking was made for a venue you manage on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+The customer accepted the time you proposed. The booking is confirmed for the time below.
+
+Reference: {{.Reference}}
+{{if .ListingTitle}}Venue: {{.ListingTitle}}
+{{end}}{{if .ListingRef}}Listing reference: {{.ListingRef}}
+{{end}}Time: {{.AppointmentTime}}
+{{if .Amount}}Estimate: {{.Amount}}
+{{end}}Status: {{.StatusText}}
+
+Contact the customer to arrange payment. No payment is taken on RightProperty365.{{end}}

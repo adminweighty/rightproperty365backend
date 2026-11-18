@@ -1,0 +1,16 @@
+{{define "subject"}}Booking request sent: {{.Reference}}{{end}}
+{{define "heading"}}Your booking request was sent{{end}}
+{{define "button"}}View your hourly bookings{{end}}
+{{define "why"}}You are receiving this because you asked to book a venue by the hour on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+Your request was sent to the host. It is not confirmed until the host confirms it.
+
+Reference: {{.Reference}}
+{{if .ListingTitle}}Venue: {{.ListingTitle}}
+{{end}}{{if .ListingRef}}Listing reference: {{.ListingRef}}
+{{end}}Time: {{.AppointmentTime}}
+{{if .Amount}}Estimate: {{.Amount}}
+{{end}}Status: {{.StatusText}}
+
+This is an estimate. No payment is taken on RightProperty365; the host confirms and arranges payment with you.{{end}}

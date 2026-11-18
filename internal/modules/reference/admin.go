@@ -87,6 +87,9 @@ type ItemInput struct {
 	SortOrder     *int    `json:"sort_order"`
 	MarketCode    *string `json:"market_code"`
 	ParentCode    *string `json:"parent_code"`
+	// HourlyBookable: property types only (may a listing of the type be
+	// booked by the hour).
+	HourlyBookable *bool `json:"hourly_bookable"`
 }
 
 // Admin is the reference data administration.
@@ -168,7 +171,17 @@ func itemState(it Item) map[string]any {
 	if it.MarketCode != nil {
 		m["market_code"] = *it.MarketCode
 	}
+	if it.HourlyBookable != nil {
+		m["hourly_bookable"] = *it.HourlyBookable
+	}
 	return m
+}
+
+// hourlyFlag checks hourly_bookable: property types only.
+func hourlyFlag(set string, in *bool, fields map[string]string) {
+	if in != nil && set != SetPropertyTypes {
+		fields["hourly_bookable"] = "applies to property_types only"
+	}
 }
 
 func targetID(set, code string) string { return set + "/" + code }
@@ -232,6 +245,11 @@ func (a *Admin) Create(ctx context.Context, p *auth.Principal, set string, in It
 	if err := a.checkParent(ctx, set, it.ParentCode, fields); err != nil {
 		return Item{}, err
 	}
+	hourlyFlag(set, in.HourlyBookable, fields)
+	if set == SetPropertyTypes {
+		hourly := in.HourlyBookable != nil && *in.HourlyBookable
+		it.HourlyBookable = &hourly
+	}
 	if len(fields) > 0 {
 		return Item{}, &ValidationError{Fields: fields}
 	}
@@ -277,6 +295,7 @@ func (a *Admin) Update(ctx context.Context, p *auth.Principal, set, code string,
 			return Item{}, err
 		}
 	}
+	hourlyFlag(set, in.HourlyBookable, fields)
 	if len(fields) > 0 {
 		return Item{}, &ValidationError{Fields: fields}
 	}
@@ -300,6 +319,10 @@ func (a *Admin) Update(ctx context.Context, p *auth.Principal, set, code string,
 		}
 		if in.ParentCode != nil {
 			it.ParentCode = parent
+		}
+		if in.HourlyBookable != nil {
+			v := *in.HourlyBookable
+			it.HourlyBookable = &v
 		}
 		return adminaudit.New(p.UserID, p.Name, adminaudit.ActionReferenceUpdated, adminaudit.TargetReferenceItem, targetID(set, code), it.Label, "",
 			before, itemState(*it), now), nil
@@ -353,6 +376,10 @@ func cloneItem(it Item) Item {
 	if it.RequiresVerification != nil {
 		v := *it.RequiresVerification
 		it.RequiresVerification = &v
+	}
+	if it.HourlyBookable != nil {
+		v := *it.HourlyBookable
+		it.HourlyBookable = &v
 	}
 	return it
 }
@@ -408,14 +435,14 @@ func (s *MemoryStore) ChangeItem(_ context.Context, set, code string, change fun
 }
 
 const itemColumns = `r.code, r.label, r.singular_label, r.description, r.sort_order, m.code, r.parent_code,
-	r.group_code, r.group_label, r.group_sort_order, r.requires_verification, r.active`
+	r.group_code, r.group_label, r.group_sort_order, r.requires_verification, r.hourly_bookable, r.active`
 
 func scanItem(row pgx.Row) (Item, error) {
 	var it Item
 	var groupCode, groupLabel *string
 	var groupSort *int
 	if err := row.Scan(&it.Code, &it.Label, &it.SingularLabel, &it.Description, &it.SortOrder, &it.MarketCode, &it.ParentCode,
-		&groupCode, &groupLabel, &groupSort, &it.RequiresVerification, &it.Active); err != nil {
+		&groupCode, &groupLabel, &groupSort, &it.RequiresVerification, &it.HourlyBookable, &it.Active); err != nil {
 		return Item{}, err
 	}
 	if groupCode != nil && groupLabel != nil {
@@ -459,9 +486,10 @@ func (s *PostgresStore) CreateItem(ctx context.Context, set string, it Item, aud
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO reference_items (set_code, code, label, singular_label, description, sort_order, active, market_id, parent_code, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, true, (SELECT id FROM markets WHERE code = $7), $8, $9, $9)`,
-		set, it.Code, it.Label, it.SingularLabel, it.Description, it.SortOrder, it.MarketCode, it.ParentCode, audit.At); err != nil {
+		INSERT INTO reference_items (set_code, code, label, singular_label, description, sort_order, active, market_id, parent_code,
+			hourly_bookable, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, true, (SELECT id FROM markets WHERE code = $7), $8, $10, $9, $9)`,
+		set, it.Code, it.Label, it.SingularLabel, it.Description, it.SortOrder, it.MarketCode, it.ParentCode, audit.At, it.HourlyBookable); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			return ErrDuplicate
@@ -491,9 +519,10 @@ func (s *PostgresStore) ChangeItem(ctx context.Context, set, code string, change
 		return Item{}, err
 	}
 	if _, err := tx.Exec(ctx, `
-		UPDATE reference_items SET label = $3, singular_label = $4, description = $5, sort_order = $6, parent_code = $7, active = $8, updated_at = $9
+		UPDATE reference_items SET label = $3, singular_label = $4, description = $5, sort_order = $6, parent_code = $7, active = $8, updated_at = $9,
+			hourly_bookable = $10
 		WHERE set_code = $1 AND code = $2`,
-		set, code, next.Label, next.SingularLabel, next.Description, next.SortOrder, next.ParentCode, next.Active, audit.At); err != nil {
+		set, code, next.Label, next.SingularLabel, next.Description, next.SortOrder, next.ParentCode, next.Active, audit.At, next.HourlyBookable); err != nil {
 		return Item{}, fmt.Errorf("update reference item: %w", err)
 	}
 	if err := adminaudit.Insert(ctx, tx, audit); err != nil {

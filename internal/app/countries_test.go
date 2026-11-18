@@ -69,7 +69,7 @@ func TestCountriesAreGlobal(t *testing.T) {
 			t.Fatalf("%s = %v, want %v", code, got, want)
 		}
 	}
-	if *byCode["ZW"].ListingCount != 20 || *byCode["GB"].ListingCount != 3 || *byCode["MU"].ListingCount != 1 || *byCode["FR"].ListingCount != 0 || *byCode["FR"].HasListings {
+	if *byCode["ZW"].ListingCount != 21 || *byCode["GB"].ListingCount != 3 || *byCode["MU"].ListingCount != 1 || *byCode["FR"].ListingCount != 0 || *byCode["FR"].HasListings {
 		t.Fatalf("counts: ZW %d GB %d MU %d FR %d", *byCode["ZW"].ListingCount, *byCode["GB"].ListingCount, *byCode["MU"].ListingCount, *byCode["FR"].ListingCount)
 	}
 	// The older name returns the same bytes.
@@ -159,7 +159,7 @@ func TestFreeTextLocationListing(t *testing.T) {
 		*mu.Facets.Price.Min != "8500.00" || len(mu.Facets.City) != 0 || len(mu.Facets.Suburb) != 0 || len(mu.Facets.Region) != 0 {
 		t.Fatalf("country=MU: %+v", mu)
 	}
-	if got := facet(e.search("").Facets.Country); got != "MU=1,GB=3,ZW=20" {
+	if got := facet(e.search("").Facets.Country); got != "MU=1,GB=3,ZW=21" {
 		t.Fatalf("country facet = %s", got)
 	}
 	for _, q := range []string{"?q=grand+baie", "?q=rempart", "?q=mauritius+villa"} {
@@ -217,7 +217,7 @@ func TestCountryFilterAndCurrencyRule(t *testing.T) {
 	// No country, no currency, results in three currencies.
 	rec := e.get("/v1/listings")
 	wantStatus(t, rec, http.StatusOK)
-	if body := rec.Body.String(); !strings.Contains(body, `"price":null,"currencies":[{"code":"USD","count":20},{"code":"GBP","count":3},{"code":"MUR","count":1}]`) {
+	if body := rec.Body.String(); !strings.Contains(body, `"price":null,"currencies":[{"code":"USD","count":21},{"code":"GBP","count":3},{"code":"MUR","count":1}]`) {
 		t.Fatalf("mixed-currency facets:\n%s", body[strings.Index(body, `"facets"`):])
 	}
 	for _, q := range []string{"?min_price=1000", "?max_price=2000", "?min_price=1&max_price=2&deal=rent"} {

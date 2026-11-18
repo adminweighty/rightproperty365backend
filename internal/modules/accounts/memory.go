@@ -40,6 +40,9 @@ type MemoryDeps struct {
 	// EraseApplications deletes the user's draft applications and anonymises
 	// the others (nil: nothing to do).
 	EraseApplications func(userID uuid.UUID, at time.Time)
+	// DeleteVenueBookings removes the user's hourly venue bookings (nil:
+	// nothing to do).
+	DeleteVenueBookings func(userID uuid.UUID)
 	// Now is the clock used for listing expiry in the detail (nil: time.Now).
 	Now func() time.Time
 }
@@ -283,6 +286,9 @@ func (s *MemoryStore) Delete(ctx context.Context, d Deletion) (Deleted, error) {
 	}
 	if s.deps.EraseApplications != nil {
 		s.deps.EraseApplications(d.UserID, d.At)
+	}
+	if s.deps.DeleteVenueBookings != nil {
+		s.deps.DeleteVenueBookings(d.UserID)
 	}
 	s.deps.Audit.Append(d.Audit)
 	return out, nil

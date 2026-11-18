@@ -1,0 +1,16 @@
+{{define "subject"}}Booking cancelled: {{.Reference}}{{end}}
+{{define "heading"}}Your booking was cancelled{{end}}
+{{define "button"}}View your hourly bookings{{end}}
+{{define "why"}}You are receiving this because you booked a venue by the hour on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+The host cancelled your booking for the time below.
+
+Reference: {{.Reference}}
+{{if .ListingTitle}}Venue: {{.ListingTitle}}
+{{end}}{{if .ListingRef}}Listing reference: {{.ListingRef}}
+{{end}}Time: {{.AppointmentTime}}
+{{if .Reason}}Reason: {{.Reason}}
+{{end}}Status: {{.StatusText}}
+
+No payment was taken on RightProperty365. If you paid the host a deposit, contact the host about it.{{end}}

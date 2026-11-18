@@ -147,6 +147,27 @@ func SampleData(name string) Data {
 		case "application-status-changed":
 			d.Path, d.StatusText = "/account/applications", "Shortlisted"
 		}
+	case "venue-booking-sent", "venue-booking-new", "venue-booking-confirmed", "venue-booking-declined", "venue-booking-cancelled",
+		"venue-booking-cancelled-by-customer", "venue-booking-reschedule-requested", "venue-booking-time-proposed", "venue-booking-accepted":
+		start := time.Date(2026, 12, 5, 8, 0, 0, 0, time.UTC)
+		d.Reference, d.ListingTitle, d.ListingRef = "VB-7K3M9QXD", "Glass-fronted showroom to hire by the hour", "RP-ZW-10021"
+		d.AppointmentTime, d.Amount = LocalSlot(start, start.Add(4*time.Hour), "Africa/Harare"), "USD 230.00"
+		d.Path, d.StatusText = "/account/hourly-bookings", "Requested"
+		switch name {
+		case "venue-booking-new", "venue-booking-cancelled-by-customer", "venue-booking-reschedule-requested", "venue-booking-accepted":
+			d.Name, d.Path = "Tendai Ncube", "/agent/venue-bookings"
+		}
+		switch name {
+		case "venue-booking-confirmed", "venue-booking-accepted":
+			d.StatusText = "Confirmed"
+		case "venue-booking-declined":
+			d.StatusText, d.Reason, d.Amount = "Declined", "The showroom is being repainted that week.", ""
+		case "venue-booking-cancelled", "venue-booking-cancelled-by-customer":
+			d.StatusText, d.Reason, d.Amount = "Cancelled", "The launch was moved to January.", ""
+		case "venue-booking-reschedule-requested", "venue-booking-time-proposed":
+			d.StatusText = "New time requested"
+			d.ProposedTime = LocalSlot(start.Add(48*time.Hour), start.Add(52*time.Hour), "Africa/Harare")
+		}
 	case "subscription-invoice", "subscription-activated", "subscription-rejected", "subscription-cancelled", "subscription-expired":
 		d.Name, d.Path, d.InvoiceNumber, d.PlanName, d.Period, d.Amount = "Tendai Ncube", "/account/subscriptions", "RPS-2026-000042", "Agent Starter", "3 months", "USD 30.00"
 		switch name {

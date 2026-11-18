@@ -161,7 +161,7 @@ func TestUnitedKingdomSearchAndCurrencies(t *testing.T) {
 	for _, l := range all.Items {
 		currencies[l.Price.Currency]++
 	}
-	if all.Total != 24 || currencies["GBP"] != 3 || currencies["USD"] != 20 || currencies["MUR"] != 1 || all.Facets.Price != nil {
+	if all.Total != 25 || currencies["GBP"] != 3 || currencies["USD"] != 21 || currencies["MUR"] != 1 || all.Facets.Price != nil {
 		t.Fatalf("mixed results: total %d, currencies %v, price facet %+v", all.Total, currencies, all.Facets.Price)
 	}
 	wantStatus(t, e.get("/v1/listings?max_price=2000"), http.StatusBadRequest)
@@ -174,7 +174,7 @@ func TestUnitedKingdomSearchAndCurrencies(t *testing.T) {
 		t.Fatalf("currency=GBP: %d", got.Total)
 	}
 	countries := facet(all.Facets.Country)
-	if countries != "MU=1,GB=3,ZW=20" {
+	if countries != "MU=1,GB=3,ZW=21" {
 		t.Fatalf("country facet = %s", countries)
 	}
 	// Directories and suggestions follow.

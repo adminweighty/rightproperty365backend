@@ -40,6 +40,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/saved"
 	"rightproperty365.com/backend/internal/modules/subscriptions"
 	"rightproperty365.com/backend/internal/modules/teams"
+	"rightproperty365.com/backend/internal/modules/venues"
 	"rightproperty365.com/backend/internal/platform/adminaudit"
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/config"
@@ -275,12 +276,14 @@ type env struct {
 	crm      *crm.MemoryStore
 	crmItems MemoryCRMItems
 	// apps holds the questionnaires and applications (the samples).
-	apps  *applications.MemoryStore
-	files *storage.Local
-	mail  *captureMailer
-	logs  *bytes.Buffer
-	now   time.Time
-	seq   int
+	apps *applications.MemoryStore
+	// venues holds the hourly settings and bookings (the showroom samples).
+	venues *venues.MemoryStore
+	files  *storage.Local
+	mail   *captureMailer
+	logs   *bytes.Buffer
+	now    time.Time
+	seq    int
 	// captchaSeq numbers the registration questions the tests ask for.
 	captchaSeq int
 	// twoStepLogin turns off the helper that completes the sign-in code step
@@ -360,6 +363,9 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 	e.apps.SetAuditSink(e.team.AuditSink())
 	e.apps.SetListingTitles(MemoryListingTitles(e.listings))
 	devseed.SeedMemoryApplications(e.apps, e.now)
+	e.venues = venues.NewMemoryStore()
+	e.venues.SetAuditSink(e.team.AuditSink())
+	devseed.SeedMemoryVenues(e.venues, e.now)
 	if err := devseed.SeedApplicationFiles(context.Background(), e.files); err != nil {
 		t.Fatal(err)
 	}
@@ -390,6 +396,7 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		Audit: e.audit, CancelSubscriptions: e.subs.CancelForDeletedUser, DeleteSignature: e.agree.DeleteSavedSignature,
 		DeleteSavedListings: e.saved.DeleteUser,
 		EraseApplications:   func(u uuid.UUID, at time.Time) { e.apps.EraseApplicant(u, at) },
+		DeleteVenueBookings: e.venues.DeleteCustomer,
 		Now:                 func() time.Time { return e.now }})
 	reportStore := MemoryReports(MemoryReportStores{Identity: e.identity, Onboarding: e.onboard, Listings: e.listings, Requests: e.requests,
 		Enquiries: e.enquiries, Leases: e.leases, Agreements: e.agree, Subscriptions: e.subs, Markets: e.marketStore,
@@ -415,6 +422,7 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		Saved: e.saved, Analytics: e.analytics,
 		CRM: e.crm, CRMItems: e.crmItems,
 		Applications: e.apps,
+		Venues:       e.venues,
 		Now:          func() time.Time { return e.now },
 		Hasher:       &hasher,
 	})

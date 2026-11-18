@@ -52,6 +52,13 @@ const (
 	// answers and every download of one of its files.
 	ActionApplicationViewed     = "APPLICATION_VIEWED"
 	ActionApplicationFileViewed = "APPLICATION_FILE_VIEWED"
+	// Hourly venue bookings (API 0.33.0, FR-025): every host decision.
+	ActionVenueBookingConfirmed    = "VENUE_BOOKING_CONFIRMED"
+	ActionVenueBookingDeclined     = "VENUE_BOOKING_DECLINED"
+	ActionVenueBookingCancelled    = "VENUE_BOOKING_CANCELLED"
+	ActionVenueBookingTimeProposed = "VENUE_BOOKING_TIME_PROPOSED"
+	ActionVenueBookingCompleted    = "VENUE_BOOKING_COMPLETED"
+	ActionVenueBookingNoShow       = "VENUE_BOOKING_NO_SHOW"
 )
 
 var actionLabels = map[string]string{
@@ -74,6 +81,12 @@ var actionLabels = map[string]string{
 	ActionContactsExported:           "Contacts exported",
 	ActionApplicationViewed:          "Application viewed",
 	ActionApplicationFileViewed:      "Application file downloaded",
+	ActionVenueBookingConfirmed:      "Hourly booking confirmed",
+	ActionVenueBookingDeclined:       "Hourly booking declined",
+	ActionVenueBookingCancelled:      "Hourly booking cancelled",
+	ActionVenueBookingTimeProposed:   "New time proposed for an hourly booking",
+	ActionVenueBookingCompleted:      "Hourly booking completed",
+	ActionVenueBookingNoShow:         "Hourly booking marked as a no-show",
 }
 
 // Actions returns every action, in a stable order.
@@ -106,6 +119,8 @@ const (
 	TargetContactBook = "CONTACT_BOOK"
 	// TargetApplication is one application (labelled with its reference).
 	TargetApplication = "APPLICATION"
+	// TargetVenueBooking is one hourly booking (labelled with its reference).
+	TargetVenueBooking = "VENUE_BOOKING"
 )
 
 // Event is one audit record.

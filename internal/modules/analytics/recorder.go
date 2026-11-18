@@ -13,6 +13,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/saved"
+	"rightproperty365.com/backend/internal/modules/venues"
 	"rightproperty365.com/backend/internal/platform/outbox"
 )
 
@@ -27,9 +28,13 @@ import (
 //	APPLICATION_SUBMITTED    -> application_submit (a first submission;
 //	                            a resubmission after a request for more
 //	                            information is not counted again)
+//	VENUE_BOOKING_CONFIRMED  -> booking_confirm (an hourly booking's first
+//	                            confirmation; a re-confirmation at a new
+//	                            time is not counted again). Never an
+//	                            appointment_confirm (FR-022).
 func OutboxEventTypes() []string {
 	return []string{saved.EventListingSaved, propertyrequests.EventPropertyRequestCreated, appointments.EventRequested,
-		appointments.EventConfirmed, listings.EventListingRelisted, applications.EventTypeSubmitted}
+		appointments.EventConfirmed, listings.EventListingRelisted, applications.EventTypeSubmitted, venues.EventConfirmed}
 }
 
 // AppointmentListing returns the listing an appointment is about (nil for a
@@ -64,6 +69,8 @@ type eventBody struct {
 	OccurredAt    *time.Time `json:"occurred_at"`
 	CreatedAt     *time.Time `json:"created_at"`
 	Resubmission  bool       `json:"resubmission"`
+	// FirstConfirmation: an hourly booking confirmed for the first time.
+	FirstConfirmation bool `json:"first_confirmation"`
 }
 
 func (b eventBody) when(fallback time.Time) time.Time {
@@ -95,6 +102,11 @@ func (r *Recorder) Handle(ctx context.Context, ev outbox.Event) error {
 			return nil
 		}
 		eventType = TypeApplicationSubmit
+	case venues.EventConfirmed:
+		if !body.FirstConfirmation {
+			return nil
+		}
+		eventType = TypeBookingConfirm
 	case listings.EventListingRelisted:
 		eventType = TypeListingRelist
 		if listing == nil {

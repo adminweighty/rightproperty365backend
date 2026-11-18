@@ -1,0 +1,24 @@
+Subject: Booking request declined: VB-7K3M9QXD
+
+Your booking request was declined
+
+Hello Tariro Moyo,
+
+The host could not accept your request for the time below.
+
+Reference: VB-7K3M9QXD
+Venue: Glass-fronted showroom to hire by the hour
+Listing reference: RP-ZW-10021
+Time: Saturday 5 December 2026, 10:00 to 14:00 (Central Africa Time)
+Reason: The showroom is being repainted that week.
+Status: Declined
+
+You can choose another time and send a new request.
+
+Find another time:
+https://rightproperty365.com/account/hourly-bookings
+
+--
+You are receiving this because you asked to book a venue by the hour on RightProperty365.
+Sent by RightProperty365.
+https://rightproperty365.com

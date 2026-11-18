@@ -27,8 +27,8 @@ const MarketUK = "GB"
 const MarketMauritius = "MU"
 
 // BackendListingCount is the number of PUBLISHED sample listings added here
-// (IDs 19..24), on top of the web's ListingCount.
-const BackendListingCount = 6
+// (IDs 19..25), on top of the web's ListingCount.
+const BackendListingCount = 7
 
 // MarketID returns the ID of a country by its code (Zimbabwe when the code
 // is not a country code). Every ISO country has one: see markets.IDFor.
@@ -83,7 +83,7 @@ var backendBusinesses = []business{
 // responsible for: the hosts own the short stays.
 var businessListings = map[string][]int{
 	hostFallsStays: {22, 24},
-	hostShowrooms:  {23},
+	hostShowrooms:  {23, ShowroomListingNumber},
 }
 
 // backendProfiles are the directory profiles of the UK organisations.
@@ -199,8 +199,25 @@ func BackendListings() []SampleListing {
 	mauritius.Description = "A sample short stay in a country that has no list of cities yet, so its city and region are written as free text. A three-bedroom villa with a private pool, a short walk from the beach. Sleeps six. Minimum stay three nights."
 	mauritius.Features, mauritius.Image.Alt = []string{"Swimming pool", "Veranda", "Walled and gated"}, "House with a garden and a pool"
 
-	return []SampleListing{london, manchester, shoreditch, falls, harare, mauritius}
+	// A showroom to hire by the hour (API 0.33.0), owned by the showrooms
+	// host; its hourly settings and sample bookings are in venues.go.
+	showroom := backendListing(ShowroomListingNumber, MarketCode, "RP-ZW-10021", ShowroomListingSlug, "listing-office-eastlea.jpg", 1200, 801, "2026-10-08T08:00:00Z")
+	showroom.Title, showroom.Deal, showroom.Category, showroom.PropertyType = "Glass-fronted showroom to hire by the hour", "rent", "commercial", "Showroom"
+	showroom.Price.Amount, showroom.Price.Currency, showroom.PricePeriod = "2800.00", "USD", listings.PricePeriodMonth
+	showroom.Suburb, showroom.City = "Eastlea", "Harare"
+	showroom.FloorArea = guests(240)
+	showroom.Summary = "Sample listing: a ground-floor showroom for launches, pop-up shops and events, by the hour or by the month."
+	showroom.Description = "A sample showroom. A glass-fronted ground-floor space with display lighting, a small kitchen and parking for customers. Book it by the hour for a launch or an exhibition, or rent it by the month."
+	showroom.Features, showroom.Image.Alt = []string{"Fibre-ready", "Backup generator", "8 parking bays"}, "Bright room with a long table and chairs"
+
+	return []SampleListing{london, manchester, shoreditch, falls, harare, mauritius, showroom}
 }
+
+// The sample showroom (hourly rental, API 0.33.0).
+const (
+	ShowroomListingNumber = 25
+	ShowroomListingSlug   = "glass-fronted-showroom-eastlea"
+)
 
 // AllListings returns the web's sample listings followed by the backend's.
 func AllListings() []SampleListing {
@@ -231,6 +248,13 @@ var (
 	shortStayTypes = []string{"Holiday home", "Serviced apartment", "Guest house", "Private room", "Lodge"}
 )
 
+// HourlyPropertyTypes are the property types added for hourly rental
+// (code, label), as migration 0032 adds them.
+var HourlyPropertyTypes = [][2]string{
+	{"showroom", "Showroom"}, {"event-space", "Venue / event space"}, {"hall", "Hall"},
+	{"conference-room", "Conference room"}, {"studio", "Studio"},
+}
+
 // addBackendReference appends the rows this file needs to the baseline:
 // the short-stay category and its property types, the price periods and the
 // United Kingdom's regions, cities and areas. sortAfter continues each set's
@@ -246,6 +270,19 @@ func addBackendReference(sets map[string][]reference.Item) {
 	appendRows(reference.SetPropertyCategories, reference.Item{Code: listings.CategoryShortStay, Label: "Short stays", Description: str(ShortStayDescription)})
 	for _, name := range shortStayTypes {
 		appendRows(reference.SetPropertyTypes, reference.Item{Code: Code(name), Label: name, ParentCode: str(listings.CategoryShortStay)})
+	}
+	// Hourly rental (migration 0032): the commercial types that may be
+	// booked by the hour; office becomes one of them. Every other property
+	// type says hourly_bookable false.
+	for _, t := range HourlyPropertyTypes {
+		appendRows(reference.SetPropertyTypes, reference.Item{Code: t[0], Label: t[1], ParentCode: str("commercial")})
+	}
+	for i, it := range sets[reference.SetPropertyTypes] {
+		hourly := it.Code == "office"
+		for _, t := range HourlyPropertyTypes {
+			hourly = hourly || t[0] == it.Code
+		}
+		sets[reference.SetPropertyTypes][i].HourlyBookable = flag(hourly)
 	}
 	appendRows(reference.SetPricePeriods,
 		reference.Item{Code: listings.PricePeriodMonth, Label: "per month"},

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.32.0
+  version: 0.33.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,42 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Showroom and venue hourly rental (new in 0.33.0)
+    - **Eligibility** (BR-007): the `property_types` reference rows gain `hourly_bookable`
+      (boolean; null on every other set), admin-editable. Seeded true: showroom, event-space
+      (venue / event space), hall, conference-room, studio and office. Only a listing of such a
+      type can have hourly settings (`PUT` is `400 LISTING_NOT_ELIGIBLE`; `GET` answers
+      `eligible: false`).
+    - **Settings** (FR-023): `GET` / `PUT /v1/me/listings/{id}/hourly` (whoever may edit the
+      listing): rate per hour and ISO currency (the listing country's), 15 / 30 / 60-minute
+      increments, minimum and maximum duration, cleaning buffer, capacity, deposit, opening
+      hours per weekday (several ranges, venue-local wall time), date exceptions, fees (PERCENT,
+      FIXED, PER_HOUR; the tax is code `TAX`) with inclusive effective dates, cancellation
+      policy and free-cancellation hours, lead time and horizon. Operational, not reviewed.
+    - **Public**: every listing and search card gains `hourly_booking`
+      (`{enabled, rate_per_hour, currency, increment_minutes}` or null).
+      `GET /v1/venues/{listingId}/availability` lays out the days in the venue's IANA zone
+      (DST-correct) with UTC instants and offset-carrying local times; `booked` ranges already
+      include the cleaning buffers and never name a customer. `POST /v1/venues/{listingId}/quotes`
+      prices a slot exactly (decimal strings, one currency, half-up to the minor unit), stores
+      it for 30 minutes, and answers `409 SLOT_UNAVAILABLE` with `details.reason` (CLOSED, TAKEN,
+      BUFFER, LEAD_TIME, OUTSIDE_HORIZON) or `400` for a misaligned slot.
+    - **Enquiry mode only, no payment** (FR-024): every quote and booking says `mode: ENQUIRY` and
+      the notice "This is an estimate. No payment is taken on RightProperty365; the host
+      confirms and arranges payment with you."; the deposit is "payable to the host if
+      confirmed".
+    - **Bookings** (FR-025): `POST /v1/me/venue-bookings` turns a quote into a REQUESTED booking
+      (idempotent per quote; holds nothing). The host (`/v1/agent/organisations/{id}/venue-bookings`:
+      OWNER, MANAGER, the listing's assigned AGENT; or `/v1/me/hosted-venue-bookings` for a
+      direct owner) confirms, declines, proposes a time, cancels, completes or records a
+      no-show; the customer cancels, asks to reschedule and accepts a proposed time.
+      **Confirming locks the slot in one transaction** under a per-listing lock row, re-checking
+      the CONFIRMED bookings and their buffers against the capacity: of two concurrent
+      confirmations for the same capacity one gets `409 SLOT_TAKEN`. Every transition is in the
+      booking's `events` (actor, time, reason); host decisions are in the organisation audit
+      trail. Bookings are a separate table and service type (`VENUE_HOURLY`): appointment lists,
+      counts and reports never include them, and analytics records `booking_confirm`.
 
     Questionnaires and applications (new in 0.32.0)
     - **Screening questionnaires** (BR-010, FR-017, FR-018) under
@@ -606,6 +642,10 @@ tags:
     description: |
       The agent CRM (new in 0.31.0): an organisation's (or a direct owner's) private contact
       book. 404 `CONTACT_NOT_FOUND` for anyone else.
+  - name: venues
+    description: |
+      Showroom and venue hourly rental (new in 0.33.0): hourly settings, public availability
+      and quotes, booking requests and the host's decisions. Enquiry mode only: no payment.
   - name: forms
     description: |
       Screening questionnaires (new in 0.32.0): versioned forms of an organisation or a direct
@@ -6839,6 +6879,604 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { description: "`LISTING_NOT_FOUND`: not a listing the caller manages.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+
+  /v1/me/listings/{id}/hourly:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [venues]
+      operationId: getHourlySettings
+      summary: A listing's hourly settings (new in 0.33.0)
+      description: |
+        Whoever may manage the listing. A property type that is not `hourly_bookable` answers 200 with
+        `eligible: false` (and `configured: false`, defaults). Unconfigured: defaults, `configured: false`.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The settings.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HourlySettings" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`LISTING_NOT_FOUND`: not a listing the caller manages.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+    put:
+      tags: [venues]
+      operationId: putHourlySettings
+      summary: Replace a listing's hourly settings (new in 0.33.0)
+      description: |
+        Whoever may edit the listing (an AGENT who only reads it gets `403`). A full replace; omitted optional
+        fields take their defaults. The currency must be the listing country's; a fee may name `currency`, which must
+        be the same. Clock times must be on the increment.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/HourlySettingsInput" }
+      responses:
+        "200":
+          description: The settings.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HourlySettings" }
+        "400": { description: "`VALIDATION_FAILED` (fields), or `LISTING_NOT_ELIGIBLE` for a property type that is not hourly_bookable.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "`LISTING_NOT_FOUND`: not a listing the caller manages.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /v1/venues/{listingId}/availability:
+    parameters:
+      - { name: listingId, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: from, in: query, required: true, schema: { type: string, format: date } }
+      - { name: to, in: query, required: true, schema: { type: string, format: date }, description: Inclusive; at most 62 days after from. }
+    get:
+      tags: [venues]
+      operationId: getVenueAvailability
+      summary: Availability in the venue's local time (public, new in 0.33.0)
+      description: |
+        A slot is free when it lies inside one `open_ranges` entry and overlaps no `booked` range (which already
+        carries the cleaning buffers). No customer data. `Cache-Control: no-cache`.
+      responses:
+        "200":
+          description: The days.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VenueAvailability" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "404": { description: "`VENUE_NOT_FOUND`: not public, not eligible, or hourly booking not enabled.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+  /v1/venues/{listingId}/quotes:
+    parameters:
+      - { name: listingId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [venues]
+      operationId: createVenueQuote
+      summary: Price a slot (public, new in 0.33.0)
+      description: |
+        Validates increment alignment and length (`400`), then lead time, horizon, opening hours with exceptions and
+        free capacity with the buffers (`409 SLOT_UNAVAILABLE`, `details.reason`). The quote is stored for 30 minutes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [start, end], additionalProperties: false, properties: { start: { type: string, format: date-time }, end: { type: string, format: date-time } } }
+      responses:
+        "201":
+          description: The quote.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VenueQuote" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "404": { description: "`VENUE_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "`SLOT_UNAVAILABLE` with `details.reason`.", content: { application/json: { schema: { $ref: "#/components/schemas/VenueErrorEnvelope" } } } }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /v1/me/venue-bookings:
+    get:
+      tags: [venues]
+      operationId: listMyVenueBookings
+      summary: The caller's hourly bookings (new in 0.33.0)
+      description: |
+        Soonest first. `?status=` (comma list), `?page=`, `?page_size=` (1-100).
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VenueBookingPage" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+    post:
+      tags: [venues]
+      operationId: requestVenueBooking
+      summary: Send a booking request from a quote (new in 0.33.0)
+      description: |
+        Re-checks the slot but holds nothing (other requests may overlap). Idempotent per quote: the same customer
+        gets the same booking (200).
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VenueBookingRequest" }
+      responses:
+        "201":
+          description: The booking (200 on a replay).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VenueBooking" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`QUOTE_NOT_FOUND`, `VENUE_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "`QUOTE_EXPIRED` (`details.expired_at`), `QUOTE_ALREADY_USED`, `SLOT_UNAVAILABLE` (`details.reason`).", content: { application/json: { schema: { $ref: "#/components/schemas/VenueErrorEnvelope" } } } }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /v1/me/venue-bookings/{bookingId}:
+    parameters:
+      - { name: bookingId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [venues]
+      operationId: getMyVenueBooking
+      summary: One of the caller's hourly bookings (new in 0.33.0)
+      description: |
+        Another customer's is 404.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The booking, with its events.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VenueBooking" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`VENUE_BOOKING_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+  /v1/me/venue-bookings/{bookingId}/cancel:
+    parameters:
+      - { name: bookingId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [venues]
+      operationId: cancelMyVenueBooking
+      summary: Cancel (new in 0.33.0)
+      description: |
+        Until the start. Free up to `free_cancellation_hours` before it (`cancellation.free`); after that the
+        policy text applies. No payment is taken either way.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false, properties: { reason: { type: string, maxLength: 500 } } }
+      responses:
+        "200":
+          description: The booking, with its events.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VenueBooking" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`VENUE_BOOKING_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "`INVALID_BOOKING_TRANSITION` (`details.from`, `action`, `allowed`).", content: { application/json: { schema: { $ref: "#/components/schemas/VenueErrorEnvelope" } } } }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /v1/me/venue-bookings/{bookingId}/reschedule:
+    parameters:
+      - { name: bookingId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [venues]
+      operationId: rescheduleMyVenueBooking
+      summary: Ask for a new time (new in 0.33.0)
+      description: |
+        A CONFIRMED booking (or a counter to the host's proposal) moves to RESCHEDULE_REQUESTED; the confirmed slot
+        stays held until the host confirms the new one.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [quote_id], additionalProperties: false, properties: { quote_id: { type: string, format: uuid } } }
+      responses:
+        "200":
+          description: The booking, with its events.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VenueBooking" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`VENUE_BOOKING_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "`INVALID_BOOKING_TRANSITION` (`details.from`, `action`, `allowed`). `QUOTE_EXPIRED`, `QUOTE_ALREADY_USED`, `SLOT_UNAVAILABLE`.", content: { application/json: { schema: { $ref: "#/components/schemas/VenueErrorEnvelope" } } } }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /v1/me/venue-bookings/{bookingId}/accept:
+    parameters:
+      - { name: bookingId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [venues]
+      operationId: acceptMyVenueBooking
+      summary: Accept the host's proposed time (new in 0.33.0)
+      description: |
+        Confirmed and locked like a host confirmation.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The booking, with its events.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VenueBooking" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`VENUE_BOOKING_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "`INVALID_BOOKING_TRANSITION` (`details.from`, `action`, `allowed`). `SLOT_TAKEN`.", content: { application/json: { schema: { $ref: "#/components/schemas/VenueErrorEnvelope" } } } }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /v1/agent/organisations/{id}/venue-bookings:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: listing_id, in: query, schema: { type: string, format: uuid } }
+      - { name: status, in: query, schema: { type: string }, description: Comma list. }
+      - { name: from, in: query, schema: { type: string, format: date }, description: Venue-local start date, inclusive. }
+      - { name: to, in: query, schema: { type: string, format: date } }
+    get:
+      tags: [venues]
+      operationId: orgVenueBookingsList
+      summary: Hourly bookings received (new in 0.33.0)
+      description: |
+        OWNER and MANAGER see every booking of the organisation's listings, an AGENT those of the listings they are
+        assigned to; STAFF and everybody else `404`.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VenueBookingPage" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "`ORGANISATION_NOT_FOUND`: not an organisation whose bookings the caller handles.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+  /v1/agent/organisations/{id}/venue-bookings/{bookingId}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: bookingId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [venues]
+      operationId: orgVenueBookingsGet
+      summary: One hourly booking received (new in 0.33.0)
+      description: |
+        With the customer's name and email and the events.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The booking, with its events.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VenueBooking" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`VENUE_BOOKING_NOT_FOUND` (also another organisation's).", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+  /v1/agent/organisations/{id}/venue-bookings/{bookingId}/confirm:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: bookingId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [venues]
+      operationId: orgVenueBookingsConfirm
+      summary: Confirm a request or the customer's new time (new in 0.33.0)
+      description: |
+        Locks the slot in one transaction (per-listing lock row); `409 SLOT_TAKEN` when CONFIRMED capacity
+        with buffers is full.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The booking, with its events.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VenueBooking" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`VENUE_BOOKING_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "`INVALID_BOOKING_TRANSITION`. `SLOT_TAKEN` (`details.reason: TAKEN`).", content: { application/json: { schema: { $ref: "#/components/schemas/VenueErrorEnvelope" } } } }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /v1/agent/organisations/{id}/venue-bookings/{bookingId}/decline:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: bookingId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [venues]
+      operationId: orgVenueBookingsDecline
+      summary: Decline a request (new in 0.33.0)
+      description: |
+        A reason is required.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [reason], additionalProperties: false, properties: { reason: { type: string, minLength: 1, maxLength: 500 } } }
+      responses:
+        "200":
+          description: The booking, with its events.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VenueBooking" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`VENUE_BOOKING_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "`INVALID_BOOKING_TRANSITION`.", content: { application/json: { schema: { $ref: "#/components/schemas/VenueErrorEnvelope" } } } }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /v1/agent/organisations/{id}/venue-bookings/{bookingId}/cancel:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: bookingId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [venues]
+      operationId: orgVenueBookingsCancel
+      summary: Cancel as the host (new in 0.33.0)
+      description: |
+        A reason is required; always free for the customer.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [reason], additionalProperties: false, properties: { reason: { type: string, minLength: 1, maxLength: 500 } } }
+      responses:
+        "200":
+          description: The booking, with its events.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VenueBooking" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`VENUE_BOOKING_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "`INVALID_BOOKING_TRANSITION`.", content: { application/json: { schema: { $ref: "#/components/schemas/VenueErrorEnvelope" } } } }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /v1/agent/organisations/{id}/venue-bookings/{bookingId}/propose:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: bookingId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [venues]
+      operationId: orgVenueBookingsPropose
+      summary: Propose a new time (new in 0.33.0)
+      description: |
+        From a quote; the customer accepts with `POST /v1/me/venue-bookings/{id}/accept`.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [quote_id], additionalProperties: false, properties: { quote_id: { type: string, format: uuid } } }
+      responses:
+        "200":
+          description: The booking, with its events.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VenueBooking" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`VENUE_BOOKING_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "`INVALID_BOOKING_TRANSITION`. `QUOTE_EXPIRED`, `QUOTE_ALREADY_USED`, `SLOT_UNAVAILABLE`.", content: { application/json: { schema: { $ref: "#/components/schemas/VenueErrorEnvelope" } } } }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /v1/agent/organisations/{id}/venue-bookings/{bookingId}/complete:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: bookingId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [venues]
+      operationId: orgVenueBookingsComplete
+      summary: Mark completed (new in 0.33.0)
+      description: |
+        A CONFIRMED booking, after its end.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The booking, with its events.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VenueBooking" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`VENUE_BOOKING_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "`INVALID_BOOKING_TRANSITION`.", content: { application/json: { schema: { $ref: "#/components/schemas/VenueErrorEnvelope" } } } }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /v1/agent/organisations/{id}/venue-bookings/{bookingId}/no-show:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: bookingId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [venues]
+      operationId: orgVenueBookingsNoShow
+      summary: Mark a no-show (new in 0.33.0)
+      description: |
+        A CONFIRMED booking, after its end.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The booking, with its events.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VenueBooking" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`VENUE_BOOKING_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "`INVALID_BOOKING_TRANSITION`.", content: { application/json: { schema: { $ref: "#/components/schemas/VenueErrorEnvelope" } } } }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /v1/me/hosted-venue-bookings:
+    parameters:
+      - { name: listing_id, in: query, schema: { type: string, format: uuid } }
+      - { name: status, in: query, schema: { type: string }, description: Comma list. }
+      - { name: from, in: query, schema: { type: string, format: date }, description: Venue-local start date, inclusive. }
+      - { name: to, in: query, schema: { type: string, format: date } }
+    get:
+      tags: [venues]
+      operationId: hostedVenueBookingsList
+      summary: Hourly bookings received (new in 0.33.0)
+      description: |
+        The bookings of an approved direct owner's own listings; `403` for anybody else.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VenueBookingPage" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "`ORGANISATION_NOT_FOUND`: not an organisation whose bookings the caller handles.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+  /v1/me/hosted-venue-bookings/{bookingId}:
+    parameters:
+      - { name: bookingId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [venues]
+      operationId: hostedVenueBookingsGet
+      summary: One hourly booking received (new in 0.33.0)
+      description: |
+        With the customer's name and email and the events.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The booking, with its events.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VenueBooking" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`VENUE_BOOKING_NOT_FOUND` (also another organisation's).", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+  /v1/me/hosted-venue-bookings/{bookingId}/confirm:
+    parameters:
+      - { name: bookingId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [venues]
+      operationId: hostedVenueBookingsConfirm
+      summary: Confirm a request or the customer's new time (new in 0.33.0)
+      description: |
+        Locks the slot in one transaction (per-listing lock row); `409 SLOT_TAKEN` when CONFIRMED capacity
+        with buffers is full.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The booking, with its events.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VenueBooking" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`VENUE_BOOKING_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "`INVALID_BOOKING_TRANSITION`. `SLOT_TAKEN` (`details.reason: TAKEN`).", content: { application/json: { schema: { $ref: "#/components/schemas/VenueErrorEnvelope" } } } }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /v1/me/hosted-venue-bookings/{bookingId}/decline:
+    parameters:
+      - { name: bookingId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [venues]
+      operationId: hostedVenueBookingsDecline
+      summary: Decline a request (new in 0.33.0)
+      description: |
+        A reason is required.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [reason], additionalProperties: false, properties: { reason: { type: string, minLength: 1, maxLength: 500 } } }
+      responses:
+        "200":
+          description: The booking, with its events.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VenueBooking" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`VENUE_BOOKING_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "`INVALID_BOOKING_TRANSITION`.", content: { application/json: { schema: { $ref: "#/components/schemas/VenueErrorEnvelope" } } } }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /v1/me/hosted-venue-bookings/{bookingId}/cancel:
+    parameters:
+      - { name: bookingId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [venues]
+      operationId: hostedVenueBookingsCancel
+      summary: Cancel as the host (new in 0.33.0)
+      description: |
+        A reason is required; always free for the customer.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [reason], additionalProperties: false, properties: { reason: { type: string, minLength: 1, maxLength: 500 } } }
+      responses:
+        "200":
+          description: The booking, with its events.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VenueBooking" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`VENUE_BOOKING_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "`INVALID_BOOKING_TRANSITION`.", content: { application/json: { schema: { $ref: "#/components/schemas/VenueErrorEnvelope" } } } }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /v1/me/hosted-venue-bookings/{bookingId}/propose:
+    parameters:
+      - { name: bookingId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [venues]
+      operationId: hostedVenueBookingsPropose
+      summary: Propose a new time (new in 0.33.0)
+      description: |
+        From a quote; the customer accepts with `POST /v1/me/venue-bookings/{id}/accept`.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [quote_id], additionalProperties: false, properties: { quote_id: { type: string, format: uuid } } }
+      responses:
+        "200":
+          description: The booking, with its events.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VenueBooking" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`VENUE_BOOKING_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "`INVALID_BOOKING_TRANSITION`. `QUOTE_EXPIRED`, `QUOTE_ALREADY_USED`, `SLOT_UNAVAILABLE`.", content: { application/json: { schema: { $ref: "#/components/schemas/VenueErrorEnvelope" } } } }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /v1/me/hosted-venue-bookings/{bookingId}/complete:
+    parameters:
+      - { name: bookingId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [venues]
+      operationId: hostedVenueBookingsComplete
+      summary: Mark completed (new in 0.33.0)
+      description: |
+        A CONFIRMED booking, after its end.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The booking, with its events.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VenueBooking" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`VENUE_BOOKING_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "`INVALID_BOOKING_TRANSITION`.", content: { application/json: { schema: { $ref: "#/components/schemas/VenueErrorEnvelope" } } } }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /v1/me/hosted-venue-bookings/{bookingId}/no-show:
+    parameters:
+      - { name: bookingId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [venues]
+      operationId: hostedVenueBookingsNoShow
+      summary: Mark a no-show (new in 0.33.0)
+      description: |
+        A CONFIRMED booking, after its end.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The booking, with its events.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VenueBooking" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`VENUE_BOOKING_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "`INVALID_BOOKING_TRANSITION`.", content: { application/json: { schema: { $ref: "#/components/schemas/VenueErrorEnvelope" } } } }
+        "429": { $ref: "#/components/responses/RateLimited" }
 
   /v1/me/applications:
     get:
@@ -13106,7 +13744,7 @@ components:
       description: A public listing. The same object is used in search results, on the detail endpoint and on profiles.
       required: [id, slug, reference, title, deal, category, property_type, price, price_period, suburb, city, region, country, market_code,
                  bedrooms, bathrooms, floor_area, land_area, max_guests, min_nights, summary, description, features, featured, photos, video, has_video, location, advertiser,
-                 verification, published_at, expires_at, updated_at, availability]
+                 verification, published_at, expires_at, updated_at, availability, hourly_booking]
       additionalProperties: false
       properties:
         id: { type: string, format: uuid, description: "Use as `listing_id` in `POST /v1/property-requests`." }
@@ -13191,6 +13829,11 @@ components:
             - $ref: "#/components/schemas/ListingApplications"
             - type: "null"
           description: "New in 0.32.0. Whether the listing takes applications now; null when no questionnaire is attached (always for short stays)."
+        hourly_booking:
+          oneOf:
+            - $ref: "#/components/schemas/ListingHourlyBooking"
+            - type: "null"
+          description: "New in 0.33.0. Null unless the property type is hourly_bookable and the lister saved hourly settings; show the booking widget only when `enabled`."
       example:
         id: 0195c0de-0000-7000-8000-000000000001
         slug: four-bedroom-family-home-borrowdale
@@ -13746,7 +14389,7 @@ components:
       description: |
         One row of a reference set. **Every key is always present**; a key that does not apply
         to the set is `null`.
-      required: [code, label, singular_label, description, sort_order, market_code, parent_code, group, requires_verification]
+      required: [code, label, singular_label, description, sort_order, market_code, parent_code, group, requires_verification, hourly_bookable]
       additionalProperties: false
       properties:
         code:
@@ -13783,6 +14426,9 @@ components:
           description: |
             `account_roles` only. `true`: choosing the role at registration only records a
             request (`PENDING_VERIFICATION`). `false`: the role is `ACTIVE` once the email is verified.
+        hourly_bookable:
+          type: [boolean, "null"]
+          description: "`property_types` only (new in 0.33.0): whether a listing of the type may be booked by the hour."
 
     ReferenceData:
       type: object
@@ -17906,6 +18552,7 @@ components:
         sort_order: { type: integer }
         market_code: { type: string, description: Create only; required for regions, cities and suburbs. }
         parent_code: { type: string, maxLength: 80 }
+        hourly_bookable: { type: boolean, description: "`property_types` only (new in 0.33.0); `400` on any other set." }
     AdminReferenceEnvelope:
       type: object
       required: [item]
@@ -18402,5 +19049,300 @@ components:
             details:
               type: object
               description: "APPLICATIONS_CLOSED: {reason, closes_at}; INVALID_APPLICATION_TRANSITION: {from, to, allowed}."
+              additionalProperties: true
+        trace_id: { type: string }
+
+    ListingHourlyBooking:
+      type: object
+      required: [enabled, rate_per_hour, currency, increment_minutes]
+      additionalProperties: false
+      properties:
+        enabled: { type: boolean }
+        rate_per_hour: { type: string, examples: ["50.00"] }
+        currency: { type: string, pattern: "^[A-Z]{3}$" }
+        increment_minutes: { type: integer, enum: [15, 30, 60] }
+    VenueOpeningRange:
+      type: object
+      required: [weekday, opens, closes]
+      additionalProperties: false
+      properties:
+        weekday: { type: integer, minimum: 1, maximum: 7, description: 1 = Monday ... 7 = Sunday. }
+        opens: { type: string, pattern: "^([01][0-9]|2[0-4]):[0-5][0-9]$", description: Venue-local wall time, on the increment. }
+        closes: { type: string, pattern: "^([01][0-9]|2[0-4]):[0-5][0-9]$", description: After opens; up to 24:00. }
+    VenueException:
+      type: object
+      required: [date, closed, opens, closes, note]
+      properties:
+        date: { type: string, format: date }
+        closed: { type: boolean }
+        opens: { type: [string, "null"], description: "Required when closed is false: replaces the day's hours." }
+        closes: { type: [string, "null"] }
+        note: { type: [string, "null"], maxLength: 120 }
+    VenueFee:
+      type: object
+      required: [code, label, kind, amount, effective_from, effective_to]
+      properties:
+        code: { type: string, pattern: "^[A-Z][A-Z0-9_]{1,31}$", description: "TAX for a tax; never RATE." }
+        label: { type: string, maxLength: 80 }
+        kind: { type: string, enum: [PERCENT, FIXED, PER_HOUR] }
+        amount: { type: string, description: "PERCENT: a percentage 0-100 (at most 3 decimals). FIXED, PER_HOUR: money in the settings' currency." }
+        currency: { type: string, description: Input only; optional; must equal the settings' currency. }
+        effective_from: { type: string, format: date }
+        effective_to: { type: [string, "null"], format: date, description: Inclusive. }
+    HourlySettingsInput:
+      type: object
+      required: [currency, rate_per_hour, increment_minutes, min_minutes, max_minutes]
+      additionalProperties: false
+      properties:
+        enabled: { type: boolean, default: false }
+        currency: { type: string, pattern: "^[A-Z]{3}$" }
+        rate_per_hour: { type: string, description: "Positive decimal with at most the currency's decimals." }
+        increment_minutes: { type: integer, enum: [15, 30, 60] }
+        min_minutes: { type: integer, description: A multiple of the increment. }
+        max_minutes: { type: integer, maximum: 1440 }
+        cleaning_buffer_minutes: { type: integer, minimum: 0, maximum: 240, default: 0 }
+        capacity: { type: integer, minimum: 1, maximum: 50, default: 1 }
+        deposit: { type: [string, "null"] }
+        opening_hours: { type: array, items: { $ref: "#/components/schemas/VenueOpeningRange" }, description: "Required (non-empty) when enabled." }
+        exceptions: { type: array, maxItems: 366, items: { $ref: "#/components/schemas/VenueException" } }
+        fees: { type: array, maxItems: 20, items: { $ref: "#/components/schemas/VenueFee" } }
+        cancellation_policy: { type: string, maxLength: 2000, description: Required when enabled. }
+        free_cancellation_hours: { type: integer, minimum: 0, maximum: 720, default: 0 }
+        lead_time_hours: { type: integer, minimum: 0, maximum: 720, default: 0 }
+        horizon_days: { type: integer, minimum: 1, maximum: 730, default: 90 }
+    HourlySettings:
+      type: object
+      required: [listing_id, property_type, eligible, configured, time_zone, currencies, mode, enabled, currency, rate_per_hour, increment_minutes,
+                 min_minutes, max_minutes, cleaning_buffer_minutes, capacity, deposit, opening_hours, exceptions, fees, cancellation_policy,
+                 free_cancellation_hours, lead_time_hours, horizon_days, updated_at]
+      properties:
+        listing_id: { type: string, format: uuid }
+        property_type: { type: string }
+        eligible: { type: boolean, description: The property type is hourly_bookable. }
+        configured: { type: boolean, description: Settings were saved (else these are the defaults). }
+        time_zone: { type: string, description: The listing country's IANA zone. }
+        currencies: { type: array, items: { type: string }, description: The currencies the listing may be priced in. }
+        mode: { type: string, enum: [ENQUIRY] }
+        enabled: { type: boolean }
+        currency: { type: string }
+        rate_per_hour: { type: [string, "null"] }
+        increment_minutes: { type: integer }
+        min_minutes: { type: integer }
+        max_minutes: { type: integer }
+        cleaning_buffer_minutes: { type: integer }
+        capacity: { type: integer }
+        deposit: { type: [string, "null"] }
+        opening_hours: { type: array, items: { $ref: "#/components/schemas/VenueOpeningRange" } }
+        exceptions: { type: array, items: { $ref: "#/components/schemas/VenueException" } }
+        fees: { type: array, items: { $ref: "#/components/schemas/VenueFee" } }
+        cancellation_policy: { type: string }
+        free_cancellation_hours: { type: integer }
+        lead_time_hours: { type: integer }
+        horizon_days: { type: integer }
+        updated_at: { type: [string, "null"], format: date-time }
+    VenueRange:
+      type: object
+      required: [start, end, local_start, local_end]
+      properties:
+        start: { type: string, format: date-time, description: UTC instant. }
+        end: { type: string, format: date-time }
+        local_start: { type: string, description: "The same instant in the venue's zone with its offset, e.g. 2026-12-05T10:00:00+02:00." }
+        local_end: { type: string }
+    VenueAvailability:
+      type: object
+      required: [listing_id, time_zone, currency, rate_per_hour, deposit, deposit_note, increment_minutes, min_minutes, max_minutes,
+                 cleaning_buffer_minutes, capacity, lead_time_hours, horizon_days, bookable_from, bookable_until, cancellation_policy,
+                 free_cancellation_hours, mode, notice, days]
+      properties:
+        listing_id: { type: string, format: uuid }
+        time_zone: { type: string }
+        currency: { type: string }
+        rate_per_hour: { type: string }
+        deposit: { type: [string, "null"] }
+        deposit_note: { type: string, enum: ["payable to the host if confirmed"] }
+        increment_minutes: { type: integer }
+        min_minutes: { type: integer }
+        max_minutes: { type: integer }
+        cleaning_buffer_minutes: { type: integer }
+        capacity: { type: integer }
+        lead_time_hours: { type: integer }
+        horizon_days: { type: integer }
+        bookable_from: { type: string, format: date-time }
+        bookable_until: { type: string, format: date-time }
+        cancellation_policy: { type: string }
+        free_cancellation_hours: { type: integer }
+        mode: { type: string, enum: [ENQUIRY] }
+        notice: { type: string }
+        days:
+          type: array
+          items:
+            type: object
+            required: [date, weekday, closed, note, open_ranges, booked]
+            properties:
+              date: { type: string, format: date }
+              weekday: { type: integer, minimum: 1, maximum: 7 }
+              closed: { type: boolean, description: No opening hours that day. }
+              note: { type: [string, "null"] }
+              open_ranges: { type: array, items: { $ref: "#/components/schemas/VenueRange" }, description: Clipped to the bookable window. }
+              booked: { type: array, items: { $ref: "#/components/schemas/VenueRange" }, description: Full capacity, widened by the cleaning buffers. }
+    VenueQuoteLine:
+      type: object
+      required: [code, kind, label, amount]
+      properties:
+        code: { type: string, description: "RATE, then the fee codes." }
+        kind: { type: string, enum: [RATE, FIXED, PER_HOUR, PERCENT] }
+        label: { type: string, examples: ["4 h × USD 50.00"] }
+        amount: { type: string, description: Rounded half-up to the currency's minor unit. }
+    VenueQuote:
+      type: object
+      required: [quote_id, listing_id, expires_at, currency, lines, subtotal, deposit, deposit_note, total_excluding_deposit, start, end,
+                 duration_minutes, time_zone, local_start, local_end, mode, notice]
+      properties:
+        quote_id: { type: string, format: uuid }
+        listing_id: { type: string, format: uuid }
+        expires_at: { type: string, format: date-time, description: 30 minutes after it was made. }
+        currency: { type: string, description: The only currency of every amount. }
+        lines: { type: array, items: { $ref: "#/components/schemas/VenueQuoteLine" } }
+        subtotal: { type: string, description: RATE + FIXED + PER_HOUR lines (what PERCENT fees are a percentage of). }
+        deposit: { type: [string, "null"] }
+        deposit_note: { type: string }
+        total_excluding_deposit: { type: string, description: Every line. }
+        start: { type: string, format: date-time }
+        end: { type: string, format: date-time }
+        duration_minutes: { type: integer }
+        time_zone: { type: string }
+        local_start: { type: string }
+        local_end: { type: string }
+        mode: { type: string, enum: [ENQUIRY] }
+        notice: { type: string, enum: ["This is an estimate. No payment is taken on RightProperty365; the host confirms and arranges payment with you."] }
+    VenueBookingRequest:
+      type: object
+      required: [quote_id, consent]
+      additionalProperties: false
+      properties:
+        quote_id: { type: string, format: uuid }
+        message: { type: string, maxLength: 1000 }
+        attendees: { type: integer, minimum: 1, maximum: 10000 }
+        consent:
+          type: object
+          required: [privacy_version, accepted]
+          properties:
+            privacy_version: { type: string, maxLength: 32 }
+            accepted: { type: boolean, enum: [true] }
+    VenueBookingPricing:
+      type: object
+      required: [quote_id, currency, lines, subtotal, deposit, total_excluding_deposit]
+      properties:
+        quote_id: { type: string, format: uuid }
+        currency: { type: string }
+        lines: { type: array, items: { $ref: "#/components/schemas/VenueQuoteLine" } }
+        subtotal: { type: string }
+        deposit: { type: [string, "null"] }
+        total_excluding_deposit: { type: string }
+    VenueBooking:
+      type: object
+      required: [id, reference, service_type, status, status_label, listing, start, end, duration_minutes, time_zone, local_start, local_end,
+                 attendees, message, quote, mode, notice, deposit_note, cancellation_policy, proposal, cancellation, decline_reason, actions,
+                 created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        reference: { type: string, examples: [VB-7K3M9QXD] }
+        service_type: { type: string, enum: [VENUE_HOURLY] }
+        status: { type: string, enum: [REQUESTED, CONFIRMED, RESCHEDULE_REQUESTED, DECLINED, CANCELLED, COMPLETED, NO_SHOW] }
+        status_label: { type: string }
+        listing:
+          type: object
+          required: [id, slug, title, reference]
+          properties: { id: { type: string, format: uuid }, slug: { type: string }, title: { type: string }, reference: { type: string } }
+        start: { type: string, format: date-time }
+        end: { type: string, format: date-time }
+        duration_minutes: { type: integer }
+        time_zone: { type: string }
+        local_start: { type: string }
+        local_end: { type: string }
+        attendees: { type: [integer, "null"] }
+        message: { type: [string, "null"] }
+        quote: { $ref: "#/components/schemas/VenueBookingPricing" }
+        mode: { type: string, enum: [ENQUIRY] }
+        notice: { type: string }
+        deposit_note: { type: string }
+        cancellation_policy:
+          type: object
+          required: [text, free_cancellation_hours, free_until]
+          properties: { text: { type: string }, free_cancellation_hours: { type: integer }, free_until: { type: string, format: date-time } }
+        proposal:
+          oneOf:
+            - type: object
+              required: [proposed_by, start, end, local_start, local_end, duration_minutes, quote]
+              properties:
+                proposed_by: { type: string, enum: [CUSTOMER, HOST] }
+                start: { type: string, format: date-time }
+                end: { type: string, format: date-time }
+                local_start: { type: string }
+                local_end: { type: string }
+                duration_minutes: { type: integer }
+                quote: { $ref: "#/components/schemas/VenueBookingPricing" }
+            - type: "null"
+        cancellation:
+          oneOf:
+            - type: object
+              required: [by, reason, at, free]
+              properties:
+                by: { type: string, enum: [CUSTOMER, HOST] }
+                reason: { type: [string, "null"] }
+                at: { type: string, format: date-time }
+                free: { type: boolean, description: Inside the free-cancellation window (always true for a host cancellation). }
+            - type: "null"
+        decline_reason: { type: [string, "null"] }
+        actions:
+          type: array
+          items: { type: string, enum: [cancel, reschedule, accept, confirm, decline, propose, complete, no_show] }
+          description: What the viewer may do now.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        customer:
+          type: object
+          description: Host views only.
+          required: [name, email]
+          properties: { name: { type: string }, email: { type: string } }
+        events:
+          type: array
+          description: A single booking only.
+          items:
+            type: object
+            required: [id, action, from_status, to_status, actor, actor_name, reason, start, end, at]
+            properties:
+              id: { type: string, format: uuid }
+              action: { type: string, enum: [REQUESTED, CONFIRMED, DECLINED, CANCELLED, RESCHEDULE_REQUESTED, PROPOSED, ACCEPTED, COMPLETED, NO_SHOW] }
+              from_status: { type: [string, "null"] }
+              to_status: { type: string }
+              actor: { type: string, enum: [CUSTOMER, HOST, SYSTEM] }
+              actor_name: { type: string }
+              reason: { type: [string, "null"] }
+              start: { type: [string, "null"], format: date-time }
+              end: { type: [string, "null"], format: date-time }
+              at: { type: string, format: date-time }
+    VenueBookingPage:
+      type: object
+      required: [items, page, page_size, total, total_pages]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/VenueBooking" } }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer }
+        total_pages: { type: integer }
+    VenueErrorEnvelope:
+      type: object
+      required: [error, trace_id]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, enum: [SLOT_UNAVAILABLE, SLOT_TAKEN, QUOTE_EXPIRED, QUOTE_ALREADY_USED, INVALID_BOOKING_TRANSITION] }
+            message: { type: string }
+            details:
+              type: object
+              description: "SLOT_UNAVAILABLE / SLOT_TAKEN: {reason}; QUOTE_EXPIRED: {expired_at}; INVALID_BOOKING_TRANSITION: {from, action, allowed}."
               additionalProperties: true
         trace_id: { type: string }

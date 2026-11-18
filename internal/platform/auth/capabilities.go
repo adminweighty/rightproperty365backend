@@ -361,3 +361,22 @@ func (p *Principal) MembershipMarket(organisationID uuid.UUID) string {
 	m, _ := p.membership(organisationID)
 	return m.MarketCode
 }
+
+// Hourly venue bookings (API 0.33.0, FR-025). The bookings of an
+// organisation's listings are handled by its OWNER and MANAGER (every one)
+// and by a listing's assigned AGENT (that listing's); nobody else sees any,
+// STAFF included (404). The direct owner (landlord, property seller)
+// handles the bookings of their own listings. The hourly settings of a
+// listing are managed by whoever may edit it (MayEditListing).
+
+// MaySeeAllVenueBookings reports whether the caller handles every hourly
+// booking of the organisation's listings (OWNER and MANAGER).
+func (p *Principal) MaySeeAllVenueBookings(organisationID uuid.UUID) bool {
+	return p.MayManageForms(organisationID)
+}
+
+// MayHandleVenueBooking reports whether the caller may see and act on one
+// hourly booking of the organisation, given its listing's assigned agent.
+func (p *Principal) MayHandleVenueBooking(organisationID uuid.UUID, agentUserID *uuid.UUID) bool {
+	return p.MayReadApplication(organisationID, agentUserID)
+}

@@ -53,7 +53,7 @@ func codes(items []refItem) string {
 
 // Row counts of the baseline data: a change here is a change to what the web shows.
 var wantSetSizes = map[string]int{
-	"deal_types": 2, "property_categories": 4, "property_types": 12, "request_types": 5, "contact_methods": 3,
+	"deal_types": 2, "property_categories": 4, "property_types": 17, "request_types": 5, "contact_methods": 3,
 	"account_roles": 15, "directory_kinds": 7, "service_trades": 7, "cities": 14, "suburbs": 24, "listing_features": 59,
 	"onboarding_documents": 10, "organisation_kinds": 6, "regions": 14, "price_periods": 2,
 	"contact_types": 5, "contact_sources": 7,
@@ -98,7 +98,7 @@ func TestReferenceAllSets(t *testing.T) {
 	for set, want := range map[string]string{
 		"deal_types":          "sale,rent",
 		"property_categories": "residential,commercial,land,short-stay",
-		"property_types":      "house,apartment,townhouse,cottage,office,stand,plot,holiday-home,serviced-apartment,guest-house,private-room,lodge",
+		"property_types":      "house,apartment,townhouse,cottage,office,stand,plot,holiday-home,serviced-apartment,guest-house,private-room,lodge,showroom,event-space,hall,conference-room,studio",
 		"request_types":       "ENQUIRY,PROPERTY_INFORMATION,VIEWING_REQUEST,CONSULTATION_REQUEST,STAY_REQUEST",
 		"contact_methods":     "EMAIL,PHONE,WHATSAPP",
 		"account_roles":       strings.Join(identity.SelectableAccountRoles(), ","),
@@ -414,7 +414,7 @@ func TestPlatformRolesAreDeniedEvenIfInTheReferenceTable(t *testing.T) {
 func TestMigrationSeedsTheSameReferenceRows(t *testing.T) {
 	sql := ""
 	for _, name := range []string{"0007_reference_data.up.sql", "0009_onboarding.up.sql", "0010_real_estate_roles.up.sql", "0012_locations.up.sql", "0013_uk_short_stays.up.sql", "0015_availability.up.sql",
-		"0016_logos_and_trust.up.sql", "0030_agent_crm.up.sql"} {
+		"0016_logos_and_trust.up.sql", "0030_agent_crm.up.sql", "0032_venue_hourly.up.sql"} {
 		raw, err := os.ReadFile(filepath.Join("..", "..", "migrations", name))
 		if err != nil {
 			t.Fatal(err)
@@ -448,6 +448,12 @@ func TestMigrationSeedsTheSameReferenceRows(t *testing.T) {
 				(!strings.Contains(sql, fmt.Sprintf("UPDATE reference_items SET parent_code = '%s', updated_at = now() WHERE set_code = 'cities' AND code = '%s';", *it.ParentCode, it.Code)) &&
 					!strings.Contains(sql, fmt.Sprintf("VALUES ('cities', '%s', '%s', NULL, %d, (SELECT id FROM markets WHERE code = 'GB'), '%s')", it.Code, it.Label, it.SortOrder, *it.ParentCode)))) {
 				t.Fatalf("the migrations do not link city %s to its region", it.Code)
+			}
+			// 0032: the hourly-bookable property types are the baseline's.
+			if set == reference.SetPropertyTypes && it.HourlyBookable != nil && *it.HourlyBookable &&
+				!strings.Contains(sql, fmt.Sprintf("'property_types', '%s', '%s', NULL, %d, NULL, 'commercial', true)", it.Code, it.Label, it.SortOrder)) &&
+				!strings.Contains(sql, fmt.Sprintf("SET hourly_bookable = true, updated_at = now() WHERE set_code = 'property_types' AND code = '%s';", it.Code)) {
+				t.Fatalf("the migrations do not make %s hourly-bookable", it.Code)
 			}
 			if it.Group != nil && !strings.Contains(sql, fmt.Sprintf("'%s', '%s', %d,", it.Group.Code, it.Group.Label, it.Group.SortOrder)) {
 				t.Fatalf("the migrations lack the group of %s/%s: %+v", set, it.Code, *it.Group)

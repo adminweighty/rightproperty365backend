@@ -250,6 +250,11 @@ All configuration comes from environment variables. For local development you ma
 | GET | `/v1/directory/{kind}/{slug}/logo` | A public profile's logo: the image itself, cacheable, no session |
 | GET | `/v1/me/profiles` | The directory profiles the caller may manage |
 | PUT, DELETE | `/v1/me/profiles/{kind}/{slug}/logo` | Set (multipart) or remove a profile's logo |
+| GET, PUT | `/v1/me/listings/{id}/hourly` | A listing's hourly settings (API 0.33.0) |
+| GET | `/v1/venues/{listingId}/availability` | Public availability in the venue's local time |
+| POST | `/v1/venues/{listingId}/quotes` | Public itemised quote (enquiry mode, no payment) |
+| GET, POST | `/v1/me/venue-bookings`, `/v1/me/venue-bookings/{id}` (+ `/cancel`, `/reschedule`, `/accept`) | A customer's hourly bookings |
+| GET, POST | `/v1/agent/organisations/{id}/venue-bookings[/{bookingId}]` (+ `/confirm`, `/decline`, `/cancel`, `/propose`, `/complete`, `/no-show`), `/v1/me/hosted-venue-bookings` | Hourly bookings a host received |
 | GET | `/v1/trust/summary` | How many advertisers are verified and how many listings are public (public, cacheable) |
 | POST | `/v1/property-requests` | The single entry point for every customer enquiry (guest or signed-in) |
 | POST | `/v1/business-enquiries` | The only way to contact a directory profile (guest or signed-in) |
@@ -451,6 +456,80 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 change; follow-up dates and reminders; editing or deleting a note; listing analytics, conversion
 funnels and response-time KPIs (no event data exists); seeker favourites, saved searches and
 alerts.
+
+## Showroom and venue hourly rental (API 0.33.0)
+
+Migration `0032`, module `internal/modules/venues` (BR-007, FR-022 to FR-025). Routes:
+`/v1/me/listings/{id}/hourly`, `/v1/venues/{listingId}/availability` and `.../quotes` (public),
+`/v1/me/venue-bookings`, `/v1/agent/organisations/{id}/venue-bookings` and
+`/v1/me/hosted-venue-bookings` (OpenAPI tag `venues`). The response shapes are in the 0.33
+contract's "Response shapes".
+
+- **Eligibility.** The `property_types` reference rows carry `hourly_bookable` (admin-editable
+  through `/v1/admin/reference/property_types`). Seeded true: showroom, event-space (venue /
+  event space), hall, conference-room, studio and office. Only such listings can have hourly
+  settings: `PUT` is `400 LISTING_NOT_ELIGIBLE`, `GET` answers `eligible: false`.
+- **Settings** (FR-023), managed by whoever may edit the listing (`auth.MayEditListing`) and not
+  reviewed: rate per hour in the listing country's currency, 15 / 30 / 60-minute increments,
+  minimum and maximum duration (multiples of the increment), cleaning buffer (0 to 240), capacity,
+  deposit, opening hours per weekday in venue-local wall time (several ranges, on the
+  increment, up to 24:00), date exceptions (closed, or other hours), fees PERCENT / FIXED /
+  PER_HOUR with inclusive effective dates (the tax is code `TAX`), cancellation policy text and
+  free-cancellation hours, lead time and horizon. Every public listing and search card carries
+  `hourly_booking` (`{enabled, rate_per_hour, currency, increment_minutes}` or null).
+- **Time.** The zone is the listing country's IANA zone (`markets`). Opening hours are wall-clock
+  times turned into instants per date with `time.LoadLocation`, so their UTC times move with
+  daylight saving and the night the clocks change is an hour shorter or longer (tested with
+  Europe/London). A slot starts on the increment of the venue's clock; durations are real
+  elapsed time. Availability returns UTC instants and offset-carrying local times.
+- **Quotes** (`venues/pricing.go`): exact decimals (`math/big`, never a float), one currency
+  per quote (a fee in another one is refused), each line rounded half-up to the currency's
+  minor unit (JPY 0, KWD 3, most 2): RATE, then FIXED and PER_HOUR fees (the subtotal), then
+  PERCENT fees of the subtotal; the deposit apart. A fee applies when its dates cover the
+  venue-local start date. Quotes are stored for 30 minutes. A slot outside the rules is
+  `400` (misaligned, too short or long) or `409 SLOT_UNAVAILABLE` with `details.reason`
+  (CLOSED, TAKEN, BUFFER, LEAD_TIME, OUTSIDE_HORIZON).
+- **Enquiry mode only.** No payment is taken or implied anywhere: every quote and booking says
+  `mode: ENQUIRY`, the notice "This is an estimate. No payment is taken on RightProperty365; the
+  host confirms and arranges payment with you." and that the deposit is "payable to the host if
+  confirmed". No unpaid holds exist, so there is nothing to expire.
+- **Requests and confirmation** (FR-024). A request (`POST /v1/me/venue-bookings`, idempotent
+  per quote) re-checks the slot but holds nothing; overlapping requests may wait side by side.
+  **Confirming locks the slot**: in Postgres one transaction takes the listing's
+  `venue_settings` row `FOR UPDATE` (the per-listing lock row), then the booking row, then reads
+  the other rows that hold capacity (CONFIRMED, and RESCHEDULE_REQUESTED still holding its
+  confirmed slot) through the `btree_gist` index on `(listing_id, occupied tstzrange)` and
+  checks the new block (slot plus its cleaning buffer) against the capacity; the memory store
+  does the same under its mutex. Of two concurrent confirmations for the same capacity one
+  gets `409 SLOT_TAKEN` (tested with two goroutines on both stores).
+- **States** (FR-025): REQUESTED > CONFIRMED / DECLINED / CANCELLED / RESCHEDULE_REQUESTED (host
+  proposal); CONFIRMED > RESCHEDULE_REQUESTED / CANCELLED / COMPLETED / NO_SHOW (after the end);
+  RESCHEDULE_REQUESTED > CONFIRMED (re-locks) / CANCELLED. A customer cancels until the start,
+  free up to `free_cancellation_hours` before it (`cancellation.free`); the host cancels or
+  declines with a reason. `venues.Allowed` is the one table; anything else is `409
+  INVALID_BOOKING_TRANSITION`. Every transition is a `venue_booking_events` row (actor, time,
+  reason); host decisions on an organisation's booking go to `organisation_audit_events`
+  (`VENUE_BOOKING_*`).
+- **Who sees what.** The customer sees their own (`404` for another's). The host is the
+  organisation's OWNER and MANAGER (every booking) and the listing's assigned AGENT (that
+  listing's) (`auth.MaySeeAllVenueBookings` / `MayHandleVenueBooking`); STAFF and other
+  organisations get `404`; a direct owner uses `/v1/me/hosted-venue-bookings`.
+- **Notifications** (outbox `VENUE_BOOKING_*`, templates `venue-booking-*`, all triggered): the
+  party that did not act, plus a receipt to the customer for a request. `VENUE_BOOKING_CONFIRMED`
+  (first confirmation) is the analytics server event `booking_confirm`.
+- **Kept apart from appointments** (FR-022): own tables and service type `VENUE_HOURLY`; the
+  appointment lists, counts and reports never include them (tested).
+- **Sample data.** The sample-showrooms host lists a showroom in Harare (`RP-ZW-10021`): USD 50
+  an hour, 30-minute steps, 2 to 8 hours, 30-minute buffer, Monday to Saturday 08:00 to 18:00,
+  closed on Sunday and on Christmas Day, VAT 15% from 2026-01-01, USD 100 deposit.
+  tenant@example.test has a CONFIRMED (a week ahead, 10:00 to 14:00) and a REQUESTED booking;
+  consumer@example.test has a REQUESTED booking overlapping the confirmed one (confirming it is
+  `409 SLOT_TAKEN`).
+
+**Not verified / follow-ups:** migration `0032` and `venues/postgres.go` have only run where
+`RP365_TEST_DATABASE_URL` is set. Reservation mode and payments are not built. Account deletion
+removes a customer's bookings through the database cascade only (the memory store keeps them).
+`booking_confirm` is recorded as a raw event but has no rollup column yet. No ICS invites.
 
 ## Questionnaires and applications (API 0.32.0)
 
@@ -3145,6 +3224,14 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0032_venue_hourly` (API 0.33.0): `CREATE EXTENSION IF NOT EXISTS btree_gist`; adds
+  `reference_items.hourly_bookable` (false on property types, NULL elsewhere) and the hourly
+  property types (showroom, event-space, hall, conference-room, studio; office flagged);
+  `venue_settings` (also the per-listing lock row), `venue_fees`, `venue_quotes`,
+  `venue_bookings` (`occupied` tstzrange generated from `start_at` and `block_end_at`, GiST
+  index on `(listing_id, occupied)` for the rows that hold capacity) and
+  `venue_booking_events`; widens the `organisation_audit_events` action and target CHECKs. The
+  down migration drops the tables and the column and deactivates the new types.
 - `0031_questionnaires_applications` (API 0.32.0): `forms` (versions of a family, one DRAFT and
   one PUBLISHED at most, organisation_id XOR owner_user_id, `sections` jsonb, retention 30 to
   3650 days) with the trigger `forms_frozen_after_submission`, `listing_application_intake`,

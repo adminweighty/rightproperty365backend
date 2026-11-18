@@ -1,0 +1,18 @@
+{{define "subject"}}New hourly booking request: {{.Reference}}{{end}}
+{{define "heading"}}New hourly booking request{{end}}
+{{define "button"}}Open your hourly bookings{{end}}
+{{define "why"}}You are receiving this because a booking request was sent for a venue you manage on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+A customer asked to book your venue. Nothing is held until you confirm it, and other requests may be for the same time.
+
+Reference: {{.Reference}}
+{{if .ListingTitle}}Venue: {{.ListingTitle}}
+{{end}}{{if .ListingRef}}Listing reference: {{.ListingRef}}
+{{end}}Requested time: {{.AppointmentTime}}
+{{if .Amount}}Estimate: {{.Amount}}
+{{end}}Status: {{.StatusText}}
+
+You can confirm the request, propose another time or decline it. No payment is taken on RightProperty365: you arrange payment with the customer.
+
+The customer's contact details are in your hourly bookings. They are not included in this email.{{end}}

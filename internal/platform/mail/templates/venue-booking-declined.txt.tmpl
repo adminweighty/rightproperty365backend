@@ -1,0 +1,16 @@
+{{define "subject"}}Booking request declined: {{.Reference}}{{end}}
+{{define "heading"}}Your booking request was declined{{end}}
+{{define "button"}}Find another time{{end}}
+{{define "why"}}You are receiving this because you asked to book a venue by the hour on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+The host could not accept your request for the time below.
+
+Reference: {{.Reference}}
+{{if .ListingTitle}}Venue: {{.ListingTitle}}
+{{end}}{{if .ListingRef}}Listing reference: {{.ListingRef}}
+{{end}}Time: {{.AppointmentTime}}
+{{if .Reason}}Reason: {{.Reason}}
+{{end}}Status: {{.StatusText}}
+
+You can choose another time and send a new request.{{end}}

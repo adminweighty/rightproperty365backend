@@ -446,6 +446,24 @@ type Listing struct {
 	// Applications says whether the listing takes applications now (API
 	// 0.32.0); null when no questionnaire is attached (always for short stays).
 	Applications *ApplicationsSummary `json:"applications"`
+	// HourlyBooking says whether the listing can be booked by the hour (API
+	// 0.33.0); null unless its property type is hourly_bookable and the
+	// lister configured hourly settings. The availability is GET
+	// /v1/venues/{id}/availability.
+	HourlyBooking *HourlyBookingSummary `json:"hourly_booking"`
+}
+
+// HourlyBookingSummary is what a listing says about hourly booking.
+type HourlyBookingSummary struct {
+	Enabled          bool   `json:"enabled"`
+	RatePerHour      string `json:"rate_per_hour"`
+	Currency         string `json:"currency"`
+	IncrementMinutes int    `json:"increment_minutes"`
+}
+
+// HourlyRates supplies the HourlyBookingSummary of listings (the venues module).
+type HourlyRates interface {
+	HourlySummaries(ctx context.Context, records []Record) (map[uuid.UUID]HourlyBookingSummary, error)
 }
 
 // ApplicationsSummary is what a public listing says about its application

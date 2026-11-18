@@ -87,6 +87,15 @@ func Templates() []Template {
 		{"application-new", "New or resubmitted application (to the agent, or the organisation's owners and managers, or the direct owner)", true},
 		{"application-more-info", "More information asked for an application (to the applicant)", true},
 		{"application-status-changed", "Application shortlisted, accepted or not successful (to the applicant)", true},
+		{"venue-booking-sent", "Hourly booking request sent, with the estimate (to the customer)", true},
+		{"venue-booking-new", "New hourly booking request (to the listing's agent, or the organisation's owners and managers, or the direct owner)", true},
+		{"venue-booking-confirmed", "Hourly booking confirmed (to the customer)", true},
+		{"venue-booking-declined", "Hourly booking request declined (to the customer)", true},
+		{"venue-booking-cancelled", "Hourly booking cancelled by the host (to the customer)", true},
+		{"venue-booking-cancelled-by-customer", "Hourly booking cancelled by the customer (to the host)", true},
+		{"venue-booking-reschedule-requested", "Customer asked for a new time (to the host)", true},
+		{"venue-booking-time-proposed", "Host proposed a new time (to the customer)", true},
+		{"venue-booking-accepted", "Customer accepted the proposed time (to the host)", true},
 
 		{"request-update", "Reply or status update to the customer", false},
 		{"listing-expiring", "Listing expiring in 14, 7 or 1 days", false},
@@ -189,6 +198,22 @@ func LocalDateTime(t time.Time, zone string) string {
 	}
 	local := t.In(loc)
 	return local.Format("Monday 2 January 2006, 15:04") + " (" + ZoneName(zone, local) + ")"
+}
+
+// LocalSlot writes a span of time in an IANA time zone and names the zone:
+// "Saturday 5 December 2026, 10:00 to 14:00 (Central Africa Time)", or with
+// both dates when it ends on another local day.
+func LocalSlot(start, end time.Time, zone string) string {
+	loc, err := time.LoadLocation(zone)
+	if err != nil || zone == "" {
+		loc, zone = time.UTC, "UTC"
+	}
+	a, b := start.In(loc), end.In(loc)
+	until := b.Format("15:04")
+	if a.Format("2006-01-02") != b.Format("2006-01-02") {
+		until = b.Format("Monday 2 January 2006, 15:04")
+	}
+	return a.Format("Monday 2 January 2006, 15:04") + " to " + until + " (" + ZoneName(zone, a) + ")"
 }
 
 // appointmentTypeNames are the plain-language names of appointment types.

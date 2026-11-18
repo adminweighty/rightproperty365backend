@@ -40,6 +40,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/subscriptions"
 	"rightproperty365.com/backend/internal/modules/teams"
+	"rightproperty365.com/backend/internal/modules/venues"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/mail"
 	"rightproperty365.com/backend/internal/platform/outbox"
@@ -279,6 +280,8 @@ type Handlers struct {
 	subscription func(ctx context.Context, id uuid.UUID) (subscriptions.Subscription, error)
 	// application loads the application behind an application event.
 	application func(ctx context.Context, id uuid.UUID) (applications.Notice, error)
+	// venue loads the hourly booking behind a venue booking event.
+	venue func(ctx context.Context, id uuid.UUID) (venues.BookingNotice, error)
 }
 
 // SetListingSource supplies the listing behind a listing review event (the
@@ -473,7 +476,7 @@ func EventTypes() []string {
 		identity.EventPasswordChanged,
 		identity.EventAdminSignedIn,
 	}, onboarding.EventTypes()...), append(append(append(appointments.EventTypes(), listings.ReviewEventTypes()...),
-		accounts.EventTypes()...), append(subscriptions.EventTypes(), applications.OutboxEventTypes()...)...)...)
+		accounts.EventTypes()...), append(append(subscriptions.EventTypes(), applications.OutboxEventTypes()...), venues.EventTypes()...)...)...)
 }
 
 // PathOnboarding is the web page where an applicant fills in an application.
@@ -741,6 +744,12 @@ func (h *Handlers) build(ctx context.Context, ev outbox.Event) ([]mail.Notificat
 
 	case applications.EventTypeSubmitted, applications.EventTypeInfoRequested, applications.EventTypeStatusChanged, applications.EventTypeWithdrawn:
 		if err := h.applicationNotes(ctx, ev, add); err != nil {
+			return nil, err
+		}
+
+	case venues.EventRequested, venues.EventConfirmed, venues.EventDeclined, venues.EventCancelled, venues.EventRescheduleRequested,
+		venues.EventProposed, venues.EventCompleted, venues.EventNoShow:
+		if err := h.venueNotes(ctx, ev, add); err != nil {
 			return nil, err
 		}
 

@@ -32,6 +32,7 @@ var sampleCoordinates = map[string]SampleCoordinate{
 	"three-bedroom-townhouse-greendale":      {-17.817240, 31.121060, listings.PrecisionExact},
 	"garden-cottage-greystone-park":          {-17.735480, 31.104720, listings.PrecisionExact},
 	"garden-guest-house-avondale":            {-17.799060, 31.041280, listings.PrecisionExact},
+	"glass-fronted-showroom-eastlea":         {-17.823910, 31.079450, listings.PrecisionExact},
 	// Bulawayo.
 	"residential-stand-hillside-bulawayo":   {-20.181430, 28.605270, listings.PrecisionExact},
 	"three-bedroom-house-burnside-bulawayo": {-20.204180, 28.602350, listings.PrecisionExact},

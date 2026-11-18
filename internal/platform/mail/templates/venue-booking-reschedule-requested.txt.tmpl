@@ -1,0 +1,17 @@
+{{define "subject"}}New time requested: {{.Reference}}{{end}}
+{{define "heading"}}The customer asked for a new time{{end}}
+{{define "button"}}Open your hourly bookings{{end}}
+{{define "why"}}You are receiving this because a booking was made for a venue you manage on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+The customer asked to move their booking to a new time.
+
+Reference: {{.Reference}}
+{{if .ListingTitle}}Venue: {{.ListingTitle}}
+{{end}}{{if .ListingRef}}Listing reference: {{.ListingRef}}
+{{end}}Current time: {{.AppointmentTime}}
+New time: {{.ProposedTime}}
+{{if .Amount}}Estimate for the new time: {{.Amount}}
+{{end}}Status: {{.StatusText}}
+
+Confirm the new time, propose another one or cancel the booking.{{end}}

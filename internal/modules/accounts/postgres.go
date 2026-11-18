@@ -433,6 +433,12 @@ func (s *PostgresStore) Delete(ctx context.Context, d Deletion) (Deleted, error)
 		if _, _, err := applications.EraseApplicantTx(ctx, tx, d.UserID, d.At); err != nil {
 			return err
 		}
+		// Hourly venue bookings (migration 0032) were meant to go with the
+		// users row by cascade, which never fires here: delete them (their
+		// events cascade; quotes that used them are unlinked).
+		if _, err := tx.Exec(ctx, `DELETE FROM venue_bookings WHERE customer_user_id = $1`, d.UserID); err != nil {
+			return fmt.Errorf("delete venue bookings: %w", err)
+		}
 		return adminaudit.Insert(ctx, tx, d.Audit)
 	})
 	return out, err

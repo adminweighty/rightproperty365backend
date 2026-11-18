@@ -84,7 +84,7 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore { return &PostgresStore
 func (s *PostgresStore) List(ctx context.Context, set string, f Filter) ([]Item, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT r.code, r.label, r.singular_label, r.description, r.sort_order, m.code, r.parent_code,
-		       r.group_code, r.group_label, r.group_sort_order, r.requires_verification, r.active
+		       r.group_code, r.group_label, r.group_sort_order, r.requires_verification, r.hourly_bookable, r.active
 		FROM reference_items r
 		LEFT JOIN markets m ON m.id = r.market_id
 		WHERE r.set_code = $1
@@ -100,7 +100,7 @@ func (s *PostgresStore) List(ctx context.Context, set string, f Filter) ([]Item,
 		var groupCode, groupLabel *string
 		var groupSort *int
 		if err := row.Scan(&it.Code, &it.Label, &it.SingularLabel, &it.Description, &it.SortOrder, &it.MarketCode, &it.ParentCode,
-			&groupCode, &groupLabel, &groupSort, &it.RequiresVerification, &it.Active); err != nil {
+			&groupCode, &groupLabel, &groupSort, &it.RequiresVerification, &it.HourlyBookable, &it.Active); err != nil {
 			return Item{}, err
 		}
 		if groupCode != nil && groupLabel != nil {

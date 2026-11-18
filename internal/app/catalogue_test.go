@@ -649,7 +649,7 @@ func TestSitemap(t *testing.T) {
 	rec := e.get("/v1/sitemap")
 	wantStatus(t, rec, http.StatusOK)
 	s := decode[directory.Sitemap](t, rec)
-	if len(s.Listings) != 24 || len(s.Profiles) != 34 {
+	if len(s.Listings) != 25 || len(s.Profiles) != 34 {
 		t.Fatalf("sitemap: %d listings, %d profiles", len(s.Listings), len(s.Profiles))
 	}
 	for _, l := range s.Listings {

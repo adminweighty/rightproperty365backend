@@ -32,6 +32,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/reference"
 	"rightproperty365.com/backend/internal/modules/saved"
 	"rightproperty365.com/backend/internal/modules/subscriptions"
+	"rightproperty365.com/backend/internal/modules/venues"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/database"
 	"rightproperty365.com/backend/internal/platform/elastic"
@@ -135,6 +136,10 @@ func run() error {
 	applicationStore := applications.NewPostgresStore(pool)
 	handlers.SetApplicationSource(app.ApplicationNotices(applicationStore, listingStore, reference.NewPostgresStore(pool),
 		identity.NewPostgresStore(pool), logger))
+
+	// Hourly venue bookings: the emails read the booking at send time.
+	handlers.SetVenueSource(app.VenueNotices(venues.NewPostgresStore(pool), listingStore, markets.NewPostgresStore(pool),
+		reference.NewPostgresStore(pool), logger))
 
 	dispatcher := outbox.NewDispatcher(outbox.NewPostgresQueue(pool), logger, outbox.Config{})
 	handlers.Register(dispatcher)

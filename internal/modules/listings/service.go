@@ -26,12 +26,35 @@ type Service struct {
 	calendar Calendar
 	// intake supplies the applications summary; nil means none.
 	intake Intake
+	// hourly supplies the hourly booking summary; nil means none.
+	hourly HourlyRates
 	now    func() time.Time
 }
 
 // SetIntake gives the Service the application intake behind a listing's
 // `applications`.
 func (s *Service) SetIntake(i Intake) { s.intake = i }
+
+// SetHourlyRates gives the Service the hourly settings behind a listing's
+// `hourly_booking`.
+func (s *Service) SetHourlyRates(h HourlyRates) { s.hourly = h }
+
+// withHourly sets `hourly_booking` on the listings that have hourly settings.
+func (s *Service) withHourly(ctx context.Context, records []Record, out []Listing) error {
+	if s.hourly == nil || len(records) == 0 {
+		return nil
+	}
+	summaries, err := s.hourly.HourlySummaries(ctx, records)
+	if err != nil {
+		return fmt.Errorf("load hourly settings: %w", err)
+	}
+	for i := range out {
+		if summary, ok := summaries[out[i].ID]; ok {
+			out[i].HourlyBooking = &summary
+		}
+	}
+	return nil
+}
 
 // withApplications sets `applications` on the listings that take them.
 func (s *Service) withApplications(ctx context.Context, records []Record, out []Listing) error {
@@ -295,6 +318,9 @@ func (s *Service) Present(ctx context.Context, records []Record) ([]Listing, err
 	if err := s.withApplications(ctx, records, out); err != nil {
 		return nil, err
 	}
+	if err := s.withHourly(ctx, records, out); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
@@ -330,6 +356,9 @@ func (s *Service) Find(ctx context.Context, q Query) (Page, error) {
 		return Page{}, err
 	}
 	if err := s.withApplications(ctx, shown, page.Items); err != nil {
+		return Page{}, err
+	}
+	if err := s.withHourly(ctx, shown, page.Items); err != nil {
 		return Page{}, err
 	}
 	// A hit the source of truth refused (the index was behind) is not counted either.

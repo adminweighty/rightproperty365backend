@@ -39,6 +39,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/saved"
 	"rightproperty365.com/backend/internal/modules/subscriptions"
 	"rightproperty365.com/backend/internal/modules/teams"
+	"rightproperty365.com/backend/internal/modules/venues"
 	"rightproperty365.com/backend/internal/platform/adminaudit"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/database"
@@ -133,6 +134,8 @@ func run() error {
 		crmItems crm.Items
 		// applicationStore holds the questionnaires, intakes and applications.
 		applicationStore applications.Store
+		// venueStore holds the hourly settings, quotes and hourly bookings.
+		venueStore venues.Store
 		// memSubscriptions is set without a database (its expiry sweep runs here).
 		memSubscriptions *subscriptions.MemoryStore
 	)
@@ -240,6 +243,12 @@ func run() error {
 			return fmt.Errorf("seed sample application file: %w", err)
 		}
 		applicationStore = memApplications
+		// Hourly rental: the sample showroom's settings and bookings; host
+		// decisions are audited into the team audit trail.
+		memVenues := venues.NewMemoryStore()
+		memVenues.SetAuditSink(memTeams.AuditSink())
+		devseed.SeedMemoryVenues(memVenues, time.Now())
+		venueStore = memVenues
 		crmItems = app.MemoryCRMItems{Requests: memRequests, Enquiries: memEnquiries, Appointments: memAppointments,
 			Identity: memIdentity, Listings: memListings, Applications: memApplications}
 		memAgreements := agreements.NewMemoryStore()
@@ -259,7 +268,8 @@ func run() error {
 		accountStore = accounts.NewMemoryStore(accounts.MemoryDeps{Identity: memIdentity, Listings: memListings, Teams: memTeams,
 			Directory: memDirectory, Audit: memAudit, CancelSubscriptions: memSubscriptions.CancelForDeletedUser,
 			DeleteSignature: memAgreements.DeleteSavedSignature, DeleteSavedListings: memSaved.DeleteUser,
-			EraseApplications: func(userID uuid.UUID, at time.Time) { memApplications.EraseApplicant(userID, at) }})
+			EraseApplications:   func(userID uuid.UUID, at time.Time) { memApplications.EraseApplicant(userID, at) },
+			DeleteVenueBookings: memVenues.DeleteCustomer})
 		reportStore = app.MemoryReports(app.MemoryReportStores{Identity: memIdentity, Onboarding: memOnboarding, Listings: memListings,
 			Requests: memRequests, Enquiries: memEnquiries, Leases: memLeases, Agreements: memAgreements, Subscriptions: memSubscriptions,
 			Markets: marketStore})
@@ -287,6 +297,7 @@ func run() error {
 		handlers.SetSuspensionReasons(app.SuspensionReasons(accountStore))
 		handlers.SetSubscriptionSource(memSubscriptions.Subscription)
 		handlers.SetApplicationSource(app.ApplicationNotices(memApplications, memListings, referenceStore, memIdentity, logger))
+		handlers.SetVenueSource(app.VenueNotices(memVenues, memListings, marketStore, referenceStore, logger))
 		// Server-side analytics events (saves, enquiries, viewing requests,
 		// confirmations, relists) are recorded here too, and the rollups run
 		// in this process.
@@ -342,6 +353,7 @@ func run() error {
 		memAppointments.SetOutboxSink(sink)
 		memSubscriptions.SetOutboxSink(sink)
 		memApplications.SetOutboxSink(sink)
+		memVenues.SetOutboxSink(sink)
 		// The application retention job (and the purge of deleted files).
 		go app.RunApplicationJobs(ctx, app.ApplicationsService(memApplications, files,
 			listings.NewService(memListings, memListings, reference.NewService(referenceStore, nil)), memListings, memIdentity, logger, nil))
@@ -408,6 +420,7 @@ func run() error {
 		analyticsStore = analytics.NewPostgresStore(pool)
 		crmStore, crmItems = crm.NewPostgresStore(pool), crm.NewPostgresItems(pool)
 		applicationStore = applications.NewPostgresStore(pool)
+		venueStore = venues.NewPostgresStore(pool)
 		adminAuditLog = adminaudit.PostgresLog{Q: pool}
 	}
 
@@ -466,6 +479,7 @@ func run() error {
 		CRM:           crmStore,
 		CRMItems:      crmItems,
 		Applications:  applicationStore,
+		Venues:        venueStore,
 	})
 	if err != nil {
 		return err
