@@ -186,100 +186,8 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 	// Listings: the web's real titles, prices, descriptions, features and
 	// photos, each tied to its organisation and agent (or direct seller).
 	for _, l := range ListingRecords(now) {
-		var period, sellerName *string
-		if l.PricePeriod != "" {
-			period = &l.PricePeriod
-		}
-		if l.Advertiser.Type == listings.AdvertiserPrivateSeller {
-			sellerName = &l.Advertiser.Name
-		}
-		// The sample draft and the listing waiting for review were never
-		// published: no publication dates.
-		var publishedAt, expiresAt *time.Time
-		if !l.PublishedAt.IsZero() {
-			publishedAt, expiresAt = &l.PublishedAt, &l.ExpiresAt
-		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO listings (id, market_id, title, status, price_amount, currency_code,
-			                      organisation_id, agent_user_id, seller_user_id, published_at, expires_at, created_at, updated_at,
-			                      slug, reference, deal, category, property_type, price_period, city_code, suburb_code,
-			                      bedrooms, bathrooms, floor_area_m2, land_area_m2, summary, description, featured, private_seller_name,
-			                      max_guests, min_nights, city_name, region_name, reviewed_at, reviewed_by,
-			                      youtube_video_id, youtube_start_seconds, latitude, longitude, location_precision)
-			VALUES ($1, (SELECT id FROM markets WHERE code = $2), $3, $4::text::listing_status, $5::text::numeric, $6, $7, $8, $9, $10, $11, $12, $12,
-			        $13, $14, $15, $16, $17, $18, NULLIF($19, ''), NULLIF($20, ''), $21, $22, $23, $24, $25, $26, $27, $28, $29, $30,
-			        NULLIF($31, ''), NULLIF($32, ''), $33, $34, NULLIF($35, ''), $36, $37, $38, $39)
-			ON CONFLICT (id) DO UPDATE
-			SET market_id = EXCLUDED.market_id, title = EXCLUDED.title, status = EXCLUDED.status,
-			    price_amount = EXCLUDED.price_amount, currency_code = EXCLUDED.currency_code,
-			    organisation_id = EXCLUDED.organisation_id, agent_user_id = EXCLUDED.agent_user_id,
-			    seller_user_id = EXCLUDED.seller_user_id, published_at = EXCLUDED.published_at,
-			    expires_at = EXCLUDED.expires_at, updated_at = EXCLUDED.updated_at,
-			    slug = EXCLUDED.slug, reference = EXCLUDED.reference, deal = EXCLUDED.deal, category = EXCLUDED.category,
-			    property_type = EXCLUDED.property_type, price_period = EXCLUDED.price_period,
-			    city_code = EXCLUDED.city_code, suburb_code = EXCLUDED.suburb_code,
-			    bedrooms = EXCLUDED.bedrooms, bathrooms = EXCLUDED.bathrooms,
-			    floor_area_m2 = EXCLUDED.floor_area_m2, land_area_m2 = EXCLUDED.land_area_m2,
-			    summary = EXCLUDED.summary, description = EXCLUDED.description, featured = EXCLUDED.featured,
-			    private_seller_name = EXCLUDED.private_seller_name,
-			    max_guests = EXCLUDED.max_guests, min_nights = EXCLUDED.min_nights,
-			    city_name = EXCLUDED.city_name, region_name = EXCLUDED.region_name,
-			    reviewed_at = EXCLUDED.reviewed_at, reviewed_by = EXCLUDED.reviewed_by,
-			    youtube_video_id = EXCLUDED.youtube_video_id, youtube_start_seconds = EXCLUDED.youtube_start_seconds,
-			    latitude = EXCLUDED.latitude, longitude = EXCLUDED.longitude, location_precision = EXCLUDED.location_precision,
-			    -- Listing management (0020): a re-run drops pending changes and reviews.
-			    revision = NULL, revision_status = NULL, review_reason = NULL, submitted_at = NULL, submitted_by = NULL`,
-			l.ID, l.MarketCode, l.Title, l.Status, l.Price.Amount, l.Price.Currency,
-			l.OrganisationID, l.AgentUserID, l.SellerUserID, publishedAt, expiresAt, l.UpdatedAt,
-			l.Slug, l.Reference, l.Deal, l.Category, l.PropertyType, period, l.City, l.Suburb,
-			l.Bedrooms, l.Bathrooms, l.FloorArea, l.LandArea, l.Summary, l.Description, l.Featured, sellerName,
-			l.MaxGuests, l.MinNights, l.CityName, l.RegionName, l.ReviewedAt, l.ReviewedBy,
-			l.YouTubeVideoID, l.YouTubeStartSeconds, l.Latitude, l.Longitude, listings.NormalPrecision(l.LocationPrecision)); err != nil {
-			var pgErr *pgconn.PgError
-			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-				return fmt.Errorf("seed listing %s: its slug or reference already belongs to a different listing in this database", l.Slug)
-			}
-			return fmt.Errorf("seed listing %s: %w", l.Slug, err)
-		}
-		// The listing waiting for review joined the queue when it was last changed.
-		if _, err := tx.Exec(ctx, `UPDATE listings SET submitted_at = updated_at WHERE id = $1 AND status = 'PENDING_REVIEW'`, l.ID); err != nil {
-			return fmt.Errorf("seed listing %s submission: %w", l.Slug, err)
-		}
-		// Tell the search index: the worker turns this into an upsert or a delete.
-		event := listings.EventListingPublished
-		if l.Status != listings.StatusPublished {
-			event = listings.EventListingExpired
-		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO outbox_events (id, event_type, aggregate_type, aggregate_id, payload, created_at, available_at)
-			VALUES ($1, $2, $3, $4, $5::jsonb, $6, $6)`,
-			uuid.New(), event, listings.AggregateListing, l.ID, fmt.Sprintf(`{"listing_id":%q}`, l.ID), now); err != nil {
-			return fmt.Errorf("seed listing %s event: %w", l.Slug, err)
-		}
-		// Features and photos are replaced wholesale so a re-run resets them.
-		if _, err := tx.Exec(ctx, `DELETE FROM listing_features WHERE listing_id = $1`, l.ID); err != nil {
-			return fmt.Errorf("seed listing %s features: %w", l.Slug, err)
-		}
-		for i, f := range l.Features {
-			if _, err := tx.Exec(ctx, `INSERT INTO listing_features (listing_id, feature_code, position) VALUES ($1, $2, $3)`, l.ID, f, i); err != nil {
-				return fmt.Errorf("seed listing %s feature %s: %w", l.Slug, f, err)
-			}
-		}
-		if _, err := tx.Exec(ctx, `DELETE FROM listing_photos WHERE listing_id = $1`, l.ID); err != nil {
-			return fmt.Errorf("seed listing %s photos: %w", l.Slug, err)
-		}
-		// The photos of a listing that has been published are approved; those
-		// of the sample draft and the listing waiting for review are not.
-		var approved *time.Time
-		if !l.PublishedAt.IsZero() {
-			approved = &l.PublishedAt
-		}
-		for i, ph := range l.Photos {
-			if _, err := tx.Exec(ctx, `
-				INSERT INTO listing_photos (id, listing_id, position, url, alt, width, height, approved_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-				uuid.New(), l.ID, i, ph.URL, ph.Alt, ph.Width, ph.Height, approved); err != nil {
-				return fmt.Errorf("seed listing %s photo: %w", l.Slug, err)
-			}
+		if err := seedListingTx(ctx, tx, l, now); err != nil {
+			return err
 		}
 	}
 
@@ -483,6 +391,107 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit: %w", err)
+	}
+	return nil
+}
+
+// seedListingTx upserts one sample listing with its features and photos
+// (replaced wholesale, so a re-run resets them) and tells the search index.
+func seedListingTx(ctx context.Context, tx pgx.Tx, l listings.Record, now time.Time) error {
+	var period, sellerName *string
+	if l.PricePeriod != "" {
+		period = &l.PricePeriod
+	}
+	if l.Advertiser.Type == listings.AdvertiserPrivateSeller {
+		sellerName = &l.Advertiser.Name
+	}
+	// The sample draft and the listing waiting for review were never
+	// published: no publication dates.
+	var publishedAt, expiresAt *time.Time
+	if !l.PublishedAt.IsZero() {
+		publishedAt, expiresAt = &l.PublishedAt, &l.ExpiresAt
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO listings (id, market_id, title, status, price_amount, currency_code,
+		                      organisation_id, agent_user_id, seller_user_id, published_at, expires_at, created_at, updated_at,
+		                      slug, reference, deal, category, property_type, price_period, city_code, suburb_code,
+		                      bedrooms, bathrooms, floor_area_m2, land_area_m2, summary, description, featured, private_seller_name,
+		                      max_guests, min_nights, city_name, region_name, reviewed_at, reviewed_by,
+		                      youtube_video_id, youtube_start_seconds, latitude, longitude, location_precision)
+		VALUES ($1, (SELECT id FROM markets WHERE code = $2), $3, $4::text::listing_status, $5::text::numeric, $6, $7, $8, $9, $10, $11, $12, $12,
+		        $13, $14, $15, $16, $17, $18, NULLIF($19, ''), NULLIF($20, ''), $21, $22, $23, $24, $25, $26, $27, $28, $29, $30,
+		        NULLIF($31, ''), NULLIF($32, ''), $33, $34, NULLIF($35, ''), $36, $37, $38, $39)
+		ON CONFLICT (id) DO UPDATE
+		SET market_id = EXCLUDED.market_id, title = EXCLUDED.title, status = EXCLUDED.status,
+		    price_amount = EXCLUDED.price_amount, currency_code = EXCLUDED.currency_code,
+		    organisation_id = EXCLUDED.organisation_id, agent_user_id = EXCLUDED.agent_user_id,
+		    seller_user_id = EXCLUDED.seller_user_id, published_at = EXCLUDED.published_at,
+		    expires_at = EXCLUDED.expires_at, updated_at = EXCLUDED.updated_at,
+		    slug = EXCLUDED.slug, reference = EXCLUDED.reference, deal = EXCLUDED.deal, category = EXCLUDED.category,
+		    property_type = EXCLUDED.property_type, price_period = EXCLUDED.price_period,
+		    city_code = EXCLUDED.city_code, suburb_code = EXCLUDED.suburb_code,
+		    bedrooms = EXCLUDED.bedrooms, bathrooms = EXCLUDED.bathrooms,
+		    floor_area_m2 = EXCLUDED.floor_area_m2, land_area_m2 = EXCLUDED.land_area_m2,
+		    summary = EXCLUDED.summary, description = EXCLUDED.description, featured = EXCLUDED.featured,
+		    private_seller_name = EXCLUDED.private_seller_name,
+		    max_guests = EXCLUDED.max_guests, min_nights = EXCLUDED.min_nights,
+		    city_name = EXCLUDED.city_name, region_name = EXCLUDED.region_name,
+		    reviewed_at = EXCLUDED.reviewed_at, reviewed_by = EXCLUDED.reviewed_by,
+		    youtube_video_id = EXCLUDED.youtube_video_id, youtube_start_seconds = EXCLUDED.youtube_start_seconds,
+		    latitude = EXCLUDED.latitude, longitude = EXCLUDED.longitude, location_precision = EXCLUDED.location_precision,
+		    -- Listing management (0020): a re-run drops pending changes and reviews.
+		    revision = NULL, revision_status = NULL, review_reason = NULL, submitted_at = NULL, submitted_by = NULL`,
+		l.ID, l.MarketCode, l.Title, l.Status, l.Price.Amount, l.Price.Currency,
+		l.OrganisationID, l.AgentUserID, l.SellerUserID, publishedAt, expiresAt, l.UpdatedAt,
+		l.Slug, l.Reference, l.Deal, l.Category, l.PropertyType, period, l.City, l.Suburb,
+		l.Bedrooms, l.Bathrooms, l.FloorArea, l.LandArea, l.Summary, l.Description, l.Featured, sellerName,
+		l.MaxGuests, l.MinNights, l.CityName, l.RegionName, l.ReviewedAt, l.ReviewedBy,
+		l.YouTubeVideoID, l.YouTubeStartSeconds, l.Latitude, l.Longitude, listings.NormalPrecision(l.LocationPrecision)); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return fmt.Errorf("seed listing %s: its slug or reference already belongs to a different listing in this database", l.Slug)
+		}
+		return fmt.Errorf("seed listing %s: %w", l.Slug, err)
+	}
+	// The listing waiting for review joined the queue when it was last changed.
+	if _, err := tx.Exec(ctx, `UPDATE listings SET submitted_at = updated_at WHERE id = $1 AND status = 'PENDING_REVIEW'`, l.ID); err != nil {
+		return fmt.Errorf("seed listing %s submission: %w", l.Slug, err)
+	}
+	// Tell the search index: the worker turns this into an upsert or a delete.
+	event := listings.EventListingPublished
+	if l.Status != listings.StatusPublished {
+		event = listings.EventListingExpired
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO outbox_events (id, event_type, aggregate_type, aggregate_id, payload, created_at, available_at)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $6)`,
+		uuid.New(), event, listings.AggregateListing, l.ID, fmt.Sprintf(`{"listing_id":%q}`, l.ID), now); err != nil {
+		return fmt.Errorf("seed listing %s event: %w", l.Slug, err)
+	}
+	// Features and photos are replaced wholesale so a re-run resets them.
+	if _, err := tx.Exec(ctx, `DELETE FROM listing_features WHERE listing_id = $1`, l.ID); err != nil {
+		return fmt.Errorf("seed listing %s features: %w", l.Slug, err)
+	}
+	for i, f := range l.Features {
+		if _, err := tx.Exec(ctx, `INSERT INTO listing_features (listing_id, feature_code, position) VALUES ($1, $2, $3)`, l.ID, f, i); err != nil {
+			return fmt.Errorf("seed listing %s feature %s: %w", l.Slug, f, err)
+		}
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM listing_photos WHERE listing_id = $1`, l.ID); err != nil {
+		return fmt.Errorf("seed listing %s photos: %w", l.Slug, err)
+	}
+	// The photos of a listing that has been published are approved; those
+	// of the sample draft and the listing waiting for review are not.
+	var approved *time.Time
+	if !l.PublishedAt.IsZero() {
+		approved = &l.PublishedAt
+	}
+	for i, ph := range l.Photos {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO listing_photos (id, listing_id, position, url, alt, width, height, approved_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			uuid.New(), l.ID, i, ph.URL, ph.Alt, ph.Width, ph.Height, approved); err != nil {
+			return fmt.Errorf("seed listing %s photo: %w", l.Slug, err)
+		}
 	}
 	return nil
 }

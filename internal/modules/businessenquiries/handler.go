@@ -18,6 +18,8 @@ const (
 	CodeRecipientUnavailable = "RECIPIENT_UNAVAILABLE"
 	CodeIdempotencyConflict  = "IDEMPOTENCY_CONFLICT"
 	CodeEnquiryNotFound      = "BUSINESS_ENQUIRY_NOT_FOUND"
+	// CodeDevelopmentNotFound: the development project named is not public.
+	CodeDevelopmentNotFound = "DEVELOPMENT_NOT_FOUND"
 )
 
 // HeaderIdempotencyKey may carry the idempotency key instead of the body.
@@ -53,6 +55,8 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.As(err, &verr):
 			httpx.WriteError(w, r, http.StatusBadRequest, httpx.CodeValidationFailed, "Some fields need your attention.", verr.Fields)
+		case errors.Is(err, ErrDevelopmentNotFound):
+			httpx.WriteError(w, r, http.StatusNotFound, CodeDevelopmentNotFound, "This development does not exist.", nil)
 		case errors.Is(err, ErrRecipientNotFound):
 			httpx.WriteError(w, r, http.StatusNotFound, CodeRecipientNotFound, "This profile does not exist.", nil)
 		case errors.Is(err, ErrRecipientUnavailable):

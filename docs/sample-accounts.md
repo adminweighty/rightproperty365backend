@@ -65,7 +65,7 @@ loses its sample account.
 | --- | --- | --- |
 | `sample-falls-stays@example.test` | `HOST`; owner of Sample Falls Stays | Short stays 22 and 24 (24 is in Mauritius); availability calendars |
 | `sample-showrooms@example.test` | `HOST`; owner of Sample Showrooms | Short stay 23 and its calendar |
-| `sample-developments@example.test` | `DEVELOPER`; owner of Sample Developments | Profile `developers/sample-developments`; a confirmed consultation with the tenant |
+| `sample-developments@example.test` | `DEVELOPER`; owner of Sample Developments | Profile `developers/sample-developments`; a confirmed consultation with the tenant; development projects `ZW/borrowdale-heights` (published, with a linked listing) and `ZW/ruwa-gardens-estate` (draft) (API 0.44.0) |
 | `sample-plumbers@example.test` | `SERVICE_PROVIDER`; owner of Sample Plumbers | Profile `service-providers/sample-plumbers` (rating 4.5 from 2 reviews); a consultation request from the tenant; received reviews, one to reply to |
 
 Every other business profile has an owner too, at `<profile slug>@example.test` (for example

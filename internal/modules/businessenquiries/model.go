@@ -14,6 +14,7 @@
 package businessenquiries
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -67,6 +68,11 @@ var (
 	// ErrReferenceCollision is returned by Store.Create when the generated
 	// reference already exists; the service retries with a new one.
 	ErrReferenceCollision = errors.New("reference already in use")
+	// ErrDevelopmentNotFound: the enquiry names a development project that
+	// is not public (API 0.44.0). ErrUnitTypeNotFound: its unit type is not
+	// one of the project's.
+	ErrDevelopmentNotFound = errors.New("development not found")
+	ErrUnitTypeNotFound    = errors.New("unit type not found")
 )
 
 // ValidationError carries per-field messages for a 400 response.
@@ -85,6 +91,10 @@ type Input struct {
 	IdempotencyKey         string        `json:"idempotency_key"`
 	GuestContact           *GuestContact `json:"guest_contact"`
 	Consent                *Consent      `json:"consent"`
+	// Development is the development project the enquiry is about (API
+	// 0.44.0). With it, Recipient may be omitted: it is the project's
+	// developer profile.
+	Development *DevelopmentRef `json:"development"`
 
 	// Customer is the authenticated caller, set by the handler from the
 	// session and never read from the body. Nil for a guest.
@@ -95,6 +105,45 @@ type Input struct {
 type RecipientRef struct {
 	Kind string `json:"kind"`
 	Slug string `json:"slug"`
+}
+
+// DevelopmentRef names a public development project by its market and slug,
+// and optionally one of its unit types.
+type DevelopmentRef struct {
+	Market     string  `json:"market"`
+	Slug       string  `json:"slug"`
+	UnitTypeID *string `json:"unit_type_id"`
+}
+
+// DevelopmentTarget is a public project as an enquiry quotes it: who
+// receives it (the developer's profile) and the names kept with it.
+type DevelopmentTarget struct {
+	ID           uuid.UUID
+	Market       string
+	Slug         string
+	Name         string
+	ProfileKind  string
+	ProfileSlug  string
+	UnitTypeID   *uuid.UUID
+	UnitTypeName string
+}
+
+// DevelopmentResolver finds the public project an enquiry names:
+// ErrDevelopmentNotFound when it is not public, ErrUnitTypeNotFound when
+// the unit type is not one of it.
+type DevelopmentResolver interface {
+	ResolveDevelopment(ctx context.Context, market, slug string, unitTypeID *uuid.UUID) (DevelopmentTarget, error)
+}
+
+// EnquiryDevelopment is the project (and unit type) stored with an enquiry:
+// IDs, and snapshots of the names that survive a rename or a deletion.
+type EnquiryDevelopment struct {
+	ID           uuid.UUID
+	Market       string
+	Slug         string
+	Name         string
+	UnitTypeID   *uuid.UUID
+	UnitTypeName string
 }
 
 // GuestContact identifies an unauthenticated customer. For an authenticated
@@ -190,6 +239,8 @@ type NewEnquiry struct {
 	// (API 0.36.4; nil when not). Create never sets them; the seed may.
 	RepliedAt *time.Time
 	RepliedBy *uuid.UUID
+	// Development is the project the enquiry quotes (nil: none).
+	Development *EnquiryDevelopment
 }
 
 // CustomerEnquiry is what reviews read of an enquiry (API 0.36.4): who sent
@@ -234,6 +285,9 @@ type InboxScope struct {
 	ManagedOrganisationIDs []uuid.UUID
 	MemberOrganisationIDs  []uuid.UUID
 	Limit                  int
+	// DevelopmentID, when set, keeps only the enquiries about that project
+	// (the developer's project view, API 0.44.0), within the rule above.
+	DevelopmentID *uuid.UUID
 }
 
 // InboxItem is one enquiry as shown to its authorised recipient. This is the
@@ -253,6 +307,25 @@ type InboxItem struct {
 	// until then. A replied enquiry at least 14 days old lets its customer
 	// review the provider.
 	RepliedAt *time.Time `json:"replied_at"`
+	// Development is the development project the enquiry is about (API
+	// 0.44.0), with the unit type the customer chose; null when none.
+	Development *InboxDevelopment `json:"development"`
+}
+
+// InboxDevelopment is the project an enquiry quotes, as it was named when
+// the enquiry was sent. ID is null once the project was deleted.
+type InboxDevelopment struct {
+	ID       *uuid.UUID     `json:"id"`
+	Market   string         `json:"market"`
+	Slug     string         `json:"slug"`
+	Name     string         `json:"name"`
+	UnitType *InboxUnitType `json:"unit_type"`
+}
+
+// InboxUnitType is the unit type an enquiry quotes (ID null once deleted).
+type InboxUnitType struct {
+	ID   *uuid.UUID `json:"id"`
+	Name string     `json:"name"`
 }
 
 // InboxRecipient is the profile the enquiry was addressed to.

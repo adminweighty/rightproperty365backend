@@ -109,6 +109,14 @@ func (s *PostgresStore) Create(ctx context.Context, enq NewEnquiry) (Record, boo
 		recipientOrgID = &enq.Recipient.OrganisationID
 		recipientUserID = enq.Recipient.UserID
 	}
+	var devID, devUnitID *uuid.UUID
+	var devName, devMarket, devSlug, devUnitName *string
+	if d := enq.Development; d != nil {
+		devID, devUnitID, devName, devMarket, devSlug = &d.ID, d.UnitTypeID, &d.Name, &d.Market, &d.Slug
+		if d.UnitTypeName != "" {
+			devUnitName = &d.UnitTypeName
+		}
+	}
 	var service, guestPhone *string
 	if enq.Service != "" {
 		service = &enq.Service
@@ -124,8 +132,9 @@ func (s *PostgresStore) Create(ctx context.Context, enq NewEnquiry) (Record, boo
 			customer_user_id, guest_name, guest_email, guest_phone,
 			consent_privacy_version, consent_accepted_at,
 			recipient_organisation_id, recipient_user_id,
-			created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $19)
+			created_at, updated_at,
+			development_id, development_unit_type_id, development_name, development_market, development_slug, development_unit_type_name)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $19, $20, $21, $22, $23, $24, $25)
 		ON CONFLICT (idempotency_key) DO NOTHING`,
 		enq.ID, enq.Reference, enq.MarketID, enq.ProfileID, enq.Status, service, enq.Message,
 		enq.PreferredContactMethod, enq.IdempotencyKey, enq.RequestHash,
@@ -133,6 +142,7 @@ func (s *PostgresStore) Create(ctx context.Context, enq NewEnquiry) (Record, boo
 		enq.PrivacyVersion, enq.ConsentAcceptedAt,
 		recipientOrgID, recipientUserID,
 		enq.CreatedAt,
+		devID, devUnitID, devName, devMarket, devSlug, devUnitName,
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -194,7 +204,9 @@ const inboxColumns = `e.id, e.reference, p.kind, p.slug, p.name, e.service, e.me
 		       e.preferred_contact_method,
 		       COALESCE(e.guest_name, u.full_name, ''),
 		       COALESCE(e.guest_email, u.email, ''),
-		       e.guest_phone, e.status, e.created_at, e.replied_at`
+		       e.guest_phone, e.status, e.created_at, e.replied_at,
+		       e.development_id, e.development_market, e.development_slug, e.development_name,
+		       e.development_unit_type_id, e.development_unit_type_name`
 
 const inboxFrom = ` FROM business_enquiries e
 		JOIN directory_profiles p ON p.id = e.profile_id
@@ -208,9 +220,18 @@ const inboxVisible = `(e.recipient_organisation_id IN (SELECT unnest($1::text[])
 
 func scanInbox(row pgx.CollectableRow) (InboxItem, error) {
 	var it InboxItem
+	var devID, unitID *uuid.UUID
+	var devMarket, devSlug, devName, unitName *string
 	err := row.Scan(&it.EnquiryID, &it.Reference, &it.Recipient.Kind, &it.Recipient.Slug, &it.Recipient.Name,
 		&it.Service, &it.Message, &it.PreferredContactMethod,
-		&it.Contact.Name, &it.Contact.Email, &it.Contact.Phone, &it.Status, &it.CreatedAt, &it.RepliedAt)
+		&it.Contact.Name, &it.Contact.Email, &it.Contact.Phone, &it.Status, &it.CreatedAt, &it.RepliedAt,
+		&devID, &devMarket, &devSlug, &devName, &unitID, &unitName)
+	if devName != nil {
+		it.Development = &InboxDevelopment{ID: devID, Market: deref(devMarket), Slug: deref(devSlug), Name: *devName}
+		if unitName != nil {
+			it.Development.UnitType = &InboxUnitType{ID: unitID, Name: *unitName}
+		}
+	}
 	it.CreatedAt = it.CreatedAt.UTC()
 	if it.RepliedAt != nil {
 		at := it.RepliedAt.UTC()
@@ -219,14 +240,24 @@ func scanInbox(row pgx.CollectableRow) (InboxItem, error) {
 	return it, err
 }
 
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// inboxDevelopmentFilter keeps the enquiries about one project ($5; NULL: all).
+const inboxDevelopmentFilter = ` AND ($5::uuid IS NULL OR e.development_id = $5)`
+
 // ListInbox implements Store. Organisation IDs are passed as text arrays and
 // cast in SQL; the visibility rule is documented on InboxScope. Routing
 // exceptions have no recipient organisation, so no branch can match them.
 func (s *PostgresStore) ListInbox(ctx context.Context, scope InboxScope) ([]InboxItem, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+inboxColumns+inboxFrom+`WHERE `+inboxVisible+`
+	rows, err := s.pool.Query(ctx, `SELECT `+inboxColumns+inboxFrom+`WHERE `+inboxVisible+inboxDevelopmentFilter+`
 		ORDER BY e.created_at DESC, e.id DESC
 		LIMIT $4`,
-		uuidStrings(scope.ManagedOrganisationIDs), uuidStrings(scope.MemberOrganisationIDs), scope.UserID, scope.Limit)
+		uuidStrings(scope.ManagedOrganisationIDs), uuidStrings(scope.MemberOrganisationIDs), scope.UserID, scope.Limit, scope.DevelopmentID)
 	if err != nil {
 		return nil, err
 	}

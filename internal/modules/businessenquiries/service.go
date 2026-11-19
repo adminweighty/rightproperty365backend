@@ -44,12 +44,20 @@ func (s *Service) allowed(ctx context.Context) (allowed, error) {
 	return allowed{kinds: kinds, contactMethods: methods}, nil
 }
 
+// WithDevelopments resolves the development projects enquiries name (API 0.44.0).
+func WithDevelopments(r DevelopmentResolver) Option { return func(s *Service) { s.developments = r } }
+
+// SetDevelopments is WithDevelopments on a built Service (the resolver is
+// built after the Service in the router).
+func (s *Service) SetDevelopments(r DevelopmentResolver) { s.developments = r }
+
 // Service holds the business rules for business enquiries.
 type Service struct {
-	vocab  Vocabulary
-	store  Store
-	now    func() time.Time
-	newRef func() (string, error)
+	vocab        Vocabulary
+	developments DevelopmentResolver
+	store        Store
+	now          func() time.Time
+	newRef       func() (string, error)
 }
 
 // Option customises a Service (used by tests).
@@ -99,6 +107,32 @@ func (s *Service) Create(ctx context.Context, in Input, headerIdempotencyKey str
 		return Result{}, fmt.Errorf("look up idempotency key: %w", err)
 	}
 
+	// An enquiry about a development project goes to the project's
+	// developer, and quotes the project (and the unit type chosen).
+	var development *EnquiryDevelopment
+	if v.development {
+		if s.developments == nil {
+			return Result{}, ErrDevelopmentNotFound
+		}
+		target, err := s.developments.ResolveDevelopment(ctx, v.devMarket, v.devSlug, v.devUnitTypeID)
+		switch {
+		case errors.Is(err, ErrUnitTypeNotFound):
+			return Result{}, &ValidationError{Fields: map[string]string{"development.unit_type_id": "must be the id of one of the development's unit types"}}
+		case errors.Is(err, ErrDevelopmentNotFound):
+			return Result{}, ErrDevelopmentNotFound
+		case err != nil:
+			return Result{}, fmt.Errorf("resolve development: %w", err)
+		}
+		switch {
+		case v.kind == "" && v.slug == "":
+			v.kind, v.slug = target.ProfileKind, target.ProfileSlug
+		case v.kind != target.ProfileKind || v.slug != target.ProfileSlug:
+			return Result{}, &ValidationError{Fields: map[string]string{"recipient.slug": "must be the development's developer, or left out"}}
+		}
+		development = &EnquiryDevelopment{ID: target.ID, Market: target.Market, Slug: target.Slug, Name: target.Name,
+			UnitTypeID: target.UnitTypeID, UnitTypeName: target.UnitTypeName}
+	}
+
 	profile, err := s.store.GetProfile(ctx, v.kind, v.slug)
 	if err != nil {
 		if errors.Is(err, ErrRecipientNotFound) {
@@ -136,6 +170,7 @@ func (s *Service) Create(ctx context.Context, in Input, headerIdempotencyKey str
 		ConsentAcceptedAt:      now,
 		Recipient:              ResolveRecipient(profile),
 		CreatedAt:              now,
+		Development:            development,
 	}
 	if enq.Recipient == nil {
 		// Still accepted: the customer gets RECEIVED and operations picks up

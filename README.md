@@ -258,6 +258,10 @@ All configuration comes from environment variables. For local development you ma
 | GET | `/v1/listings`, `/v1/listings/suggest`, `/v1/listings/{slug}` | Public listing search, suggestions and detail |
 | GET | `/v1/directory`, `/v1/directory/{kind}`, `/v1/directory/{kind}/{slug}`, `/v1/sitemap` | Public directories, profiles and sitemap data |
 | GET | `/v1/directory/{kind}/{slug}/logo` | A public profile's logo: the image itself, cacheable, no session |
+| GET | `/v1/developments`, `/v1/developments/{market}/{slug}` | Public development projects (API 0.44.0): list (`market`, `city`, `status`, `q`, paging) and detail with phases, unit types and available listings; no contact details |
+| GET | `/v1/development-photos/{photoId}/{size}` | One size of a development photo (public while the project is) |
+| GET, POST, PATCH, PUT, DELETE | `/v1/agent/organisations/{id}/developments/...` | A developer's projects: CRUD, submit, withdraw, phases, unit types, photos, listing links, enquiries (OWNER / MANAGER / AGENT; STAFF read; 404 for anybody else) |
+| GET, POST | `/v1/admin/developments`, `/{id}`, `/{id}/approve`, `/{id}/reject` | The development review queue (the listing reviewers; audited) |
 | GET | `/v1/me/profiles` | The directory profiles the caller may manage |
 | PUT, DELETE | `/v1/me/profiles/{kind}/{slug}/logo` | Set (multipart) or remove a profile's logo |
 | GET, PUT | `/v1/me/listings/{id}/hourly` | A listing's hourly settings (API 0.33.0) |
@@ -498,6 +502,68 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 change; follow-up dates and reminders; editing or deleting a note; listing analytics; seeker
 favourites, saved searches and alerts. (Conversion funnels and response-time KPIs: API 0.38.0,
 below.)
+
+## Development and investment showcase (API 0.44.0)
+
+BR-019 / FR-048. Migration `0046_developments`; `modules/developments` (model, memory and Postgres
+stores, service, handler), `app/developments.go` (wiring: the developer profiles, the directory's
+`projects` and the sitemap). The exact JSON is the 0.44 developments contract. OpenAPI tag
+`developments`.
+
+### What existed before 0.44.0 (reused, not duplicated)
+
+| Area | What was there | What 0.44.0 does with it |
+| --- | --- | --- |
+| Developers | Directory kind `developers` (sample `developers/sample-developments`, owner `sample-developments@example.test`, organisation kind DEVELOPER, account role DEVELOPER); DEVELOPER is a listing-managing kind (`auth.KindManagesListings`) | A project belongs to the organisation's `developers` profile (409 `NO_DEVELOPER_PROFILE` without one). Access is `auth.MayManageListings` (OWNER / MANAGER / AGENT change) and `auth.MayReadListingPackage` (STAFF read) |
+| New developments / off-plan | Nothing: listings have no development, off-plan or project field (only the feature `gated-development`) | Projects are their own table; ordinary listings are linked to a project (and a unit type) through `development_listings` |
+| Contact | `businessenquiries`: profiles have no contact columns; `POST /v1/business-enquiries` needs a recipient profile; 10/min/IP limit, idempotency, consent | The enquiry gains an optional `development` (market, slug, unit type); with it the recipient is the project's developer. The enquiry stores the project and unit type IDs and name snapshots; inbox items show them. Same route, limiter and validation |
+| Photos | Listing photo pipeline (`listings.ProcessPhoto`: three JPEG sizes, metadata stripped) and synchronous malware screening (`storage.Screen`, 0.41.0) | Reused as is (`developmentphotos/` keys, `/v1/development-photos/{id}/{size}`); the key prefix is in `UnscannedKeyPrefixes` (screened before storing) |
+| Coordinates, YouTube | 0028 (EXACT / APPROXIMATE, rounded publicly), 0027 (`ParseYouTubeURL`) | Reused through `listings.CheckCoordinates`, `PublicLocationOf`, `VideoOf` (new exported wrappers) |
+| Moderation | Listing review queue `/v1/admin/listings` (`auth.ListingReviewRoles`, market scoping, self-review refused) | A separate queue `/v1/admin/developments` with the same roles, scoping and self-review rule; decisions are in `admin_audit_events` (target DEVELOPMENT) |
+| Sitemap / SEO | `GET /v1/sitemap` (listings and profiles) | Gains `developments` [{market, slug, updated_at}]; no separate endpoint |
+| Reference data | No amenities set (`listing_features` is about a property) | New admin-editable set `development_amenities` (14 rows; creatable through `/v1/admin/reference`) |
+
+### Rules
+
+- **No contact details anywhere public.** No phone, email or street address is stored or accepted;
+  free text with an email address, a phone number (written with `+` or a leading 0, nine digits or
+  more) or a WhatsApp link is refused (400). The developer card is `{kind, slug, name, verified, logo}`.
+  A test walks every public response for `@`, `email`, `phone`, `whatsapp`, `+263`, `address`.
+- **Only PUBLISHED projects of a public profile (ACTIVE, verified) of an ACTIVE organisation are
+  public** (list, detail, directory `projects`, sitemap, photos, enquiries). Linked listings show only
+  while the listing itself is public.
+- **Investment highlights are the developer's statements**: always answered with
+  `stated_by: DEVELOPER` and a disclaimer; never advice.
+- Moderation: DRAFT → submit → PENDING_REVIEW → approve → PUBLISHED, or reject (reason required) →
+  REJECTED (editable, can be submitted again). Withdraw takes PENDING_REVIEW / PUBLISHED back to DRAFT.
+  While PENDING_REVIEW / PUBLISHED the project's own fields and photos are locked (409
+  `DEVELOPMENT_LOCKED`); phases, unit types and listing links still change at once.
+- The slug is unique per market (`developments_market_slug_unique`), defaults to the name (`-2`, `-3`
+  when taken) and is fixed once published.
+- Every route under `/v1/agent/organisations/{id}/developments` answers 404 `DEVELOPMENT_NOT_FOUND`
+  to anybody who is not a member of the organisation, before any validation. Project enquiries
+  (with the customers' contact details) are for OWNER and MANAGER only, as in the inbox.
+- Account deletion keeps the organisation's projects and unlinks the person
+  (`developments.ForgetUserTx`; the memory store's `ForgetUser`). Organisations are never deleted by
+  the API; the schema cascades projects with their organisation or profile.
+- **Not in Elasticsearch**: the public list is a Postgres query, so there is no mapping and no reindex.
+
+### Sample data
+
+`sample-developments@example.test` (DEVELOPER, OWNER): `ZW/borrowdale-heights` "Borrowdale Heights"
+(PUBLISHED, SELLING, Harare / Borrowdale, 2 phases, 3 unit types of which one is price on request,
+3 bundled photos, a YouTube tour, one linked published listing
+`three-bedroom-cluster-home-at-borrowdale-heights-zw-200401`), and `ZW/ruwa-gardens-estate` (DRAFT).
+In memory they are loaded by `cmd/api`; in Postgres by `cmd/seed` (`devseed.SeedPostgresDevelopments`,
+re-runnable: existing projects are saved over by their fixed IDs). The linked listing is seeded with
+the projects, so the sample listing counts of the other tests do not change.
+
+### Backend deviations
+
+No street address (the listing privacy rule); no "request changes" (approve / reject only); no
+listing-style revision of a published project (withdraw, edit, resubmit); no separate
+`/v1/developments/sitemap` (the existing sitemap is extended); project enquiries for OWNER / MANAGER
+only; contact details refused in free text.
 
 ## Per-market legal documents, tax rules and translations (API 0.43.0)
 
@@ -3934,6 +4000,7 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0046_developments` (API 0.44.0): `developments` (organisation CASCADE, developer profile CASCADE, `market_code` FK `markets.code`, `slug` `developments_slug_format` unique per market `developments_market_slug_unique`, `name` `developments_name_length`, `summary` `developments_summary_length`, `description` `developments_description_length`, construction `status` PLANNED / UNDER_CONSTRUCTION / SELLING / COMPLETED / SOLD_OUT `developments_status_allowed`, `moderation_status` DRAFT / PENDING_REVIEW / PUBLISHED / REJECTED `developments_moderation_allowed`, `completion_estimate` quarter or date `developments_completion_format`, `city_code` / `suburb_code` / free `city_name` (`developments_city_name_length`, `developments_city_one_kind`), `latitude` / `longitude` numeric(9,6) (`developments_latitude_range`, `developments_longitude_range`, `developments_coordinates_pair`), `location_precision` `developments_precision_allowed`, `amenities` text[], `highlights` jsonb, `youtube_video_id` `developments_youtube_format` / `youtube_start_seconds` `developments_youtube_start_valid`, `review_reason` `developments_review_reason_length`, submitted / reviewed / created by (SET NULL) and times, `published_at` `developments_published_when_public`; NO phone, email or street-address column), `development_phases` (name, status, completion, position; unique `(development_id, id)`), `development_unit_types` (phase by composite FK `development_unit_types_phase_fk` CASCADE, bedrooms / bathrooms 0-50, size range `development_unit_types_size_order`, price from / to numeric(20,4) with currency or `price_on_request` `development_unit_types_price_shape`, units total / available `development_unit_types_units_order`), `development_photos` (as `listing_photos` after 0020: url or variants `development_photos_one_source`, checksum, alt ≤ 250, `approved_at`, `uploaded_by` SET NULL) and `development_listings` (listing PRIMARY KEY CASCADE: one project per listing; unit type by composite FK `development_listings_unit_type_fk` ON DELETE SET NULL (unit_type_id), Postgres 15+). `business_enquiries` gains `development_id` / `development_unit_type_id` (SET NULL) and the snapshots `development_name`, `development_market`, `development_slug`, `development_unit_type_name` (`business_enquiries_development_snapshot`). `reference_items_set_check` + `development_amenities` (14 rows). `admin_audit_events_target_type_allowed` + DEVELOPMENT. Not in Elasticsearch (no reindex). The development and staging seed (`devseed.SeedPostgresDevelopments`) adds the Sample Developments projects. Account deletion unlinks the person (`developments.ForgetUserTx`). New tables, new nullable columns, wider checks; re-runnable.
 - `0045_markets_legal_tax` (API 0.43.0): `legal_document_versions` (kind TERMS / PRIVACY / COOKIES / REFUND / EULA / AGENT_TERMS `legal_document_versions_kind_allowed`, `market_code` GLOBAL or ISO 3166-1 alpha-2 `legal_document_versions_market_format`, `lang` `legal_document_versions_lang_format`, `version_label` 1-32 printable ASCII `legal_document_versions_label_format`, unique per kind + market + lang `legal_document_versions_label_unique`, `effective_from`, status DRAFT / PUBLISHED / RETIRED `legal_document_versions_status_allowed`, `body_md` 1-200000 `legal_document_versions_body_length`, `summary_of_changes` `legal_document_versions_summary_length`, `requires_reacceptance`, `draft_notice`, `created_by` / `published_by` SET NULL with names, `published_at` `legal_document_versions_published_when_done`, `retired_at` `legal_document_versions_retired_when_done`; trigger `legal_document_versions_frozen`: a PUBLISHED / RETIRED row only retires or is unlinked, only a DRAFT is deleted; partial index `legal_document_versions_resolve_idx`). `user_consents`: `user_consents_type_check` replaced by `user_consents_type_allowed` (+ TERMS, COOKIES, REFUND, EULA, AGENT_TERMS), new nullable `market_code` (`user_consents_market_format`) and `context` REGISTRATION / REACCEPTANCE (`user_consents_context_allowed`), index `user_consents_user_type_idx`. `tax_rules` (market FK `markets.code`, `tax_name` `tax_rules_name_length`, `rate numeric(7,4)` 0-100 `tax_rules_rate_range`, `applies_to` SUBSCRIPTIONS / VENUE_BOOKINGS / LISTING_FEES `tax_rules_applies_to_allowed`, `inclusive`, `effective_from` / `effective_to` exclusive `tax_rules_period_order`, `registration_number_label` `tax_rules_registration_label_length`, status ACTIVE / RETIRED `tax_rules_status_allowed`, `is_sample`, `notes` `tax_rules_notes_length`; overlap refused by the service under an advisory lock). `admin_audit_events_target_type_allowed` + LEGAL_DOCUMENT_VERSION, TAX_RULE. **Inserts no rows** (production has no legal document and no tax rule); the development and staging seed (`devseed.SeedPostgresLegalTax`) adds the GLOBAL placeholders (PUBLISHED, body "DRAFT — awaiting legal review"), ZW / GB DRAFT copies and the SAMPLE tax rules. Account deletion keeps the acceptances and unlinks creators / publishers (`legal.ForgetUserTx`). New tables, new nullable columns, a wider check; re-runnable.
 - `0044_online_payment` (API 0.42.0): `payments` (subscription RESTRICT, invoice number and subscriber snapshot, market, `provider` `payments_provider_format`, `provider_ref` / `payment_ref` (unique per provider `payments_provider_ref_unique`), `idempotency_key` `payments_idempotency_key_unique`, invoice `amount` / `currency_code`, `paid_amount` / `paid_currency_code`, `refunded_amount` `payments_refunded_in_range`, `status` OPEN / SUCCEEDED / FAILED / EXPIRED / REVIEW / PARTIALLY_REFUNDED / REFUNDED `payments_status_allowed`, hosted URL, `expires_at`, return and cancel URLs, review and failure reasons, `opened_by` SET NULL and name, timestamps; at most one OPEN per subscription `payments_one_open_per_subscription`), `payment_refunds` (payment RESTRICT, amount, currency, reason, PENDING / SUCCEEDED / FAILED `payment_refunds_status_allowed`, `provider_refund_ref` unique per payment, `idempotency_key` unique, requester SET NULL and name, completed) and `payment_events` (provider, `event_id` unique per provider `payment_events_one_per_provider_event`, type, references, amount, `processing_started_at` lease, `processed_at`, outcome, payment SET NULL). `subscription_plans.package_code` (`subscription_plans_package_code_format`); `subscriptions.payment_recorded_by_kind` ADMIN / GATEWAY (`subscriptions_payment_recorder_allowed`) and `payment_provider`; `subscription_events` CHECKs re-created as `subscription_events_action_allowed` (+ REFUNDED) and `subscription_events_actor_allowed` (+ GATEWAY); `listing_package_assignments.subscription_id` (SET NULL, INVOICE only `listing_package_assignments_subscription_is_invoice`, one per subscription `listing_package_assignments_one_per_subscription`). Account deletion keeps the payments and unlinks the person explicitly. New tables, new nullable or defaulted columns and wider checks.
 - `0043_malware_scanning` (API 0.41.0): `file_scans` (one per uploaded document by `object_key` `file_scans_object_key_unique` / `file_scans_object_key_format`, `kind` ONBOARDING_DOCUMENT / APPLICATION_FILE / LEDGER_ATTACHMENT / AGREEMENT_DOCUMENT `file_scans_kind_known`, `uploaded_by` SET NULL, status PENDING / CLEAN / INFECTED / LEGACY_UNSCANNED `file_scans_status_known`, `signature` only when INFECTED `file_scans_signature_when_infected` / `file_scans_signature_size`, `size_bytes`, `attempts`, `last_error`, `next_attempt_at` (required while PENDING `file_scans_pending_scheduled`), `scanned_at` (`file_scans_scanned_when_done`); indexes `file_scans_due_idx`, `file_scans_status_idx`, `file_scans_uploaded_by_idx`). Every document stored before it is backfilled as LEGACY_UNSCANNED. Account deletion unlinks the uploader (`malware.ForgetUploaderTx`). New table; re-runnable.

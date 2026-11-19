@@ -13,6 +13,7 @@ import (
 
 	"rightproperty365.com/backend/internal/modules/applications"
 	"rightproperty365.com/backend/internal/modules/appointments"
+	"rightproperty365.com/backend/internal/modules/developments"
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/inapp"
 	"rightproperty365.com/backend/internal/modules/inspections"
@@ -509,6 +510,12 @@ func (s *PostgresStore) Delete(ctx context.Context, d Deletion) (Deleted, error)
 		// INFECTED one stays on the administrators' list); the person is
 		// unlinked (ON DELETE SET NULL never fires here).
 		if err := malware.ForgetUploaderTx(ctx, tx, d.UserID); err != nil {
+			return err
+		}
+		// Development projects (migration 0046): kept with their
+		// organisation; the person is unlinked as creator, submitter,
+		// reviewer and photo uploader (ON DELETE SET NULL never fires here).
+		if err := developments.ForgetUserTx(ctx, tx, d.UserID); err != nil {
 			return err
 		}
 		return adminaudit.Insert(ctx, tx, d.Audit)

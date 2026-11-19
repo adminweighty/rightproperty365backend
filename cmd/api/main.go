@@ -25,6 +25,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/availability"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/crm"
+	"rightproperty365.com/backend/internal/modules/developments"
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/health"
 	"rightproperty365.com/backend/internal/modules/identity"
@@ -187,6 +188,8 @@ func run() error {
 		legalStore       legal.Store
 		legalAcceptances legal.AcceptanceStore
 		taxStore         tax.Store
+		// developmentStore holds the development showcase (API 0.44.0).
+		developmentStore developments.Store
 	)
 	if cfg.UseMemoryStore() {
 		// config.Load guarantees this branch is only reachable in development.
@@ -385,6 +388,10 @@ func run() error {
 		legalStore = memLegal
 		legalAcceptances = app.MemoryLegalAcceptances{Identity: memIdentity}
 		taxStore = tax.NewMemoryStore(tax.SeedRules(time.Now()), memAudit)
+		// The development showcase's samples, with their linked listing.
+		memDevelopments := developments.NewMemoryStore()
+		devseed.SeedMemoryDevelopments(memDevelopments, memListings, time.Now())
+		developmentStore = memDevelopments
 		accountStore = accounts.NewMemoryStore(accounts.MemoryDeps{Identity: memIdentity, Listings: memListings, Teams: memTeams,
 			Directory: memDirectory, Audit: memAudit, CancelSubscriptions: memSubscriptions.CancelForDeletedUser,
 			DeleteSignature: memAgreements.DeleteSavedSignature, DeleteSavedListings: memSaved.DeleteUser,
@@ -397,7 +404,7 @@ func run() error {
 				memEnquiries.ForgetUser(userID)
 			},
 			ForgetPackages: memPackages.ForgetUser, ForgetPayments: memPayments.ForgetUser,
-			ForgetLegal: memLegal.ForgetUser})
+			ForgetLegal: memLegal.ForgetUser, ForgetDevelopments: memDevelopments.ForgetUser})
 		reportStore = app.MemoryReports(app.MemoryReportStores{Identity: memIdentity, Onboarding: memOnboarding, Listings: memListings,
 			Requests: memRequests, Enquiries: memEnquiries, Leases: memLeases, Agreements: memAgreements, Subscriptions: memSubscriptions,
 			Markets: marketStore})
@@ -581,6 +588,7 @@ func run() error {
 		pgLegal := legal.NewPostgresStore(pool)
 		legalStore, legalAcceptances = pgLegal, pgLegal
 		taxStore = tax.NewPostgresStore(pool)
+		developmentStore = developments.NewPostgresStore(pool)
 		adminAuditLog = adminaudit.PostgresLog{Q: pool}
 		inboxSvc = inapp.NewService(inapp.NewPostgresStore(pool), pushProvider, logger, nil)
 		// Scan records; the worker scans the quarantined documents.
@@ -675,6 +683,7 @@ func run() error {
 		LegalAcceptances: legalAcceptances,
 		Tax:              taxStore,
 		Inbox:            inboxSvc,
+		Developments:     developmentStore,
 	})
 	if err != nil {
 		return err

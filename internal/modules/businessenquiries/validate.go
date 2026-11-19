@@ -31,6 +31,7 @@ var (
 	emailRe   = regexp.MustCompile(`^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>".]+$`)
 	e164Re    = regexp.MustCompile(`^\+[1-9][0-9]{6,14}$`)
 	slugRe    = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+	marketRe  = regexp.MustCompile(`^[A-Z]{2}$`)
 )
 
 // validated is the normalised form of an Input.
@@ -46,6 +47,13 @@ type validated struct {
 	phone          string
 	privacyVersion string
 	customerUserID *uuid.UUID
+	// The development project the enquiry is about (API 0.44.0): set when
+	// Input.Development was sent. kind and slug stay "" until it is resolved
+	// when the customer did not name the recipient.
+	development   bool
+	devMarket     string
+	devSlug       string
+	devUnitTypeID *uuid.UUID
 }
 
 // validate normalises in and returns per-field errors (empty when valid).
@@ -80,11 +88,35 @@ func validate(in Input, headerKey string, ok allowed) (validated, map[string]str
 		fields["idempotency_key"] = "must contain only printable ASCII characters without spaces"
 	}
 
-	// Recipient.
-	if in.Recipient == nil {
+	// Development project (optional): market + slug, and optionally a unit type.
+	if in.Development != nil {
+		v.development = true
+		v.devMarket = strings.ToUpper(strings.TrimSpace(in.Development.Market))
+		if !marketRe.MatchString(v.devMarket) {
+			fields["development.market"] = "must be a two-letter country code"
+		}
+		v.devSlug = strings.TrimSpace(in.Development.Slug)
+		if v.devSlug == "" || len(v.devSlug) > maxSlugLength || !slugRe.MatchString(v.devSlug) {
+			fields["development.slug"] = "is not a valid development address"
+		}
+		if in.Development.UnitTypeID != nil && strings.TrimSpace(*in.Development.UnitTypeID) != "" {
+			id, err := uuid.Parse(strings.TrimSpace(*in.Development.UnitTypeID))
+			if err != nil {
+				fields["development.unit_type_id"] = "must be the id of one of the development's unit types"
+			} else {
+				v.devUnitTypeID = &id
+			}
+		}
+	}
+
+	// Recipient: required, unless the enquiry is about a development (its
+	// developer is the recipient, resolved by the service).
+	switch {
+	case in.Recipient == nil && v.development:
+	case in.Recipient == nil:
 		fields["recipient.kind"] = "is required"
 		fields["recipient.slug"] = "is required"
-	} else {
+	default:
 		v.kind = in.Recipient.Kind
 		switch {
 		case v.kind == "":
@@ -205,6 +237,10 @@ func (v validated) hash() string {
 	if v.customerUserID != nil {
 		customer = v.customerUserID.String()
 	}
+	unitType := ""
+	if v.devUnitTypeID != nil {
+		unitType = v.devUnitTypeID.String()
+	}
 	canonical, _ := json.Marshal(struct {
 		Kind           string `json:"recipient_kind"`
 		Slug           string `json:"recipient_slug"`
@@ -216,7 +252,11 @@ func (v validated) hash() string {
 		Phone          string `json:"guest_phone"`
 		PrivacyVersion string `json:"privacy_version"`
 		CustomerUserID string `json:"customer_user_id,omitempty"`
-	}{v.kind, v.slug, v.service, v.message, v.contactMethod, v.name, v.email, v.phone, v.privacyVersion, customer})
+		DevMarket      string `json:"development_market,omitempty"`
+		DevSlug        string `json:"development_slug,omitempty"`
+		DevUnitType    string `json:"development_unit_type_id,omitempty"`
+	}{v.kind, v.slug, v.service, v.message, v.contactMethod, v.name, v.email, v.phone, v.privacyVersion, customer,
+		v.devMarket, v.devSlug, unitType})
 	sum := sha256.Sum256(canonical)
 	return hex.EncodeToString(sum[:])
 }

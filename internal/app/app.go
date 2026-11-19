@@ -23,6 +23,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/crm"
 	"rightproperty365.com/backend/internal/modules/dashboard"
+	"rightproperty365.com/backend/internal/modules/developments"
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/health"
 	"rightproperty365.com/backend/internal/modules/identity"
@@ -231,6 +232,9 @@ var (
 	maintenancePhotoPath = regexp.MustCompile(`^/v1/(agent/organisations|me/tenancies)/[^/]+/maintenance/[^/]+/photos$`)
 	// inspectionPhotoPath is POST .../inspections/{inspectionId}/items/{itemId}/photos (10 MB).
 	inspectionPhotoPath = regexp.MustCompile(`^/v1/agent/organisations/[^/]+/inspections/[^/]+/items/[^/]+/photos$`)
+	// developmentPhotoPath is POST .../developments/{developmentId}/photos
+	// (a development photo: the listing photo limit, API 0.44.0).
+	developmentPhotoPath = regexp.MustCompile(`^/v1/agent/organisations/[^/]+/developments/[^/]+/photos$`)
 )
 
 func isContactImport(r *http.Request) bool {
@@ -242,7 +246,7 @@ func isPDFUpload(r *http.Request) bool {
 }
 
 func isPhotoUpload(r *http.Request) bool {
-	return r.Method == http.MethodPost && photoPath.MatchString(r.URL.Path)
+	return r.Method == http.MethodPost && (photoPath.MatchString(r.URL.Path) || developmentPhotoPath.MatchString(r.URL.Path))
 }
 
 func isLogoUpload(r *http.Request) bool {
@@ -366,6 +370,10 @@ type Deps struct {
 	Legal            legal.Store
 	LegalAcceptances legal.AcceptanceStore
 	Tax              tax.Store
+
+	// Developments holds the development showcase (API 0.44.0); nil means
+	// an empty memory store.
+	Developments developments.Store
 
 	// Inbox is the notification centre (API 0.35.0): devices, in-app
 	// notifications, preferences and the delivery health. Logging out
@@ -590,6 +598,16 @@ func NewRouter(d Deps) (http.Handler, error) {
 	requestsH.SetMarkets(marketIDs(d.Markets))
 	requestWorkLimiter := httpx.NewRateLimiter(requestWorkPerMinute, requestWorkBurst)
 	enquiriesH := businessenquiries.NewHandler(enquiriesSvc, logger)
+	// The development showcase (API 0.44.0, BR-019 / FR-048): projects of
+	// the developers' profiles, enquiries to the developer through the
+	// business enquiries (quoting the project), on the developer's profile
+	// page and in the sitemap.
+	developmentsSvc := DevelopmentsService(DevelopmentsDeps{Store: d.Developments, Files: d.Files, Listings: listingsSvc,
+		Directory: d.Directory, Labels: referenceSvc, Places: geography, Inbox: enquiriesSvc, Audit: d.AdminAudit,
+		Enquiries: d.Enquiries, Logger: logger, Now: d.Now})
+	enquiriesSvc.SetDevelopments(developmentsSvc)
+	directorySvc.SetDevelopments(developmentProjects(developmentsSvc))
+	developmentsH := developments.NewHandler(developmentsSvc, logger)
 	// Maintenance requests (API 0.36.2): the tenancies' books, a cost posts
 	// its EXPENSE entry through the ledger in its own transaction, and an
 	// assignment sends the provider a business enquiry.
@@ -871,6 +889,11 @@ func NewRouter(d Deps) (http.Handler, error) {
 		// listing's managers and reviewers (404 for everyone else).
 		r.Get("/listing-photos/{photoId}/{size}", manageH.Photo)
 		r.Get("/sitemap", directoryH.Sitemap)
+		// The development showcase (API 0.44.0): public, cacheable, no
+		// contact details; a project's photos as the listing photos.
+		r.Get("/developments", developmentsH.List)
+		r.Get("/developments/{market}/{slug}", developmentsH.Get)
+		r.Get("/development-photos/{photoId}/{size}", developmentsH.Photo)
 		// How many advertisers are verified and how many listings are public.
 		r.Get("/trust/summary", trustH.Summary)
 
@@ -1258,6 +1281,13 @@ func NewRouter(d Deps) (http.Handler, error) {
 			// Reviewing listings: SUPER_ADMIN, PLATFORM_ADMIN, MODERATOR, and
 			// MARKET_ADMIN for its own markets (the service limits it; another
 			// country's listing is 404).
+			// Reviewing development projects (API 0.44.0): the listing
+			// reviewers, a MARKET_ADMIN in its own markets; every decision
+			// is in the admin audit.
+			r.Route("/developments", func(r chi.Router) {
+				r.Use(auth.RequirePlatformRole(auth.ListingReviewRoles()...))
+				developmentsH.AdminRoutes(r, listingLimiter.Middleware)
+			})
 			r.Route("/listings", func(r chi.Router) {
 				r.Use(auth.RequirePlatformRole(auth.ListingReviewRoles()...))
 				r.Get("/", manageH.AdminList)
@@ -1453,6 +1483,12 @@ func NewRouter(d Deps) (http.Handler, error) {
 			// 0.38.0, BR-005): OWNER and MANAGER the whole organisation, AGENT
 			// and STAFF what their inbox shows, 404 for anybody else.
 			r.Get("/reports/lead-funnel", requestsH.LeadFunnel)
+			// Development projects (API 0.44.0): OWNER, MANAGER and AGENT
+			// change them, STAFF read them, 404 DEVELOPMENT_NOT_FOUND for
+			// anybody else on every route.
+			r.Route("/developments", func(r chi.Router) {
+				developmentsH.AgentRoutes(r, listingLimiter.Middleware, uploadLimiter.Middleware)
+			})
 			r.Get("/members", teamsH.Members)
 			r.With(teamLimiter.Middleware).Patch("/members/{userId}", teamsH.PatchMember)
 			r.With(teamLimiter.Middleware).Delete("/members/{userId}", teamsH.RemoveMember)

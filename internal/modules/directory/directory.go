@@ -132,6 +132,32 @@ type Detail struct {
 	Agents []listings.ProfileRef `json:"agents"`
 	// Listings are the profile's public listings, newest first.
 	Listings []listings.Listing `json:"listings"`
+	// Projects are a developer's public development projects (API 0.44.0),
+	// the same cards as GET /v1/developments; absent for every other kind.
+	Projects any `json:"projects,omitempty"`
+}
+
+// KindDevelopers is the directory kind of the property developers.
+const KindDevelopers = "developers"
+
+// ProjectSource returns the public development projects of a developer
+// profile, as the JSON value of Detail.Projects (never nil).
+type ProjectSource func(ctx context.Context, profileID uuid.UUID) (any, error)
+
+// DevelopmentEntry is one public development project of the sitemap.
+type DevelopmentEntry struct {
+	Market    string    `json:"market"`
+	Slug      string    `json:"slug"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// DevelopmentEntries returns every public development project's address.
+type DevelopmentEntries func(ctx context.Context) ([]DevelopmentEntry, error)
+
+// SetDevelopments gives the Service the developers' public projects and
+// their sitemap entries (API 0.44.0).
+func (s *Service) SetDevelopments(projects ProjectSource, entries DevelopmentEntries) {
+	s.projects, s.developmentEntries = projects, entries
 }
 
 // Record is a profile as stored.
@@ -258,6 +284,10 @@ type Service struct {
 	now    func() time.Time
 	// ratings supplies the reviews' ratings; nil means none.
 	ratings RatingSource
+	// projects and developmentEntries supply the development projects; nil
+	// means none.
+	projects           ProjectSource
+	developmentEntries DevelopmentEntries
 }
 
 // SetRatings gives the Service the ratings of the reviews (API 0.36.4).
@@ -572,6 +602,14 @@ func (s *Service) Get(ctx context.Context, kindCode, slug string) (Detail, error
 	if d.Listings == nil {
 		d.Listings = []listings.Listing{}
 	}
+	if r.Kind == KindDevelopers {
+		d.Projects = []any{}
+		if s.projects != nil {
+			if d.Projects, err = s.projects(ctx, r.ID); err != nil {
+				return Detail{}, err
+			}
+		}
+	}
 	if r.Kind == KindAgencies {
 		agents, err := s.store.AgentsOf(ctx, r.OrganisationID)
 		if err != nil {
@@ -588,6 +626,8 @@ func (s *Service) Get(ctx context.Context, kindCode, slug string) (Detail, error
 type Sitemap struct {
 	Listings []listings.SlugEntry `json:"listings"`
 	Profiles []Entry              `json:"profiles"`
+	// Developments are the public development projects (API 0.44.0).
+	Developments []DevelopmentEntry `json:"developments"`
 }
 
 // Sitemap returns every public listing slug and profile address with updated_at.
@@ -604,7 +644,14 @@ func (s *Service) Sitemap(ctx context.Context) (Sitemap, error) {
 	if err != nil {
 		return Sitemap{}, err
 	}
-	out := Sitemap{Listings: slugs, Profiles: []Entry{}}
+	out := Sitemap{Listings: slugs, Profiles: []Entry{}, Developments: []DevelopmentEntry{}}
+	if s.developmentEntries != nil {
+		developments, err := s.developmentEntries(ctx)
+		if err != nil {
+			return Sitemap{}, err
+		}
+		out.Developments = append(out.Developments, developments...)
+	}
 	for _, e := range entries {
 		if slices.ContainsFunc(kinds, func(k Kind) bool { return k.Code == e.Kind }) {
 			out.Profiles = append(out.Profiles, e)

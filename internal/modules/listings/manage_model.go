@@ -231,19 +231,24 @@ func PhotoPath(id uuid.UUID, size, checksum string) string {
 }
 
 // publicPhoto is the public form of an approved photo.
-func publicPhoto(p StoredPhoto) Photo {
+func publicPhoto(p StoredPhoto) Photo { return PhotoAt(p, PhotoPath) }
+
+// PhotoAt is the public form of a stored photo whose sizes are served at
+// path(id, size, checksum): a listing's (PhotoPath) or another module's
+// (the development photos, API 0.44.0).
+func PhotoAt(p StoredPhoto, path func(id uuid.UUID, size, checksum string) string) Photo {
 	if !p.Uploaded() {
 		return Photo{URL: p.URL, Alt: p.Alt, Width: p.Width, Height: p.Height, Variants: []PhotoVariant{}}
 	}
 	out := Photo{Alt: p.Alt, Width: p.Width, Height: p.Height, Variants: []PhotoVariant{}}
 	if large, ok := p.Variant(PhotoSizeLarge); ok {
-		out.URL, out.Width, out.Height = PhotoPath(p.ID, PhotoSizeLarge, p.Checksum), large.Width, large.Height
+		out.URL, out.Width, out.Height = path(p.ID, PhotoSizeLarge, p.Checksum), large.Width, large.Height
 	}
 	seen := map[int]bool{}
 	for _, size := range PhotoSizes() {
 		if v, ok := p.Variant(size); ok && !seen[v.Width] {
 			seen[v.Width] = true
-			out.Variants = append(out.Variants, PhotoVariant{Width: v.Width, Height: v.Height, URL: PhotoPath(p.ID, size, p.Checksum)})
+			out.Variants = append(out.Variants, PhotoVariant{Width: v.Width, Height: v.Height, URL: path(p.ID, size, p.Checksum)})
 		}
 	}
 	return out

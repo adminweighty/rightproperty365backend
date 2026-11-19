@@ -150,6 +150,9 @@ func visible(scope InboxScope, enq NewEnquiry) bool {
 	if enq.Recipient == nil {
 		return false
 	}
+	if scope.DevelopmentID != nil && (enq.Development == nil || enq.Development.ID != *scope.DevelopmentID) {
+		return false
+	}
 	org, addressee := enq.Recipient.OrganisationID, enq.Recipient.UserID
 	return slices.Contains(scope.ManagedOrganisationIDs, org) ||
 		(slices.Contains(scope.MemberOrganisationIDs, org) && addressee != nil && *addressee == scope.UserID)
@@ -177,7 +180,58 @@ func inboxItem(enq NewEnquiry) InboxItem {
 		at := enq.RepliedAt.UTC()
 		item.RepliedAt = &at
 	}
+	item.Development = inboxDevelopment(enq.Development)
 	return item
+}
+
+// inboxDevelopment is the inbox's view of the project an enquiry quotes. A
+// project that was deleted keeps its names, without its id.
+func inboxDevelopment(d *EnquiryDevelopment) *InboxDevelopment {
+	if d == nil {
+		return nil
+	}
+	out := &InboxDevelopment{Market: d.Market, Slug: d.Slug, Name: d.Name}
+	if d.ID != uuid.Nil {
+		id := d.ID
+		out.ID = &id
+	}
+	if d.UnitTypeName != "" {
+		out.UnitType = &InboxUnitType{Name: d.UnitTypeName}
+		if d.UnitTypeID != nil {
+			u := *d.UnitTypeID
+			out.UnitType.ID = &u
+		}
+	}
+	return out
+}
+
+// ForgetDevelopment unlinks a deleted development project and its unit
+// types from the enquiries that quote it, keeping the names (what the
+// Postgres ON DELETE SET NULL does).
+func (s *MemoryStore) ForgetDevelopment(id uuid.UUID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.enquiries {
+		if d := s.enquiries[i].Development; d != nil && d.ID == id {
+			copied := *d
+			copied.ID, copied.UnitTypeID = uuid.Nil, nil
+			s.enquiries[i].Development = &copied
+		}
+	}
+}
+
+// ForgetUnitType unlinks a deleted unit type from the enquiries that quote
+// it, keeping its name.
+func (s *MemoryStore) ForgetUnitType(id uuid.UUID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.enquiries {
+		if d := s.enquiries[i].Development; d != nil && d.UnitTypeID != nil && *d.UnitTypeID == id {
+			copied := *d
+			copied.UnitTypeID = nil
+			s.enquiries[i].Development = &copied
+		}
+	}
 }
 
 // ListInbox implements Store with the same visibility rule as the Postgres query.

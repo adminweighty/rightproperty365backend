@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"rightproperty365.com/backend/internal/modules/agreements"
+	"rightproperty365.com/backend/internal/modules/developments"
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/inapp"
 	"rightproperty365.com/backend/internal/modules/inspections"
@@ -39,6 +40,6 @@ func FileScanNotifier(inbox *inapp.Service) malware.Notifier {
 // record: images (screened before they are stored) and the PDFs the
 // platform renders. The guard skips the scan-record lookup for them.
 func UnscannedKeyPrefixes() []string {
-	return []string{listings.PhotoKeyPrefix, directory.LogoKeyPrefix, maintenance.PhotoKeyPrefix, inspections.PhotoKeyPrefix,
+	return []string{listings.PhotoKeyPrefix, developments.PhotoKeyPrefix, directory.LogoKeyPrefix, maintenance.PhotoKeyPrefix, inspections.PhotoKeyPrefix,
 		agreements.SignatureKeyPrefix, agreements.SavedSignatureKeyPrefix, leases.ObjectKeyPrefix}
 }

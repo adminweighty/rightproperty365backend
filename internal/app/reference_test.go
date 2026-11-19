@@ -57,7 +57,7 @@ var wantSetSizes = map[string]int{
 	"account_roles": 15, "directory_kinds": 7, "service_trades": 7, "cities": 14, "suburbs": 24, "listing_features": 59,
 	"onboarding_documents": 10, "organisation_kinds": 6, "regions": 14, "price_periods": 2,
 	"contact_types": 5, "contact_sources": 7, "maintenance_categories": 8, "maintenance_priorities": 4,
-	"inspection_checklist_templates": 59,
+	"inspection_checklist_templates": 59, "development_amenities": 14,
 }
 
 func TestReferenceAllSets(t *testing.T) {
@@ -411,12 +411,13 @@ func TestPlatformRolesAreDeniedEvenIfInTheReferenceTable(t *testing.T) {
 
 // The reference rows the migrations leave behind (0007, 0009 for the
 // onboarding documents, 0010 for the real estate role names and the
-// solicitors directory) are the same rows the memory store and cmd/seed use.
+// solicitors directory, 0046 for the development amenities) are the same
+// rows the memory store and cmd/seed use.
 func TestMigrationSeedsTheSameReferenceRows(t *testing.T) {
 	sql := ""
 	for _, name := range []string{"0007_reference_data.up.sql", "0009_onboarding.up.sql", "0010_real_estate_roles.up.sql", "0012_locations.up.sql", "0013_uk_short_stays.up.sql", "0015_availability.up.sql",
 		"0016_logos_and_trust.up.sql", "0030_agent_crm.up.sql", "0032_venue_hourly.up.sql", "0037_maintenance.up.sql",
-		"0038_inspections.up.sql"} {
+		"0038_inspections.up.sql", "0046_developments.up.sql"} {
 		raw, err := os.ReadFile(filepath.Join("..", "..", "migrations", name))
 		if err != nil {
 			t.Fatal(err)

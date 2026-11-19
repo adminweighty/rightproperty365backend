@@ -70,6 +70,10 @@ type MemoryDeps struct {
 	// ForgetLegal unlinks the user as creator and publisher of legal
 	// document versions (API 0.43.0). Their acceptances are kept.
 	ForgetLegal func(userID uuid.UUID, deletedName string)
+	// ForgetDevelopments unlinks the user from the development projects
+	// (creator, submitter, reviewer, photo uploader; API 0.44.0). The
+	// projects stay with their organisation (nil: nothing to do).
+	ForgetDevelopments func(userID uuid.UUID)
 	// Now is the clock used for listing expiry in the detail (nil: time.Now).
 	Now func() time.Time
 }
@@ -340,6 +344,9 @@ func (s *MemoryStore) Delete(ctx context.Context, d Deletion) (Deleted, error) {
 	}
 	if s.deps.ForgetLegal != nil {
 		s.deps.ForgetLegal(d.UserID, DeletedName)
+	}
+	if s.deps.ForgetDevelopments != nil {
+		s.deps.ForgetDevelopments(d.UserID)
 	}
 	// Marketing consent records (API 0.37.1): deleted with the account.
 	s.deps.Identity.DeleteMarketingConsents(d.UserID)

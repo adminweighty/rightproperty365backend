@@ -89,6 +89,9 @@ func outboxPayload(enq NewEnquiry) ([]byte, error) {
 		"status":         enq.Status,
 		"created_at":     enq.CreatedAt,
 	}
+	if enq.Development != nil {
+		payload["development_id"] = enq.Development.ID
+	}
 	if enq.Recipient != nil {
 		payload["recipient_organisation_id"] = enq.Recipient.OrganisationID
 		if enq.Recipient.UserID != nil {

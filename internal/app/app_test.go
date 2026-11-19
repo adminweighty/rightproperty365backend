@@ -28,6 +28,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/availability"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/crm"
+	"rightproperty365.com/backend/internal/modules/developments"
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/health"
 	"rightproperty365.com/backend/internal/modules/identity"
@@ -300,6 +301,9 @@ type env struct {
 	// packages holds the listing packages (the samples: Starter default,
 	// Business, Professional in ZW and GB; Sample Estates on Business in ZW).
 	packages *packages.MemoryStore
+	// developments holds the development showcase (empty unless a test
+	// seeds the samples: seedDevelopments).
+	developments *developments.MemoryStore
 	// inbox holds devices, in-app notifications and preferences (empty).
 	inbox    *inapp.MemoryStore
 	inboxSvc *inapp.Service
@@ -453,6 +457,7 @@ func newEnvWith(t *testing.T, mutate func(*config.Config), scanner malware.Scann
 		t.Fatal(err)
 	}
 	e.saved = saved.NewMemoryStore()
+	e.developments = developments.NewMemoryStore()
 	e.inbox = inapp.NewMemoryStore()
 	e.inboxSvc = inapp.NewService(e.inbox, "log", logger, func() time.Time { return e.now })
 	e.analytics = analytics.NewMemoryStore()
@@ -470,8 +475,9 @@ func newEnvWith(t *testing.T, mutate func(*config.Config), scanner malware.Scann
 			e.reviews.ForgetUser(u, name)
 			e.enquiries.ForgetUser(u)
 		},
-		ForgetPackages: e.packages.ForgetUser,
-		Now:            func() time.Time { return e.now }})
+		ForgetPackages:     e.packages.ForgetUser,
+		ForgetDevelopments: e.developments.ForgetUser,
+		Now:                func() time.Time { return e.now }})
 	var files storage.Storage = e.files
 	if scanner != nil {
 		e.guard = malware.NewGuard(e.files, scanner, logging.New(e.logs, slog.LevelInfo, "api", cfg.Env))
@@ -511,6 +517,7 @@ func newEnvWith(t *testing.T, mutate func(*config.Config), scanner malware.Scann
 		Reviews:      e.reviews,
 		Packages:     e.packages,
 		Inbox:        e.inboxSvc,
+		Developments: e.developments,
 		Now:          func() time.Time { return e.now },
 		Hasher:       &hasher,
 	})

@@ -101,6 +101,12 @@ func run() error {
 	if err := devseed.SeedPostgresLegalTax(ctx, pool, time.Now()); err != nil {
 		return err
 	}
+	// The development showcase samples (needs migration 0046): Borrowdale
+	// Heights (published, with a linked listing) and a draft, of Sample
+	// Developments. Re-runnable.
+	if err := devseed.SeedPostgresDevelopments(ctx, pool, time.Now()); err != nil {
+		return err
+	}
 	// admin.mfa@example.test enrolled in MFA with the fixed development
 	// secret (needs migration 0042), sealed with MFA_ENCRYPTION_KEY or, in
 	// development without one, the development key. Without a key outside

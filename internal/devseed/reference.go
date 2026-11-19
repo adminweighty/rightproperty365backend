@@ -204,6 +204,8 @@ func ReferenceItems() map[string][]reference.Item {
 	addCRMReference(sets)
 	// The inspection checklist templates (migration 0038).
 	sets[reference.SetInspectionChecklistTemplates] = InspectionTemplateRows()
+	// The development amenities (migration 0046).
+	sets[reference.SetDevelopmentAmenities] = DevelopmentAmenityRows()
 	return sets
 }
 

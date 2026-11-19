@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.43.0
+  version: 0.44.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,25 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Development and investment showcase (new in 0.44.0, BR-019, FR-048)
+    - Developers (organisations with a `developers` directory profile) show new-development
+      projects: phases, unit types (bedrooms, bathrooms, size range, price from–to or "price on
+      request", units in all and available), photos (the listing photo pipeline, scanned for
+      malware), a YouTube tour, amenities (reference set `development_amenities`) and investment
+      highlights that are **always framed as the developer's own statements**
+      (`stated_by: DEVELOPER` with a disclaimer), never as advice.
+    - Public: `GET /v1/developments` (cacheable list) and `GET /v1/developments/{market}/{slug}`;
+      a developer's directory profile gains `projects`; `GET /v1/sitemap` gains `developments`.
+      **No contact details anywhere** (no phone, email or street address is stored); free text with
+      an email address or phone number is refused.
+    - Enquire: `POST /v1/business-enquiries` gains optional `development` ({market, slug,
+      unit_type_id}); with it `recipient` may be omitted. Inbox items gain `development`.
+    - Developer side: `/v1/agent/organisations/{id}/developments` (OWNER, MANAGER, AGENT change;
+      STAFF read; 404 `DEVELOPMENT_NOT_FOUND` for anybody else). Moderation DRAFT → PENDING_REVIEW
+      → PUBLISHED or REJECTED, reviewed at `/v1/admin/developments` by the listing reviewers, every
+      decision in the admin audit (`DEVELOPMENT_APPROVED` / `DEVELOPMENT_REJECTED`).
+    - Not in Elasticsearch: Postgres queries only (no reindex).
 
     Per-market legal documents, tax rules and translations (new in 0.43.0, BR-001)
     - **Structure only. No legal text here is final or legal advice.** Production starts with no
@@ -1051,6 +1070,10 @@ tags:
     description: Tax rules per market (new in 0.43.0). Stored and looked up; applied nowhere yet.
   - name: i18n
     description: Languages and the message catalogue (new in 0.43.0; English only).
+  - name: developments
+    description: |
+      The development and investment showcase (new in 0.44.0, BR-019 / FR-048): developers' new-development
+      projects with phases, unit types and linked listings; enquiry-only contact; reviewed before they are public.
   - name: reports
     description: Administrators' counts and CSV exports (new in 0.25.0), and the request inbox's lead funnel and response-time KPIs (new in 0.38.0).
 
@@ -3319,6 +3342,406 @@ paths:
         "504":
           $ref: "#/components/responses/Timeout"
 
+  /v1/developments:
+    get:
+      tags: [developments]
+      operationId: listDevelopments
+      summary: Public development projects (new in 0.44.0)
+      description: |
+        PUBLISHED projects of public developer profiles (ACTIVE and verified) of ACTIVE organisations,
+        most recently published first. No contact details. Cacheable like the catalogue.
+      parameters:
+        - { name: market, in: query, schema: { type: string }, description: "A country code (any case); 400 when unknown." }
+        - { name: city, in: query, schema: { type: string }, description: "A `cities` reference code; 400 when unknown." }
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/DevelopmentStatus" } }
+        - { name: q, in: query, schema: { type: string, maxLength: 100 }, description: "Matches the name, summary, description, city and suburb." }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 48, default: 12 } }
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: One page.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+            Cache-Control: { $ref: "#/components/headers/CatalogueCacheControl" }
+          content: { application/json: { schema: { $ref: "#/components/schemas/DevelopmentPage" } } }
+        "304": { $ref: "#/components/responses/NotModified" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "500": { $ref: "#/components/responses/InternalError" }
+  /v1/developments/{market}/{slug}:
+    parameters:
+      - { name: market, in: path, required: true, schema: { type: string, pattern: "^[A-Za-z]{2}$" } }
+      - { name: slug, in: path, required: true, schema: { type: string, maxLength: 80 } }
+    get:
+      tags: [developments]
+      operationId: getDevelopment
+      summary: A public development project page (new in 0.44.0)
+      description: |
+        Phases with unit types, the linked listings that are public right now (`available_units`), and the
+        developer card (kind, slug, name, verified, logo: no contact details). Enquire with
+        `POST /v1/business-enquiries` and `development`.
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: The project.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+            Cache-Control: { $ref: "#/components/headers/CatalogueCacheControl" }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [development]
+                properties:
+                  development: { $ref: "#/components/schemas/DevelopmentDetail" }
+        "304": { $ref: "#/components/responses/NotModified" }
+        "404": { description: "`DEVELOPMENT_NOT_FOUND` (unknown, not published, or its developer is not public).", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+  /v1/development-photos/{photoId}/{size}:
+    parameters:
+      - { name: photoId, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: size, in: path, required: true, schema: { type: string, enum: [large, medium, small] } }
+      - { name: v, in: query, schema: { type: string }, description: The photo's version (in its URL). }
+    get:
+      tags: [developments]
+      operationId: getDevelopmentPhoto
+      summary: One size of a development photo (new in 0.44.0)
+      description: |
+        As a listing photo: public (cached a year with `v`) while the project is public and the photo approved;
+        otherwise only for the organisation's members and the reviewers (`private, no-store`). JPEG.
+      responses:
+        "200": { description: The JPEG., content: { image/jpeg: { schema: { type: string, format: binary } } } }
+        "304": { $ref: "#/components/responses/NotModified" }
+        "404": { description: "`PHOTO_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+  /v1/agent/organisations/{id}/developments:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: "An organisation the caller is a member of. Anybody else: 404 DEVELOPMENT_NOT_FOUND on every route below." }
+    get:
+      tags: [developments]
+      operationId: listOrganisationDevelopments
+      summary: The organisation's projects, any status (any member; new in 0.44.0)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { description: The projects., content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: "#/components/schemas/ManagedDevelopment" } } } } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/DevelopmentNotFound" }
+    post:
+      tags: [developments]
+      operationId: createDevelopment
+      summary: Start a project of the organisation's developer profile (OWNER, MANAGER, AGENT; new in 0.44.0)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/DevelopmentFields" } } } }
+      responses:
+        "201": { $ref: "#/components/responses/ManagedDevelopment" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/DevelopmentNotFound" }
+        "409": { $ref: "#/components/responses/DevelopmentConflict" }
+  /v1/agent/organisations/{id}/developments/{developmentId}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: developmentId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [developments]
+      operationId: getOrganisationDevelopment
+      summary: One project (any member; new in 0.44.0)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/ManagedDevelopment" }
+        "404": { $ref: "#/components/responses/DevelopmentNotFound" }
+    patch:
+      tags: [developments]
+      operationId: updateDevelopment
+      summary: Change a project's fields (DRAFT or REJECTED only; 409 DEVELOPMENT_LOCKED otherwise)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/DevelopmentFields" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/ManagedDevelopment" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/DevelopmentNotFound" }
+        "409": { $ref: "#/components/responses/DevelopmentConflict" }
+    delete:
+      tags: [developments]
+      operationId: deleteDevelopment
+      summary: Delete a DRAFT or REJECTED project
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "204": { description: Deleted. }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/DevelopmentNotFound" }
+        "409": { $ref: "#/components/responses/DevelopmentConflict" }
+  /v1/agent/organisations/{id}/developments/{developmentId}/submit:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: developmentId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [developments]
+      operationId: submitDevelopment
+      summary: DRAFT / REJECTED → PENDING_REVIEW
+      description: Needs a summary, a description, a city, at least one photo with alt text and one phase with a unit type (422 `DEVELOPMENT_INCOMPLETE`, `fields` names what is missing).
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/ManagedDevelopment" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/DevelopmentNotFound" }
+        "409": { $ref: "#/components/responses/DevelopmentConflict" }
+        "422": { description: "`DEVELOPMENT_INCOMPLETE`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+  /v1/agent/organisations/{id}/developments/{developmentId}/withdraw:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: developmentId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [developments]
+      operationId: withdrawDevelopment
+      summary: PENDING_REVIEW / PUBLISHED → DRAFT (no longer public; edit and submit again)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/ManagedDevelopment" }
+        "404": { $ref: "#/components/responses/DevelopmentNotFound" }
+        "409": { $ref: "#/components/responses/DevelopmentConflict" }
+  /v1/agent/organisations/{id}/developments/{developmentId}/phases:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: developmentId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [developments]
+      operationId: addDevelopmentPhase
+      summary: Add a phase (any moderation status; at most 10)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/DevelopmentPhaseFields" } } } }
+      responses:
+        "201": { $ref: "#/components/responses/ManagedDevelopment" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "404": { $ref: "#/components/responses/DevelopmentNotFound" }
+  /v1/agent/organisations/{id}/developments/{developmentId}/phases/{phaseId}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: developmentId, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: phaseId, in: path, required: true, schema: { type: string, format: uuid } }
+    patch:
+      tags: [developments]
+      operationId: updateDevelopmentPhase
+      summary: Change a phase
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/DevelopmentPhaseFields" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/ManagedDevelopment" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "404": { $ref: "#/components/responses/DevelopmentNotFound" }
+    delete:
+      tags: [developments]
+      operationId: deleteDevelopmentPhase
+      summary: Delete a phase and its unit types
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/ManagedDevelopment" }
+        "404": { $ref: "#/components/responses/DevelopmentNotFound" }
+  /v1/agent/organisations/{id}/developments/{developmentId}/phases/{phaseId}/unit-types:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: developmentId, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: phaseId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [developments]
+      operationId: addDevelopmentUnitType
+      summary: Add a unit type to a phase (at most 20 per phase)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/DevelopmentUnitTypeFields" } } } }
+      responses:
+        "201": { $ref: "#/components/responses/ManagedDevelopment" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "404": { $ref: "#/components/responses/DevelopmentNotFound" }
+  /v1/agent/organisations/{id}/developments/{developmentId}/unit-types/{unitTypeId}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: developmentId, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: unitTypeId, in: path, required: true, schema: { type: string, format: uuid } }
+    patch:
+      tags: [developments]
+      operationId: updateDevelopmentUnitType
+      summary: Change a unit type (`phase_id` moves it to another phase of the project)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/DevelopmentUnitTypeFields" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/ManagedDevelopment" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "404": { $ref: "#/components/responses/DevelopmentNotFound" }
+    delete:
+      tags: [developments]
+      operationId: deleteDevelopmentUnitType
+      summary: Delete a unit type (its listing links stay, without a unit type)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/ManagedDevelopment" }
+        "404": { $ref: "#/components/responses/DevelopmentNotFound" }
+  /v1/agent/organisations/{id}/developments/{developmentId}/photos:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: developmentId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [developments]
+      operationId: addDevelopmentPhoto
+      summary: Upload a photo (the listing photo rules; scanned for malware; DRAFT / REJECTED only)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: { type: object, required: [file], properties: { file: { type: string, format: binary, description: "JPEG, PNG or WebP, at most 15 MB, longer side at least 800 px." } } }
+      responses:
+        "201": { $ref: "#/components/responses/ManagedDevelopment" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "404": { $ref: "#/components/responses/DevelopmentNotFound" }
+        "409": { $ref: "#/components/responses/DevelopmentConflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "422": { $ref: "#/components/responses/UploadInfected" }
+        "503": { $ref: "#/components/responses/ScannerUnavailable" }
+  /v1/agent/organisations/{id}/developments/{developmentId}/photos/order:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: developmentId, in: path, required: true, schema: { type: string, format: uuid } }
+    put:
+      tags: [developments]
+      operationId: orderDevelopmentPhotos
+      summary: Put the photos in order (every photo exactly once)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [photo_ids], properties: { photo_ids: { type: array, items: { type: string, format: uuid } } } } } } }
+      responses:
+        "200": { $ref: "#/components/responses/ManagedDevelopment" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "404": { $ref: "#/components/responses/DevelopmentNotFound" }
+        "409": { $ref: "#/components/responses/DevelopmentConflict" }
+  /v1/agent/organisations/{id}/developments/{developmentId}/photos/{photoId}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: developmentId, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: photoId, in: path, required: true, schema: { type: string, format: uuid } }
+    patch:
+      tags: [developments]
+      operationId: updateDevelopmentPhoto
+      summary: "Change a photo's description: {\"alt\": \"...\"}"
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [alt], properties: { alt: { type: string, maxLength: 250 } } } } } }
+      responses:
+        "200": { $ref: "#/components/responses/ManagedDevelopment" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "404": { $ref: "#/components/responses/DevelopmentNotFound" }
+        "409": { $ref: "#/components/responses/DevelopmentConflict" }
+    delete:
+      tags: [developments]
+      operationId: deleteDevelopmentPhoto
+      summary: Delete a photo and its files
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/ManagedDevelopment" }
+        "404": { $ref: "#/components/responses/DevelopmentNotFound" }
+        "409": { $ref: "#/components/responses/DevelopmentConflict" }
+  /v1/agent/organisations/{id}/developments/{developmentId}/listings/{listingId}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: developmentId, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: listingId, in: path, required: true, schema: { type: string, format: uuid }, description: "A listing of the same organisation (404 LISTING_NOT_FOUND otherwise)." }
+    put:
+      tags: [developments]
+      operationId: linkDevelopmentListing
+      summary: Show a listing as an available unit (or change its unit type)
+      description: A listing is in at most one project (409 `LISTING_ALREADY_LINKED`). Shown publicly only while the listing is public.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, properties: { unit_type_id: { type: [string, "null"], format: uuid } } } } } }
+      responses:
+        "200": { $ref: "#/components/responses/ManagedDevelopment" }
+        "404": { $ref: "#/components/responses/DevelopmentNotFound" }
+        "409": { $ref: "#/components/responses/DevelopmentConflict" }
+    delete:
+      tags: [developments]
+      operationId: unlinkDevelopmentListing
+      summary: Remove a listing from the project
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/ManagedDevelopment" }
+        "404": { $ref: "#/components/responses/DevelopmentNotFound" }
+  /v1/agent/organisations/{id}/developments/{developmentId}/enquiries:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: developmentId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [developments, business-enquiries]
+      operationId: developmentEnquiries
+      summary: The business enquiries about the project (OWNER and MANAGER only; 403 for AGENT and STAFF)
+      description: The inbox items (with the customers' contact details) whose `development` is this project, newest first, at most 100.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { description: The enquiries., content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { type: object } } } } } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/DevelopmentNotFound" }
+  /v1/admin/developments:
+    get:
+      tags: [developments]
+      operationId: adminDevelopmentQueue
+      summary: The development review queue (the listing reviewers; MARKET_ADMIN its own markets; new in 0.44.0)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [DRAFT, PENDING_REVIEW, PUBLISHED, REJECTED], default: PENDING_REVIEW } }
+        - { name: market, in: query, schema: { type: string } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 48, default: 12 } }
+      responses:
+        "200":
+          description: Oldest submission first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page, page_size, total, total_pages]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/ManagedDevelopment" } }
+                  page: { type: integer }
+                  page_size: { type: integer }
+                  total: { type: integer }
+                  total_pages: { type: integer }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /v1/admin/developments/{developmentId}:
+    parameters:
+      - { name: developmentId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [developments]
+      operationId: adminGetDevelopment
+      summary: One project as its reviewer sees it
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/ManagedDevelopment" }
+        "404": { $ref: "#/components/responses/DevelopmentNotFound" }
+  /v1/admin/developments/{developmentId}/approve:
+    parameters:
+      - { name: developmentId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [developments]
+      operationId: approveDevelopment
+      summary: PENDING_REVIEW → PUBLISHED (its photos become public; audited DEVELOPMENT_APPROVED)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/ManagedDevelopment" }
+        "403": { description: "`SELF_REVIEW_FORBIDDEN` (a member of the organisation, its creator or submitter) or `FORBIDDEN`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "404": { $ref: "#/components/responses/DevelopmentNotFound" }
+        "409": { $ref: "#/components/responses/DevelopmentConflict" }
+  /v1/admin/developments/{developmentId}/reject:
+    parameters:
+      - { name: developmentId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [developments]
+      operationId: rejectDevelopment
+      summary: PENDING_REVIEW → REJECTED with the reason (audited DEVELOPMENT_REJECTED, reason kept)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [reason], additionalProperties: false, properties: { reason: { type: string, minLength: 1, maxLength: 1000 } } } } } }
+      responses:
+        "200": { $ref: "#/components/responses/ManagedDevelopment" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "403": { description: "`SELF_REVIEW_FORBIDDEN` or `FORBIDDEN`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "404": { $ref: "#/components/responses/DevelopmentNotFound" }
+        "409": { $ref: "#/components/responses/DevelopmentConflict" }
   /v1/sitemap:
     get:
       tags: [directory]
@@ -3344,9 +3767,20 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [listings, profiles]
+                required: [listings, profiles, developments]
                 additionalProperties: false
                 properties:
+                  developments:
+                    type: array
+                    description: "Every public development project (new in 0.44.0). Suggested web page: `/developments/{market lower-case}/{slug}`."
+                    items:
+                      type: object
+                      required: [market, slug, updated_at]
+                      additionalProperties: false
+                      properties:
+                        market: { type: string, pattern: "^[A-Z]{2}$" }
+                        slug: { type: string }
+                        updated_at: { type: string, format: date-time }
                   listings:
                     type: array
                     items:
@@ -16420,6 +16854,26 @@ components:
         type: string
 
   responses:
+    ManagedDevelopment:
+      description: The project (`private, no-store`; new in 0.44.0).
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [development]
+            properties:
+              development: { $ref: "#/components/schemas/ManagedDevelopment" }
+    DevelopmentNotFound:
+      description: |
+        `DEVELOPMENT_NOT_FOUND` (not a project of an organisation the caller is a member of: another organisation, a consumer,
+        an administrator; answered before any validation), `PHASE_NOT_FOUND`, `UNIT_TYPE_NOT_FOUND`, `PHOTO_NOT_FOUND` or
+        `LISTING_NOT_FOUND`.
+      content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } }
+    DevelopmentConflict:
+      description: |
+        `DEVELOPMENT_LOCKED` (PENDING_REVIEW / PUBLISHED: withdraw first), `DEVELOPMENT_STATE_CONFLICT`, `DEVELOPMENT_CHANGED`
+        (a concurrent change), `DEVELOPMENT_SLUG_TAKEN`, `NO_DEVELOPER_PROFILE`, `LISTING_ALREADY_LINKED` or `PHOTO_LIMIT_REACHED`.
+      content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } }
     RentNotFound:
       description: |
         `BOOK_NOT_FOUND` (answered before any validation), `TENANCY_NOT_FOUND`, `RENT_DUE_NOT_FOUND` or `RENT_RECEIPT_NOT_FOUND`.
@@ -18919,6 +19373,11 @@ components:
               description: The profile's public listings, newest first. Empty for kinds that own no listings.
               items:
                 $ref: "#/components/schemas/Listing"
+            projects:
+              type: array
+              description: "Kind `developers` only (absent for every other kind; new in 0.44.0): the developer's public development projects, most recently published first."
+              items:
+                $ref: "#/components/schemas/DevelopmentCard"
 
     DirectoryPage:
       type: object
@@ -19929,11 +20388,247 @@ components:
         and Venues, Property Services).
       examples: [service-providers]
 
+    DevelopmentStatus:
+      type: string
+      description: A project's or phase's construction status (new in 0.44.0).
+      enum: [PLANNED, UNDER_CONSTRUCTION, SELLING, COMPLETED, SOLD_OUT]
+    DevelopmentCompletion:
+      type: object
+      description: 'A completion estimate: a quarter ("2027-Q3", label "Q3 2027") or a date ("2027-06-30", label "30 June 2027").'
+      required: [kind, value, label]
+      additionalProperties: false
+      properties:
+        kind: { type: string, enum: [QUARTER, DATE] }
+        value: { type: string }
+        label: { type: string }
+    DevelopmentLocation:
+      type: object
+      description: Country, region (from the city), city, suburb and coordinates (rounded to 2 decimals publicly when APPROXIMATE). Never a street address.
+      required: [country, region, city, suburb, coordinates]
+      additionalProperties: false
+      properties:
+        country: { $ref: "#/components/schemas/Country" }
+        region: { oneOf: [{ type: "null" }, { $ref: "#/components/schemas/Place" }] }
+        city: { $ref: "#/components/schemas/Place" }
+        suburb: { oneOf: [{ type: "null" }, { $ref: "#/components/schemas/Place" }] }
+        coordinates: { oneOf: [{ type: "null" }, { $ref: "#/components/schemas/ListingLocation" }] }
+    DevelopmentPrice:
+      type: object
+      description: 'Decimal strings. On request: {"on_request": true, "from": null, "to": null, "currency": null}. "to" may be null with a "from".'
+      required: [on_request, from, to, currency]
+      additionalProperties: false
+      properties:
+        on_request: { type: boolean }
+        from: { type: [string, "null"], examples: ["185000.00"] }
+        to: { type: [string, "null"] }
+        currency: { type: [string, "null"], pattern: "^[A-Z]{3}$" }
+    DevelopmentUnitType:
+      type: object
+      required: [id, name, bedrooms, bathrooms, size_m2, price, units_total, units_available, available_listing_count]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        bedrooms: { type: [integer, "null"] }
+        bathrooms: { type: [integer, "null"] }
+        size_m2:
+          oneOf:
+            - type: "null"
+            - type: object
+              required: [min, max]
+              properties: { min: { type: [integer, "null"] }, max: { type: [integer, "null"] } }
+        price: { $ref: "#/components/schemas/DevelopmentPrice" }
+        units_total: { type: [integer, "null"] }
+        units_available: { type: [integer, "null"] }
+        available_listing_count: { type: integer, description: Its linked listings that are public right now. }
+        phase_id: { type: string, format: uuid, description: Manage views only. }
+        position: { type: integer, description: Manage views only. }
+    DevelopmentPhase:
+      type: object
+      required: [id, name, status, completion, unit_types]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        status: { $ref: "#/components/schemas/Coded" }
+        completion: { oneOf: [{ type: "null" }, { $ref: "#/components/schemas/DevelopmentCompletion" }] }
+        position: { type: integer, description: Manage views only. }
+        unit_types: { type: array, items: { $ref: "#/components/schemas/DevelopmentUnitType" } }
+    DevelopmentHighlights:
+      type: object
+      description: The developer's own investment statements. Always shown with `disclaimer`; never advice.
+      required: [stated_by, disclaimer, items]
+      additionalProperties: false
+      properties:
+        stated_by: { type: string, const: DEVELOPER }
+        disclaimer: { type: string }
+        items:
+          type: array
+          maxItems: 6
+          items: { type: object, required: [label, value], properties: { label: { type: string }, value: { type: string } } }
+    DevelopmentCard:
+      type: object
+      description: A public project in a list and on its developer's profile. No contact details.
+      required: [id, market, slug, name, summary, status, completion, location, cover_photo, price_from, price_on_request, unit_type_count, developer, published_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        market: { $ref: "#/components/schemas/Country" }
+        slug: { type: string }
+        name: { type: string }
+        summary: { type: string }
+        status: { $ref: "#/components/schemas/Coded" }
+        completion: { oneOf: [{ type: "null" }, { $ref: "#/components/schemas/DevelopmentCompletion" }] }
+        location: { $ref: "#/components/schemas/DevelopmentLocation" }
+        cover_photo: { oneOf: [{ type: "null" }, { $ref: "#/components/schemas/Photo" }] }
+        price_from: { oneOf: [{ type: "null" }, { $ref: "#/components/schemas/Money" }], description: The lowest "from" price of the unit types with a price. }
+        price_on_request: { type: boolean, description: True when no unit type has a price. }
+        unit_type_count: { type: integer }
+        developer: { $ref: "#/components/schemas/ProfileRef" }
+        published_at: { type: [string, "null"], format: date-time }
+        updated_at: { type: string, format: date-time }
+    DevelopmentDetail:
+      allOf:
+        - $ref: "#/components/schemas/DevelopmentCard"
+        - type: object
+          required: [description, amenities, investment_highlights, photos, video, phases, available_units]
+          properties:
+            description: { type: string }
+            amenities: { type: array, items: { $ref: "#/components/schemas/Coded" } }
+            investment_highlights: { $ref: "#/components/schemas/DevelopmentHighlights" }
+            photos: { type: array, items: { $ref: "#/components/schemas/Photo" } }
+            video: { oneOf: [{ type: "null" }, { $ref: "#/components/schemas/ListingVideo" }] }
+            phases: { type: array, items: { $ref: "#/components/schemas/DevelopmentPhase" } }
+            available_units:
+              type: array
+              description: The linked listings that are public right now.
+              items:
+                type: object
+                required: [unit_type_id, listing]
+                properties:
+                  unit_type_id: { type: [string, "null"], format: uuid }
+                  listing: { $ref: "#/components/schemas/Listing" }
+    DevelopmentPage:
+      type: object
+      required: [items, page, page_size, total, total_pages]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/DevelopmentCard" } }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer }
+        total_pages: { type: integer }
+    DevelopmentFields:
+      type: object
+      description: |
+        Create (`name` required) or PATCH (only what changes; null clears). Free text is plain text without
+        HTML and WITHOUT contact details (an email address, a phone number written with + or a leading 0, a
+        WhatsApp link: 400). Locked while PENDING_REVIEW or PUBLISHED (409 DEVELOPMENT_LOCKED).
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        slug: { type: [string, "null"], maxLength: 80, pattern: "^[a-z0-9]+(-[a-z0-9]+)*$", description: "Default: from the name (a suffix -2, -3 when taken). Unique per market (409 DEVELOPMENT_SLUG_TAKEN when given and taken). Fixed once published." }
+        market: { type: string, description: Create only. Default the developer profile's country. }
+        status: { $ref: "#/components/schemas/DevelopmentStatus" }
+        completion_estimate: { type: [string, "null"], examples: ["2027-Q3", "2027-06-30"] }
+        summary: { type: [string, "null"], maxLength: 200 }
+        description: { type: [string, "null"], maxLength: 5000 }
+        city: { type: [string, "null"], description: A `cities` code of the market. }
+        suburb: { type: [string, "null"], description: A `suburbs` code of the city. }
+        city_name: { type: [string, "null"], maxLength: 80, description: Free text, only in a country without reference cities. }
+        latitude: { type: [number, "null"] }
+        longitude: { type: [number, "null"] }
+        location_precision: { type: string, enum: [EXACT, APPROXIMATE] }
+        amenities: { type: [array, "null"], maxItems: 30, items: { type: string }, description: "`development_amenities` codes." }
+        investment_highlights:
+          type: [array, "null"]
+          maxItems: 6
+          items: { type: object, required: [label, value], properties: { label: { type: string, maxLength: 60 }, value: { type: string, maxLength: 120 } } }
+        youtube_url: { type: [string, "null"], description: As a listing's (0.28.0). }
+    DevelopmentPhaseFields:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 80 }
+        status: { $ref: "#/components/schemas/DevelopmentStatus" }
+        completion_estimate: { type: [string, "null"] }
+        position: { type: integer, minimum: 0 }
+    DevelopmentUnitTypeFields:
+      type: object
+      additionalProperties: false
+      description: A price (`price_from` + `currency`, optional `price_to` >= from) unless `price_on_request` (then all three null).
+      properties:
+        name: { type: string, minLength: 1, maxLength: 80 }
+        phase_id: { type: string, format: uuid, description: PATCH only. Moves the unit type to another phase of the project. }
+        bedrooms: { type: [integer, "null"], minimum: 0, maximum: 50 }
+        bathrooms: { type: [integer, "null"], minimum: 0, maximum: 50 }
+        size_min_m2: { type: [integer, "null"], minimum: 1, maximum: 100000 }
+        size_max_m2: { type: [integer, "null"], minimum: 1, maximum: 100000 }
+        price_on_request: { type: boolean }
+        price_from: { type: [string, "null"], description: Decimal string. }
+        price_to: { type: [string, "null"], description: Decimal string. }
+        currency: { type: [string, "null"], pattern: "^[A-Z]{3}$" }
+        units_total: { type: [integer, "null"], minimum: 0 }
+        units_available: { type: [integer, "null"], minimum: 0 }
+        position: { type: integer, minimum: 0 }
+    ManagedDevelopment:
+      type: object
+      description: A project as its organisation and its reviewers see it (`private, no-store`). Coordinates are the stored ones.
+      required: [id, organisation_id, developer, market, slug, name, summary, description, status, completion, moderation_status, review_reason,
+        public_url_path, location, city_name, amenities, investment_highlights, youtube_url, video, photos, phases, linked_listings, actions,
+        submitted_at, reviewed_at, published_at, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        organisation_id: { type: string, format: uuid }
+        developer: { $ref: "#/components/schemas/ProfileRef" }
+        market: { $ref: "#/components/schemas/Country" }
+        slug: { type: string }
+        name: { type: string }
+        summary: { type: string }
+        description: { type: string }
+        status: { $ref: "#/components/schemas/Coded" }
+        completion: { oneOf: [{ type: "null" }, { $ref: "#/components/schemas/DevelopmentCompletion" }] }
+        moderation_status: { type: string, enum: [DRAFT, PENDING_REVIEW, PUBLISHED, REJECTED] }
+        review_reason: { type: [string, "null"] }
+        public_url_path: { type: [string, "null"], description: "`/v1/developments/{market}/{slug}` while public." }
+        location: { $ref: "#/components/schemas/DevelopmentLocation" }
+        city_name: { type: [string, "null"] }
+        amenities: { type: array, items: { $ref: "#/components/schemas/Coded" } }
+        investment_highlights: { $ref: "#/components/schemas/DevelopmentHighlights" }
+        youtube_url: { type: [string, "null"] }
+        video: { oneOf: [{ type: "null" }, { $ref: "#/components/schemas/ListingVideo" }] }
+        photos:
+          type: array
+          items:
+            allOf:
+              - $ref: "#/components/schemas/Photo"
+              - type: object
+                required: [id, approved, position]
+                properties: { id: { type: string, format: uuid }, approved: { type: boolean }, position: { type: integer } }
+        phases: { type: array, items: { $ref: "#/components/schemas/DevelopmentPhase" } }
+        linked_listings:
+          type: array
+          items:
+            type: object
+            required: [listing_id, unit_type_id, title, slug, reference, status, public]
+            properties:
+              listing_id: { type: string, format: uuid }
+              unit_type_id: { type: [string, "null"], format: uuid }
+              title: { type: string }
+              slug: { type: string }
+              reference: { type: string }
+              status: { type: string }
+              public: { type: boolean }
+        actions: { type: array, items: { type: string, enum: [edit, submit, withdraw, delete] } }
+        submitted_at: { type: [string, "null"], format: date-time }
+        reviewed_at: { type: [string, "null"], format: date-time }
+        published_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
     BusinessEnquiryCreate:
       type: object
       additionalProperties: false
+      description: |
+        `recipient` is required unless `development` is sent (new in 0.44.0): an enquiry about a
+        development project goes to the project's developer, and quotes the project (and the unit
+        type) in the developer's inbox. With both, `recipient` must be the developer (400 `recipient.slug`).
       required:
-        - recipient
         - message
         - preferred_contact_method
         - consent
@@ -19949,6 +20644,15 @@ components:
               type: string
               maxLength: 80
               pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+        development:
+          type: object
+          additionalProperties: false
+          required: [market, slug]
+          description: "New in 0.44.0. A PUBLIC development project (404 DEVELOPMENT_NOT_FOUND otherwise)."
+          properties:
+            market: { type: string, pattern: "^[A-Za-z]{2}$", description: Country code, any case. }
+            slug: { type: string, maxLength: 80, pattern: "^[a-z0-9]+(-[a-z0-9]+)*$" }
+            unit_type_id: { type: [string, "null"], format: uuid, description: "Optional: one of the project's unit types (400 `development.unit_type_id` otherwise)." }
         service:
           type: string
           maxLength: 120
@@ -20032,6 +20736,7 @@ components:
         - status
         - created_at
         - replied_at
+        - development
       additionalProperties: false
       properties:
         enquiry_id:
@@ -20085,6 +20790,27 @@ components:
           type: [string, "null"]
           format: date-time
           description: "When the recipient marked it replied to (new in 0.36.4); null until then."
+        development:
+          description: "New in 0.44.0: the development project the enquiry is about, as named when it was sent (`id` null once the project was deleted); null for other enquiries."
+          oneOf:
+            - type: "null"
+            - type: object
+              required: [id, market, slug, name, unit_type]
+              additionalProperties: false
+              properties:
+                id: { type: [string, "null"], format: uuid }
+                market: { type: string }
+                slug: { type: string }
+                name: { type: string }
+                unit_type:
+                  oneOf:
+                    - type: "null"
+                    - type: object
+                      required: [id, name]
+                      additionalProperties: false
+                      properties:
+                        id: { type: [string, "null"], format: uuid }
+                        name: { type: string }
 
     ListingSummary:
       type: object
