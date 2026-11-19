@@ -179,6 +179,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	if !httpx.DecodeJSON(w, r, &in) {
 		return
 	}
+	in.Source = httpx.ClientSource(r)
 	if err := h.svc.Register(r.Context(), in); err != nil {
 		h.fail(w, r, err)
 		return

@@ -329,6 +329,8 @@ func (s *MemoryStore) Delete(ctx context.Context, d Deletion) (Deleted, error) {
 	if s.deps.ForgetPackages != nil {
 		s.deps.ForgetPackages(d.UserID, DeletedName, d.At)
 	}
+	// Marketing consent records (API 0.37.1): deleted with the account.
+	s.deps.Identity.DeleteMarketingConsents(d.UserID)
 	s.deps.Audit.Append(d.Audit)
 	return out, nil
 }

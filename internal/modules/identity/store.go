@@ -11,7 +11,8 @@ import (
 // session lookups are always by SHA-256 digest; raw tokens are never stored.
 type Store interface {
 	// CreateUser atomically creates the account, its registration consent
-	// record and its account roles. It returns ErrEmailTaken when the email is
+	// record, its marketing consent record when it opts in (context
+	// REGISTRATION) and its account roles. It returns ErrEmailTaken when the email is
 	// already registered.
 	CreateUser(ctx context.Context, u NewUser) error
 
@@ -19,6 +20,8 @@ type Store interface {
 	// account-role selection of an account whose email is still UNVERIFIED and
 	// invalidates its outstanding
 	// verification tokens, so only the most recent registration can complete.
+	// When it changes marketing_opt_in it appends a REGISTRATION marketing
+	// consent record.
 	// It returns ErrNotFound if the account is missing or already verified.
 	UpdatePendingRegistration(ctx context.Context, u NewUser) error
 
@@ -86,6 +89,9 @@ type Store interface {
 	// ApprovedDirectOwners returns the number of ACTIVE accounts whose
 	// PRIVATE_SELLER or LANDLORD role is approved (GET /v1/trust/summary).
 	ApprovedDirectOwners(ctx context.Context) (int, error)
+
+	// MarketingStore records marketing consent (see marketing.go).
+	MarketingStore
 
 	// PeopleStore lists the members of an organisation and counts accounts
 	// (see people.go).

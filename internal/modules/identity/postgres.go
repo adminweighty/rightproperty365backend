@@ -129,6 +129,17 @@ func (s *PostgresStore) CreateUser(ctx context.Context, u NewUser) error {
 		if err := replaceAccountRoles(ctx, tx, u); err != nil {
 			return err
 		}
+		// Opting in at registration is recorded (API 0.37.1); not opting in
+		// writes no record.
+		if u.MarketingOptIn {
+			e, err := registrationMarketingEvent(u)
+			if err != nil {
+				return err
+			}
+			if err := insertMarketingEvent(ctx, tx, e); err != nil {
+				return err
+			}
+		}
 		return insertConsent(ctx, tx, u)
 	})
 }
@@ -136,6 +147,15 @@ func (s *PostgresStore) CreateUser(ctx context.Context, u NewUser) error {
 // UpdatePendingRegistration implements Store.
 func (s *PostgresStore) UpdatePendingRegistration(ctx context.Context, u NewUser) error {
 	return s.inTx(ctx, func(tx pgx.Tx) error {
+		var wasOptedIn bool
+		err := tx.QueryRow(ctx, `SELECT marketing_opt_in FROM users WHERE id = $1 AND email_verified_at IS NULL FOR UPDATE`, u.ID).
+			Scan(&wasOptedIn)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("lock pending user: %w", err)
+		}
 		tag, err := tx.Exec(ctx, `
 			UPDATE users
 			SET full_name = $2, password_hash = $3, marketing_opt_in = $4, updated_at = $5
@@ -146,6 +166,17 @@ func (s *PostgresStore) UpdatePendingRegistration(ctx context.Context, u NewUser
 		}
 		if tag.RowsAffected() == 0 {
 			return ErrNotFound
+		}
+		// A registration that changes the pending account's marketing choice
+		// is recorded (API 0.37.1).
+		if wasOptedIn != u.MarketingOptIn {
+			e, err := registrationMarketingEvent(u)
+			if err != nil {
+				return err
+			}
+			if err := insertMarketingEvent(ctx, tx, e); err != nil {
+				return err
+			}
 		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE email_verification_tokens SET used_at = $2

@@ -14,20 +14,26 @@ import (
 	"rightproperty365.com/backend/internal/platform/httpx"
 )
 
-// Per-IP limit on registering and removing devices, marking notifications
-// read and changing preferences (API 0.35.0), its own bucket: bursts of
-// 60, refilled at 60 per minute. The unread count is read-only and polled
-// every 60 s by the website, so it is not limited here.
+// The /v1/me settings write bucket: registering and removing devices,
+// marking notifications read, changing notification preferences (API
+// 0.35.0) and changing marketing preferences (API 0.37.1) share it: bursts
+// of 60, refilled at 60 per minute, per caller IP (httpx.RateLimiter). The
+// unread count is read-only and polled every 60 s by the website, so it is
+// not limited here.
 const (
 	notificationChangesPerMinute = 60
 	notificationChangesBurst     = 60
 )
 
+// newSettingsLimiter is the shared /v1/me settings write bucket.
+func newSettingsLimiter() *httpx.RateLimiter {
+	return httpx.NewRateLimiter(notificationChangesPerMinute, notificationChangesBurst)
+}
+
 // notificationRoutes mounts the notification centre (API 0.35.0): every
 // route needs a signed-in session (either scope); another user's device or
-// notification is 404.
-func notificationRoutes(r chi.Router, h *inapp.Handler) {
-	limiter := httpx.NewRateLimiter(notificationChangesPerMinute, notificationChangesBurst)
+// notification is 404. Writes use the shared settings bucket.
+func notificationRoutes(r chi.Router, h *inapp.Handler, limiter *httpx.RateLimiter) {
 	r.Route("/me/devices", func(r chi.Router) {
 		r.Use(auth.RequireAuth)
 		r.Get("/", h.Devices)

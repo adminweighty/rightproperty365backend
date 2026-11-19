@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"rightproperty365.com/backend/internal/platform/httpx"
 )
 
 // Notification types. The catalogue below is the order and the labels the
@@ -135,23 +137,17 @@ const (
 	PlatformWeb     = "WEB"
 )
 
-// Preference change sources (from the X-Client header).
+// Preference change sources (from the X-Client header). The mapping is
+// shared with marketing consent and lives in httpx.
 const (
-	SourceWeb = "web"
-	SourceApp = "app"
-	SourceAPI = "api"
+	SourceWeb = httpx.ClientSourceWeb
+	SourceApp = httpx.ClientSourceApp
+	SourceAPI = httpx.ClientSourceAPI
 )
 
-// SourceFromClient maps an X-Client header to a change source.
-func SourceFromClient(h string) string {
-	switch h {
-	case "web":
-		return SourceWeb
-	case "app", "ios", "android":
-		return SourceApp
-	}
-	return SourceAPI
-}
+// SourceFromClient maps an X-Client header to a change source (see
+// httpx.SourceFromClient).
+func SourceFromClient(h string) string { return httpx.SourceFromClient(h) }
 
 // Limits.
 const (

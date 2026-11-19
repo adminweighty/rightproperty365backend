@@ -832,7 +832,19 @@ func NewRouter(d Deps) (http.Handler, error) {
 		r.With(auth.RequireAuth).Get("/me", identityH.Me)
 		// The notification centre: devices, in-app notifications and
 		// preferences (API 0.35.0).
-		notificationRoutes(r, inboxH)
+		settingsLimiter := newSettingsLimiter()
+		notificationRoutes(r, inboxH, settingsLimiter)
+		// Marketing preferences (API 0.37.1): the current choice with its
+		// newest records; a change is recorded with the X-Client source.
+		// Writes share the settings bucket with notification preferences.
+		// One marketing consent wording by version (public, cacheable; rows
+		// never change).
+		r.Get("/marketing-consent-texts/{version}", identityH.MarketingConsentText)
+		r.Route("/me/marketing-preferences", func(r chi.Router) {
+			r.Use(httpx.PrivateNoStore, auth.RequireAuth)
+			r.Get("/", identityH.MarketingPreferences)
+			r.With(settingsLimiter.Middleware).Put("/", identityH.SetMarketingPreferences)
+		})
 		// Deleting one's own account, confirmed with the password. It shares
 		// the sign-in bucket (a password is checked).
 		r.With(auth.RequireAuth, authLimiter.Middleware).Delete("/me", accountsH.DeleteSelf)

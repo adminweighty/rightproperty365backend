@@ -43,6 +43,9 @@ type RegisterInput struct {
 	Roles json.RawMessage `json:"roles"`
 	// Captcha is the answer to a question from GET /v1/auth/captcha. Required.
 	Captcha *CaptchaInput `json:"captcha"`
+	// Source is set by the handler from X-Client (web, app or api): it is
+	// recorded with a marketing opt-in. Never read from the body.
+	Source string `json:"-"`
 }
 
 // Messages for the "roles" field. Plain language: they are shown to people.
@@ -343,7 +346,8 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) error {
 	}
 	nu := NewUser{
 		Name: name, Email: email, PasswordHash: passwordHash,
-		MarketingOptIn: in.MarketingOptIn, PrivacyVersion: privacyVersion, AccountRoles: accountRoles, CreatedAt: now,
+		MarketingOptIn: in.MarketingOptIn, MarketingSource: in.Source, MarketingConsentVersion: CurrentMarketingConsentVersion,
+		PrivacyVersion: privacyVersion, AccountRoles: accountRoles, CreatedAt: now,
 	}
 
 	existing, err := s.store.UserByEmail(ctx, email)

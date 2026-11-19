@@ -109,6 +109,14 @@ Every other business profile has an owner too, at `<profile slug>@example.test` 
   `DEV MAIL (not sent): agreement-signing-code`, or set `AUTH_DEMO_CODE`).
 - Seeded in memory by the API in development and by `cmd/seed` (needs migrations 0022 and 0023).
 
+## Marketing preferences (API 0.37.1)
+
+No account changed. `GET /v1/me/marketing-preferences` shows:
+
+- `consumer@example.test`: opted in at registration (web, `marketing-2026-01`), one record.
+- `tenant@example.test`: opted in at registration (web), then opted out from the app: opted out, two records.
+- Every other sample account: never chose (`marketing_opt_in` false, no record).
+
 ## Listing packages (API 0.37.0)
 
 No account changed. The development seed adds Starter (20 active listings, the default), Business (40) and

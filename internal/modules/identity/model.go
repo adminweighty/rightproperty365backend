@@ -251,7 +251,13 @@ type NewUser struct {
 	Email          string
 	PasswordHash   string
 	MarketingOptIn bool
-	PrivacyVersion string
+	// MarketingSource is where the registration came from (web, app or api,
+	// from X-Client); "" is api. MarketingConsentVersion is the opt-in
+	// wording agreed to; "" is the current one. Both are recorded only when
+	// MarketingOptIn changes the account's value (API 0.37.1).
+	MarketingSource         string
+	MarketingConsentVersion string
+	PrivacyVersion          string
 	// AccountRoles is the validated role selection with initial statuses.
 	AccountRoles []AccountRole
 	// EmailVerifiedAt is nil for normal registration (set by seeds only).

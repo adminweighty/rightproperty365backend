@@ -13,6 +13,7 @@ import (
 
 	"rightproperty365.com/backend/internal/modules/applications"
 	"rightproperty365.com/backend/internal/modules/appointments"
+	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/inapp"
 	"rightproperty365.com/backend/internal/modules/inspections"
 	"rightproperty365.com/backend/internal/modules/listings"
@@ -476,6 +477,11 @@ func (s *PostgresStore) Delete(ctx context.Context, d Deletion) (Deleted, error)
 		// Listing packages (migration 0040): the person's own current and
 		// scheduled assignments end; they are unlinked as an assigner.
 		if err := packages.ForgetUserTx(ctx, tx, d.UserID, DeletedName, d.At); err != nil {
+			return err
+		}
+		// Marketing consent records (migration 0041): deleted (the users row
+		// above already has marketing_opt_in false).
+		if err := identity.DeleteMarketingConsentTx(ctx, tx, d.UserID); err != nil {
 			return err
 		}
 		return adminaudit.Insert(ctx, tx, d.Audit)

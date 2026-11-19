@@ -467,6 +467,13 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 		return err
 	}
 
+	// Marketing consent (needs migration 0041): consumer@example.test opted
+	// in at registration; tenant@example.test opted in, then out from the
+	// app; every other sample account never chose.
+	if err := seedPostgresMarketing(ctx, tx, now); err != nil {
+		return err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}

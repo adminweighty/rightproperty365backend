@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.37.0
+  version: 0.37.1
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,26 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Marketing preferences (new in 0.37.1)
+    - **`/v1/me/marketing-preferences`** (BR-017, FR-003): the signed-in person's marketing choice
+      (`marketing_opt_in`, false for an account that never chose) with the newest consent records
+      (at most 20, newest first). `PUT` with the value the account already has writes nothing and
+      returns the state unchanged, including `changed_at`.
+    - **Consent wording** comes from the API: `consent_text` (`version`, `text`, `status`) is the
+      wording of `current_consent_text_version` (`marketing-2026-01`), so no client hard-codes it.
+      `GET /v1/marketing-consent-texts/{version}` (public) serves any version, for older records.
+      Wording rows never change: new wording is a new version. **`marketing-2026-01` is `DRAFT`**:
+      it awaits the owner's legal wording, and approving it means inserting a new version with
+      status `APPROVED`. An opt-in naming any version other than the current one is
+      `400 VALIDATION_FAILED` on `consent_text_version`; omitting it agrees to the current one.
+    - **Records** are append-only (time, `source` from `X-Client`, `context`, and the wording on
+      opt-in), never updated, and deleted only with the account. Accounts opted in before this
+      release have one `MIGRATION` record dated at their account's creation (source `api`).
+      Registering with `marketing_opt_in: true` writes a `REGISTRATION` record.
+    - **No send is marketing today.** Every future marketing send checks, at send time, that the
+      account is active, its email verified and it is opted in. Service and account mail is
+      unaffected and follows the notification preferences.
 
     Listing packages and quotas (new in 0.37.0)
     - **Packages** (FR-008) belong to one market: Starter, Business, Professional ... each allowing a number of **active
@@ -814,6 +834,10 @@ tags:
     description: |
       Maintenance requests (new in 0.36.2): requests with a timeline, photos, assignment to a directory service provider
       (a business enquiry) and costs (EXPENSE ledger entries); the tenant's own requests.
+  - name: marketing
+    description: |
+      Marketing preferences (new in 0.37.1): the signed-in person's marketing opt-in with its
+      append-only consent records. Every answer is `Cache-Control: private, no-store`.
   - name: packages
     description: |
       Listing packages and quotas (new in 0.37.0): packages per market with prices per billing term, their assignment to
@@ -12911,6 +12935,73 @@ paths:
         "200": { description: Every type after the change., content: { application/json: { schema: { $ref: "#/components/schemas/NotificationPreferences" } } } }
         "400": { $ref: "#/components/responses/ValidationFailed" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
+  /v1/marketing-consent-texts/{version}:
+    get:
+      tags: [marketing]
+      operationId: getMarketingConsentText
+      summary: One marketing consent wording by version (public, cacheable; new in 0.37.1)
+      description: |
+        Wording rows never change (a change of wording is a new version), so a client can show what an
+        older consent record agreed to. `DRAFT` wording awaits the owner's legal wording.
+      security: []
+      parameters:
+        - { name: version, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 40 } }
+      responses:
+        "200": { description: The wording., content: { application/json: { schema: { $ref: "#/components/schemas/MarketingConsentText" } } } }
+        "404":
+          description: "`MARKETING_CONSENT_TEXT_NOT_FOUND`."
+          content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } }
+  /v1/me/marketing-preferences:
+    get:
+      tags: [marketing]
+      operationId: getMarketingPreferences
+      summary: The caller's marketing choice and its newest consent records (new in 0.37.1)
+      description: |
+        `marketing_opt_in` is always present (false for an account that never chose). `changed_at`,
+        `source`, `context` and `consent_text_version` come from the newest record and are all
+        `null` when the account has none. `history` is newest first, at most 20 records.
+        Answers are `Cache-Control: private, no-store`.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { description: The marketing preferences., content: { application/json: { schema: { $ref: "#/components/schemas/MarketingPreferences" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+    put:
+      tags: [marketing]
+      operationId: setMarketingPreferences
+      summary: Opt in to or out of marketing (new in 0.37.1)
+      description: |
+        `marketing_opt_in` (boolean) is required: missing, null or not a boolean is
+        `400 VALIDATION_FAILED` with `fields.marketing_opt_in`. On opt-in, `consent_text_version` is
+        optional and defaults to `current_consent_text_version`; any other value is
+        `400 VALIDATION_FAILED` with `fields.consent_text_version` "The consent wording has changed;
+        show the current wording and try again." On opt-out it is ignored.
+
+        Only a real change is recorded: the value the account already has writes nothing and the
+        answer is the current state unchanged, including `changed_at`. A change sets the account's
+        value and appends one record (`context` `PREFERENCES`, `source` from `X-Client`: `web`;
+        `app`, `ios` or `android` give `app`; anything else or absent `api`) in one transaction.
+        Writes share the per-caller settings limit with the notification preferences
+        (`429 RATE_LIMITED`).
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      parameters:
+        - { name: X-Client, in: header, schema: { type: string }, description: "`web`, `app`, `ios` or `android`." }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [marketing_opt_in]
+              properties:
+                marketing_opt_in: { type: boolean }
+                consent_text_version: { type: string, minLength: 1, maxLength: 40, description: "Opt-in only: must equal `current_consent_text_version` when given." }
+            example: { marketing_opt_in: true, consent_text_version: marketing-2026-01 }
+      responses:
+        "200": { description: The marketing preferences after the request (same body as GET)., content: { application/json: { schema: { $ref: "#/components/schemas/MarketingPreferences" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "429": { $ref: "#/components/responses/RateLimited" }
   /v1/admin/notifications/health:
     get:
       tags: [admin, notifications]
@@ -15686,6 +15777,52 @@ components:
         reference: { type: [string, "null"] }
         created_at: { type: string, format: date-time }
         read_at: { type: [string, "null"], format: date-time }
+    MarketingConsentRecord:
+      type: object
+      required: [marketing_opt_in, changed_at, source, context, consent_text_version]
+      properties:
+        marketing_opt_in: { type: boolean }
+        changed_at: { type: string, format: date-time }
+        source: { type: string, enum: [web, app, api] }
+        context:
+          type: string
+          enum: [REGISTRATION, PREFERENCES, MIGRATION, ADMIN, UNSUBSCRIBE]
+          description: "`ADMIN` and `UNSUBSCRIBE` are reserved; nothing produces them in 0.37.1."
+        consent_text_version: { type: [string, "null"], description: The opt-in wording agreed to; null on opt-out and for MIGRATION records. }
+    MarketingConsentText:
+      type: object
+      required: [version, text, status]
+      properties:
+        version: { type: string }
+        text: { type: string, description: The wording to show next to the opt-in. }
+        status: { type: string, enum: [DRAFT, APPROVED], description: "DRAFT awaits the owner's legal wording; approval is a new version with status APPROVED." }
+    MarketingPreferences:
+      type: object
+      required: [marketing_opt_in, changed_at, source, context, consent_text_version, current_consent_text_version, consent_text, history]
+      properties:
+        marketing_opt_in: { type: boolean, description: The current value (false for an account that never chose). }
+        changed_at: { type: [string, "null"], format: date-time, description: From the newest record; null when there is none. }
+        source: { type: [string, "null"], enum: [web, app, api, null] }
+        context: { type: [string, "null"], enum: [REGISTRATION, PREFERENCES, MIGRATION, ADMIN, UNSUBSCRIBE, null] }
+        consent_text_version: { type: [string, "null"] }
+        current_consent_text_version: { type: string, description: The wording version clients should show now (marketing-2026-01). }
+        consent_text: { $ref: "#/components/schemas/MarketingConsentText" }
+        history:
+          type: array
+          maxItems: 20
+          description: Newest first, at most 20 records.
+          items: { $ref: "#/components/schemas/MarketingConsentRecord" }
+      example:
+        marketing_opt_in: false
+        changed_at: "2026-11-19T06:10:00Z"
+        source: app
+        context: PREFERENCES
+        consent_text_version: null
+        current_consent_text_version: marketing-2026-01
+        consent_text: { version: marketing-2026-01, text: "Send me news, tips and offers from RightProperty365 by email. I can stop them at any time.", status: DRAFT }
+        history:
+          - { marketing_opt_in: false, changed_at: "2026-11-19T06:10:00Z", source: app, context: PREFERENCES, consent_text_version: null }
+          - { marketing_opt_in: true, changed_at: "2026-10-01T09:00:00Z", source: web, context: REGISTRATION, consent_text_version: marketing-2026-01 }
     NotificationPreferences:
       type: object
       required: [items]
@@ -17976,6 +18113,9 @@ components:
         marketing_opt_in:
           type: boolean
           default: false
+          description: |
+            New in 0.37.1: `true` also writes a marketing consent record (context `REGISTRATION`,
+            source from the `X-Client` header, the current wording version). `false` writes none.
         roles:
           type: array
           minItems: 1

@@ -282,7 +282,8 @@ func SeedMemoryUsers(ctx context.Context, store *identity.MemoryStore, hasher id
 			}
 		}
 	}
-	return nil
+	// Marketing consent (API 0.37.1): the consumer and the tenant.
+	return SeedMemoryMarketing(store, now)
 }
 
 func activeRoles(roles []string) []identity.AccountRole {

@@ -262,3 +262,12 @@ func ClientIP(r *http.Request) string {
 	}
 	return host
 }
+
+// PrivateNoStore marks every answer of the routes it wraps, errors included
+// (a 401 from the auth middleware too), Cache-Control: private, no-store.
+func PrivateNoStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "private, no-store")
+		next.ServeHTTP(w, r)
+	})
+}

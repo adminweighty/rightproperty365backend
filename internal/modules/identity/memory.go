@@ -31,6 +31,7 @@ type MemoryStore struct {
 	captchas      map[string]*memoryCaptcha  // key: captcha id
 	challenges    map[string]*LoginChallenge // key: hex id hash
 	consents      []MemoryConsent
+	marketing     []MarketingConsentEvent // in insertion order
 	outbox        []outbox.Event
 	sink          outbox.Sink
 
@@ -435,6 +436,13 @@ func (s *MemoryStore) createUser(u NewUser) error {
 	s.byEmail[u.Email] = u.ID
 	s.accountRoles[u.ID] = append([]AccountRole(nil), u.AccountRoles...)
 	s.consents = append(s.consents, MemoryConsent{UserID: u.ID, ConsentType: ConsentPrivacyNotice, Version: u.PrivacyVersion, AcceptedAt: u.CreatedAt})
+	if u.MarketingOptIn {
+		e, err := registrationMarketingEvent(u)
+		if err != nil {
+			return err
+		}
+		s.marketing = append(s.marketing, e)
+	}
 	return nil
 }
 
@@ -453,6 +461,13 @@ func (s *MemoryStore) updatePendingRegistration(u NewUser) error {
 	user, ok := s.users[u.ID]
 	if !ok || user.EmailVerifiedAt != nil {
 		return ErrNotFound
+	}
+	if user.MarketingOptIn != u.MarketingOptIn {
+		e, err := registrationMarketingEvent(u)
+		if err != nil {
+			return err
+		}
+		s.marketing = append(s.marketing, e)
 	}
 	user.Name, user.PasswordHash, user.MarketingOptIn = u.Name, u.PasswordHash, u.MarketingOptIn
 	s.accountRoles[u.ID] = append([]AccountRole(nil), u.AccountRoles...)
