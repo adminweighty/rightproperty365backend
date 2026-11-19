@@ -192,7 +192,10 @@ func TestPostgresStoreContract(t *testing.T) {
 	s := NewPostgresStore(pool)
 	storeContract(t, s, org, user, func() int {
 		var n int
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM outbox_events WHERE event_type = $1`, EventReminderDue).Scan(&n); err != nil {
+		// Only this test's book: ClaimDueReminders claims across every book,
+		// so reminders an earlier run left due would otherwise be counted too.
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM outbox_events WHERE event_type = $1
+			AND aggregate_id IN (SELECT id FROM contacts WHERE organisation_id = $2)`, EventReminderDue, org).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 		return n
