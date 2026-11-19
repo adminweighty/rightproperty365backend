@@ -39,6 +39,12 @@ var (
 	ContactMarufuDupID = id("c508")
 	// ContactNyashaID has the overdue reminder.
 	ContactNyashaID = id("c503")
+	// ContactKudzaiID is the tenant of the sample active tenancy; one of its
+	// emails is the sample tenant account's (tenant@example.test), so that
+	// account sees the tenancy at /v1/me/tenancies.
+	ContactKudzaiID = id("c506")
+	// ContactTapiwaID is a landlord.
+	ContactTapiwaID = id("c504")
 	// SecondStreetContactIDs are Second Street Realty's two contacts (the
 	// isolation test); the first shares an email address with ContactTariroID.
 	SecondStreetContactIDs = []uuid.UUID{id("c511"), id("c512")}
@@ -102,7 +108,7 @@ func CRMSamples(now time.Time) crm.Change {
 		Text: "Confirm the valuation visit", CreatedBy: ptr(chipo), CreatedByName: "Chipo Dube", CreatedAt: at(-1)})
 
 	add(crm.Contact{ID: id("c506"), Book: estates, Name: "Kudzai Sithole", Type: "tenant", Stage: crm.StageUnsuccessful, OwnerUserID: ptr(chipo),
-		Source: "phone", Phones: []string{"+263733111222"}, LastContactAt: tp(at(-15))}, chipo, "Chipo Dube", at(-25))
+		Source: "phone", Emails: []string{TenantEmail}, Phones: []string{"+263733111222"}, LastContactAt: tp(at(-15))}, chipo, "Chipo Dube", at(-25))
 
 	add(crm.Contact{ID: ContactMarufuID, Book: estates, Name: "Tendai Marufu", Type: "buyer", Stage: crm.StageNew, OwnerUserID: ptr(tendai),
 		Source: "walk-in", Emails: []string{"t.marufu@example.com"}, Phones: []string{"+263773555444"}, Tags: []string{"cash buyer"}},

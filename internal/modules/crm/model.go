@@ -359,6 +359,9 @@ type Store interface {
 	// Matching returns the live contacts of a book that have one of the
 	// emails or phones (already normalised).
 	Matching(ctx context.Context, book Book, emails, phones []string) ([]Contact, error)
+	// WithEmail returns the live contacts of every book that have the email
+	// (already normalised): a tenant's own tenancies are found through it.
+	WithEmail(ctx context.Context, email string) ([]Contact, error)
 	// Apply writes a Change atomically. ErrConflict when an expectation fails.
 	Apply(ctx context.Context, ch Change) error
 	Notes(ctx context.Context, contactID uuid.UUID) ([]Note, error)

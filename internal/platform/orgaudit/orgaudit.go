@@ -69,6 +69,11 @@ const (
 	ActionLedgerAttachmentAdded   = "LEDGER_ATTACHMENT_ADDED"
 	ActionLedgerAttachmentViewed  = "LEDGER_ATTACHMENT_VIEWED"
 	ActionLedgerExported          = "LEDGER_EXPORTED"
+	// Tenancies (API 0.36.0, FR-047): created, activated, ended and deleted.
+	ActionTenancyCreated   = "TENANCY_CREATED"
+	ActionTenancyActivated = "TENANCY_ACTIVATED"
+	ActionTenancyEnded     = "TENANCY_ENDED"
+	ActionTenancyDeleted   = "TENANCY_DELETED"
 )
 
 var actionLabels = map[string]string{
@@ -105,6 +110,10 @@ var actionLabels = map[string]string{
 	ActionLedgerAttachmentAdded:      "Ledger attachment added",
 	ActionLedgerAttachmentViewed:     "Ledger attachment downloaded",
 	ActionLedgerExported:             "Ledger exported",
+	ActionTenancyCreated:             "Tenancy created",
+	ActionTenancyActivated:           "Tenancy activated",
+	ActionTenancyEnded:               "Tenancy ended",
+	ActionTenancyDeleted:             "Draft tenancy deleted",
 }
 
 // Actions returns every action, in a stable order.
@@ -144,6 +153,8 @@ const (
 	// is the organisation's).
 	TargetLedgerEntry = "LEDGER_ENTRY"
 	TargetLedgerBook  = "LEDGER_BOOK"
+	// TargetTenancy is one tenancy (labelled "<property> <unit>").
+	TargetTenancy = "TENANCY"
 )
 
 // Event is one audit record.

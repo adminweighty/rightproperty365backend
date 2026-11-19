@@ -427,3 +427,36 @@ func (p *Principal) MayCorrectLedgerEntry(organisationID uuid.UUID, authorUserID
 // OwnsLedgerBook reports whether bookID is the caller's personal book: their
 // own user ID, while they are an approved direct owner.
 func (p *Principal) OwnsLedgerBook(bookID uuid.UUID) bool { return p.OwnsContactBook(bookID) }
+
+// Properties, units and tenancies (API 0.36.0, BR-019, FR-047). They belong
+// to an organisation whose kind manages listings (agencies, property
+// managers and the like), or (a personal book) to an approved direct owner,
+// addressed with their own user ID (OwnsContactBook), the same books as the
+// CRM and the ledger.
+//
+//   - read: any member, STAFF included;
+//   - write (properties, units, tenancies, activate, end): its OWNER,
+//     MANAGER and AGENT.
+//
+// The direct owner reads and writes their own book. Anybody else, platform
+// administrators included, sees none (404 BOOK_NOT_FOUND). A tenant reads
+// their own tenancies through /v1/me/tenancies (matched by verified email),
+// never through these rights.
+
+// MayReadProperties reports whether the caller may read the organisation's
+// properties and tenancies.
+func (p *Principal) MayReadProperties(organisationID uuid.UUID) bool {
+	m, ok := p.membership(organisationID)
+	return ok && KindManagesListings(m.OrganisationKind)
+}
+
+// MayWriteProperties reports whether the caller may change the
+// organisation's properties and tenancies.
+func (p *Principal) MayWriteProperties(organisationID uuid.UUID) bool {
+	m, ok := p.membership(organisationID)
+	return ok && KindManagesListings(m.OrganisationKind) && RoleHoldsLeads(m.Role)
+}
+
+// OwnsPropertyBook reports whether bookID is the caller's personal book:
+// their own user ID, while they are an approved direct owner.
+func (p *Principal) OwnsPropertyBook(bookID uuid.UUID) bool { return p.OwnsContactBook(bookID) }

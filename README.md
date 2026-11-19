@@ -265,6 +265,9 @@ All configuration comes from environment variables. For local development you ma
 | GET, PUT | `/v1/me/notification-preferences` | Email and push per type (essential types locked on) |
 | GET | `/v1/admin/notifications/health` | Delivery counts, dead-letter backlog, oldest unattempted push |
 | GET, POST, PATCH | `/v1/agent/organisations/{id}/ledger/*` (`/options`, `/entries[/{entryId}]` + `/reverse`, `/correct`, `/reconcile`, `/notes`, `/attachments`; `/reports/*`, `/categories`) | The agent ledger / books, per currency (API 0.34.0) |
+| GET, POST, PATCH, DELETE | `/v1/agent/organisations/{id}/properties[/{propertyId}]` (+ `/units[/{unitId}]`) | Properties and their units (API 0.36.0) |
+| GET, POST, PATCH, DELETE | `/v1/agent/organisations/{id}/tenancies[/{tenancyId}]` (+ `/options`, `/activate`, `/end`) | Tenancies (API 0.36.0) |
+| GET | `/v1/me/tenancies`, `/v1/me/tenancies/{id}` | A tenant's own tenancies, read-only (matched by verified email) |
 | GET | `/v1/trust/summary` | How many advertisers are verified and how many listings are public (public, cacheable) |
 | POST | `/v1/property-requests` | The single entry point for every customer enquiry (guest or signed-in) |
 | POST | `/v1/business-enquiries` | The only way to contact a directory profile (guest or signed-in) |
@@ -466,6 +469,27 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 change; follow-up dates and reminders; editing or deleting a note; listing analytics, conversion
 funnels and response-time KPIs (no event data exists); seeker favourites, saved searches and
 alerts.
+
+## Properties, units and tenancies (API 0.36.0)
+
+Migration `0035_properties_tenancies`, module `internal/modules/tenancies` (BR-019, FR-047; Phase 2 part a). Routes: `/v1/agent/organisations/{id}/properties` (+ `/{propertyId}`, `/{propertyId}/units[/{unitId}]`), `/v1/agent/organisations/{id}/tenancies` (+ `/options`, `/{tenancyId}`, `/activate`, `/end`) and `/v1/me/tenancies[/{id}]` (OpenAPI tags `properties`, `tenancies`). The exact JSON is the 0.36 contract's "Response shapes (a)".
+
+- **Books.** The same as the CRM and the ledger: an organisation (a kind that manages listings) or an approved direct owner's personal book, addressed with their own user ID. Rights in `auth/capabilities.go`: `MayReadProperties` (any member, STAFF included), `MayWriteProperties` (OWNER, MANAGER, AGENT), `OwnsPropertyBook`. Anybody else, platform administrators and tenants included, gets `404 BOOK_NOT_FOUND` on every route before any validation (tested on every endpoint).
+- **Properties and units.** `{name, address, market_code, listing_id?, notes, units: [{label}]}`. A property with no units is one lettable unit. Unit labels are unique per property (case-insensitive). Properties and units are **archived, never deleted** (`deleted_at`), so tenancies, and later maintenance and inspections, keep pointing at them; neither is archived while a DRAFT or ACTIVE tenancy uses it (`409 PROPERTY_IN_USE` / `409 UNIT_IN_USE`). A property without units gains its first unit only while no open tenancy holds the whole of it.
+- **Tenancies.** A property; a unit (required when the property has units, null otherwise); tenants (1-10) and landlords (0-10) that are live CRM contacts of the same book; an optional lease of the book; rent `{amount, currency, frequency, due_day}` (WEEKLY, MONTHLY, QUARTERLY, ANNUALLY; `due_day` an ISO weekday for WEEKLY, else a day of the month); an optional deposit in the rent's currency; `start_date`, an optional agreed `end_date`, and notes.
+  - Money is exact (`internal/platform/money`, stored `numeric(20,4)`, ISO 4217 codes of reference data, answered with the minor-unit decimals; a JSON number is `400 INVALID_JSON`).
+  - Created DRAFT (editable, deletable). `activate` makes it ACTIVE: one per unit or whole property, a partial unique index, `409 UNIT_OCCUPIED`. `end {end_date, reason}` makes it ENDED, or TERMINATED when it ends before the agreed end date; `ended_on` is the actual end.
+  - An ACTIVE tenancy may change its parties, lease, deposit, end date and notes; an ended one only its notes.
+  - Create, activate, end and delete are `organisation_audit_events` rows (`TENANCY_*`, target `TENANCY`) in the same transaction; a direct owner's book logs them (`audit=true`).
+- **Tenant view.** `GET /v1/me/tenancies[/{id}]`: the tenancies (never a DRAFT) where one of the **tenant** contacts is a live contact of the tenancy's own book with the caller's **verified** account email (`crm.Store.WithEmail`). Names, property, unit, rent, deposit, dates and the lease reference only: no notes, contact IDs, emails, phones or audit names. Anybody else's is `404 TENANCY_NOT_FOUND`.
+- **Ready for parts b to e.** `ledger_entries.tenancy_id` now references `tenancies` (its CHECK still keeps it NULL until part b); units have stable IDs for maintenance and inspections.
+- **Account deletion.** The users row is anonymised, so nothing cascades. `tenancies.ForgetUserTx` (and `MemoryStore.ForgetUser`) deletes the person's personal-book DRAFT tenancies, replaces the manager name their tenants see, and unlinks them as creator, activator and ender. The personal book's other records are kept (rent records), as the ledger's are.
+- **Sample data** (IDs `…b7xx`): Sample Estates has Avondale Court (Flat 1-3, linked to listing 2) and Borrowdale Cottage (no units).
+  - ACTIVE Flat 1: Kudzai Sithole, whose CRM contact now also has `tenant@example.test`, so the sample tenant sees it; landlord Tapiwa Chirwa; USD 950.00 monthly; the sample draft lease.
+  - ACTIVE Borrowdale Cottage: Tariro Moyo, USD 700.00, periodic. ENDED Flat 2: Tariro Moyo's earlier tenancy.
+  - Second Street Realty has Second Street House (the isolation tests). In Postgres the samples are upserted by ID on every seed.
+
+**Not verified / follow-ups:** migration `0035` and `tenancies/postgres.go` have only run where `RP365_TEST_DATABASE_URL` is set. Rent schedules, receipts, arrears, maintenance, inspections and reviews are parts b to e.
 
 ## Notifications and push (API 0.35.0)
 
@@ -3394,6 +3418,7 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0035_properties_tenancies` (API 0.36.0): `properties` (organisation_id XOR book_user_id, archived by `deleted_at`, optional `listing_id` ON DELETE SET NULL), `property_units` (live label unique per property, case-insensitive; unique `(id, property_id)`), `tenancies` (rent `numeric(20,4)` + ISO 4217, frequency, due day, deposit in the rent currency, dates, DRAFT / ACTIVE / ENDED / TERMINATED with state CHECKs, one ACTIVE per unit or whole property by a partial unique index, the unit tied to its property by a composite foreign key, `lease_id` ON DELETE SET NULL) and `tenancy_parties` (TENANT / LANDLORD contacts; the contact key DEFERRABLE INITIALLY DEFERRED for the development re-seed). `ledger_entries.tenancy_id` gains its foreign key; the organisation audit checks gain the `TENANCY_*` actions and the `TENANCY` target. New tables, a key on an always-NULL column and wider checks.
 - `0034_notifications_push` (API 0.35.0): `user_devices` (unique `token`, `session_id` of the
   registering session), `notifications` (unique `(source_event_id, user_id)`: one per event and
   recipient; safe text; `read_at`), `notification_deliveries` (PUSH per device / EMAIL; PENDING,

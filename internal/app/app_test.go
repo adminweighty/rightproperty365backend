@@ -42,6 +42,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/saved"
 	"rightproperty365.com/backend/internal/modules/subscriptions"
 	"rightproperty365.com/backend/internal/modules/teams"
+	"rightproperty365.com/backend/internal/modules/tenancies"
 	"rightproperty365.com/backend/internal/modules/venues"
 	"rightproperty365.com/backend/internal/platform/adminaudit"
 	"rightproperty365.com/backend/internal/platform/auth"
@@ -283,6 +284,8 @@ type env struct {
 	venues *venues.MemoryStore
 	// ledger holds the agent books (the samples).
 	ledger *ledger.MemoryStore
+	// tenancies holds the properties, units and tenancies (the samples).
+	tenancies *tenancies.MemoryStore
 	// inbox holds devices, in-app notifications and preferences (empty).
 	inbox    *inapp.MemoryStore
 	inboxSvc *inapp.Service
@@ -378,6 +381,9 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 	if err := devseed.SeedMemoryLedger(e.ledger, e.now); err != nil {
 		t.Fatal(err)
 	}
+	e.tenancies = tenancies.NewMemoryStore()
+	e.tenancies.SetAuditSink(e.team.AuditSink())
+	devseed.SeedMemoryTenancies(e.tenancies, e.now)
 	if err := devseed.SeedApplicationFiles(context.Background(), e.files); err != nil {
 		t.Fatal(err)
 	}
@@ -412,6 +418,7 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		EraseApplications:   func(u uuid.UUID, at time.Time) { e.apps.EraseApplicant(u, at) },
 		DeleteVenueBookings: e.venues.DeleteCustomer,
 		DeleteNotifications: e.inbox.DeleteUser,
+		ForgetTenancies:     e.tenancies.ForgetUser,
 		Now:                 func() time.Time { return e.now }})
 	reportStore := MemoryReports(MemoryReportStores{Identity: e.identity, Onboarding: e.onboard, Listings: e.listings, Requests: e.requests,
 		Enquiries: e.enquiries, Leases: e.leases, Agreements: e.agree, Subscriptions: e.subs, Markets: e.marketStore,
@@ -439,6 +446,7 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		Applications: e.apps,
 		Venues:       e.venues,
 		Ledger:       e.ledger,
+		Tenancies:    e.tenancies,
 		Inbox:        e.inboxSvc,
 		Now:          func() time.Time { return e.now },
 		Hasher:       &hasher,

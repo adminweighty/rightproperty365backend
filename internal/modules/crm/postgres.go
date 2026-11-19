@@ -259,6 +259,30 @@ func (s *PostgresStore) Matching(ctx context.Context, book Book, emails, phones 
 	return out, rows.Err()
 }
 
+// WithEmail implements Store.
+func (s *PostgresStore) WithEmail(ctx context.Context, email string) ([]Contact, error) {
+	if email == "" {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+contactColumns+` FROM contacts c
+		WHERE c.deleted_at IS NULL AND c.merged_into IS NULL
+		  AND c.id IN (SELECT contact_id FROM contact_emails WHERE email = $1)
+		ORDER BY c.created_at DESC, c.id DESC`, email)
+	if err != nil {
+		return nil, fmt.Errorf("contacts with email: %w", err)
+	}
+	defer rows.Close()
+	var out []Contact
+	for rows.Next() {
+		c, err := scanContact(rows)
+		if err != nil {
+			return nil, fmt.Errorf("contacts with email: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 func jsonOrNil(v any) (*string, error) {
 	if v == nil {
 		return nil, nil

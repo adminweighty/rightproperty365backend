@@ -46,6 +46,10 @@ type MemoryDeps struct {
 	// DeleteNotifications removes the user's push devices, in-app
 	// notifications and notification preferences (nil: nothing to do).
 	DeleteNotifications func(userID uuid.UUID)
+	// ForgetTenancies handles the user's tenancy rows: their personal book's
+	// DRAFT tenancies deleted, the manager name tenants see replaced, and the
+	// user unlinked as creator, activator and ender (nil: nothing to do).
+	ForgetTenancies func(userID uuid.UUID, deletedName string)
 	// Now is the clock used for listing expiry in the detail (nil: time.Now).
 	Now func() time.Time
 }
@@ -295,6 +299,9 @@ func (s *MemoryStore) Delete(ctx context.Context, d Deletion) (Deleted, error) {
 	}
 	if s.deps.DeleteNotifications != nil {
 		s.deps.DeleteNotifications(d.UserID)
+	}
+	if s.deps.ForgetTenancies != nil {
+		s.deps.ForgetTenancies(d.UserID, DeletedName)
 	}
 	s.deps.Audit.Append(d.Audit)
 	return out, nil

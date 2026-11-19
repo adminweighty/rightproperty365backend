@@ -427,6 +427,12 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 		return err
 	}
 
+	// The sample properties, units and tenancies (needs migration 0035),
+	// after the contacts and the leases.
+	if err := seedPostgresTenancies(ctx, tx, now); err != nil {
+		return err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}

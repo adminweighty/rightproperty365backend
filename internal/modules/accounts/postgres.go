@@ -16,6 +16,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/inapp"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
+	"rightproperty365.com/backend/internal/modules/tenancies"
 	"rightproperty365.com/backend/internal/platform/adminaudit"
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/orgaudit"
@@ -444,6 +445,13 @@ func (s *PostgresStore) Delete(ctx context.Context, d Deletion) (Deleted, error)
 		// notification preferences (migration 0034): the same, never by
 		// cascade here (FR-045: tokens are revoked on deletion).
 		if err := inapp.DeleteUserTx(ctx, tx, d.UserID); err != nil {
+			return err
+		}
+		// Properties and tenancies (migration 0035): a direct owner's personal
+		// book is kept (rent records), but its DRAFT tenancies go, the manager
+		// name its tenants see is anonymised, and the person is unlinked as
+		// creator, activator and ender (ON DELETE SET NULL never fires here).
+		if err := tenancies.ForgetUserTx(ctx, tx, d.UserID, DeletedName); err != nil {
 			return err
 		}
 		return adminaudit.Insert(ctx, tx, d.Audit)

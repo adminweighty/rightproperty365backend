@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.35.0
+  version: 0.36.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,26 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Properties, units and tenancies (new in 0.36.0)
+    - **What it is** (BR-019, FR-047, Phase 2 part a): an organisation's (or an approved direct owner's)
+      properties under `/v1/agent/organisations/{id}/properties` and tenancies under `.../tenancies`, in
+      the same books as the CRM and the ledger. Rent schedules, receipts and arrears, maintenance and
+      inspections attach to these records in later 0.36.x releases.
+    - **Who**: OWNER, MANAGER and AGENT of an organisation whose kind manages listings write; STAFF read;
+      the direct owner their own book. Anybody else, platform administrators included, gets
+      `404 BOOK_NOT_FOUND` on every route, before any validation.
+    - **Units**: a property with no units is let as a whole (one unit). Properties and units are archived,
+      never deleted, and not while a DRAFT or ACTIVE tenancy uses them (`409 PROPERTY_IN_USE`,
+      `409 UNIT_IN_USE`).
+    - **Tenancies**: tenants (1+) and landlords are CRM contacts of the same book; an optional lease of the
+      book; rent `{amount, currency, frequency, due_day}` and an optional deposit as exact decimal strings
+      with an ISO 4217 currency (the deposit in the rent's currency). DRAFT -> `activate` -> ACTIVE (one per
+      unit, `409 UNIT_OCCUPIED`) -> `end` -> ENDED, or TERMINATED when it ends before the agreed end date.
+      Creating, activating, ending and deleting are in the organisation audit trail.
+    - **Tenants** read their own tenancies at `GET /v1/me/tenancies`: one of its tenant contacts has the
+      caller's **verified** email, in the tenancy's own book. Never a DRAFT; never notes, contact details or
+      another tenant's tenancy (`404`).
 
     Notifications and push (new in 0.35.0)
     - **In-app notifications** (FR-062): after the commit, the worker turns outbox events into one
@@ -696,6 +716,14 @@ tags:
     description: |
       The agent ledger / books (new in 0.34.0): an organisation's (or a direct owner's) own cashbook, per
       currency, with immutable posted entries. 404 `BOOK_NOT_FOUND` for anyone else.
+  - name: properties
+    description: |
+      Properties and their units (new in 0.36.0), in an organisation's (or a direct owner's) book. 404
+      `BOOK_NOT_FOUND` for anyone else.
+  - name: tenancies
+    description: |
+      Tenancies (new in 0.36.0): parties from the CRM, rent and deposit, DRAFT / ACTIVE / ENDED / TERMINATED,
+      and the tenant's own read-only view (`/v1/me/tenancies`).
   - name: venues
     description: |
       Showroom and venue hourly rental (new in 0.33.0): hourly settings, public availability
@@ -12803,8 +12831,328 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /v1/agent/organisations/{id}/properties:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+    get:
+      tags: [properties]
+      operationId: propertiesList
+      summary: The book's properties with their units and occupancy (new in 0.36.0)
+      description: Live properties, newest first. Any reader (STAFF included).
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      parameters:
+        - { name: q, in: query, schema: { type: string }, description: Name or address contains (case-insensitive). }
+        - { name: market_code, in: query, schema: { type: string, pattern: "^[A-Z]{2}$" } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
+      responses:
+        "200": { description: One page., content: { application/json: { schema: { $ref: "#/components/schemas/PropertyPage" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/TenancyNotFound" }
+    post:
+      tags: [properties]
+      operationId: propertiesCreate
+      summary: Add a property, with its units (new in 0.36.0)
+      description: OWNER, MANAGER and AGENT (STAFF `403`). A property with no units is let as a whole (one unit).
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/PropertyInput" } } }
+      responses:
+        "201": { description: Created., content: { application/json: { schema: { $ref: "#/components/schemas/PropertyEnvelope" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/TenancyNotFound" }
+  /v1/agent/organisations/{id}/properties/{propertyId}:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - $ref: "#/components/parameters/PropertyID"
+    get:
+      tags: [properties]
+      operationId: propertiesGet
+      summary: One property (new in 0.36.0)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { description: The property., content: { application/json: { schema: { $ref: "#/components/schemas/PropertyEnvelope" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/TenancyNotFound" }
+    patch:
+      tags: [properties]
+      operationId: propertiesUpdate
+      summary: Change a property's name, address, country, listing link or notes (new in 0.36.0)
+      description: "`listing_id: null` clears the link. Units change through the unit routes (`units` here is `400`)."
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/PropertyPatch" } } }
+      responses:
+        "200": { description: The property., content: { application/json: { schema: { $ref: "#/components/schemas/PropertyEnvelope" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/TenancyNotFound" }
+    delete:
+      tags: [properties]
+      operationId: propertiesDelete
+      summary: Archive a property (new in 0.36.0)
+      description: |
+        Archived, never deleted: gone from lists and `404 PROPERTY_NOT_FOUND`, still shown on the tenancies that used it.
+        `409 PROPERTY_IN_USE` while a DRAFT or ACTIVE tenancy uses it.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "204": { description: Archived. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/TenancyNotFound" }
+        "409": { $ref: "#/components/responses/TenancyConflict" }
+  /v1/agent/organisations/{id}/properties/{propertyId}/units:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - $ref: "#/components/parameters/PropertyID"
+    post:
+      tags: [properties]
+      operationId: propertyUnitsCreate
+      summary: Add a unit (new in 0.36.0)
+      description: |
+        Labels are unique per property (case-insensitive). A property without units gains its first one only while no
+        DRAFT or ACTIVE tenancy holds the whole of it (`409 PROPERTY_IN_USE`).
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/UnitInput" } } }
+      responses:
+        "201": { description: The property., content: { application/json: { schema: { $ref: "#/components/schemas/PropertyEnvelope" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/TenancyNotFound" }
+        "409": { $ref: "#/components/responses/TenancyConflict" }
+  /v1/agent/organisations/{id}/properties/{propertyId}/units/{unitId}:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - $ref: "#/components/parameters/PropertyID"
+      - $ref: "#/components/parameters/UnitID"
+    patch:
+      tags: [properties]
+      operationId: propertyUnitsRename
+      summary: Rename a unit (new in 0.36.0)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/UnitInput" } } }
+      responses:
+        "200": { description: The property., content: { application/json: { schema: { $ref: "#/components/schemas/PropertyEnvelope" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/TenancyNotFound" }
+    delete:
+      tags: [properties]
+      operationId: propertyUnitsDelete
+      summary: Archive a unit (new in 0.36.0)
+      description: "`409 UNIT_IN_USE` while a DRAFT or ACTIVE tenancy uses it. Answers the property."
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { description: The property., content: { application/json: { schema: { $ref: "#/components/schemas/PropertyEnvelope" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/TenancyNotFound" }
+        "409": { $ref: "#/components/responses/TenancyConflict" }
+  /v1/agent/organisations/{id}/tenancies/options:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+    get:
+      tags: [tenancies]
+      operationId: tenanciesOptions
+      summary: Rent frequencies, statuses, currencies and the caller's rights (new in 0.36.0)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { description: The options., content: { application/json: { schema: { $ref: "#/components/schemas/TenancyOptions" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/TenancyNotFound" }
+  /v1/agent/organisations/{id}/tenancies:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+    get:
+      tags: [tenancies]
+      operationId: tenanciesList
+      summary: The book's tenancies (new in 0.36.0)
+      description: Newest first. `status_counts` ignore the `status` filter (the other filters apply). Any reader.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      parameters:
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/TenancyStatus" } }
+        - { name: property_id, in: query, schema: { type: string, format: uuid } }
+        - { name: unit_id, in: query, schema: { type: string, format: uuid } }
+        - { name: contact_id, in: query, schema: { type: string, format: uuid }, description: A tenant or landlord. }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
+      responses:
+        "200": { description: One page., content: { application/json: { schema: { $ref: "#/components/schemas/TenancyPage" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/TenancyNotFound" }
+    post:
+      tags: [tenancies]
+      operationId: tenanciesCreate
+      summary: Create a tenancy, as a DRAFT (new in 0.36.0)
+      description: |
+        OWNER, MANAGER and AGENT (STAFF `403`). Tenants (1-10) and landlords (0-10) are live CRM contacts of the same
+        book; `unit_id` is required when the property has units and null when it has none; `lease_id` is one of the
+        book's leases; the deposit is in the rent's currency. `status` may only be DRAFT (activate with `.../activate`).
+        Audited (`TENANCY_CREATED`).
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/TenancyInput" } } }
+      responses:
+        "201": { description: Created., content: { application/json: { schema: { $ref: "#/components/schemas/TenancyEnvelope" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/TenancyNotFound" }
+  /v1/agent/organisations/{id}/tenancies/{tenancyId}:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - $ref: "#/components/parameters/TenancyID"
+    get:
+      tags: [tenancies]
+      operationId: tenanciesGet
+      summary: One tenancy (new in 0.36.0)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { description: The tenancy., content: { application/json: { schema: { $ref: "#/components/schemas/TenancyEnvelope" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/TenancyNotFound" }
+    patch:
+      tags: [tenancies]
+      operationId: tenanciesUpdate
+      summary: Change a tenancy (new in 0.36.0)
+      description: |
+        Any field of the create body except `status`; null clears `unit_id`, `lease_id`, `deposit` and `end_date`.
+        DRAFT: everything. ACTIVE: `tenants`, `landlords`, `lease_id`, `deposit`, `end_date`, `notes` (the others are `400`).
+        ENDED / TERMINATED: `notes` only.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/TenancyPatch" } } }
+      responses:
+        "200": { description: The tenancy., content: { application/json: { schema: { $ref: "#/components/schemas/TenancyEnvelope" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/TenancyNotFound" }
+        "409": { $ref: "#/components/responses/TenancyConflict" }
+    delete:
+      tags: [tenancies]
+      operationId: tenanciesDelete
+      summary: Delete a DRAFT tenancy (new in 0.36.0)
+      description: "Any other status is `409 TENANCY_INVALID_STATE`. Audited (`TENANCY_DELETED`)."
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/TenancyNotFound" }
+        "409": { $ref: "#/components/responses/TenancyConflict" }
+  /v1/agent/organisations/{id}/tenancies/{tenancyId}/activate:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - $ref: "#/components/parameters/TenancyID"
+    post:
+      tags: [tenancies]
+      operationId: tenanciesActivate
+      summary: Activate a DRAFT tenancy (new in 0.36.0)
+      description: |
+        No body. One ACTIVE tenancy per unit (or per whole property): `409 UNIT_OCCUPIED` with `details.tenancy_id`.
+        Audited (`TENANCY_ACTIVATED`).
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { description: The tenancy., content: { application/json: { schema: { $ref: "#/components/schemas/TenancyEnvelope" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/TenancyNotFound" }
+        "409": { $ref: "#/components/responses/TenancyConflict" }
+  /v1/agent/organisations/{id}/tenancies/{tenancyId}/end:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - $ref: "#/components/parameters/TenancyID"
+    post:
+      tags: [tenancies]
+      operationId: tenanciesEnd
+      summary: End an ACTIVE tenancy (new in 0.36.0)
+      description: |
+        `TERMINATED` when the tenancy had an agreed `end_date` and ends before it, otherwise `ENDED`. `ended_on` is the
+        given date; `end_date` stays the agreed one. Audited (`TENANCY_ENDED`).
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [end_date, reason]
+              properties:
+                end_date: { type: string, format: date, description: On or after the start date. }
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        "200": { description: The tenancy., content: { application/json: { schema: { $ref: "#/components/schemas/TenancyEnvelope" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/TenancyNotFound" }
+        "409": { $ref: "#/components/responses/TenancyConflict" }
+  /v1/me/tenancies:
+    get:
+      tags: [tenancies]
+      operationId: myTenancies
+      summary: The caller's own tenancies (tenant view, read-only; new in 0.36.0)
+      description: |
+        A tenancy is the caller's when one of its tenant contacts is a live contact of the tenancy's own book with an
+        email equal to the caller's **verified** account email. DRAFT tenancies are never shown. Newest start date first.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The caller's tenancies (empty when none, or when the email is not verified).
+          content:
+            application/json:
+              schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: "#/components/schemas/MyTenancy" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /v1/me/tenancies/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [tenancies]
+      operationId: myTenancy
+      summary: One of the caller's own tenancies (new in 0.36.0)
+      description: "Anybody else's tenancy (and a DRAFT) is `404 TENANCY_NOT_FOUND`."
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The tenancy.
+          content: { application/json: { schema: { type: object, required: [tenancy], properties: { tenancy: { $ref: "#/components/schemas/MyTenancy" } } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/TenancyNotFound" }
+
 components:
   parameters:
+    PropertyID:
+      name: propertyId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    UnitID:
+      name: unitId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    TenancyID:
+      name: tenancyId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
     LedgerBookID:
       name: id
       in: path
@@ -13107,6 +13455,20 @@ components:
         type: string
 
   responses:
+    TenancyNotFound:
+      description: |
+        `BOOK_NOT_FOUND` (not the caller's book: another organisation, a consumer, a tenant, an administrator; answered
+        before any validation), `PROPERTY_NOT_FOUND`, `UNIT_NOT_FOUND` or `TENANCY_NOT_FOUND`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    TenancyConflict:
+      description: |
+        `PROPERTY_IN_USE`, `UNIT_IN_USE`, `UNIT_OCCUPIED` (`details.tenancy_id`) or `TENANCY_INVALID_STATE`
+        (`details.status`).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/TenancyErrorEnvelope" }
     DeviceNotFound:
       description: "`DEVICE_NOT_FOUND`: not one of the caller's devices."
       content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } }
@@ -20455,4 +20817,274 @@ components:
             code: { type: string, enum: [LEDGER_ENTRY_ALREADY_REVERSED, LEDGER_ENTRY_NOT_REVERSIBLE, LEDGER_OPENING_BALANCE_EXISTS, LEDGER_CATEGORY_EXISTS] }
             message: { type: string }
             details: { type: object, additionalProperties: true }
+        trace_id: { type: string }
+    TenancyAmount:
+      type: string
+      pattern: "^[0-9]{1,16}(\\.[0-9]{1,8})?$"
+      description: A positive decimal string with exactly the currency's ISO 4217 minor-unit decimals in answers (at most that many in a body).
+      examples: ["950.00", "5000", "1.250"]
+    TenancyStatus:
+      type: string
+      enum: [DRAFT, ACTIVE, ENDED, TERMINATED]
+      description: "`TERMINATED` is an ACTIVE tenancy ended before its agreed end date."
+    RentFrequency:
+      type: string
+      enum: [WEEKLY, MONTHLY, QUARTERLY, ANNUALLY]
+    TenancyContactRef:
+      type: object
+      required: [id, name, live]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        live: { type: boolean, description: False when the contact was deleted or merged since (the name is then the last known one). }
+    TenancyMoney:
+      type: object
+      required: [amount, currency, minor_unit]
+      properties:
+        amount: { $ref: "#/components/schemas/TenancyAmount" }
+        currency: { type: string, pattern: "^[A-Z]{3}$" }
+        minor_unit: { type: integer }
+    TenancyRent:
+      type: object
+      required: [amount, currency, minor_unit, frequency, frequency_label, due_day]
+      properties:
+        amount: { $ref: "#/components/schemas/TenancyAmount" }
+        currency: { type: string, pattern: "^[A-Z]{3}$" }
+        minor_unit: { type: integer }
+        frequency: { $ref: "#/components/schemas/RentFrequency" }
+        frequency_label: { type: string }
+        due_day:
+          type: integer
+          minimum: 1
+          maximum: 31
+          description: WEEKLY 1-7 (ISO weekday, 1 = Monday); otherwise the day of the month (a shorter month uses its last day).
+    Property:
+      type: object
+      required: [id, name, address, market_code, listing, notes, units, unit_count, lettable_units, occupied_units, active_tenancy_id,
+        open_tenancies, created_by, created_at, updated_at, can]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        address: { type: string }
+        market_code: { type: string, pattern: "^[A-Z]{2}$" }
+        listing:
+          oneOf:
+            - type: "null"
+            - type: object
+              required: [id, title, reference]
+              properties: { id: { type: string, format: uuid }, title: { type: string }, reference: { type: string } }
+        notes: { type: string }
+        units:
+          type: array
+          description: The live units, by position.
+          items:
+            type: object
+            required: [id, label, position, active_tenancy_id]
+            properties:
+              id: { type: string, format: uuid }
+              label: { type: string }
+              position: { type: integer }
+              active_tenancy_id: { type: [string, "null"], format: uuid }
+        unit_count: { type: integer }
+        lettable_units: { type: integer, description: "max(unit_count, 1): a property with no units is one unit." }
+        occupied_units: { type: integer }
+        active_tenancy_id: { type: [string, "null"], format: uuid, description: The ACTIVE tenancy of the whole property (one with no unit). }
+        open_tenancies: { type: integer, description: DRAFT plus ACTIVE tenancies. }
+        created_by: { $ref: "#/components/schemas/LedgerPersonRef" }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        can:
+          type: object
+          required: [edit, delete]
+          properties: { edit: { type: boolean }, delete: { type: boolean } }
+    PropertyEnvelope:
+      type: object
+      required: [property]
+      properties: { property: { $ref: "#/components/schemas/Property" } }
+    PropertyPage:
+      type: object
+      required: [items, total, page, page_size]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Property" } }
+        total: { type: integer }
+        page: { type: integer }
+        page_size: { type: integer }
+    UnitInput:
+      type: object
+      additionalProperties: false
+      required: [label]
+      properties:
+        label: { type: string, minLength: 1, maxLength: 80 }
+    PropertyInput:
+      type: object
+      additionalProperties: false
+      required: [name, address, market_code]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        address: { type: string, minLength: 1, maxLength: 500 }
+        market_code: { type: string, description: A country of reference data (ISO 3166-1 alpha-2). }
+        listing_id: { type: [string, "null"], format: uuid, description: A listing of the same book (any status). }
+        notes: { type: string, maxLength: 5000 }
+        units: { type: [array, "null"], maxItems: 200, items: { $ref: "#/components/schemas/UnitInput" } }
+    PropertyPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        address: { type: string, minLength: 1, maxLength: 500 }
+        market_code: { type: string }
+        listing_id: { type: [string, "null"], format: uuid }
+        notes: { type: string, maxLength: 5000 }
+    TenancyRentInput:
+      type: object
+      additionalProperties: false
+      required: [amount, currency, frequency, due_day]
+      properties:
+        amount: { type: string, description: 'A positive decimal string such as "950.00" (a JSON number is 400 INVALID_JSON).' }
+        currency: { type: string, description: An ISO 4217 code of a country in reference data. }
+        frequency: { $ref: "#/components/schemas/RentFrequency" }
+        due_day: { type: integer }
+    TenancyDepositInput:
+      type: object
+      additionalProperties: false
+      required: [amount, currency]
+      properties:
+        amount: { type: string }
+        currency: { type: string, description: The rent's currency. }
+    TenancyPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        property_id: { type: string, format: uuid }
+        unit_id: { type: [string, "null"], format: uuid }
+        tenants: { type: array, minItems: 1, maxItems: 10, items: { type: string, format: uuid }, description: CRM contacts of the same book. }
+        landlords: { type: array, maxItems: 10, items: { type: string, format: uuid } }
+        lease_id: { type: [string, "null"], format: uuid }
+        rent: { $ref: "#/components/schemas/TenancyRentInput" }
+        deposit: { oneOf: [{ type: "null" }, { $ref: "#/components/schemas/TenancyDepositInput" }] }
+        start_date: { type: string, format: date }
+        end_date: { type: [string, "null"], format: date }
+        notes: { type: string, maxLength: 5000 }
+    TenancyInput:
+      allOf:
+        - $ref: "#/components/schemas/TenancyPatch"
+        - type: object
+          required: [property_id, tenants, rent, start_date]
+          properties:
+            status: { type: string, enum: [DRAFT], description: Optional; a tenancy always starts as DRAFT. }
+    Tenancy:
+      type: object
+      required: [id, status, status_label, property, unit, tenants, landlords, lease, rent, deposit, start_date, end_date, ended_on,
+        end_reason, notes, activated_at, activated_by, ended_at, ended_by, created_by, created_at, updated_at, can]
+      properties:
+        id: { type: string, format: uuid }
+        status: { $ref: "#/components/schemas/TenancyStatus" }
+        status_label: { type: string }
+        property:
+          type: object
+          required: [id, name, address, market_code, archived]
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string }
+            address: { type: string }
+            market_code: { type: string }
+            archived: { type: boolean }
+        unit:
+          oneOf:
+            - type: "null"
+            - type: object
+              required: [id, label, archived]
+              properties: { id: { type: string, format: uuid }, label: { type: string }, archived: { type: boolean } }
+        tenants: { type: array, items: { $ref: "#/components/schemas/TenancyContactRef" } }
+        landlords: { type: array, items: { $ref: "#/components/schemas/TenancyContactRef" } }
+        lease:
+          oneOf:
+            - type: "null"
+            - { type: object, required: [id, reference], properties: { id: { type: string, format: uuid }, reference: { type: string } } }
+        rent: { $ref: "#/components/schemas/TenancyRent" }
+        deposit: { oneOf: [{ type: "null" }, { $ref: "#/components/schemas/TenancyMoney" }] }
+        start_date: { type: string, format: date }
+        end_date: { type: [string, "null"], format: date, description: The agreed end date (null for a periodic tenancy). }
+        ended_on: { type: [string, "null"], format: date, description: The actual end, once ENDED or TERMINATED. }
+        end_reason: { type: [string, "null"] }
+        notes: { type: string }
+        activated_at: { type: [string, "null"], format: date-time }
+        activated_by: { oneOf: [{ type: "null" }, { $ref: "#/components/schemas/LedgerPersonRef" }] }
+        ended_at: { type: [string, "null"], format: date-time }
+        ended_by: { oneOf: [{ type: "null" }, { $ref: "#/components/schemas/LedgerPersonRef" }] }
+        created_by: { $ref: "#/components/schemas/LedgerPersonRef" }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        can:
+          type: object
+          required: [edit, activate, end, delete]
+          properties: { edit: { type: boolean }, activate: { type: boolean }, end: { type: boolean }, delete: { type: boolean } }
+    TenancyEnvelope:
+      type: object
+      required: [tenancy]
+      properties: { tenancy: { $ref: "#/components/schemas/Tenancy" } }
+    TenancyPage:
+      type: object
+      required: [items, total, page, page_size, status_counts]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Tenancy" } }
+        total: { type: integer }
+        page: { type: integer }
+        page_size: { type: integer }
+        status_counts:
+          type: object
+          required: [DRAFT, ACTIVE, ENDED, TERMINATED]
+          properties: { DRAFT: { type: integer }, ACTIVE: { type: integer }, ENDED: { type: integer }, TERMINATED: { type: integer } }
+    TenancyOptions:
+      type: object
+      required: [frequencies, statuses, currencies, permissions]
+      properties:
+        frequencies: { type: array, items: { type: object, required: [code, label], properties: { code: { type: string }, label: { type: string } } } }
+        statuses: { type: array, items: { type: object, required: [code, label], properties: { code: { type: string }, label: { type: string } } } }
+        currencies: { type: array, items: { type: object, required: [code, minor_unit], properties: { code: { type: string }, minor_unit: { type: integer } } } }
+        permissions: { type: object, required: [write], properties: { write: { type: boolean } } }
+    MyTenancy:
+      type: object
+      description: A tenancy as its tenant sees it. No notes, contact IDs, contact details, audit names or rights.
+      required: [id, status, status_label, managed_by, property, unit, tenants, landlords, lease, rent, deposit, start_date, end_date, ended_on]
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [ACTIVE, ENDED, TERMINATED] }
+        status_label: { type: string }
+        managed_by:
+          type: object
+          required: [kind, name]
+          properties:
+            kind: { type: string, enum: [ORGANISATION, DIRECT_OWNER] }
+            name: { type: string }
+        property:
+          type: object
+          required: [name, address, market_code]
+          properties: { name: { type: string }, address: { type: string }, market_code: { type: string } }
+        unit: { oneOf: [{ type: "null" }, { type: object, required: [label], properties: { label: { type: string } } }] }
+        tenants: { type: array, items: { type: object, required: [name], properties: { name: { type: string } } } }
+        landlords: { type: array, items: { type: object, required: [name], properties: { name: { type: string } } } }
+        lease:
+          oneOf:
+            - type: "null"
+            - { type: object, required: [id, reference], properties: { id: { type: string, format: uuid }, reference: { type: string } } }
+        rent: { $ref: "#/components/schemas/TenancyRent" }
+        deposit: { oneOf: [{ type: "null" }, { $ref: "#/components/schemas/TenancyMoney" }] }
+        start_date: { type: string, format: date }
+        end_date: { type: [string, "null"], format: date }
+        ended_on: { type: [string, "null"], format: date }
+    TenancyErrorEnvelope:
+      type: object
+      required: [error, trace_id]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, enum: [PROPERTY_IN_USE, UNIT_IN_USE, UNIT_OCCUPIED, TENANCY_INVALID_STATE] }
+            message: { type: string }
+            details:
+              type: object
+              additionalProperties: true
+              description: "`UNIT_OCCUPIED`: `tenancy_id` (or null); `TENANCY_INVALID_STATE`: `status` (or null when it changed meanwhile)."
         trace_id: { type: string }

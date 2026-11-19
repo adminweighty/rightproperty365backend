@@ -177,7 +177,9 @@ func TestApplicationsEndToEnd(t *testing.T) {
 func TestApplicationCRMAndAnalytics(t *testing.T) {
 	e := newEnv(t)
 	owner := browser(e.loginCookie(devseed.EstatesOwnerEmail, seedPassword))
-	rec := e.post(contactsPath(devseed.SampleEstates.ID, "/"), obj{"name": "Tariro Tenant", "type": "tenant", "emails": []string{devseed.TenantEmail}}, owner)
+	// The sample contact Kudzai Sithole (the sample tenancy's tenant) already
+	// has this email: keep both.
+	rec := e.post(contactsPath(devseed.SampleEstates.ID, "/?allow_duplicate=true"), obj{"name": "Tariro Tenant", "type": "tenant", "emails": []string{devseed.TenantEmail}}, owner)
 	wantStatus(t, rec, http.StatusCreated)
 	id := decode[contactBody](t, rec).Contact.ID
 	timeline := e.get(contactsPath(devseed.SampleEstates.ID, "/"+id+"/timeline"), owner).Body.String()

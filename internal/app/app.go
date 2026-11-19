@@ -37,6 +37,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/saved"
 	"rightproperty365.com/backend/internal/modules/subscriptions"
 	"rightproperty365.com/backend/internal/modules/teams"
+	"rightproperty365.com/backend/internal/modules/tenancies"
 	"rightproperty365.com/backend/internal/modules/trust"
 	"rightproperty365.com/backend/internal/modules/venues"
 	"rightproperty365.com/backend/internal/platform/adminaudit"
@@ -185,6 +186,9 @@ const (
 	// Ledger writes (entries, reversals, notes, attachments) per member.
 	ledgerChangesPerMinute = 120
 	ledgerChangesBurst     = 120
+	// Property, unit and tenancy writes per member.
+	tenancyChangesPerMinute = 120
+	tenancyChangesBurst     = 120
 )
 
 // uploadPath matches POST /v1/me/onboarding/{role}/documents and logoPath
@@ -304,6 +308,9 @@ type Deps struct {
 	// in Files.
 	Ledger ledger.Store
 
+	// Tenancies holds the properties, units and tenancies (API 0.36.0).
+	Tenancies tenancies.Store
+
 	// Inbox is the notification centre (API 0.35.0): devices, in-app
 	// notifications, preferences and the delivery health. Logging out
 	// removes the session's devices through it.
@@ -409,6 +416,13 @@ func NewRouter(d Deps) (http.Handler, error) {
 	}
 	ledgerH := ledger.NewHandler(LedgerService(d.Ledger, d.Files, d.CRM, d.Listings, d.Leases, d.Markets, logger, d.Now), logger)
 	ledgerLimiter := httpx.NewRateLimiter(ledgerChangesPerMinute, ledgerChangesBurst)
+	// Properties, units and tenancies (BR-019, FR-047): the same books as the
+	// CRM and the ledger; tenants read their own through /v1/me/tenancies.
+	if d.Tenancies == nil {
+		return nil, errors.New("app: no tenancy store")
+	}
+	tenanciesH := tenancies.NewHandler(TenanciesService(d.Tenancies, d.CRM, d.Listings, d.Leases, d.Markets, d.Identity, logger, d.Now), logger)
+	tenancyLimiter := httpx.NewRateLimiter(tenancyChangesPerMinute, tenancyChangesBurst)
 	directorySvc := directory.NewService(d.Directory, vocab, listingsSvc)
 	directorySvc.SetPlaces(geography)
 	// Logos are kept in the object storage and served by the API itself.
@@ -791,6 +805,14 @@ func NewRouter(d Deps) (http.Handler, error) {
 			// 400 for a property type that is not hourly_bookable).
 			r.Get("/{id}/hourly", venuesH.GetSettings)
 			r.With(venueLimiter.Middleware).Put("/{id}/hourly", venuesH.PutSettings)
+		})
+
+		// A tenant's own tenancies (FR-047): matched by their verified email
+		// to a tenant contact of the tenancy's book; anybody else's is 404.
+		r.Route("/me/tenancies", func(r chi.Router) {
+			r.Use(auth.RequireAuth)
+			r.Get("/", tenanciesH.MyTenancies)
+			r.Get("/{id}", tenanciesH.MyTenancy)
 		})
 
 		// A customer's hourly bookings (FR-025): another customer's is 404.
@@ -1186,6 +1208,12 @@ func NewRouter(d Deps) (http.Handler, error) {
 			// (auth.MayReadLedger / OwnsLedgerBook); 403 to a member whose role
 			// may not do it. No PATCH and no DELETE on entries.
 			r.Route("/ledger", func(r chi.Router) { ledgerH.Routes(r, ledgerLimiter.Middleware) })
+			// Properties, units and tenancies (FR-047). {id} is the organisation,
+			// or an approved direct owner's own user ID. 404 BOOK_NOT_FOUND to
+			// anyone else on every route (auth.MayReadProperties /
+			// OwnsPropertyBook); 403 to STAFF for every change.
+			r.Route("/properties", func(r chi.Router) { tenanciesH.PropertyRoutes(r, tenancyLimiter.Middleware) })
+			r.Route("/tenancies", func(r chi.Router) { tenanciesH.TenancyRoutes(r, tenancyLimiter.Middleware) })
 			r.Route("/venue-bookings", func(r chi.Router) {
 				r.Get("/", orgVenues.List)
 				r.Get("/{bookingId}", orgVenues.Get)

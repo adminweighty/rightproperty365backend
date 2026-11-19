@@ -255,6 +255,20 @@ func (s *MemoryStore) Matching(_ context.Context, book Book, emails, phones []st
 	return out, nil
 }
 
+// WithEmail implements Store.
+func (s *MemoryStore) WithEmail(_ context.Context, email string) ([]Contact, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []Contact
+	for _, c := range s.contacts {
+		if c.Live() && email != "" && slices.Contains(c.Emails, email) {
+			out = append(out, s.withReminders(c))
+		}
+	}
+	SortContacts(out, SortCreated)
+	return out, nil
+}
+
 // Apply implements Store.
 func (s *MemoryStore) Apply(_ context.Context, ch Change) error {
 	s.mu.Lock()

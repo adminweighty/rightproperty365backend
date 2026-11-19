@@ -41,6 +41,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/saved"
 	"rightproperty365.com/backend/internal/modules/subscriptions"
 	"rightproperty365.com/backend/internal/modules/teams"
+	"rightproperty365.com/backend/internal/modules/tenancies"
 	"rightproperty365.com/backend/internal/modules/venues"
 	"rightproperty365.com/backend/internal/platform/adminaudit"
 	"rightproperty365.com/backend/internal/platform/config"
@@ -153,7 +154,8 @@ func run() error {
 		// venueStore holds the hourly settings, quotes and hourly bookings.
 		venueStore venues.Store
 		// ledgerStore holds the agent books.
-		ledgerStore ledger.Store
+		ledgerStore  ledger.Store
+		tenancyStore tenancies.Store
 		// memSubscriptions is set without a database (its expiry sweep runs here).
 		memSubscriptions *subscriptions.MemoryStore
 	)
@@ -275,6 +277,12 @@ func run() error {
 			return fmt.Errorf("seed sample books: %w", err)
 		}
 		ledgerStore = memLedger
+		// Properties and tenancies: the samples; creating, activating, ending and
+		// deleting a tenancy is audited into the team audit trail.
+		memTenancies := tenancies.NewMemoryStore()
+		memTenancies.SetAuditSink(memTeams.AuditSink())
+		devseed.SeedMemoryTenancies(memTenancies, time.Now())
+		tenancyStore = memTenancies
 		crmItems = app.MemoryCRMItems{Requests: memRequests, Enquiries: memEnquiries, Appointments: memAppointments,
 			Identity: memIdentity, Listings: memListings, Applications: memApplications}
 		// The notification centre, and its push sender in this process.
@@ -301,7 +309,8 @@ func run() error {
 			Directory: memDirectory, Audit: memAudit, CancelSubscriptions: memSubscriptions.CancelForDeletedUser,
 			DeleteSignature: memAgreements.DeleteSavedSignature, DeleteSavedListings: memSaved.DeleteUser,
 			EraseApplications:   func(userID uuid.UUID, at time.Time) { memApplications.EraseApplicant(userID, at) },
-			DeleteVenueBookings: memVenues.DeleteCustomer, DeleteNotifications: memInbox.DeleteUser})
+			DeleteVenueBookings: memVenues.DeleteCustomer, DeleteNotifications: memInbox.DeleteUser,
+			ForgetTenancies: memTenancies.ForgetUser})
 		reportStore = app.MemoryReports(app.MemoryReportStores{Identity: memIdentity, Onboarding: memOnboarding, Listings: memListings,
 			Requests: memRequests, Enquiries: memEnquiries, Leases: memLeases, Agreements: memAgreements, Subscriptions: memSubscriptions,
 			Markets: marketStore})
@@ -458,6 +467,7 @@ func run() error {
 		applicationStore = applications.NewPostgresStore(pool)
 		venueStore = venues.NewPostgresStore(pool)
 		ledgerStore = ledger.NewPostgresStore(pool)
+		tenancyStore = tenancies.NewPostgresStore(pool)
 		adminAuditLog = adminaudit.PostgresLog{Q: pool}
 		inboxSvc = inapp.NewService(inapp.NewPostgresStore(pool), pushProvider, logger, nil)
 	}
@@ -527,6 +537,7 @@ func run() error {
 		Applications:  applicationStore,
 		Venues:        venueStore,
 		Ledger:        ledgerStore,
+		Tenancies:     tenancyStore,
 		Inbox:         inboxSvc,
 	})
 	if err != nil {
