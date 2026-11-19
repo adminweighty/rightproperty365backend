@@ -34,6 +34,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/modules/onboarding"
 	"rightproperty365.com/backend/internal/modules/packages"
+	"rightproperty365.com/backend/internal/modules/payments"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
 	"rightproperty365.com/backend/internal/modules/reports"
@@ -50,6 +51,7 @@ import (
 	"rightproperty365.com/backend/internal/platform/httpx"
 	"rightproperty365.com/backend/internal/platform/ics"
 	"rightproperty365.com/backend/internal/platform/malware"
+	"rightproperty365.com/backend/internal/platform/paygateway"
 	"rightproperty365.com/backend/internal/platform/storage"
 )
 
@@ -344,6 +346,13 @@ type Deps struct {
 	// Postgres listing store always does (packages.EnforceTx); the memory one
 	// once MemoryPackages has been called on it.
 	Packages packages.Store
+
+	// Payments holds the online payments of subscription invoices (API
+	// 0.42.0); nil means an in-memory store. PaymentGateway is the provider;
+	// nil means the one PAYMENT_GATEWAY configures (none: online payment is
+	// not offered).
+	Payments       payments.Store
+	PaymentGateway paygateway.Gateway
 
 	// Inbox is the notification centre (API 0.35.0): devices, in-app
 	// notifications, preferences and the delivery health. Logging out
@@ -689,6 +698,27 @@ func NewRouter(d Deps) (http.Handler, error) {
 		accountMailer, _ = d.Mailer.(accounts.Mailer)
 	}
 	subscriptionsSvc := subscriptions.NewService(subscriptions.Deps{Store: d.Subscriptions, Currency: marketCurrency(d.Markets), Logger: logger, Now: d.Now})
+	// A paid subscription grants its plan's listing package (API 0.42.0).
+	LinkSubscriptionPackages(d.Subscriptions, d.Packages)
+	// Online payment (API 0.42.0): off unless PAYMENT_GATEWAY names a driver.
+	gateway := d.PaymentGateway
+	if gateway == nil {
+		var err error
+		if gateway, err = paygateway.Open(cfg, logger, d.Now); err != nil {
+			return nil, err
+		}
+	}
+	paymentStore := d.Payments
+	if paymentStore == nil {
+		memAudit, _ := d.AdminAudit.(*adminaudit.MemoryLog)
+		paymentStore = payments.NewMemoryStore(memAudit)
+	}
+	if gateway != nil {
+		subscriptionsSvc.SetOnlinePayment(gateway.Name())
+	}
+	paymentsSvc := payments.NewService(payments.Deps{Store: paymentStore, Subscriptions: subscriptionsSvc, Gateway: gateway,
+		PublicWebURL: cfg.PublicWebURL, ReconcileAfter: cfg.PaymentReconcileAfter, Logger: logger, Now: d.Now})
+	paymentsH := payments.NewHandler(paymentsSvc, logger)
 	subscriptionsH := subscriptions.NewHandler(subscriptionsSvc, logger)
 	accountsH := accounts.NewHandler(accounts.NewService(accounts.Deps{Store: d.Accounts, Audit: d.AdminAudit, Mailer: accountMailer,
 		Subscriptions: AccountSubscriptions(d.Subscriptions, d.Now), Logger: logger, Now: d.Now}), logger, secure)
@@ -745,7 +775,16 @@ func NewRouter(d Deps) (http.Handler, error) {
 		},
 		// After CORS so preflights never touch the session store; resolves the
 		// cookie/bearer session and enforces the CSRF origin rule for cookies.
-		authn.Authenticate,
+		func(next http.Handler) http.Handler {
+			authenticated := authn.Authenticate(next)
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if skipAuthentication(r.URL.Path) {
+					next.ServeHTTP(w, r)
+					return
+				}
+				authenticated.ServeHTTP(w, r)
+			})
+		},
 	)
 	r.NotFound(httpx.NotFound)
 	r.MethodNotAllowed(httpx.MethodNotAllowed)
@@ -764,6 +803,14 @@ func NewRouter(d Deps) (http.Handler, error) {
 		// Reference data behind every drop-down, filter and list. Public and cacheable.
 		r.Get("/reference", referenceH.All)
 		r.Get("/reference/{set}", referenceH.One)
+
+		// Online payment (API 0.42.0): the provider's signed webhooks, and the
+		// fake provider's hosted page (PAYMENT_GATEWAY=fake only). No session.
+		r.Post("/payments/webhooks/{provider}", paymentsH.Webhook)
+		if _, fake := gateway.(*paygateway.Fake); fake {
+			r.Get("/payments/fake/checkout/{ref}", paymentsH.FakeCheckout)
+			r.Post("/payments/fake/checkout/{ref}/{action}", paymentsH.FakeComplete)
+		}
 
 		// Open to guests and signed-in customers alike.
 		r.With(requestLimiter.Middleware).Post("/property-requests", requestsH.Create)
@@ -877,6 +924,9 @@ func NewRouter(d Deps) (http.Handler, error) {
 			r.Get("/{id}", subscriptionsH.MineOne)
 			r.With(adminLimiter.Middleware).Post("/{id}/cancel", subscriptionsH.CancelPending)
 			r.With(adminLimiter.Middleware).Post("/{id}/renew", subscriptionsH.Renew)
+			// Online payment (API 0.42.0): 404 ONLINE_PAYMENT_NOT_OFFERED when off.
+			r.With(adminLimiter.Middleware).Post("/{id}/checkout", paymentsH.Checkout)
+			r.Get("/{id}/payments", paymentsH.Mine)
 		})
 
 		// One role-aware summary for the signed-in account: which dashboard
@@ -1257,13 +1307,18 @@ func NewRouter(d Deps) (http.Handler, error) {
 				r.Use(auth.RequirePlatformRole(subscriptions.ReadRoles()...))
 				r.Get("/", subscriptionsH.AdminList)
 				r.Get("/{id}", subscriptionsH.AdminGet)
+				r.Get("/{id}/payments", paymentsH.AdminOf)
 				r.Group(func(r chi.Router) {
 					r.Use(auth.RequirePlatformRole(subscriptions.DecisionRoles()...), adminLimiter.Middleware)
 					r.Post("/{id}/approve", subscriptionsH.Approve)
+					r.Post("/{id}/refund", paymentsH.Refund)
 					r.Post("/{id}/reject", subscriptionsH.Reject)
 					r.Post("/{id}/cancel", subscriptionsH.Cancel)
 				})
 			})
+
+			// Online payments (API 0.42.0): read like subscriptions.
+			r.With(auth.RequirePlatformRole(subscriptions.ReadRoles()...)).Get("/payments", paymentsH.List)
 
 			// Reference data: SUPER_ADMIN, PLATFORM_ADMIN, CONTENT_ADMIN, and
 			// MARKET_ADMIN for the rows of its own market. Nothing is deleted.
@@ -1284,6 +1339,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 				r.With(auth.RequirePlatformRole(reports.PeopleExportRoles()...)).Get("/users.csv", reportsH.Users)
 				r.With(auth.RequirePlatformRole(reports.PeopleExportRoles()...)).Get("/listings.csv", reportsH.Listings)
 				r.With(auth.RequirePlatformRole(reports.SubscriptionExportRoles()...)).Get("/subscriptions.csv", reportsH.Subscriptions)
+				r.With(auth.RequirePlatformRole(payments.ExportRoles()...)).Get("/payments.csv", paymentsH.Export)
 			})
 
 			// Listing analytics, site and market aggregates: SUPER_ADMIN,

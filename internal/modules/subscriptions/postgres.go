@@ -17,7 +17,17 @@ import (
 )
 
 // PostgresStore is the production Store (migration 0024).
-type PostgresStore struct{ pool *pgxpool.Pool }
+type PostgresStore struct {
+	pool *pgxpool.Pool
+	// entitle applies a change's Entitlement in its transaction (nil: ignored).
+	entitle EntitlementTxFunc
+}
+
+// EntitlementTxFunc applies an entitlement inside the store's transaction.
+type EntitlementTxFunc func(ctx context.Context, tx pgx.Tx, x Subscription, e Entitlement, at time.Time) error
+
+// SetEntitlements sets the hook that grants and ends listing packages (wiring).
+func (s *PostgresStore) SetEntitlements(fn EntitlementTxFunc) { s.entitle = fn }
 
 // NewPostgresStore returns the Postgres store.
 func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore { return &PostgresStore{pool: pool} }
@@ -57,13 +67,13 @@ func (s *PostgresStore) NextInvoiceNumber(ctx context.Context, year int) (string
 // ---------------------------------------------------------------------------
 
 const planColumns = `id, name, description, subscriber_kind, eligible_roles, features, benefits, status, sort_order, created_by,
-	created_at, updated_at, retired_at`
+	created_at, updated_at, retired_at, COALESCE(package_code, '')`
 
 func scanPlan(row pgx.Row) (Plan, error) {
 	var p Plan
 	var features []byte
 	if err := row.Scan(&p.ID, &p.Name, &p.Description, &p.SubscriberKind, &p.EligibleRoles, &features, &p.Benefits, &p.Status,
-		&p.SortOrder, &p.CreatedBy, &p.CreatedAt, &p.UpdatedAt, &p.RetiredAt); err != nil {
+		&p.SortOrder, &p.CreatedBy, &p.CreatedAt, &p.UpdatedAt, &p.RetiredAt, &p.PackageCode); err != nil {
 		return Plan{}, err
 	}
 	if err := json.Unmarshal(features, &p.Features); err != nil {
@@ -119,17 +129,17 @@ func writePlan(ctx context.Context, tx pgx.Tx, p Plan, insert bool) error {
 	if insert {
 		_, err = tx.Exec(ctx, `
 			INSERT INTO subscription_plans (id, name, description, subscriber_kind, eligible_roles, features, benefits, status, sort_order,
-				created_by, created_at, updated_at, retired_at)
-			VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13)`,
+				created_by, created_at, updated_at, retired_at, package_code)
+			VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, NULLIF($14::text, ''))`,
 			p.ID, p.Name, p.Description, p.SubscriberKind, p.EligibleRoles, string(features), p.Benefits, p.Status, p.SortOrder,
-			p.CreatedBy, p.CreatedAt, p.UpdatedAt, p.RetiredAt)
+			p.CreatedBy, p.CreatedAt, p.UpdatedAt, p.RetiredAt, p.PackageCode)
 	} else {
 		_, err = tx.Exec(ctx, `
 			UPDATE subscription_plans SET name = $2, description = $3, subscriber_kind = $4, eligible_roles = $5, features = $6::jsonb,
-				benefits = $7, status = $8, sort_order = $9, updated_at = $10, retired_at = $11
+				benefits = $7, status = $8, sort_order = $9, updated_at = $10, retired_at = $11, package_code = NULLIF($12::text, '')
 			WHERE id = $1`,
 			p.ID, p.Name, p.Description, p.SubscriberKind, p.EligibleRoles, string(features), p.Benefits, p.Status, p.SortOrder,
-			p.UpdatedAt, p.RetiredAt)
+			p.UpdatedAt, p.RetiredAt, p.PackageCode)
 	}
 	if err != nil {
 		return fmt.Errorf("save plan: %w", err)
@@ -230,21 +240,23 @@ const subColumns = `id, invoice_number, plan_id, plan_name, period, status, subs
 	requested_by, requested_by_name, market_code, currency_code, round(amount, 2)::text, renewal_of, starts_at, ends_at, activated_at,
 	payment_reference, round(payment_amount, 2)::text, to_char(payment_received_on, 'YYYY-MM-DD'), payment_note, payment_recorded_by,
 	payment_recorded_by_name, rejected_at, rejection_reason, cancelled_at, cancel_reason, COALESCE(cancelled_by_kind, ''), refund_due,
-	refund_note, expired_at, created_at, updated_at`
+	refund_note, expired_at, created_at, updated_at, payment_recorded_by_kind, payment_provider`
 
 func scanSub(row pgx.Row) (Subscription, error) {
 	var x Subscription
 	var payRef, payAmount, payOn *string
-	var payNote, payByName string
+	var payNote, payByName, payKind, payProvider string
 	var payBy *uuid.UUID
 	if err := row.Scan(&x.ID, &x.InvoiceNumber, &x.PlanID, &x.PlanName, &x.Period, &x.Status, &x.SubscriberKind, &x.SubscriberID,
 		&x.SubscriberName, &x.OrganisationID, &x.RequestedBy, &x.RequestedByName, &x.MarketCode, &x.CurrencyCode, &x.Amount, &x.RenewalOf,
 		&x.StartsAt, &x.EndsAt, &x.ActivatedAt, &payRef, &payAmount, &payOn, &payNote, &payBy, &payByName, &x.RejectedAt, &x.RejectionReason,
-		&x.CancelledAt, &x.CancelReason, &x.CancelledBy, &x.RefundDue, &x.RefundNote, &x.ExpiredAt, &x.CreatedAt, &x.UpdatedAt); err != nil {
+		&x.CancelledAt, &x.CancelReason, &x.CancelledBy, &x.RefundDue, &x.RefundNote, &x.ExpiredAt, &x.CreatedAt, &x.UpdatedAt,
+		&payKind, &payProvider); err != nil {
 		return Subscription{}, err
 	}
 	if payAmount != nil {
-		x.Payment = &Payment{Amount: *payAmount, Note: payNote, RecordedBy: payBy, RecordedByName: payByName}
+		x.Payment = &Payment{Amount: *payAmount, Note: payNote, RecordedBy: payBy, RecordedByName: payByName, RecordedByKind: payKind,
+			Provider: payProvider}
 		if payRef != nil {
 			x.Payment.Reference = *payRef
 		}
@@ -288,6 +300,14 @@ func paymentArgs(p *Payment) (ref, amount, on *string, note string, by *uuid.UUI
 	}
 	r, a, o := p.Reference, p.Amount, p.ReceivedOn
 	return &r, &a, &o, p.Note, p.RecordedBy, p.RecordedByName
+}
+
+// paymentRecorder returns who recorded the payment (ADMIN when none) and the provider.
+func paymentRecorder(p *Payment) (kind, provider string) {
+	if p == nil || p.RecordedByKind == "" {
+		return RecordedByAdmin, ""
+	}
+	return p.RecordedByKind, p.Provider
 }
 
 func cancelledBy(kind string) *string {
@@ -430,16 +450,23 @@ func (s *PostgresStore) ChangeSubscription(ctx context.Context, id uuid.UUID, ch
 			return err
 		}
 		ref, amount, on, note, by, byName := paymentArgs(next.Payment)
+		kind, provider := paymentRecorder(next.Payment)
 		if _, err := tx.Exec(ctx, `
 			UPDATE subscriptions SET status = $2, starts_at = $3, ends_at = $4, activated_at = $5, payment_reference = $6,
 				payment_amount = $7::numeric, payment_received_on = $8::date, payment_note = $9, payment_recorded_by = $10,
 				payment_recorded_by_name = $11, rejected_at = $12, rejection_reason = $13, cancelled_at = $14, cancel_reason = $15,
-				cancelled_by_kind = $16, refund_due = $17, refund_note = $18, expired_at = $19, updated_at = $20
+				cancelled_by_kind = $16, refund_due = $17, refund_note = $18, expired_at = $19, updated_at = $20,
+				payment_recorded_by_kind = $21, payment_provider = $22
 			WHERE id = $1`,
 			id, next.Status, next.StartsAt, next.EndsAt, next.ActivatedAt, ref, amount, on, note, by, byName, next.RejectedAt,
 			next.RejectionReason, next.CancelledAt, next.CancelReason, cancelledBy(next.CancelledBy), next.RefundDue, next.RefundNote,
-			next.ExpiredAt, next.UpdatedAt); err != nil {
+			next.ExpiredAt, next.UpdatedAt, kind, provider); err != nil {
 			return fmt.Errorf("update subscription: %w", err)
+		}
+		if ch.Entitlement != nil && s.entitle != nil {
+			if err := s.entitle(ctx, tx, next, *ch.Entitlement, next.UpdatedAt); err != nil {
+				return err
+			}
 		}
 		for _, e := range ch.Events {
 			if err := insertEvent(ctx, tx, e); err != nil {

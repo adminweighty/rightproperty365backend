@@ -150,6 +150,8 @@ type AssignmentView struct {
 	AssignedBy  PersonRef  `json:"assigned_by"`
 	CreatedAt   time.Time  `json:"created_at"`
 	CancelledAt *time.Time `json:"cancelled_at"`
+	// SubscriptionID is the paid subscription of an INVOICE assignment.
+	SubscriptionID *uuid.UUID `json:"subscription_id"`
 }
 
 func dateString(t *time.Time) *string {

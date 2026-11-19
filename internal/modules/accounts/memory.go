@@ -64,6 +64,9 @@ type MemoryDeps struct {
 	// ForgetPackages ends the user's own listing package assignments and
 	// unlinks them as the administrator who made any (nil: nothing to do).
 	ForgetPackages func(userID uuid.UUID, deletedName string, at time.Time)
+	// ForgetPayments unlinks the user from their online payments (kept for
+	// finance) and expires their open checkouts (nil: nothing to do).
+	ForgetPayments func(userID uuid.UUID, deletedName string, at time.Time)
 	// Now is the clock used for listing expiry in the detail (nil: time.Now).
 	Now func() time.Time
 }
@@ -328,6 +331,9 @@ func (s *MemoryStore) Delete(ctx context.Context, d Deletion) (Deleted, error) {
 	}
 	if s.deps.ForgetPackages != nil {
 		s.deps.ForgetPackages(d.UserID, DeletedName, d.At)
+	}
+	if s.deps.ForgetPayments != nil {
+		s.deps.ForgetPayments(d.UserID, DeletedName, d.At)
 	}
 	// Marketing consent records (API 0.37.1): deleted with the account.
 	s.deps.Identity.DeleteMarketingConsents(d.UserID)

@@ -159,7 +159,30 @@ type Config struct {
 	ClamdAddress        string
 	MalwareScanTimeout  time.Duration
 	MalwareScanMaxBytes int64
+
+	// Online payment of subscription invoices (API 0.42.0, BR-015).
+	// PaymentGateway is PAYMENT_GATEWAY: none (the default: not offered) or
+	// fake (development and staging only; refused in production). No real
+	// provider is built: one adds its name to PaymentGateways and its
+	// credentials here as Secret fields. PaymentFakeWebhookSecret is
+	// PAYMENT_FAKE_WEBHOOK_SECRET (optional: random per process when unset);
+	// PaymentReconcileAfter is PAYMENT_RECONCILE_AFTER (default 15m): an open
+	// checkout older than this is checked with the provider.
+	PaymentGateway           string
+	PaymentFakeWebhookSecret Secret
+	PaymentReconcileAfter    time.Duration
 }
+
+// Payment gateways (PAYMENT_GATEWAY).
+const (
+	PaymentGatewayNone = "none"
+	PaymentGatewayFake = "fake"
+
+	defaultPaymentReconcileAfter = 15 * time.Minute
+)
+
+// PaymentGateways returns the accepted PAYMENT_GATEWAY values.
+func PaymentGateways() []string { return []string{PaymentGatewayNone, PaymentGatewayFake} }
 
 // Malware scanners (MALWARE_SCANNER).
 const (
@@ -589,6 +612,32 @@ func FromLookup(get func(string) string) (Config, error) {
 		}
 	default:
 		errs = append(errs, errors.New("MALWARE_SCANNER must be none or clamav"))
+	}
+
+	// Online payment: off unless PAYMENT_GATEWAY names a driver. Only the
+	// fake one exists, and never in production.
+	cfg.PaymentGateway = strings.ToLower(val("PAYMENT_GATEWAY", PaymentGatewayNone))
+	cfg.PaymentFakeWebhookSecret = Secret(val("PAYMENT_FAKE_WEBHOOK_SECRET", ""))
+	cfg.PaymentReconcileAfter = defaultPaymentReconcileAfter
+	if raw := val("PAYMENT_RECONCILE_AFTER", ""); raw != "" {
+		v, err := time.ParseDuration(raw)
+		if err != nil || v < time.Minute || v > 24*time.Hour {
+			errs = append(errs, errors.New("PAYMENT_RECONCILE_AFTER must be a Go duration between 1m and 24h, for example 15m"))
+		} else {
+			cfg.PaymentReconcileAfter = v
+		}
+	}
+	switch cfg.PaymentGateway {
+	case PaymentGatewayNone:
+	case PaymentGatewayFake:
+		if cfg.Env == EnvProduction {
+			errs = append(errs, errors.New("PAYMENT_GATEWAY=fake is refused when APP_ENV=production: it charges nothing and activates subscriptions for free"))
+		}
+		if s := cfg.PaymentFakeWebhookSecret; s.IsSet() && len(s.Reveal()) < 16 {
+			errs = append(errs, errors.New("PAYMENT_FAKE_WEBHOOK_SECRET must be at least 16 characters (or unset for a random one)"))
+		}
+	default:
+		errs = append(errs, fmt.Errorf("PAYMENT_GATEWAY must be one of %s (no real provider is built yet)", strings.Join(PaymentGateways(), ", ")))
 	}
 
 	if len(errs) > 0 {

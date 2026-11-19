@@ -45,7 +45,8 @@ func SamplePlans(now time.Time) []subscriptions.Plan {
 			Benefits: []string{"Unlimited active listings", "Up to 10 featured listings", "Up to 25 team members", "Lease templates and e-signing"},
 			Prices: []subscriptions.Price{{CurrencyCode: "USD", Period: subscriptions.PeriodQuarterly, Amount: "150.00"},
 				{CurrencyCode: "USD", Period: subscriptions.PeriodYearly, Amount: "500.00"}},
-			Status: subscriptions.PlanActive, SortOrder: 20, CreatedAt: now, UpdatedAt: now},
+			// A paid Agency Pro grants the Professional listing package (API 0.42.0).
+			PackageCode: "PROFESSIONAL", Status: subscriptions.PlanActive, SortOrder: 20, CreatedAt: now, UpdatedAt: now},
 		{ID: LandlordPlanID, Name: "Landlord", Description: "For a landlord or seller advertising their own property.",
 			SubscriberKind: subscriptions.KindIndividual, EligibleRoles: []string{identity.AccountRoleLandlord, identity.AccountRolePrivateSeller},
 			Features: []subscriptions.Feature{{Code: subscriptions.FeatureMaxActiveListings, Limit: limit(5)}},
@@ -104,6 +105,16 @@ func SeedPostgresSubscriptions(ctx context.Context, pool *pgxpool.Pool, now time
 			"Sample plan (development seed).", nil, map[string]any{"name": p.Name}, p.CreatedAt)
 		if err := store.CreatePlan(ctx, p, audit); err != nil {
 			return fmt.Errorf("seed plan %s: %w", p.Name, err)
+		}
+	}
+	// Plans seeded before API 0.42.0 gain their package code (never changing
+	// one an administrator set).
+	for _, p := range SamplePlans(now) {
+		if p.PackageCode == "" {
+			continue
+		}
+		if _, err := pool.Exec(ctx, `UPDATE subscription_plans SET package_code = $2 WHERE id = $1 AND package_code IS NULL`, p.ID, p.PackageCode); err != nil {
+			return fmt.Errorf("seed plan package code: %w", err)
 		}
 	}
 	if _, err := store.Subscription(ctx, PendingAgentSubscription); err == nil {

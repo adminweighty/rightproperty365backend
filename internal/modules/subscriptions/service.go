@@ -53,7 +53,18 @@ type Deps struct {
 }
 
 // Service is the subscriptions use cases.
-type Service struct{ d Deps }
+type Service struct {
+	d Deps
+	// online is the payment gateway's name ("": online payment is off).
+	online string
+}
+
+// SetOnlinePayment records the configured payment gateway ("" for none):
+// views then offer online payment of pending invoices (wiring).
+func (s *Service) SetOnlinePayment(provider string) { s.online = provider }
+
+// OnlinePayment returns the payment gateway's name ("": off).
+func (s *Service) OnlinePayment() string { return s.online }
 
 // NewService builds the service.
 func NewService(d Deps) *Service {
@@ -87,9 +98,15 @@ type PlanInput struct {
 	Benefits       *[]string  `json:"benefits"`
 	Prices         *[]Price   `json:"prices"`
 	SortOrder      *int       `json:"sort_order"`
+	// PackageCode is the listing package a paid subscription grants (""
+	// clears it).
+	PackageCode *string `json:"package_code"`
 }
 
-var currencyRe = regexp.MustCompile(`^[A-Z]{3}$`)
+var (
+	currencyRe    = regexp.MustCompile(`^[A-Z]{3}$`)
+	packageCodeRe = regexp.MustCompile(`^[A-Z][A-Z0-9_]{1,31}$`)
+)
 
 func runes(s string) int { return utf8.RuneCountInString(s) }
 
@@ -192,6 +209,13 @@ func applyPlan(p *Plan, in PlanInput, create bool) error {
 	if in.SortOrder != nil {
 		p.SortOrder = *in.SortOrder
 	}
+	if in.PackageCode != nil {
+		code := strings.ToUpper(strings.TrimSpace(*in.PackageCode))
+		if code != "" && !packageCodeRe.MatchString(code) {
+			fields["package_code"] = "must be a listing package code such as BUSINESS (A-Z, 0-9 and _), or empty for none"
+		}
+		p.PackageCode = code
+	}
 	if len(fields) > 0 {
 		return &ValidationError{Fields: fields}
 	}
@@ -200,7 +224,7 @@ func applyPlan(p *Plan, in PlanInput, create bool) error {
 
 func planState(p Plan) map[string]any {
 	return map[string]any{"name": p.Name, "status": p.Status, "subscriber_kind": p.SubscriberKind, "eligible_roles": p.EligibleRoles,
-		"features": p.Features, "prices": p.Prices, "sort_order": p.SortOrder}
+		"features": p.Features, "prices": p.Prices, "sort_order": p.SortOrder, "package_code": p.PackageCode}
 }
 
 // Plans returns every plan (retired ones too when asked).
@@ -364,6 +388,8 @@ type SubscriberState struct {
 	ActiveListings    int
 	MaxActiveListings *int
 	HasLimit          bool
+	// PackageCode is the current plan's listing package ("": none).
+	PackageCode string
 }
 
 func (s *Service) state(ctx context.Context, sub Subscriber, list []Subscription, now time.Time) (SubscriberState, error) {
@@ -388,6 +414,7 @@ func (s *Service) state(ctx context.Context, sub Subscriber, list []Subscription
 		st.CanRenew = st.Pending == nil && st.Upcoming == nil && opens != nil && !now.Before(*opens)
 		if plan, err := s.d.Store.Plan(ctx, st.Current.PlanID); err == nil {
 			st.MaxActiveListings, st.HasLimit = plan.Limit(FeatureMaxActiveListings)
+			st.PackageCode = plan.PackageCode
 		} else if !errors.Is(err, ErrPlanNotFound) {
 			return SubscriberState{}, err
 		}
@@ -532,6 +559,12 @@ func (s *Service) Request(ctx context.Context, p *auth.Principal, in RequestInpu
 	return x, nil
 }
 
+// Owned returns a subscription of the caller (or of an organisation they
+// own); ErrNotFound for anybody else's.
+func (s *Service) Owned(ctx context.Context, p *auth.Principal, id uuid.UUID) (Subscription, error) {
+	return s.own(ctx, p, id)
+}
+
 // own returns a subscription of the caller (or of an organisation they
 // own); ErrNotFound for anybody else's.
 func (s *Service) own(ctx context.Context, p *auth.Principal, id uuid.UUID) (Subscription, error) {
@@ -670,6 +703,8 @@ type Detail struct {
 	ActiveListings    int
 	MaxActiveListings *int
 	HasLimit          bool
+	// PackageCode is the plan's listing package ("": none).
+	PackageCode string
 }
 
 // Get returns a subscription's detail.
@@ -685,6 +720,7 @@ func (s *Service) Get(ctx context.Context, id uuid.UUID) (Detail, error) {
 	d := Detail{Subscription: x, Events: events}
 	if plan, err := s.d.Store.Plan(ctx, x.PlanID); err == nil {
 		d.MaxActiveListings, d.HasLimit = plan.Limit(FeatureMaxActiveListings)
+		d.PackageCode = plan.PackageCode
 	}
 	if d.ActiveListings, err = s.d.Store.ActiveListings(ctx, x.SubscriberKind, x.SubscriberID, s.now()); err != nil {
 		return Detail{}, err
@@ -728,6 +764,36 @@ func (s *Service) Approve(ctx context.Context, p *auth.Principal, id uuid.UUID, 
 	if len(fields) > 0 {
 		return Detail{}, &ValidationError{Fields: fields}
 	}
+	by := recorder{kind: RecordedByAdmin, actorType: ActorAdmin, userID: p.UserID, name: p.Name}
+	pay := Payment{Reference: ref, Amount: amount, ReceivedOn: received.Format(PaymentDayLayout), Note: note}
+	return s.activate(ctx, id, by, pay, func(x *Subscription) error {
+		if CompareAmounts(amount, x.Amount) < 0 {
+			return ErrPaymentTooLow
+		}
+		return nil
+	})
+}
+
+// recorder is who records a payment: an administrator, or the gateway.
+type recorder struct {
+	kind, actorType string
+	userID          uuid.UUID
+	name, provider  string
+}
+
+// GatewayName is how the payment gateway is named as an actor.
+func GatewayName(provider string) string { return "Payment gateway (" + provider + ")" }
+
+// activate records the payment of a PENDING_PAYMENT subscription and
+// activates it: the one path of the administrator's approval and of the
+// payment gateway. It starts now, or when the subscriber's paid period ends
+// for a renewal, and ends 3 months or a year later; the plan's listing
+// package is granted for that period (Change.Entitlement), with the history,
+// the SUBSCRIPTION_APPROVED audit record and the SUBSCRIPTION_ACTIVATED email
+// in the same transaction. check vets the payment against the subscription
+// under its lock.
+func (s *Service) activate(ctx context.Context, id uuid.UUID, by recorder, pay Payment, check func(x *Subscription) error) (Detail, error) {
+	now := s.now()
 	cur, err := s.d.Store.Subscription(ctx, id)
 	if err != nil {
 		return Detail{}, err
@@ -743,29 +809,141 @@ func (s *Service) Approve(ctx context.Context, p *auth.Principal, id uuid.UUID, 
 			start = *o.EndsAt
 		}
 	}
-	by := p.UserID
+	packageCode := ""
+	if plan, err := s.d.Store.Plan(ctx, cur.PlanID); err == nil {
+		packageCode = plan.PackageCode
+	} else if !errors.Is(err, ErrPlanNotFound) {
+		return Detail{}, err
+	}
+	if by.userID != uuid.Nil {
+		u := by.userID
+		pay.RecordedBy = &u
+	}
+	pay.RecordedByName, pay.RecordedByKind, pay.Provider = by.name, by.kind, by.provider
 	if _, err := s.d.Store.ChangeSubscription(ctx, id, func(x *Subscription) (Change, error) {
 		if x.Status != StatusPendingPayment {
 			return Change{}, ErrState
 		}
-		if CompareAmounts(amount, x.Amount) < 0 {
-			return Change{}, ErrPaymentTooLow
+		if check != nil {
+			if err := check(x); err != nil {
+				return Change{}, err
+			}
 		}
 		end := End(x.Period, start)
 		x.Status, x.StartsAt, x.EndsAt, x.ActivatedAt, x.UpdatedAt = StatusActive, &start, &end, &now, now
-		x.Payment = &Payment{Reference: ref, Amount: amount, ReceivedOn: received.Format(PaymentDayLayout), Note: note, RecordedBy: &by, RecordedByName: p.Name}
-		paid := fmt.Sprintf("%s %s received on %s, reference %s", x.CurrencyCode, amount, x.Payment.ReceivedOn, ref)
-		audit := adminaudit.New(p.UserID, p.Name, adminaudit.ActionSubscriptionApproved, adminaudit.TargetSubscription, x.ID.String(), x.InvoiceNumber, note,
-			map[string]any{"status": StatusPendingPayment}, map[string]any{"status": StatusActive, "payment_amount": amount, "currency_code": x.CurrencyCode,
-				"payment_reference": ref, "received_on": x.Payment.ReceivedOn, "starts_at": start, "ends_at": end}, now)
-		return Change{Events: []Event{
-			NewEvent(x.ID, ActionPaymentRecorded, ActorAdmin, p.UserID, p.Name, paid, now),
-			NewEvent(x.ID, ActionActivated, ActorAdmin, p.UserID, p.Name, "", now),
-		}, Audit: &audit, Outbox: EventActivated}, nil
+		recorded := pay
+		x.Payment = &recorded
+		paid := fmt.Sprintf("%s %s received on %s, reference %s", x.CurrencyCode, pay.Amount, pay.ReceivedOn, pay.Reference)
+		after := map[string]any{"status": StatusActive, "payment_amount": pay.Amount, "currency_code": x.CurrencyCode,
+			"payment_reference": pay.Reference, "received_on": pay.ReceivedOn, "starts_at": start, "ends_at": end, "recorded_by": by.kind}
+		if by.provider != "" {
+			after["provider"] = by.provider
+		}
+		audit := adminaudit.New(by.userID, by.name, adminaudit.ActionSubscriptionApproved, adminaudit.TargetSubscription, x.ID.String(), x.InvoiceNumber,
+			pay.Note, map[string]any{"status": StatusPendingPayment}, after, now)
+		ch := Change{Events: []Event{
+			NewEvent(x.ID, ActionPaymentRecorded, by.actorType, by.userID, by.name, paid, now),
+			NewEvent(x.ID, ActionActivated, by.actorType, by.userID, by.name, "", now),
+		}, Audit: &audit, Outbox: EventActivated}
+		if packageCode != "" {
+			ch.Entitlement = &Entitlement{Grant: true, PackageCode: packageCode}
+		}
+		return ch, nil
 	}); err != nil {
 		return Detail{}, err
 	}
 	return s.Get(ctx, id)
+}
+
+// GatewayPayment is a payment the payment gateway confirmed (a verified
+// webhook, or reconciliation with the provider).
+type GatewayPayment struct {
+	Provider string
+	// Reference is the provider's payment reference (else its checkout's).
+	Reference string
+	Amount    string
+	Currency  string
+	PaidAt    time.Time
+}
+
+// ActivatePaid activates a PENDING_PAYMENT subscription the gateway was paid
+// for, through the same path as Approve. The amount and currency must equal
+// the invoice's (ErrPaymentMismatch); anything but PENDING_PAYMENT is
+// ErrState.
+func (s *Service) ActivatePaid(ctx context.Context, id uuid.UUID, gp GatewayPayment) (Detail, error) {
+	amount, ok := ParseAmount(gp.Amount)
+	ref := strings.TrimSpace(gp.Reference)
+	if !ok || ref == "" || len(ref) > MaxReferenceLen || gp.Provider == "" {
+		return Detail{}, ErrPaymentMismatch
+	}
+	paidAt := gp.PaidAt
+	if paidAt.IsZero() {
+		paidAt = s.now()
+	}
+	by := recorder{kind: RecordedByGateway, actorType: ActorGateway, name: GatewayName(gp.Provider), provider: gp.Provider}
+	pay := Payment{Reference: ref, Amount: amount, ReceivedOn: paidAt.UTC().Format(PaymentDayLayout), Note: "Paid online (" + gp.Provider + ")."}
+	return s.activate(ctx, id, by, pay, func(x *Subscription) error {
+		if x.CurrencyCode != gp.Currency || CompareAmounts(amount, x.Amount) != 0 {
+			return ErrPaymentMismatch
+		}
+		return nil
+	})
+}
+
+// RefundRecord is money returned through the payment gateway.
+type RefundRecord struct {
+	// Full is true when the payment is now refunded in full.
+	Full     bool
+	Amount   string
+	Currency string
+	Reason   string
+	// PaymentReference is the refunded payment's reference: a full refund
+	// cancels the subscription only when that payment activated it.
+	PaymentReference string
+	// ActorType is ActorAdmin (an administrator's refund) or ActorGateway
+	// (a refund made at the provider, reported by its webhook).
+	ActorType string
+	ActorID   uuid.UUID
+	ActorName string
+}
+
+func clip(s string, n int) string {
+	if runes(s) <= n {
+		return s
+	}
+	return string([]rune(s)[:n])
+}
+
+// RecordRefund writes a refund into the subscription's history. A full
+// refund of the payment that activated an ACTIVE (current or upcoming)
+// subscription cancels it at once: access ends now, starts_at and ends_at
+// keep the paid period for the record, refund_due is false (the money is
+// back), the listing package it granted ends, and the subscriber is emailed
+// as for any cancellation. A partial refund changes nothing else: the
+// subscription runs to its end.
+func (s *Service) RecordRefund(ctx context.Context, id uuid.UUID, r RefundRecord) (Subscription, error) {
+	now := s.now()
+	return s.d.Store.ChangeSubscription(ctx, id, func(x *Subscription) (Change, error) {
+		note := clip(fmt.Sprintf("%s %s refunded through the payment gateway: %s", r.Currency, r.Amount, r.Reason), MaxNoteRunes)
+		ch := Change{Events: []Event{NewEvent(x.ID, ActionRefunded, r.ActorType, r.ActorID, r.ActorName, note, now)}}
+		from := x.EffectiveStatus(now)
+		if r.Full && from == StatusActive && x.Payment != nil && x.Payment.Reference == r.PaymentReference {
+			by := ActorSystem
+			if r.ActorType == ActorAdmin {
+				by = ActorAdmin
+			}
+			x.Status, x.CancelledAt, x.CancelledBy = StatusCancelled, &now, by
+			x.CancelReason = clip("Refunded in full: "+r.Reason, MaxReasonRunes)
+			x.RefundDue, x.RefundNote = false, note
+			audit := adminaudit.New(r.ActorID, r.ActorName, adminaudit.ActionSubscriptionCanceled, adminaudit.TargetSubscription, x.ID.String(),
+				x.InvoiceNumber, x.CancelReason, map[string]any{"status": from},
+				map[string]any{"status": StatusCancelled, "refund_due": false, "refunded": r.Amount, "currency_code": r.Currency}, now)
+			ch.Events = append(ch.Events, NewEvent(x.ID, ActionCancelled, r.ActorType, r.ActorID, r.ActorName, x.CancelReason, now))
+			ch.Audit, ch.Outbox, ch.Entitlement = &audit, EventCancelled, &Entitlement{}
+		}
+		x.UpdatedAt = now
+		return ch, nil
+	})
 }
 
 // DecisionInput is the body of reject and of the administrator's cancel.
@@ -834,7 +1012,12 @@ func (s *Service) Cancel(ctx context.Context, p *auth.Principal, id uuid.UUID, i
 		x.RefundDue, x.RefundNote = in.RefundDue, refundNote
 		audit := adminaudit.New(p.UserID, p.Name, adminaudit.ActionSubscriptionCanceled, adminaudit.TargetSubscription, x.ID.String(), x.InvoiceNumber, reason,
 			map[string]any{"status": from}, map[string]any{"status": StatusCancelled, "refund_due": in.RefundDue, "refund_note": refundNote}, now)
-		return Change{Events: []Event{NewEvent(x.ID, ActionCancelled, ActorAdmin, p.UserID, p.Name, reason, now)}, Audit: &audit, Outbox: EventCancelled}, nil
+		ch := Change{Events: []Event{NewEvent(x.ID, ActionCancelled, ActorAdmin, p.UserID, p.Name, reason, now)}, Audit: &audit, Outbox: EventCancelled}
+		if from == StatusActive {
+			// The listing package it granted ends with it.
+			ch.Entitlement = &Entitlement{}
+		}
+		return ch, nil
 	}); err != nil {
 		return Detail{}, err
 	}

@@ -327,6 +327,50 @@ func (s *MemoryStore) EndAssignments(_ context.Context, acct Account, market str
 	return nil
 }
 
+// GrantInvoice is GrantInvoiceTx of the Postgres store.
+func (s *MemoryStore) GrantInvoice(g InvoiceGrant) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, a := range s.assignments {
+		if a.SubscriptionID != nil && *a.SubscriptionID == g.SubscriptionID {
+			return false
+		}
+	}
+	var pkg *Package
+	for _, p := range s.packages {
+		if p.MarketCode == g.MarketCode && p.Code == g.PackageCode && p.Active {
+			pkg = &p
+			break
+		}
+	}
+	if pkg == nil {
+		return false
+	}
+	a := g.assignment(*pkg)
+	replaced := s.replaceFromLocked(g.Account, g.MarketCode, a.StartsOn, nil, a.CreatedAt)
+	s.assignments = append(s.assignments, a)
+	s.audit.Append(g.audit(a, *pkg, replaced))
+	return true
+}
+
+// EndInvoice is EndInvoiceTx of the Postgres store.
+func (s *MemoryStore) EndInvoice(subscriptionID uuid.UUID, label string, at time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.assignments {
+		a := &s.assignments[i]
+		if a.SubscriptionID == nil || *a.SubscriptionID != subscriptionID {
+			continue
+		}
+		if !endInvoice(a, at) {
+			return false
+		}
+		s.audit.Append(endInvoiceAudit(*a, label, at))
+		return true
+	}
+	return false
+}
+
 func (s *MemoryStore) depsCopy() MemoryDeps {
 	s.mu.Lock()
 	defer s.mu.Unlock()

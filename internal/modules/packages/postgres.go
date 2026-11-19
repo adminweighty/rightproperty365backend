@@ -300,13 +300,13 @@ func (s *PostgresStore) PackageUses(ctx context.Context, ids []uuid.UUID, today 
 // ---------------------------------------------------------------------------
 
 const assignmentColumns = `a.id, a.organisation_id, a.user_id, a.market_code, a.package_id, a.starts_on, a.ends_on, a.source, a.note,
-	a.assigned_by, a.assigned_by_name, a.created_at, a.cancelled_at, a.cancelled_by`
+	a.assigned_by, a.assigned_by_name, a.created_at, a.cancelled_at, a.cancelled_by, a.subscription_id`
 
 func scanAssignment(row pgx.CollectableRow) (Assignment, error) {
 	var a Assignment
 	var org, user *uuid.UUID
 	if err := row.Scan(&a.ID, &org, &user, &a.MarketCode, &a.PackageID, &a.StartsOn, &a.EndsOn, &a.Source, &a.Note,
-		&a.AssignedBy, &a.AssignedByName, &a.CreatedAt, &a.CancelledAt, &a.CancelledBy); err != nil {
+		&a.AssignedBy, &a.AssignedByName, &a.CreatedAt, &a.CancelledAt, &a.CancelledBy, &a.SubscriptionID); err != nil {
 		return Assignment{}, err
 	}
 	if org != nil {
@@ -440,23 +440,94 @@ func (s *PostgresStore) Assign(ctx context.Context, a Assignment, audit func(rep
 		if err != nil {
 			return err
 		}
-		var org, user *uuid.UUID
-		if a.Account.Kind == KindOrganisation {
-			org = &a.Account.ID
-		} else {
-			user = &a.Account.ID
-		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO listing_package_assignments (id, organisation_id, user_id, market_code, package_id, starts_on, ends_on, source, note,
-				assigned_by, assigned_by_name, created_at)
-			VALUES ($1, $2, $3, $4, $5, $6::date, $7::date, $8, $9, $10, $11, $12)`,
-			a.ID, org, user, a.MarketCode, a.PackageID, a.StartsOn, a.EndsOn, a.Source, a.Note, a.AssignedBy, a.AssignedByName, a.CreatedAt); err != nil {
-			return fmt.Errorf("create package assignment: %w", err)
+		if err := insertAssignment(ctx, tx, a); err != nil {
+			return err
 		}
 		out.Replaced = replaced
 		return adminaudit.Insert(ctx, tx, audit(replaced))
 	})
 	return out, err
+}
+
+func insertAssignment(ctx context.Context, q querier, a Assignment) error {
+	var org, user *uuid.UUID
+	if a.Account.Kind == KindOrganisation {
+		org = &a.Account.ID
+	} else {
+		user = &a.Account.ID
+	}
+	if _, err := q.Exec(ctx, `
+		INSERT INTO listing_package_assignments (id, organisation_id, user_id, market_code, package_id, starts_on, ends_on, source, note,
+			assigned_by, assigned_by_name, created_at, subscription_id)
+		VALUES ($1, $2, $3, $4, $5, $6::date, $7::date, $8, $9, $10, $11, $12, $13)`,
+		a.ID, org, user, a.MarketCode, a.PackageID, a.StartsOn, a.EndsOn, a.Source, a.Note, a.AssignedBy, a.AssignedByName, a.CreatedAt,
+		a.SubscriptionID); err != nil {
+		return fmt.Errorf("create package assignment: %w", err)
+	}
+	return nil
+}
+
+// GrantInvoiceTx gives the account the package a paid subscription grants,
+// inside the caller's transaction (the subscription's activation): under the
+// account and market's advisory lock, the active package g.PackageCode of
+// the market replaces what overlaps from g.StartsOn on (like an
+// administrator's assignment), with source INVOICE and the subscription's
+// id, and a PACKAGE_ASSIGNED audit record. It returns false and does nothing
+// when the subscription already has its assignment (idempotent) or the
+// market has no active package with that code.
+func GrantInvoiceTx(ctx context.Context, tx pgx.Tx, g InvoiceGrant) (bool, error) {
+	if err := lockAccount(ctx, tx, g.Account, g.MarketCode); err != nil {
+		return false, err
+	}
+	var exists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM listing_package_assignments WHERE subscription_id = $1)`,
+		g.SubscriptionID).Scan(&exists); err != nil {
+		return false, fmt.Errorf("find invoice assignment: %w", err)
+	}
+	if exists {
+		return false, nil
+	}
+	pkgs, err := readPackages(ctx, tx, `p.market_code = $1 AND p.code = $2 AND p.active`, g.MarketCode, g.PackageCode)
+	if err != nil || len(pkgs) == 0 {
+		return false, err
+	}
+	a := g.assignment(pkgs[0])
+	replaced, err := replaceFrom(ctx, tx, g.Account, g.MarketCode, a.StartsOn, nil, a.CreatedAt)
+	if err != nil {
+		return false, err
+	}
+	if err := insertAssignment(ctx, tx, a); err != nil {
+		return false, err
+	}
+	return true, adminaudit.Insert(ctx, tx, g.audit(a, pkgs[0], replaced))
+}
+
+// EndInvoiceTx ends the INVOICE assignment of a subscription (cancelled,
+// refunded in full) inside the caller's transaction: cancelled when it
+// starts today or later, else ended yesterday, so the market default applies
+// from today; with a PACKAGE_ASSIGNMENT_ENDED audit record. False when there
+// is none in force or scheduled.
+func EndInvoiceTx(ctx context.Context, tx pgx.Tx, subscriptionID uuid.UUID, label string, at time.Time) (bool, error) {
+	list, err := readAssignments(ctx, tx, `a.subscription_id = $1`, subscriptionID)
+	if err != nil || len(list) == 0 {
+		return false, err
+	}
+	if err := lockAccount(ctx, tx, list[0].Account, list[0].MarketCode); err != nil {
+		return false, err
+	}
+	// Read again under the lock (an administrator may have replaced it).
+	if list, err = readAssignments(ctx, tx, `a.subscription_id = $1`, subscriptionID); err != nil || len(list) == 0 {
+		return false, err
+	}
+	a := list[0]
+	if !endInvoice(&a, at) {
+		return false, nil
+	}
+	if _, err := tx.Exec(ctx, `UPDATE listing_package_assignments SET ends_on = $2::date, cancelled_at = $3 WHERE id = $1`,
+		a.ID, a.EndsOn, a.CancelledAt); err != nil {
+		return false, fmt.Errorf("end invoice assignment: %w", err)
+	}
+	return true, adminaudit.Insert(ctx, tx, endInvoiceAudit(a, label, at))
 }
 
 // EndAssignments implements Store.

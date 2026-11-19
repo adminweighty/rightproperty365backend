@@ -243,6 +243,7 @@ All configuration comes from environment variables. For local development you ma
 | `ANALYTICS_RAW_RETENTION_DAYS` | `90` | Days raw analytics events are kept before the worker deletes them (7..3650); rollups are kept. See "Listing analytics" |
 | `STORAGE_DRIVER`, `STORAGE_LOCAL_DIR`, `S3_*` | | Private file storage for onboarding documents: see "File storage". **Staging and production must use `STORAGE_DRIVER=s3`** |
 | `MALWARE_SCANNER`, `CLAMD_ADDRESS`, `MALWARE_SCAN_TIMEOUT`, `MALWARE_SCAN_MAX_BYTES` | `none` | Malware scanning of uploads: see "Uploads and malware scanning". **Off unless `MALWARE_SCANNER=clamav`; the ClamAV host is yours to provide** |
+| `PAYMENT_GATEWAY`, `PAYMENT_FAKE_WEBHOOK_SECRET`, `PAYMENT_RECONCILE_AFTER` | `none` | Online payment of subscription invoices: see "Online payment of subscription invoices". **Off unless set; only the `fake` driver exists, refused in production** |
 | `FCM_PROJECT_ID`, `FCM_SERVICE_ACCOUNT_JSON`, `FCM_SERVICE_ACCOUNT_FILE` | _(empty)_ | Push through FCM: see "Notifications and push". Without them push is **disabled** in staging/production (one log line, never a startup failure) and logged in development. The key is a secret, never logged |
 | `ADMINCTL_PASSWORD` | _(empty)_ | `cmd/adminctl` only: the administrator password, as an alternative to stdin |
 
@@ -498,6 +499,115 @@ change; follow-up dates and reminders; editing or deleting a note; listing analy
 favourites, saved searches and alerts. (Conversion funnels and response-time KPIs: API 0.38.0,
 below.)
 
+## Online payment of subscription invoices (API 0.42.0)
+
+BR-015, FR-037-040. Migration `0044_online_payment`; `platform/paygateway` (the provider-neutral
+adapter and the `fake` driver), `modules/payments` (checkouts, webhooks, refunds, reconciliation,
+the payments export), `app/payments.go` (wiring, the packages link, the reconciliation loop). OpenAPI
+tag `payments`. The exact JSON is the 0.42 online payment contract.
+
+**Online payment is OFF unless configured, and no real provider is built.** With `PAYMENT_GATEWAY`
+unset (`none`) nothing is offered (`online_payment.enabled: false`, `404 ONLINE_PAYMENT_NOT_OFFERED`)
+and subscriptions work exactly as before: invoice, bank transfer, the administrator's approve. The
+only other driver is **`fake`**, for development and staging: its hosted page is served by the API
+itself and charges nothing. **`PAYMENT_GATEWAY=fake` with `APP_ENV=production` refuses to start.**
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `PAYMENT_GATEWAY` | `none` | `none` or `fake`. Anything else fails startup (a real provider adds its name) |
+| `PAYMENT_FAKE_WEBHOOK_SECRET` | _(random per process)_ | `fake` only; at least 16 characters. Set it when several API instances run (the page of one may be answered by another). A secret: never logged |
+| `PAYMENT_RECONCILE_AFTER` | `15m` | An OPEN checkout older than this is checked with the provider by the reconciliation job (1m..24h) |
+
+**Flow.** `POST /v1/me/subscriptions/{id}/checkout` (the subscriber, or the organisation's owner;
+`PENDING_PAYMENT` only) creates a `payments` row (OPEN) and a checkout at the provider, and returns
+`{hosted_url}`; it is idempotent per invoice (an open checkout more than a minute from expiry is
+handed out again; a concurrent creation is `409 CHECKOUT_IN_PROGRESS`). The provider calls
+`POST /v1/payments/webhooks/{provider}`: the driver verifies the signature first (`401
+INVALID_WEBHOOK_SIGNATURE`), the event is recorded in `payment_events` (unique per provider and
+event id, with a 2-minute processing lease, so a redelivery is a no-op and a crash mid-way is
+retried by the next delivery), and a `PAYMENT_SUCCEEDED` whose amount and currency equal the
+invoice activates the subscription through **the same path as the administrator's approve**
+(`subscriptions.Service.ActivatePaid` and `Approve` share `activate`: history, `SUBSCRIPTION_APPROVED`
+audit with `recorded_by: GATEWAY`, the activation email, the package grant), with
+`payment_reference` the provider's payment reference and `recorded_by` GATEWAY. A mismatch, or a
+payment for a subscription no longer waiting, goes to `REVIEW` (`PAYMENT_FLAGGED`) and activates
+nothing. Only `PENDING_PAYMENT` activates, under the subscription's row lock, so concurrent
+deliveries activate once. The browser returns to
+`{PUBLIC_WEB_URL}/account/subscriptions/{id}/payment?payment_id=&result=`; that page only reads
+`GET /v1/me/subscriptions/{id}/payments`. The return never activates anything.
+
+**The fake driver.** `GET /v1/payments/fake/checkout/{ref}` shows the invoice with **Pay**, **Pay
+(no webhook)** and **Decline**; the buttons sign a webhook (`Fake-Signature: t=<unix>,v1=<hex
+HMAC-SHA256(secret, "t.body")>`, 5 minutes' tolerance) and deliver it to the webhook handler in the
+same process, then 303 to the return page. "Pay (no webhook)" exercises reconciliation. The fake's
+checkouts live in the API process (a restart forgets them), so with `fake` the API also runs the
+reconciliation loop. These routes, and the webhooks, skip the session middleware (no CSRF origin
+rule: they never use a session).
+
+**Refunds.** `POST /v1/admin/subscriptions/{id}/refund {amount, reason}` (SUPER_ADMIN, FINANCE_ADMIN;
+optional `Idempotency-Key`, else derived from the subscription, amount and reason): full or partial,
+never more than paid minus refunded and pending (`422 REFUND_EXCEEDS_PAYMENT`); `409
+NO_GATEWAY_PAYMENT` for a subscription paid by transfer (refund those outside, as before, with
+`cancel` and `refund_due`). Audited `PAYMENT_REFUND_REQUESTED` and `PAYMENT_REFUNDED`. A provider
+refusal records the refund `FAILED` (`502`; the key is freed so it can be tried again). A
+`REFUNDED` webhook completes a pending refund or records one made in the provider's dashboard.
+**A full refund cancels the subscription at once**: access ends at the refund, `starts_at` and
+`ends_at` keep the paid period for the record, nothing is pro-rated or carried over, `refund_due`
+is false (the money is back), `cancelled_by` is ADMIN (or SYSTEM for a dashboard refund), the
+subscriber is emailed as for any cancellation, and the package it granted ends. **A partial refund**
+adds a `REFUNDED` history event and nothing else: the subscription and its package run to
+`ends_at`.
+
+**Records (a deliberate choice).** The platform's finance record of online payments is the
+`payments`, `payment_refunds` and `payment_events` tables plus the admin audit; **the agent ledger
+is not written** (it is the agents' own books, not platform finance). FINANCE_ADMIN reads them in
+`GET /v1/admin/payments?status=REVIEW` (the work queue), `GET /v1/admin/subscriptions/{id}/payments`
+and exports `GET /v1/admin/reports/payments.csv` (SUPER_ADMIN, FINANCE_ADMIN). Account deletion
+keeps the payments, unlinks the person as who opened a checkout or asked for a refund (name
+replaced), and expires their open checkouts (`payments.ForgetUserTx`).
+
+**Plans and listing packages.** A plan's optional `package_code` (admin-editable on
+`POST/PATCH /v1/admin/subscription-plans`; the seed sets Agency Pro to `PROFESSIONAL`) names a
+listing package. When a subscription activates (gateway **or** admin approve) and its market has an
+active package of that code, the subscriber's listing account (the person as a direct owner for an
+INDIVIDUAL plan, the organisation for an ORGANISATION plan) gets an `INVOICE` assignment
+(`subscription_id` set) for the paid period, in the activation's transaction
+(`app.LinkSubscriptionPackages`, `packages.GrantInvoiceTx`); it replaces what overlaps from its
+start, like an administrator's assignment. An admin cancellation or a full refund ends it
+(cancelled when it started today, else ended yesterday; `EndInvoiceTx`); expiry ends it by date.
+This resolves the display-versus-enforced mismatch of 0.37.0: a plan with a `package_code` shows
+`limit_enforced: true` and the package's `listing_limit` is what listing approval enforces; the
+plan's `MAX_ACTIVE_LISTINGS` stays a display feature, so administrators should keep the two equal.
+A plan without a code grants nothing (display only, as before).
+
+**Reconciliation** (`app.RunPaymentReconciliation`, every 5 minutes in the worker, and in the API on
+in-memory stores or with `fake`; idempotent): OPEN checkouts past `expires_at` become EXPIRED;
+those older than `PAYMENT_RECONCILE_AFTER` are checked with `FetchPayment`, a success or failure
+being applied as a synthetic event through the webhook path; a SUCCEEDED payment whose subscription
+still waits is activated, and a full refund whose subscription is still active cancels it.
+
+**Adding a real provider** (Paynow, Stripe, Flutterwave, DPO ...): one file in `platform/paygateway`
+implementing `Gateway`:
+`CreateCheckout(ctx, {PaymentID, InvoiceNumber, Description, Amount, Currency, SuccessURL, CancelURL,
+IdempotencyKey, BaseURL}) -> {ProviderRef, HostedURL, ExpiresAt}` (pass the idempotency key on;
+convert the decimal string to minor units with string arithmetic, never floats);
+`VerifyWebhook(ctx, header, body) -> Event{ID, Type PAYMENT_SUCCEEDED|PAYMENT_FAILED|REFUNDED|
+CHECKOUT_EXPIRED, ProviderRef, PaymentRef, RefundRef, Amount, Currency, OccurredAt}` (verify the
+signature before parsing, constant time, with a timestamp tolerance; `ErrInvalidSignature`; a
+provider that only posts a status notification, like Paynow, must confirm with its status API
+before reporting a success); `Refund(ctx, {PaymentRef, Amount, Currency, IdempotencyKey, Reason}) ->
+{RefundRef, Status PENDING|SUCCEEDED}`; `FetchPayment(ctx, providerRef)`. Then its name in
+`config.PaymentGateways()` and `PAYMENT_GATEWAY`, its credentials as `config.Secret` fields read
+from the environment (from the deployment's secret store, never this repository), a case in
+`paygateway.Open`, and its webhook URL `https://<api>/v1/payments/webhooks/<name>` registered in the
+provider's dashboard. Test the signature (valid, invalid, stale), the amount conversion and checkout
+idempotency.
+
+**Not verified / follow-ups:** migration `0044` and the Postgres stores have only run where
+`RP365_TEST_DATABASE_URL` is set (`TestFlowPostgres` in `modules/payments`, including concurrent
+duplicate webhooks, and `TestInvoiceGrantPostgres` in `modules/packages`). No receipts PDF, no saved
+cards, nothing recurring; renewal is still a new invoice.
+
 ## Uploads and malware scanning (API 0.41.0)
 
 BR-014, FR-009/010. Migration `0043_malware_scanning`; `platform/malware` (the adapter, the
@@ -676,7 +786,7 @@ Migration `0040_listing_packages`, module `internal/modules/packages` (FR-008, B
 - **Account deletion** (`packages.ForgetUserTx` / `MemoryStore.ForgetUser`): the person's own current and scheduled assignments end or are cancelled; they are unlinked as assigner, canceller and package creator.
 - **Sample data** (`devseed/packages.go`, development seed only): Starter (20, the default), Business (40) and Professional (60) in ZW (USD) and GB (GBP), every price marked `sample`; Sample Estates holds Business in ZW. Other markets have no packages (not limited) until an administrator creates them; the migration seeds nothing, so production starts unlimited until packages and a default are configured. Re-runnable: packages are upserted by market and code, an administrator's (non-sample) price is kept, and the sample assignment is added only when Sample Estates holds nothing else in ZW.
 
-**Not verified / follow-ups:** migration `0040` and `packages/postgres.go` have only run where `RP365_TEST_DATABASE_URL` is set (`TestPostgresStoreContract` and `TestConcurrentApprovalsNeverExceedTheLimit` in the module). The subscriptions module's plan limits (`MAX_ACTIVE_LISTINGS`) are still display-only and separate from packages; item G (invoices) should create `INVOICE` assignments. The review queue rows carry no usage (only the listing detail does), and the dashboards gain no usage hint.
+**Not verified / follow-ups:** migration `0040` and `packages/postgres.go` have only run where `RP365_TEST_DATABASE_URL` is set (`TestPostgresStoreContract` and `TestConcurrentApprovalsNeverExceedTheLimit` in the module). Since 0.42.0 a plan's `package_code` makes a paid subscription create an `INVOICE` assignment (see "Online payment of subscription invoices"); the plan's `MAX_ACTIVE_LISTINGS` stays display-only. The review queue rows carry no usage (only the listing detail does), and the dashboards gain no usage hint.
 
 ## Reviews of service providers (API 0.36.4)
 
@@ -1400,6 +1510,8 @@ route needs an admin-scope session and one of the platform roles named below
 | Reports summary | SUPER_ADMIN, PLATFORM_ADMIN, FINANCE_ADMIN (`reports.SummaryRoles`) | – |
 | `users.csv`, `listings.csv` | SUPER_ADMIN, PLATFORM_ADMIN (`reports.PeopleExportRoles`) | – |
 | `subscriptions.csv` | SUPER_ADMIN, FINANCE_ADMIN, PLATFORM_ADMIN (`reports.SubscriptionExportRoles`) | – |
+| Online payments (`/v1/admin/payments`, `/v1/admin/subscriptions/{id}/payments`; 0.42.0) | as for plans | refunds (`POST /v1/admin/subscriptions/{id}/refund`): SUPER_ADMIN, FINANCE_ADMIN |
+| `payments.csv` (0.42.0) | SUPER_ADMIN, FINANCE_ADMIN (`payments.ExportRoles`) | – |
 
 - **Accounts** – `GET /v1/admin/users?q=&role=&status=&market=` and `GET /{id}`;
   `POST /{id}/suspend {reason}`, `POST /{id}/reactivate`, `POST /{id}/delete {reason}`. Nobody
@@ -1415,7 +1527,9 @@ route needs an admin-scope session and one of the platform roles named below
 - **`DELETE /v1/me {password}`** – the same deletion for the person themselves, after typing the
   password again (`401 INVALID_PASSWORD`); an administrator account cannot use it (`403
   ADMIN_ACCOUNT_CANNOT_SELF_DELETE`). It shares the sign-in rate limit.
-- **Subscriptions** – there is **no online payment**. `GET /v1/me/subscription-plans` lists the
+- **Subscriptions** – invoices are paid by bank transfer and recorded by finance, or, **only when the
+  server has a payment gateway** (`PAYMENT_GATEWAY`; off by default, no real provider built yet), online
+  (see "Online payment of subscription invoices"). `GET /v1/me/subscription-plans` lists the
   plans the caller may take (a plan is offered to account roles the caller holds as approved, and
   an organisation plan needs an organisation they own). `POST /v1/me/subscriptions {plan_id,
   period, market_code?, organisation_id?}` creates a `PENDING_PAYMENT` subscription with an
@@ -1423,13 +1537,16 @@ route needs an admin-scope session and one of the platform roles named below
   subscriber sees their own and their owned organisations' subscriptions (`404` for anybody
   else's), may withdraw a pending request (`POST /{id}/cancel`, not emailed) and, from 30 days
   before the end, ask for the next period (`POST /{id}/renew`: a new invoice that starts when the
-  current period ends). Nothing renews by itself. The payment is made outside the platform;
-  `POST /v1/admin/subscriptions/{id}/approve {payment_reference, amount, received_on, ...}`
-  records it and makes the subscription `ACTIVE` for 3 months (`QUARTERLY`) or 12 (`YEARLY`).
-  `reject` and `cancel` take a reason and record `refund_due` (a flag and a note: no money moves).
+  current period ends). Nothing renews by itself. A payment made outside the platform is recorded by
+  `POST /v1/admin/subscriptions/{id}/approve {payment_reference, amount, received_on, ...}`,
+  which makes the subscription `ACTIVE` for 3 months (`QUARTERLY`) or 12 (`YEARLY`).
+  `reject` and `cancel` take a reason and record `refund_due` (a flag and a note: no money moves;
+  online payments are refunded with `POST /{id}/refund`).
   Past its end a subscription is expired by the subscription sweep (every 5 minutes, in the
   worker; in the API on in-memory stores), which emails the subscriber. A plan's limits are shown
-  with the current usage but **not enforced** (`limit_enforced: false`).
+  with the current usage; since 0.42.0 a plan with a `package_code` grants that listing package for
+  the paid period, which is what is enforced (`limit_enforced: true`); without one the limit is only
+  shown (`limit_enforced: false`).
 - **Reference data** – `GET /v1/admin/reference`, `GET /{set}`, `POST /{set}` (a new row),
   `PATCH /{set}/{code}`, `POST /{set}/{code}/deactivate` and `/reactivate`. Every set can be
   relabelled, reordered, deactivated and reactivated; rows can be added only to property types,
@@ -2800,7 +2917,8 @@ So that nobody assumes these exist. They are in the updated functional specifica
 - a display name a direct owner can choose (their account name is shown on their listings);
 - per-size thumbnails, cropping and moderation of logos, and a CDN (see "Logos");
 - receipts for subscription payments (subscription plans, invoices and admin-recorded payments
-  exist since 0.25.0; there is no online payment);
+  exist since 0.25.0; online payment through a provider-neutral gateway since 0.42.0, with only the
+  `fake` driver: **a real payment provider is not chosen or built**);
 - per-country **legal texts, payment gateways and tax rules** (see "Countries": any country can
   be listed in, but none of these is configured for any country);
 - a per-city time zone for countries with several zones;
@@ -3633,7 +3751,8 @@ Deliberately no empty stubs. These will be added under `internal/modules/` as th
 - uploads have no module of their own: each module stores its files through
   `internal/platform/storage` (local folder or S3/MinIO)
 - `subscriptions` (exists since 0.25.0) covers plans, invoices and admin-recorded payments
-  (exact decimal money + ISO 4217); online payment and receipts are not built
+  (exact decimal money + ISO 4217); online payment is in `payments` behind `platform/paygateway`
+  (0.42.0, fake driver only); receipts are not built
 - `notifications` (exists for email) – WhatsApp and in-app delivery
 - `backoffice` – moderation, and reassigning routing exceptions (listing and resolving them is
   built in `propertyrequests`)
@@ -3706,6 +3825,7 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0044_online_payment` (API 0.42.0): `payments` (subscription RESTRICT, invoice number and subscriber snapshot, market, `provider` `payments_provider_format`, `provider_ref` / `payment_ref` (unique per provider `payments_provider_ref_unique`), `idempotency_key` `payments_idempotency_key_unique`, invoice `amount` / `currency_code`, `paid_amount` / `paid_currency_code`, `refunded_amount` `payments_refunded_in_range`, `status` OPEN / SUCCEEDED / FAILED / EXPIRED / REVIEW / PARTIALLY_REFUNDED / REFUNDED `payments_status_allowed`, hosted URL, `expires_at`, return and cancel URLs, review and failure reasons, `opened_by` SET NULL and name, timestamps; at most one OPEN per subscription `payments_one_open_per_subscription`), `payment_refunds` (payment RESTRICT, amount, currency, reason, PENDING / SUCCEEDED / FAILED `payment_refunds_status_allowed`, `provider_refund_ref` unique per payment, `idempotency_key` unique, requester SET NULL and name, completed) and `payment_events` (provider, `event_id` unique per provider `payment_events_one_per_provider_event`, type, references, amount, `processing_started_at` lease, `processed_at`, outcome, payment SET NULL). `subscription_plans.package_code` (`subscription_plans_package_code_format`); `subscriptions.payment_recorded_by_kind` ADMIN / GATEWAY (`subscriptions_payment_recorder_allowed`) and `payment_provider`; `subscription_events` CHECKs re-created as `subscription_events_action_allowed` (+ REFUNDED) and `subscription_events_actor_allowed` (+ GATEWAY); `listing_package_assignments.subscription_id` (SET NULL, INVOICE only `listing_package_assignments_subscription_is_invoice`, one per subscription `listing_package_assignments_one_per_subscription`). Account deletion keeps the payments and unlinks the person explicitly. New tables, new nullable or defaulted columns and wider checks.
 - `0042_admin_mfa` (API 0.40.0): `admin_mfa_totp` (one per user, primary key and cascade on `users`; `secret_sealed` AES-256-GCM sealed secret 29-512 bytes `admin_mfa_totp_sealed_size`; `confirmed_at` NULL while the setup is pending; `last_used_step` for replay protection, never negative `admin_mfa_totp_step_not_negative`; `created_at`, `updated_at`) and `admin_mfa_recovery_codes` (id, user, Argon2id `code_hash` 20-400 characters `admin_mfa_recovery_codes_hash_size`, `used_at`, `created_at`; index `admin_mfa_recovery_codes_user_idx`). `sign_in_challenges` gains `code_verified_at` (the emailed code was accepted; administrators only, `sign_in_challenges_mfa_admin_only`) and `mfa_attempts` (`sign_in_challenges_mfa_attempts_min`). Account deletion deletes the MFA rows explicitly. New tables and new columns with defaults.
 - API 0.39.0 (calendar invitations) adds no migration: SEQUENCE is derived from the existing timelines.
 
@@ -3955,6 +4075,8 @@ twice. `PROPERTY_REQUEST_STAGE_CHANGED` and `PROPERTY_REQUEST_EXCEPTION_RESOLVED
 and stages only), `LISTING_SAVED` and `LISTING_UNSAVED` (identifiers only) are acknowledged without sending anything: no email exists for them yet. `LISTING_SAVED`, `PROPERTY_REQUEST_CREATED`, `APPOINTMENT_REQUESTED`, `APPOINTMENT_CONFIRMED` and `LISTING_RELISTED` are also recorded as server-side analytics events (after the email handler, `outbox.Chain`: a transient failure of either retries both, each idempotent). The same three creation events link the new item to the matching contacts of its organisation (see "Agent CRM"), and every minute the worker writes `CONTACT_REMINDER_DUE` for due contact reminders (acknowledged). Every 15 minutes the worker recomputes the analytics rollups and applies `ANALYTICS_RAW_RETENTION_DAYS` (see "Listing analytics"). The four application events send their emails, `APPLICATION_SUBMITTED` is also linked by the CRM and counted as `application_submit`, and every hour the worker runs the application retention job and removes deleted application files from the object storage (the worker opens the file storage for this; see "Questionnaires and applications"). Every notification email's recipient with an account also gets one in-app notification per event (unique per event and recipient), and the worker's push sender sends the queued pushes after the commit (see "Notifications and push"); the emails of non-essential types follow the recipient's preferences. A handler can mark a failure permanent, which dead-letters the event at once. **The worker
 sends real email when `RESEND_API_KEY` is set.** Without `DATABASE_URL` in development the worker
 logs that it is idle and waits for shutdown (the API then handles the events in-process).
+Every 5 minutes the worker also runs the payment reconciliation (see "Online payment of
+subscription invoices"): expired checkouts, provider look-ups and interrupted follow-ups.
 
 ## Operational notes and known limitations
 

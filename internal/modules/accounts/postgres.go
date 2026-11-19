@@ -19,6 +19,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/maintenance"
 	"rightproperty365.com/backend/internal/modules/packages"
+	"rightproperty365.com/backend/internal/modules/payments"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reviews"
 	"rightproperty365.com/backend/internal/modules/tenancies"
@@ -478,6 +479,12 @@ func (s *PostgresStore) Delete(ctx context.Context, d Deletion) (Deleted, error)
 		// Listing packages (migration 0040): the person's own current and
 		// scheduled assignments end; they are unlinked as an assigner.
 		if err := packages.ForgetUserTx(ctx, tx, d.UserID, DeletedName, d.At); err != nil {
+			return err
+		}
+		// Online payments (migration 0044): KEPT for finance; the person is
+		// unlinked as who opened a checkout or asked for a refund, and their
+		// open checkouts expire.
+		if err := payments.ForgetUserTx(ctx, tx, d.UserID, DeletedName, d.At); err != nil {
 			return err
 		}
 		// Marketing consent records (migration 0041): deleted (the users row

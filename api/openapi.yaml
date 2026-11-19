@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.41.0
+  version: 0.42.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,22 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Online payment of subscription invoices (new in 0.42.0, BR-015, FR-037-040)
+    - **Off unless the server is configured** (`PAYMENT_GATEWAY`): with `none` (the default) no
+      route below offers anything (`404 ONLINE_PAYMENT_NOT_OFFERED`), `online_payment.enabled` is
+      false and every subscription flow is as in 0.41.0. **No real provider is built**; the only
+      driver is `fake` (development and staging, refused in production).
+    - A `PENDING_PAYMENT` subscription with `online_payment_available: true` can be paid online:
+      `POST /v1/me/subscriptions/{id}/checkout` returns `hosted_url` (the provider's page;
+      idempotent per invoice while open). **Only the provider's signed webhook activates**, through
+      the same path as an administrator's approval (`payment.recorded_by: GATEWAY`). The browser
+      comes back to `{PUBLIC_WEB_URL}/account/subscriptions/{id}/payment?payment_id=&result=`,
+      which must only show `GET /v1/me/subscriptions/{id}/payments`.
+    - A payment that does not match the invoice (amount or currency) is `REVIEW` and activates
+      nothing. Refunds: `POST /v1/admin/subscriptions/{id}/refund` (full refund cancels).
+    - A plan's `package_code` grants that listing package (an `INVOICE` assignment) for the paid
+      period, on any activation; cancelling or a full refund ends it.
 
     Malware scanning of uploads (new in 0.41.0, BR-014, FR-009/010)
     - **Off unless the server is configured** (`MALWARE_SCANNER=clamav`): with scanning off nothing
@@ -1004,8 +1020,13 @@ tags:
       each names the platform roles it accepts (SUPER_ADMIN always qualifies).
   - name: subscriptions
     description: |
-      Paid plans for professionals and organisations, invoiced and paid outside the platform (no
-      online payment, nothing charged automatically). New in 0.25.0.
+      Paid plans for professionals and organisations, invoiced (new in 0.25.0). Paid outside the
+      platform and recorded by finance, or, when the server has a payment gateway (0.42.0), online
+      on the provider's hosted page. Nothing is charged automatically.
+  - name: payments
+    description: |
+      Online payment of subscription invoices through a provider-neutral gateway (new in 0.42.0).
+      Off unless PAYMENT_GATEWAY is set; no real provider is built yet (only `fake`).
   - name: reports
     description: Administrators' counts and CSV exports (new in 0.25.0), and the request inbox's lead funnel and response-time KPIs (new in 0.38.0).
 
@@ -11853,6 +11874,161 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
 
+  /v1/me/subscriptions/{id}/checkout:
+    post:
+      tags: [subscriptions, payments]
+      operationId: checkoutMySubscription
+      summary: Pay a pending invoice online (new in 0.42.0)
+      description: |
+        The subscriber (INDIVIDUAL) or the organisation's owner. Only `PENDING_PAYMENT`. Creates a
+        checkout at the payment provider and returns its `hosted_url` (send the browser there,
+        full page). Idempotent per invoice: an open checkout that is not about to expire is handed
+        out again (`200`, `reused: true`). Nothing is activated here: only the provider's signed
+        webhook does. `404 ONLINE_PAYMENT_NOT_OFFERED` when the server has no gateway.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - $ref: "#/components/parameters/SubscriptionId"
+      responses:
+        "201":
+          description: A new checkout.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CheckoutResult" }
+        "200":
+          description: The open checkout of this invoice, again.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CheckoutResult" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: "`SUBSCRIPTION_NOT_FOUND` (not yours) or `ONLINE_PAYMENT_NOT_OFFERED` (PAYMENT_GATEWAY=none)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: "`SUBSCRIPTION_STATE_CONFLICT` (not PENDING_PAYMENT) or `CHECKOUT_IN_PROGRESS` (retry in 2 s)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "502":
+          description: "`PAYMENT_PROVIDER_ERROR`: the provider refused or is down; nothing was charged."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/me/subscriptions/{id}/payments:
+    get:
+      tags: [subscriptions, payments]
+      operationId: listMySubscriptionPayments
+      summary: The online payments of a subscription (new in 0.42.0)
+      description: |
+        Every checkout attempt, newest first. What the web app's return page polls; it never
+        activates anything.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      parameters:
+        - $ref: "#/components/parameters/SubscriptionId"
+      responses:
+        "200":
+          description: The payments.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [payments]
+                properties:
+                  payments: { type: array, items: { $ref: "#/components/schemas/Payment" } }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/SubscriptionNotFound"
+
+  /v1/payments/webhooks/{provider}:
+    post:
+      tags: [payments]
+      operationId: paymentWebhook
+      summary: A payment provider's webhook (new in 0.42.0; not for clients)
+      description: |
+        No session. The driver verifies the signature first (`401 INVALID_WEBHOOK_SIGNATURE`).
+        Deduplicated on the provider's event id: a repeat answers `duplicate: true` and changes
+        nothing. A success whose amount and currency equal the invoice activates the subscription
+        (the administrator's approval path); otherwise the payment goes to REVIEW. The fake
+        driver's header is `Fake-Signature: t=<unix>,v1=<hex HMAC-SHA256(secret, "t.body")>`.
+      security: []
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema: { type: string, examples: [fake] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, description: The provider's own format. }
+      responses:
+        "200":
+          description: Received.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [received, duplicate]
+                properties:
+                  received: { type: boolean }
+                  duplicate: { type: boolean }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          description: "`INVALID_WEBHOOK_SIGNATURE`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404":
+          description: "`PAYMENT_PROVIDER_NOT_FOUND`: not the configured gateway (or none)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/payments/fake/checkout/{ref}:
+    get:
+      tags: [payments]
+      operationId: fakeCheckoutPage
+      summary: The fake provider's hosted page (PAYMENT_GATEWAY=fake only; new in 0.42.0)
+      description: |
+        An HTML page served by the API (development and staging) with the invoice and the buttons
+        Pay, Pay (no webhook) and Decline. Showing it changes nothing. 404 with any other gateway.
+      security: []
+      parameters:
+        - { name: ref, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The page.
+          content:
+            text/html:
+              schema: { type: string }
+        "404":
+          $ref: "#/components/responses/SubscriptionNotFound"
+  /v1/payments/fake/checkout/{ref}/{action}:
+    post:
+      tags: [payments]
+      operationId: fakeCheckoutComplete
+      summary: The fake page's buttons (PAYMENT_GATEWAY=fake only; new in 0.42.0)
+      description: |
+        `pay` and `fail` sign a webhook with the development secret and deliver it to
+        `/v1/payments/webhooks/fake`; `pay-silently` only marks it paid at the fake provider (the
+        reconciliation job finds it). Then `303` to the web app's return page.
+      security: []
+      parameters:
+        - { name: ref, in: path, required: true, schema: { type: string } }
+        - { name: action, in: path, required: true, schema: { type: string, enum: [pay, pay-silently, fail] } }
+      responses:
+        "303":
+          description: To the return page.
+
   /v1/me/subscriptions/{id}/renew:
     post:
       tags: [subscriptions]
@@ -12443,6 +12619,122 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
 
+  /v1/admin/subscriptions/{id}/refund:
+    post:
+      tags: [admin, subscriptions, payments]
+      operationId: adminRefundSubscription
+      summary: Refund an online payment, in full or in part (SUPER_ADMIN, FINANCE_ADMIN; new in 0.42.0)
+      description: |
+        Refunds the subscription's paid online payment through the gateway. Idempotent: the
+        `Idempotency-Key` header (or, without it, the subscription, amount and reason) names the
+        refund; repeating it returns the same refund. A **full** refund (the refunded total reaches
+        what was paid) cancels an ACTIVE subscription at once (access ends now; `starts_at`/`ends_at`
+        keep the paid period; `refund_due` false; emailed) and ends the listing package it granted.
+        A **partial** refund leaves it running to `ends_at`. Audited (`PAYMENT_REFUND_REQUESTED`,
+        `PAYMENT_REFUNDED`). Bank transfers are refunded outside the platform as before.
+      security:
+        - cookieSession: []
+      parameters:
+        - $ref: "#/components/parameters/SubscriptionId"
+        - { name: Idempotency-Key, in: header, required: false, schema: { type: string, maxLength: 100 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RefundRequest" }
+      responses:
+        "200":
+          description: The refund, the payment and the subscription after it.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RefundResult" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: "`SUBSCRIPTION_NOT_FOUND` or `ONLINE_PAYMENT_NOT_OFFERED`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: "`NO_GATEWAY_PAYMENT`: nothing paid online is left to refund."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "422":
+          description: "`REFUND_EXCEEDS_PAYMENT`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "502":
+          description: "`PAYMENT_PROVIDER_ERROR`: the provider refused; the refund is recorded FAILED and nothing moved."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/admin/subscriptions/{id}/payments:
+    get:
+      tags: [admin, subscriptions, payments]
+      operationId: adminListSubscriptionPayments
+      summary: A subscription's online payments with their refunds (subscription readers; new in 0.42.0)
+      security:
+        - cookieSession: []
+      parameters:
+        - $ref: "#/components/parameters/SubscriptionId"
+      responses:
+        "200":
+          description: The payments.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [payments]
+                properties:
+                  payments: { type: array, items: { $ref: "#/components/schemas/AdminPayment" } }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/SubscriptionNotFound"
+
+  /v1/admin/payments:
+    get:
+      tags: [admin, payments]
+      operationId: adminListPayments
+      summary: Online payments (SUPER_ADMIN, FINANCE_ADMIN, PLATFORM_ADMIN, SUPPORT; new in 0.42.0)
+      description: Newest first. `status=REVIEW` is finance's work queue (paid, not activated).
+      security:
+        - cookieSession: []
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [OPEN, SUCCEEDED, FAILED, EXPIRED, REVIEW, PARTIALLY_REFUNDED, REFUNDED] } }
+        - { name: provider, in: query, schema: { type: string } }
+        - { name: q, in: query, description: "Invoice number, subscriber name or a provider reference.", schema: { type: string } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 100 } }
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page, page_size, total]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/AdminPayment" } }
+                  page: { type: integer }
+                  page_size: { type: integer }
+                  total: { type: integer }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
   /v1/admin/subscriptions/{id}/reject:
     post:
       tags: [admin, subscriptions]
@@ -12834,6 +13126,33 @@ paths:
         - $ref: "#/components/parameters/ReportFrom"
         - $ref: "#/components/parameters/ReportTo"
         - $ref: "#/components/parameters/ReportMarket"
+        - $ref: "#/components/parameters/ExportLimit"
+      responses:
+        "200":
+          $ref: "#/components/responses/CSVExport"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /v1/admin/reports/payments.csv:
+    get:
+      tags: [admin, reports, payments]
+      operationId: adminExportPayments
+      summary: Online payments created in the range, as CSV (SUPER_ADMIN, FINANCE_ADMIN; new in 0.42.0)
+      description: |
+        The platform's finance record of online payments (the agent ledger is not used). Range and
+        headers as `users.csv` (no market filter). Columns: id, invoice_number, subscription_id,
+        subscriber_kind, subscriber_name, market_code, provider, provider_ref, payment_ref, status,
+        amount, currency_code, paid_amount, paid_currency_code, refunded_amount, review_reason,
+        created_at, succeeded_at, refunded_at.
+      security:
+        - cookieSession: []
+      parameters:
+        - $ref: "#/components/parameters/ReportFrom"
+        - $ref: "#/components/parameters/ReportTo"
         - $ref: "#/components/parameters/ExportLimit"
       responses:
         "200":
@@ -22280,6 +22599,7 @@ components:
         prices: { type: array, items: { $ref: "#/components/schemas/PlanPrice" } }
         status: { type: string, enum: [ACTIVE, RETIRED] }
         sort_order: { type: integer }
+        package_code: { type: [string, "null"], description: "New in 0.42.0. The listing package a paid subscription grants (by code, in the subscription's market); null for none." }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         retired_at: { type: [string, "null"], format: date-time }
@@ -22303,6 +22623,7 @@ components:
         benefits: { type: array, maxItems: 20, items: { type: string, maxLength: 200 } }
         prices: { type: array, minItems: 1, items: { $ref: "#/components/schemas/PlanPrice" } }
         sort_order: { type: integer }
+        package_code: { type: string, pattern: "^([A-Za-z][A-Za-z0-9_]{1,31})?$", description: "New in 0.42.0. A listing package code (upper-cased); empty clears it." }
     SubscriptionPlanEnvelope:
       type: object
       required: [plan]
@@ -22314,7 +22635,14 @@ components:
       properties:
         currency_code: { type: [string, "null"], description: The market's currency when `market` was given. }
         plans: { type: array, items: { $ref: "#/components/schemas/SubscriptionPlan" } }
-        payment_note: { type: string, description: How invoices are paid (no online payment). }
+        payment_note: { type: string, description: How invoices are paid by bank transfer. }
+        online_payment:
+          type: object
+          description: New in 0.42.0. Whether invoices can also be paid online.
+          required: [enabled, provider]
+          properties:
+            enabled: { type: boolean }
+            provider: { type: [string, "null"], description: The gateway's name (null when off). }
     SubscriptionRequest:
       type: object
       required: [plan_id, period]
@@ -22371,6 +22699,8 @@ components:
             received_on: { type: string, format: date }
             note: { type: string }
             recorded_by_name: { type: string }
+            recorded_by: { type: string, enum: [ADMIN, GATEWAY], description: New in 0.42.0. }
+            provider: { type: [string, "null"], description: "New in 0.42.0. The gateway (GATEWAY only)." }
         rejected_at: { type: [string, "null"], format: date-time }
         rejection_reason: { type: [string, "null"] }
         cancelled_at: { type: [string, "null"], format: date-time }
@@ -22382,6 +22712,7 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         payment_instructions: { type: [string, "null"], description: PENDING_PAYMENT only. }
+        online_payment_available: { type: boolean, description: "New in 0.42.0. PENDING_PAYMENT and the server has a payment gateway: offer \"Pay online\"." }
     SubscriptionEnvelope:
       type: object
       required: [subscription]
@@ -22392,8 +22723,8 @@ components:
       required: [id, action, actor_type, actor_name, note, at]
       properties:
         id: { type: string, format: uuid }
-        action: { type: string, enum: [REQUESTED, RENEWAL_REQUESTED, CANCELLED, PAYMENT_RECORDED, ACTIVATED, REJECTED, EXPIRED] }
-        actor_type: { type: string, enum: [SUBSCRIBER, ADMIN, SYSTEM] }
+        action: { type: string, enum: [REQUESTED, RENEWAL_REQUESTED, CANCELLED, PAYMENT_RECORDED, ACTIVATED, REJECTED, EXPIRED, REFUNDED], description: REFUNDED is new in 0.42.0. }
+        actor_type: { type: string, enum: [SUBSCRIBER, ADMIN, SYSTEM, GATEWAY], description: GATEWAY is new in 0.42.0. }
         actor_name: { type: string }
         note: { type: string }
         at: { type: string, format: date-time }
@@ -22403,7 +22734,8 @@ components:
       properties:
         active_listings: { type: integer, description: Published, unexpired listings of the subscriber now. }
         max_active_listings: { type: [integer, "null"], description: The plan's MAX_ACTIVE_LISTINGS (null - unlimited or none). }
-        limit_enforced: { type: boolean, description: Always false in 0.25.0 - the limit is shown, not enforced. }
+        limit_enforced: { type: boolean, description: "Since 0.42.0 true when the plan grants a listing package (package_code): that package's listing_limit is enforced (see GET /v1/me/package); max_active_listings stays the plan's display feature. False otherwise." }
+        package_code: { type: [string, "null"], description: New in 0.42.0. }
     SubscriptionDetail:
       type: object
       required: [subscription, events, usage]
@@ -22452,6 +22784,82 @@ components:
         reason: { type: string, minLength: 3, maxLength: 1000, description: Emailed to the requester. }
         refund_due: { type: boolean, default: false }
         refund_note: { type: string, maxLength: 1000 }
+    Payment:
+      type: object
+      description: New in 0.42.0. One checkout of a subscription invoice, as its subscriber sees it.
+      required: [id, subscription_id, invoice_number, provider, status, amount, currency_code, refunded_amount, hosted_url, expires_at, created_at,
+                 succeeded_at, failed_at, expired_at, refunded_at]
+      properties:
+        id: { type: string, format: uuid }
+        subscription_id: { type: string, format: uuid }
+        invoice_number: { type: string }
+        provider: { type: string }
+        status:
+          type: string
+          enum: [OPEN, SUCCEEDED, FAILED, EXPIRED, REVIEW, PARTIALLY_REFUNDED, REFUNDED]
+          description: "REVIEW: money arrived but did not match the invoice (or the subscription was no longer waiting); not activated, finance reviews it."
+        amount: { type: string, description: The invoice amount, two decimals. }
+        currency_code: { type: string }
+        refunded_amount: { type: string }
+        hosted_url: { type: [string, "null"], description: OPEN and unexpired only. }
+        expires_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+        succeeded_at: { type: [string, "null"], format: date-time }
+        failed_at: { type: [string, "null"], format: date-time }
+        expired_at: { type: [string, "null"], format: date-time }
+        refunded_at: { type: [string, "null"], format: date-time }
+    PaymentRefund:
+      type: object
+      required: [id, amount, currency_code, reason, status, provider_refund_ref, requested_by, created_at, completed_at, failure_reason]
+      properties:
+        id: { type: string, format: uuid }
+        amount: { type: string }
+        currency_code: { type: string }
+        reason: { type: string }
+        status: { type: string, enum: [PENDING, SUCCEEDED, FAILED] }
+        provider_refund_ref: { type: [string, "null"] }
+        requested_by: { type: object, required: [id, name], properties: { id: { type: [string, "null"], format: uuid }, name: { type: string } } }
+        created_at: { type: string, format: date-time }
+        completed_at: { type: [string, "null"], format: date-time }
+        failure_reason: { type: [string, "null"] }
+    AdminPayment:
+      allOf:
+        - $ref: "#/components/schemas/Payment"
+        - type: object
+          required: [subscriber, market_code, provider_ref, payment_ref, paid_amount, paid_currency_code, review_reason, failure_reason, opened_by, refunds]
+          properties:
+            subscriber: { type: object, required: [kind, id, name], properties: { kind: { type: string, enum: [INDIVIDUAL, ORGANISATION] }, id: { type: string, format: uuid }, name: { type: string } } }
+            market_code: { type: string }
+            provider_ref: { type: [string, "null"], description: The checkout at the provider. }
+            payment_ref: { type: [string, "null"], description: "The provider's payment reference (recorded on the subscription)." }
+            paid_amount: { type: [string, "null"] }
+            paid_currency_code: { type: [string, "null"] }
+            review_reason: { type: [string, "null"] }
+            failure_reason: { type: [string, "null"] }
+            opened_by: { type: object, required: [id, name], properties: { id: { type: [string, "null"], format: uuid, description: Null after the account was deleted. }, name: { type: string } } }
+            refunds: { type: array, items: { $ref: "#/components/schemas/PaymentRefund" } }
+    CheckoutResult:
+      type: object
+      required: [hosted_url, expires_at, reused, payment]
+      properties:
+        hosted_url: { type: string, format: uri }
+        expires_at: { type: string, format: date-time }
+        reused: { type: boolean }
+        payment: { $ref: "#/components/schemas/Payment" }
+    RefundRequest:
+      type: object
+      required: [amount, reason]
+      additionalProperties: false
+      properties:
+        amount: { type: string, description: "Positive, two decimals, at most what remains (paid minus refunded and pending)." }
+        reason: { type: string, minLength: 3, maxLength: 1000 }
+    RefundResult:
+      type: object
+      required: [refund, payment, subscription]
+      properties:
+        refund: { $ref: "#/components/schemas/PaymentRefund" }
+        payment: { $ref: "#/components/schemas/AdminPayment" }
+        subscription: { $ref: "#/components/schemas/Subscription" }
     AdminReferenceItem:
       allOf:
         - $ref: "#/components/schemas/ReferenceItem"
@@ -25183,6 +25591,7 @@ components:
         assigned_by: { type: object, required: [user_id, name], properties: { user_id: { type: [string, "null"], format: uuid }, name: { type: string } } }
         created_at: { type: string, format: date-time }
         cancelled_at: { type: [string, "null"], format: date-time }
+        subscription_id: { type: [string, "null"], format: uuid, description: "New in 0.42.0. The paid subscription of an INVOICE assignment." }
     AdminPackageAccount:
       type: object
       required: [account, markets, assignments]

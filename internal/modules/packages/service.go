@@ -601,7 +601,8 @@ func (s *Service) assignmentViews(ctx context.Context, ref AccountRef, list []As
 		}
 		v := AssignmentView{ID: a.ID, Account: ref, MarketCode: a.MarketCode, Package: RefOf(pkg), StartsOn: a.StartsOn.Format(DateLayout),
 			EndsOn: dateString(a.EndsOn), Source: a.Source, Note: a.Note, Status: a.Status(today),
-			AssignedBy: PersonRef{UserID: a.AssignedBy, Name: a.AssignedByName}, CreatedAt: a.CreatedAt.UTC(), CancelledAt: a.CancelledAt}
+			AssignedBy: PersonRef{UserID: a.AssignedBy, Name: a.AssignedByName}, CreatedAt: a.CreatedAt.UTC(), CancelledAt: a.CancelledAt,
+			SubscriptionID: a.SubscriptionID}
 		out = append(out, v)
 	}
 	return out, nil

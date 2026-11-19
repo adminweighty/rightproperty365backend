@@ -722,3 +722,34 @@ func TestMalwareScannerSettings(t *testing.T) {
 		}
 	}
 }
+
+// Online payment is off unless PAYMENT_GATEWAY names a driver; the fake one
+// is refused in production; no real provider exists yet.
+func TestPaymentGatewaySettings(t *testing.T) {
+	cfg, err := FromLookup(lookup(map[string]string{}))
+	if err != nil || cfg.PaymentGateway != PaymentGatewayNone || cfg.PaymentReconcileAfter != 15*time.Minute || cfg.PaymentFakeWebhookSecret.IsSet() {
+		t.Fatalf("defaults: %q %s %v", cfg.PaymentGateway, cfg.PaymentReconcileAfter, err)
+	}
+	cfg, err = FromLookup(lookup(map[string]string{"PAYMENT_GATEWAY": "Fake", "PAYMENT_FAKE_WEBHOOK_SECRET": "dev-webhook-secret-123",
+		"PAYMENT_RECONCILE_AFTER": "5m"}))
+	if err != nil || cfg.PaymentGateway != PaymentGatewayFake || cfg.PaymentReconcileAfter != 5*time.Minute ||
+		fmt.Sprint(cfg.PaymentFakeWebhookSecret) != "[redacted]" {
+		t.Fatalf("fake: %+v %v", cfg.PaymentGateway, err)
+	}
+	const db = "postgres://user@db.private.example:5432/app?sslmode=verify-full"
+	prod := map[string]string{"APP_ENV": "production", "DATABASE_URL": db, "RESEND_API_KEY": "test-key-not-real", "MFA_ENCRYPTION_KEY": fakeMFAKey(),
+		"PAYMENT_GATEWAY": "fake"}
+	if _, err := FromLookup(lookup(prod)); err == nil || !strings.Contains(err.Error(), "PAYMENT_GATEWAY=fake is refused") {
+		t.Fatalf("fake in production: %v", err)
+	}
+	for name, env := range map[string]map[string]string{
+		"real provider not built": {"PAYMENT_GATEWAY": "stripe"},
+		"short secret":            {"PAYMENT_GATEWAY": "fake", "PAYMENT_FAKE_WEBHOOK_SECRET": "short"},
+		"bad reconcile":           {"PAYMENT_RECONCILE_AFTER": "soon"},
+		"tiny reconcile":          {"PAYMENT_RECONCILE_AFTER": "5s"},
+	} {
+		if _, err := FromLookup(lookup(env)); err == nil {
+			t.Fatalf("%s: accepted", name)
+		}
+	}
+}

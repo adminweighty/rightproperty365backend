@@ -31,6 +31,8 @@ import (
 	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/modules/notifications"
 	"rightproperty365.com/backend/internal/modules/onboarding"
+	"rightproperty365.com/backend/internal/modules/packages"
+	"rightproperty365.com/backend/internal/modules/payments"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
 	"rightproperty365.com/backend/internal/modules/reviews"
@@ -46,6 +48,7 @@ import (
 	"rightproperty365.com/backend/internal/platform/mail"
 	"rightproperty365.com/backend/internal/platform/malware"
 	"rightproperty365.com/backend/internal/platform/outbox"
+	"rightproperty365.com/backend/internal/platform/paygateway"
 	"rightproperty365.com/backend/internal/platform/push"
 	"rightproperty365.com/backend/internal/platform/storage"
 )
@@ -288,6 +291,21 @@ func run() error {
 	// Subscriptions: an ACTIVE subscription whose end has passed is recorded
 	// EXPIRED (and its holder emailed) every few minutes.
 	go app.RunSubscriptionSweeps(ctx, subscriptions.NewService(subscriptions.Deps{Store: subscriptionStore, Logger: logger}), logger)
+
+	// Online payment (API 0.42.0): open checkouts past their expiry become
+	// EXPIRED, older ones are checked with the provider, and a SUCCEEDED
+	// payment whose subscription still waits is activated (granting its
+	// plan's listing package, as the API does). With PAYMENT_GATEWAY=none only
+	// the expiry and follow-ups of past payments run.
+	app.LinkSubscriptionPackages(subscriptionStore, packages.NewPostgresStore(pool))
+	gateway, err := paygateway.Open(cfg, logger, nil)
+	if err != nil {
+		return err
+	}
+	go app.RunPaymentReconciliation(ctx, payments.NewService(payments.Deps{Store: payments.NewPostgresStore(pool), Gateway: gateway,
+		Subscriptions: subscriptions.NewService(subscriptions.Deps{Store: subscriptionStore, Logger: logger}), PublicWebURL: cfg.PublicWebURL,
+		ReconcileAfter: cfg.PaymentReconcileAfter, Logger: logger}), logger)
+	logger.Info("payment reconciliation job scheduled", slog.Duration("interval", app.PaymentReconcileInterval))
 
 	// Rent schedules (API 0.36.1): every ACTIVE tenancy's rule is re-run daily,
 	// so a rolling schedule gains the next month's due when the month turns.

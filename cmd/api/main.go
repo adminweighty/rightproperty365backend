@@ -38,6 +38,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/notifications"
 	"rightproperty365.com/backend/internal/modules/onboarding"
 	"rightproperty365.com/backend/internal/modules/packages"
+	"rightproperty365.com/backend/internal/modules/payments"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
 	"rightproperty365.com/backend/internal/modules/reports"
@@ -56,6 +57,7 @@ import (
 	"rightproperty365.com/backend/internal/platform/mail"
 	"rightproperty365.com/backend/internal/platform/malware"
 	"rightproperty365.com/backend/internal/platform/outbox"
+	"rightproperty365.com/backend/internal/platform/paygateway"
 	"rightproperty365.com/backend/internal/platform/push"
 	"rightproperty365.com/backend/internal/platform/storage"
 )
@@ -177,6 +179,8 @@ func run() error {
 		packageStore packages.Store
 		// memSubscriptions is set without a database (its expiry sweep runs here).
 		memSubscriptions *subscriptions.MemoryStore
+		// paymentStore holds the online payments (API 0.42.0).
+		paymentStore payments.Store
 	)
 	if cfg.UseMemoryStore() {
 		// config.Load guarantees this branch is only reachable in development.
@@ -368,6 +372,8 @@ func run() error {
 		memSubscriptions = subscriptions.NewMemoryStore(memAudit)
 		memSubscriptions.SetActiveListings(app.MemoryActiveListings(memListings))
 		subscriptionStore = memSubscriptions
+		memPayments := payments.NewMemoryStore(memAudit)
+		paymentStore = memPayments
 		accountStore = accounts.NewMemoryStore(accounts.MemoryDeps{Identity: memIdentity, Listings: memListings, Teams: memTeams,
 			Directory: memDirectory, Audit: memAudit, CancelSubscriptions: memSubscriptions.CancelForDeletedUser,
 			DeleteSignature: memAgreements.DeleteSavedSignature, DeleteSavedListings: memSaved.DeleteUser,
@@ -379,7 +385,7 @@ func run() error {
 				memReviews.ForgetUser(userID, deletedName)
 				memEnquiries.ForgetUser(userID)
 			},
-			ForgetPackages: memPackages.ForgetUser})
+			ForgetPackages: memPackages.ForgetUser, ForgetPayments: memPayments.ForgetUser})
 		reportStore = app.MemoryReports(app.MemoryReportStores{Identity: memIdentity, Onboarding: memOnboarding, Listings: memListings,
 			Requests: memRequests, Enquiries: memEnquiries, Leases: memLeases, Agreements: memAgreements, Subscriptions: memSubscriptions,
 			Markets: marketStore})
@@ -559,6 +565,7 @@ func run() error {
 		inspectionStore = inspections.NewPostgresStore(pool)
 		reviewStore = reviews.NewPostgresStore(pool)
 		packageStore = packages.NewPostgresStore(pool)
+		paymentStore = payments.NewPostgresStore(pool)
 		adminAuditLog = adminaudit.PostgresLog{Q: pool}
 		inboxSvc = inapp.NewService(inapp.NewPostgresStore(pool), pushProvider, logger, nil)
 		// Scan records; the worker scans the quarantined documents.
@@ -604,43 +611,52 @@ func run() error {
 		return u.ID, true
 	}, logger)
 
+	// Online payment (API 0.42.0): off (none) unless PAYMENT_GATEWAY names a
+	// driver; only the fake one exists (never in production).
+	gateway, err := paygateway.Open(cfg, logger, nil)
+	if err != nil {
+		return err
+	}
+
 	handler, err := app.NewRouter(app.Deps{
-		Config:        cfg,
-		Logger:        logger,
-		Health:        healthH,
-		Markets:       marketStore,
-		Requests:      requestStore,
-		Enquiries:     enquiryStore,
-		Reference:     referenceStore,
-		Listings:      listingStore,
-		ListingSearch: listingSearch,
-		Directory:     directoryStore,
-		Identity:      identityStore,
-		Mailer:        mailer,
-		Onboarding:    onboardingStore,
-		Appointments:  appointmentStore,
-		Availability:  availabilityStore,
-		Teams:         teamStore,
-		Leases:        leaseStore,
-		Agreements:    agreementStore,
-		Files:         files,
-		Accounts:      accountStore,
-		Subscriptions: subscriptionStore,
-		Reports:       reportStore,
-		AdminAudit:    adminAuditLog,
-		Saved:         savedStore,
-		Analytics:     analyticsStore,
-		CRM:           crmStore,
-		CRMItems:      crmItems,
-		Applications:  applicationStore,
-		Venues:        venueStore,
-		Ledger:        ledgerStore,
-		Tenancies:     tenancyStore,
-		Maintenance:   maintenanceStore,
-		Inspections:   inspectionStore,
-		Reviews:       reviewStore,
-		Packages:      packageStore,
-		Inbox:         inboxSvc,
+		Config:         cfg,
+		Logger:         logger,
+		Health:         healthH,
+		Markets:        marketStore,
+		Requests:       requestStore,
+		Enquiries:      enquiryStore,
+		Reference:      referenceStore,
+		Listings:       listingStore,
+		ListingSearch:  listingSearch,
+		Directory:      directoryStore,
+		Identity:       identityStore,
+		Mailer:         mailer,
+		Onboarding:     onboardingStore,
+		Appointments:   appointmentStore,
+		Availability:   availabilityStore,
+		Teams:          teamStore,
+		Leases:         leaseStore,
+		Agreements:     agreementStore,
+		Files:          files,
+		Accounts:       accountStore,
+		Subscriptions:  subscriptionStore,
+		Reports:        reportStore,
+		AdminAudit:     adminAuditLog,
+		Saved:          savedStore,
+		Analytics:      analyticsStore,
+		CRM:            crmStore,
+		CRMItems:       crmItems,
+		Applications:   applicationStore,
+		Venues:         venueStore,
+		Ledger:         ledgerStore,
+		Tenancies:      tenancyStore,
+		Maintenance:    maintenanceStore,
+		Inspections:    inspectionStore,
+		Reviews:        reviewStore,
+		Packages:       packageStore,
+		Payments:       paymentStore,
+		PaymentGateway: gateway,
+		Inbox:          inboxSvc,
 	})
 	if err != nil {
 		return err
@@ -652,6 +668,15 @@ func run() error {
 		go app.RunAgreementSweeps(ctx, agreements.NewService(agreements.Deps{Store: agreementStore, Files: files, Mailer: mailer, Logger: logger,
 			PublicWebURL: cfg.PublicWebURL}), nil, logger)
 		go app.RunSubscriptionSweeps(ctx, subscriptions.NewService(subscriptions.Deps{Store: memSubscriptions, Logger: logger}), logger)
+	}
+	// Payment reconciliation: here without a database (no worker), and with
+	// the fake gateway, whose checkouts live in this process. The worker runs
+	// it too; it is idempotent.
+	if _, fake := gateway.(*paygateway.Fake); cfg.UseMemoryStore() || fake {
+		go app.RunPaymentReconciliation(ctx, payments.NewService(payments.Deps{Store: paymentStore, Gateway: gateway,
+			Subscriptions:  subscriptions.NewService(subscriptions.Deps{Store: subscriptionStore, Logger: logger}),
+			PublicWebURL:   cfg.PublicWebURL,
+			ReconcileAfter: cfg.PaymentReconcileAfter, Logger: logger}), logger)
 	}
 
 	srv := &http.Server{

@@ -198,6 +198,80 @@ type Assignment struct {
 	CreatedAt      time.Time
 	CancelledAt    *time.Time
 	CancelledBy    *uuid.UUID
+	// SubscriptionID is the paid subscription an INVOICE assignment comes
+	// from (API 0.42.0; nil for ADMIN ones).
+	SubscriptionID *uuid.UUID
+}
+
+// InvoiceGrant is the package a paid subscription grants (API 0.42.0): the
+// active package PackageCode of MarketCode, for the account, from StartsOn
+// to EndsOn (UTC dates, inclusive), linked to SubscriptionID. Label names the
+// subscription in the note and the audit ("Subscription RPS-2026-000124").
+type InvoiceGrant struct {
+	Account        Account
+	MarketCode     string
+	PackageCode    string
+	StartsOn       time.Time
+	EndsOn         time.Time
+	SubscriptionID uuid.UUID
+	Label          string
+	At             time.Time
+}
+
+// InvoiceDates returns the assignment dates of a paid period [start, end):
+// the UTC day of start, and the UTC day of the last instant before end.
+func InvoiceDates(start, end time.Time) (time.Time, time.Time) {
+	from, to := Day(start), Day(end.Add(-time.Microsecond))
+	if to.Before(from) {
+		to = from
+	}
+	return from, to
+}
+
+func (g InvoiceGrant) assignment(pkg Package) Assignment {
+	id := g.SubscriptionID
+	ends := Day(g.EndsOn)
+	return Assignment{ID: uuid.New(), Account: g.Account, MarketCode: g.MarketCode, PackageID: pkg.ID, StartsOn: Day(g.StartsOn), EndsOn: &ends,
+		Source: SourceInvoice, Note: g.Label, AssignedByName: g.Label, CreatedAt: g.At.UTC(), SubscriptionID: &id}
+}
+
+func (g InvoiceGrant) audit(a Assignment, pkg Package, replaced []Assignment) adminaudit.Event {
+	var before map[string]any
+	if len(replaced) > 0 {
+		ids := []string{}
+		for _, r := range replaced {
+			ids = append(ids, r.ID.String())
+		}
+		before = map[string]any{"replaced_assignments": ids}
+	}
+	after := assignmentState(a, pkg)
+	after["subscription_id"] = g.SubscriptionID.String()
+	return adminaudit.New(uuid.Nil, g.Label, adminaudit.ActionPackageAssigned, auditTarget(g.Account), g.Account.ID.String(), g.Label,
+		"Paid subscription", before, after, g.At)
+}
+
+func endInvoiceAudit(a Assignment, label string, at time.Time) adminaudit.Event {
+	return adminaudit.New(uuid.Nil, label, adminaudit.ActionPackageAssignmentEnded, auditTarget(a.Account), a.Account.ID.String(), label,
+		"Paid subscription ended", map[string]any{"market_code": a.MarketCode, "assignments": []string{a.ID.String()}, "source": SourceInvoice},
+		map[string]any{"market_code": a.MarketCode, "basis": "DEFAULT_OR_NONE"}, at)
+}
+
+// endInvoice ends a (copy of an) INVOICE assignment at at: cancelled when it
+// starts today or later, else ended yesterday. ok is false when it was
+// already over or cancelled.
+func endInvoice(a *Assignment, at time.Time) bool {
+	today := Day(at)
+	if a.CancelledAt != nil || (a.EndsOn != nil && a.EndsOn.Before(today)) {
+		return false
+	}
+	if !a.StartsOn.Before(today) {
+		t := at.UTC()
+		a.CancelledAt = &t
+		return true
+	}
+	y := today.AddDate(0, 0, -1)
+	a.EndsOn = &y
+	return true
 }
 
 // InForce reports whether the assignment applies on the UTC date today.

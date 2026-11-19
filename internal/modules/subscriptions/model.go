@@ -1,12 +1,14 @@
 // Package subscriptions is the paid plans of professionals and
-// organisations, without online payment.
+// organisations.
 //
-// There is no card form, no stored payment method and nothing is ever
-// charged automatically (Refund Policy, "No online payments"). A request is
-// an invoice: the subscription waits as PENDING_PAYMENT with an invoice
-// number and the amount, the subscriber pays outside the platform (for
-// example by bank transfer, quoting the invoice number), and a finance
-// administrator records the payment, which activates it:
+// There is no stored payment method and nothing is ever charged
+// automatically. A request is an invoice: the subscription waits as
+// PENDING_PAYMENT with an invoice number and the amount. It is paid either
+// outside the platform (for example by bank transfer, quoting the invoice
+// number) and recorded by a finance administrator (Approve), or, when a
+// payment gateway is configured (API 0.42.0, modules/payments), online on
+// the provider's hosted page, confirmed by its signed webhook
+// (ActivatePaid). Both activate through the same path (activate):
 //
 //	PENDING_PAYMENT -> ACTIVE (payment recorded; starts_at, ends_at)
 //	                -> REJECTED (administrator, with a reason)
@@ -14,14 +16,18 @@
 //	ACTIVE          -> EXPIRED (ends_at passed; the worker's sweep, and every
 //	                   read treats a past ends_at as EXPIRED at once)
 //	                -> CANCELLED (administrator, with a reason and whether a
-//	                   pro-rata refund is due; no money moves here)
+//	                   pro-rata refund is due; or a full refund through the
+//	                   gateway, RecordRefund)
 //
 // A period is QUARTERLY (3 months) or YEARLY (1 year). Renewal opens 30 days
 // before the end: it is a new PENDING_PAYMENT subscription (renewal_of) that
 // starts when the current one ends, invoiced and paid like the first.
 //
-// A plan's limits (Feature) are shown with the subscriber's usage; they are
-// not enforced by listing management yet.
+// A plan's limits (Feature) are shown with the subscriber's usage. A plan
+// with a package_code grants the listing package of that code in the
+// subscription's market for the paid period (an INVOICE assignment, written
+// in the activation's transaction through the store's entitlement hook);
+// that package's listing limit is what listing management enforces.
 package subscriptions
 
 import (
@@ -94,6 +100,8 @@ const (
 	ActorSubscriber = "SUBSCRIBER"
 	ActorAdmin      = "ADMIN"
 	ActorSystem     = "SYSTEM"
+	// ActorGateway is the payment gateway (a verified webhook).
+	ActorGateway = "GATEWAY"
 )
 
 // History actions (subscription_events.action).
@@ -105,6 +113,8 @@ const (
 	ActionActivated        = "ACTIVATED"
 	ActionRejected         = "REJECTED"
 	ActionExpired          = "EXPIRED"
+	// ActionRefunded is money returned through the payment gateway.
+	ActionRefunded = "REFUNDED"
 )
 
 // Outbox events (aggregate "subscription"; payload subscription_id and
@@ -186,6 +196,7 @@ const (
 	CodeRenewalNotOpen       = "RENEWAL_NOT_OPEN"
 	CodePaymentTooLow        = "PAYMENT_AMOUNT_TOO_LOW"
 	CodeNotOrganisationOwner = "NOT_ORGANISATION_OWNER"
+	CodePaymentMismatch      = "PAYMENT_MISMATCH"
 )
 
 // Errors, mapped to HTTP by the handler.
@@ -202,6 +213,9 @@ var (
 	ErrRenewalNotOpen   = errors.New("renewal is not open")
 	ErrPaymentTooLow    = errors.New("the payment is less than the invoice")
 	ErrNotOwner         = errors.New("only the organisation's owner may do this")
+	// ErrPaymentMismatch is a gateway payment whose amount or currency is
+	// not the invoice's.
+	ErrPaymentMismatch = errors.New("the payment does not match the invoice")
 )
 
 // ValidationError carries per-field messages for a 400 response.
@@ -235,10 +249,13 @@ type Plan struct {
 	Prices         []Price
 	Status         string
 	SortOrder      int
-	CreatedBy      *uuid.UUID
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	RetiredAt      *time.Time
+	// PackageCode is the listing package a paid subscription grants (""
+	// for none).
+	PackageCode string
+	CreatedBy   *uuid.UUID
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	RetiredAt   *time.Time
 }
 
 // PriceFor returns the plan's price in a currency for a period.
@@ -262,7 +279,13 @@ func (p Plan) Limit(code string) (*int, bool) {
 	return nil, false
 }
 
-// Payment is what the administrator recorded.
+// Who recorded a payment.
+const (
+	RecordedByAdmin   = "ADMIN"
+	RecordedByGateway = "GATEWAY"
+)
+
+// Payment is what the administrator, or the payment gateway, recorded.
 type Payment struct {
 	Reference      string
 	Amount         string
@@ -270,7 +293,24 @@ type Payment struct {
 	Note           string
 	RecordedBy     *uuid.UUID
 	RecordedByName string
+	// RecordedByKind is RecordedByAdmin or RecordedByGateway; Provider is
+	// the gateway's name ("" for an administrator).
+	RecordedByKind string
+	Provider       string
 }
+
+// Entitlement is what a change does to the subscriber's listing package
+// (applied by the store, in the change's transaction, through the hook set
+// with SetEntitlements).
+type Entitlement struct {
+	// Grant gives the package PackageCode for the subscription's period;
+	// otherwise the package the subscription granted ends.
+	Grant       bool
+	PackageCode string
+}
+
+// EntitlementFunc applies an entitlement in memory.
+type EntitlementFunc func(x Subscription, e Entitlement, at time.Time) error
 
 // Subscription is one subscription (or a request for one).
 type Subscription struct {
@@ -364,6 +404,8 @@ type Change struct {
 	Audit  *adminaudit.Event
 	// Outbox is the event type to write ("" for none).
 	Outbox string
+	// Entitlement is applied with the change when not nil.
+	Entitlement *Entitlement
 }
 
 // Filter selects subscriptions. Empty fields match everything.

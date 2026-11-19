@@ -48,6 +48,7 @@ var answers = []struct {
 	{ErrRenewalNotOpen, http.StatusConflict, CodeRenewalNotOpen, "Renewal opens 30 days before the subscription ends."},
 	{ErrPaymentTooLow, http.StatusUnprocessableEntity, CodePaymentTooLow, "The payment recorded is less than the invoice amount."},
 	{ErrNotOwner, http.StatusForbidden, CodeNotOrganisationOwner, "Only the organisation's owner can take a plan for it."},
+	{ErrPaymentMismatch, http.StatusUnprocessableEntity, CodePaymentMismatch, "The payment does not match the invoice's amount and currency."},
 }
 
 func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
@@ -100,6 +101,7 @@ type PlanView struct {
 	Prices         []Price       `json:"prices"`
 	Status         string        `json:"status"`
 	SortOrder      int           `json:"sort_order"`
+	PackageCode    *string       `json:"package_code"`
 	CreatedAt      time.Time     `json:"created_at"`
 	UpdatedAt      time.Time     `json:"updated_at"`
 	RetiredAt      *time.Time    `json:"retired_at"`
@@ -109,7 +111,7 @@ type PlanView struct {
 func PlanViewOf(p Plan) PlanView {
 	v := PlanView{ID: p.ID, Name: p.Name, Description: p.Description, SubscriberKind: p.SubscriberKind, EligibleRoles: append([]string{}, p.EligibleRoles...),
 		Features: []featureView{}, Benefits: append([]string{}, p.Benefits...), Prices: append([]Price{}, p.Prices...), Status: p.Status,
-		SortOrder: p.SortOrder, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt, RetiredAt: p.RetiredAt}
+		SortOrder: p.SortOrder, PackageCode: optional(p.PackageCode), CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt, RetiredAt: p.RetiredAt}
 	for _, f := range p.Features {
 		v.Features = append(v.Features, featureView{Code: f.Code, Label: FeatureLabel(f.Code), Limit: f.Limit})
 	}
@@ -127,6 +129,9 @@ type paymentView struct {
 	ReceivedOn     string `json:"received_on"`
 	Note           string `json:"note,omitempty"`
 	RecordedByName string `json:"recorded_by_name"`
+	// RecordedBy is ADMIN or GATEWAY; Provider the gateway (null for ADMIN).
+	RecordedBy string  `json:"recorded_by"`
+	Provider   *string `json:"provider"`
 }
 
 // View is a subscription in the API.
@@ -161,6 +166,9 @@ type View struct {
 	UpdatedAt       time.Time    `json:"updated_at"`
 	// PaymentInstructions is set while the invoice waits for payment.
 	PaymentInstructions *string `json:"payment_instructions"`
+	// OnlinePaymentAvailable is true while the invoice waits for payment
+	// and a payment gateway is configured (API 0.42.0).
+	OnlinePaymentAvailable bool `json:"online_payment_available"`
 }
 
 func optional(s string) *string {
@@ -186,12 +194,22 @@ func ViewOf(x Subscription, now time.Time) View {
 	}
 	if x.Payment != nil {
 		v.Payment = &paymentView{Reference: x.Payment.Reference, Amount: x.Payment.Amount, ReceivedOn: x.Payment.ReceivedOn, Note: x.Payment.Note,
-			RecordedByName: x.Payment.RecordedByName}
+			RecordedByName: x.Payment.RecordedByName, RecordedBy: x.Payment.RecordedByKind, Provider: optional(x.Payment.Provider)}
+		if v.Payment.RecordedBy == "" {
+			v.Payment.RecordedBy = RecordedByAdmin
+		}
 	}
 	if x.Status == StatusPendingPayment {
 		instructions := PaymentInstructions
 		v.PaymentInstructions = &instructions
 	}
+	return v
+}
+
+// viewOf is ViewOf with whether online payment is offered.
+func (h *Handler) viewOf(x Subscription, now time.Time) View {
+	v := ViewOf(x, now)
+	v.OnlinePaymentAvailable = h.svc.online != "" && x.Status == StatusPendingPayment
 	return v
 }
 
@@ -215,8 +233,11 @@ func eventsView(events []Event) []eventView {
 type usageView struct {
 	ActiveListings    int  `json:"active_listings"`
 	MaxActiveListings *int `json:"max_active_listings"`
-	// LimitEnforced is false: the plan's limit is shown, not enforced.
-	LimitEnforced bool `json:"limit_enforced"`
+	// LimitEnforced is true when the plan grants a listing package
+	// (PackageCode): that package's limit is enforced; otherwise the plan's
+	// limit is only shown.
+	LimitEnforced bool    `json:"limit_enforced"`
+	PackageCode   *string `json:"package_code"`
 }
 
 type detailView struct {
@@ -226,8 +247,9 @@ type detailView struct {
 }
 
 func (h *Handler) detail(d Detail) detailView {
-	return detailView{Subscription: ViewOf(d.Subscription, h.now().UTC()), Events: eventsView(d.Events),
-		Usage: usageView{ActiveListings: d.ActiveListings, MaxActiveListings: d.MaxActiveListings}}
+	return detailView{Subscription: h.viewOf(d.Subscription, h.now().UTC()), Events: eventsView(d.Events),
+		Usage: usageView{ActiveListings: d.ActiveListings, MaxActiveListings: d.MaxActiveListings, LimitEnforced: d.PackageCode != "",
+			PackageCode: optional(d.PackageCode)}}
 }
 
 type subscriptionPage struct {
@@ -271,11 +293,17 @@ func (h *Handler) AvailablePlans(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
+	type online struct {
+		Enabled  bool    `json:"enabled"`
+		Provider *string `json:"provider"`
+	}
 	out := struct {
-		CurrencyCode *string    `json:"currency_code"`
-		Plans        []PlanView `json:"plans"`
-		Note         string     `json:"payment_note"`
-	}{CurrencyCode: optional(currency), Plans: []PlanView{}, Note: PaymentInstructions}
+		CurrencyCode  *string    `json:"currency_code"`
+		Plans         []PlanView `json:"plans"`
+		Note          string     `json:"payment_note"`
+		OnlinePayment online     `json:"online_payment"`
+	}{CurrencyCode: optional(currency), Plans: []PlanView{}, Note: PaymentInstructions,
+		OnlinePayment: online{Enabled: h.svc.online != "", Provider: optional(h.svc.online)}}
 	for _, plan := range plans {
 		out.Plans = append(out.Plans, PlanViewOf(plan))
 	}
@@ -309,7 +337,7 @@ func (h *Handler) Mine(w http.ResponseWriter, r *http.Request) {
 		if x == nil {
 			return nil
 		}
-		v := ViewOf(*x, now)
+		v := h.viewOf(*x, now)
 		return &v
 	}
 	out := struct {
@@ -317,9 +345,10 @@ func (h *Handler) Mine(w http.ResponseWriter, r *http.Request) {
 	}{Subscribers: []subscriberView{}}
 	for _, st := range states {
 		sv := subscriberView{Subscriber: st.Subscriber, Current: view(st.Current), Upcoming: view(st.Upcoming), Pending: view(st.Pending),
-			CanRenew: st.CanRenew, Usage: usageView{ActiveListings: st.ActiveListings, MaxActiveListings: st.MaxActiveListings}, History: []View{}}
+			CanRenew: st.CanRenew, Usage: usageView{ActiveListings: st.ActiveListings, MaxActiveListings: st.MaxActiveListings,
+				LimitEnforced: st.PackageCode != "", PackageCode: optional(st.PackageCode)}, History: []View{}}
 		for _, x := range st.History {
-			sv.History = append(sv.History, ViewOf(x, now))
+			sv.History = append(sv.History, h.viewOf(x, now))
 		}
 		out.Subscribers = append(out.Subscribers, sv)
 	}
@@ -344,12 +373,12 @@ func (h *Handler) MineOne(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	private(w)
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"subscription": ViewOf(x, h.now().UTC()), "events": eventsView(events)})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"subscription": h.viewOf(x, h.now().UTC()), "events": eventsView(events)})
 }
 
 func (h *Handler) writeSubscription(w http.ResponseWriter, status int, x Subscription) {
 	private(w)
-	httpx.WriteJSON(w, status, map[string]any{"subscription": ViewOf(x, h.now().UTC())})
+	httpx.WriteJSON(w, status, map[string]any{"subscription": h.viewOf(x, h.now().UTC())})
 }
 
 // Request handles POST /v1/me/subscriptions.
@@ -552,7 +581,7 @@ func (h *Handler) AdminList(w http.ResponseWriter, r *http.Request) {
 	now := h.now().UTC()
 	out := subscriptionPage{Items: make([]View, 0, len(items)), Page: page, PageSize: size, Total: total}
 	for _, x := range items {
-		out.Items = append(out.Items, ViewOf(x, now))
+		out.Items = append(out.Items, h.viewOf(x, now))
 	}
 	private(w)
 	httpx.WriteJSON(w, http.StatusOK, out)

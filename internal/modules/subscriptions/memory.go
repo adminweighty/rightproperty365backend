@@ -27,6 +27,15 @@ type MemoryStore struct {
 	audit  *adminaudit.MemoryLog
 	// activeListings counts a subscriber's public listings (nil: 0).
 	activeListings func(kind string, subscriberID uuid.UUID, now time.Time) int
+	// entitle applies a change's Entitlement (nil: ignored).
+	entitle EntitlementFunc
+}
+
+// SetEntitlements sets the hook that grants and ends listing packages (wiring).
+func (s *MemoryStore) SetEntitlements(fn EntitlementFunc) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.entitle = fn
 }
 
 // NewMemoryStore returns an empty store writing its administrator audit
@@ -289,6 +298,11 @@ func (s *MemoryStore) ChangeSubscription(_ context.Context, id uuid.UUID, change
 	ch, err := change(&next)
 	if err != nil {
 		return Subscription{}, err
+	}
+	if ch.Entitlement != nil && s.entitle != nil {
+		if err := s.entitle(cloneSub(next), *ch.Entitlement, next.UpdatedAt); err != nil {
+			return Subscription{}, err
+		}
 	}
 	s.subs[id] = cloneSub(next)
 	s.events = append(s.events, ch.Events...)
