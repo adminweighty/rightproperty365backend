@@ -24,6 +24,17 @@ type MemoryStore struct {
 	attachments []Attachment
 	categories  []Category
 	audit       orgaudit.Sink
+	onReversed  func(ctx context.Context, list []Reversal) error
+}
+
+// SetReversalHook runs hook inside every Apply that reverses entries, after
+// the checks and before anything is kept: an error from it keeps nothing
+// (the tenancies module undoes a rent receipt's allocations there). The hook
+// may lock its own store; it must never call back into this one.
+func (s *MemoryStore) SetReversalHook(hook func(ctx context.Context, list []Reversal) error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onReversed = hook
 }
 
 // NewMemoryStore returns an empty store.
@@ -305,7 +316,13 @@ func (s *MemoryStore) UpdateCategory(_ context.Context, c Category) error {
 }
 
 // Apply implements Store. Everything is checked before anything is written.
-func (s *MemoryStore) Apply(_ context.Context, ch Change) error {
+func (s *MemoryStore) Apply(ctx context.Context, ch Change) error { return s.ApplyWith(ctx, ch, nil) }
+
+// ApplyWith applies a Change together with another store's write, as one
+// transaction: after every check of ch passes, with passes its own write
+// (then the change is kept) or fails (then nothing of ch is kept). The
+// tenancies module records a rent receipt and its ledger entry this way.
+func (s *MemoryStore) ApplyWith(ctx context.Context, ch Change, with func() error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entries := make(map[uuid.UUID]Entry, len(s.entries))
@@ -424,6 +441,16 @@ func (s *MemoryStore) Apply(_ context.Context, ch Change) error {
 	for _, a := range ch.Attachments {
 		if _, ok := entries[a.EntryID]; !ok {
 			return ErrEntryNotFound
+		}
+	}
+	if rev := ch.reversals(); len(rev) > 0 && s.onReversed != nil {
+		if err := s.onReversed(ctx, rev); err != nil {
+			return err
+		}
+	}
+	if with != nil {
+		if err := with(); err != nil {
+			return err
 		}
 	}
 	s.entries, s.order = entries, order

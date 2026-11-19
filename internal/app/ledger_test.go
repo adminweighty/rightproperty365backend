@@ -74,15 +74,19 @@ func TestLedgerSeedAndPerCurrencyReports(t *testing.T) {
 	if len(cb.Currencies) != 2 || cb.Currencies[0].Currency != "USD" || cb.Currencies[1].Currency != "ZAR" {
 		t.Fatalf("seed currencies: %+v", cb.Currencies)
 	}
-	// USD: 500 + 12000 opening, rent 700 (reconciled) + 700 deposit + (70 - 70 + 700 corrected) + 1250 + 300 - 85.50 - 120; transfer nets 0.
-	if usd := cb.Currencies[0]; usd.OpeningBalance != "0.00" || usd.ClosingBalance != "15944.50" {
+	// USD: 500 + 12000 opening, rent 700 (reconciled) + 700 deposit + (70 - 70 + 700 corrected) + 1250 + 300 - 85.50 - 120; transfer
+	// nets 0. Plus the rent receipts (API 0.36.1): the cottage's first two (2 x 700, before the period: the opening balance), Flat 1's
+	// two (2 x 950) and the cottage's part payment (300).
+	if usd := cb.Currencies[0]; usd.OpeningBalance != "1400.00" || usd.ClosingBalance != "19544.50" {
 		t.Fatalf("USD cashbook: opening %s closing %s", usd.OpeningBalance, usd.ClosingBalance)
 	}
 	if zar := cb.Currencies[1]; zar.ClosingBalance != "29500.00" {
 		t.Fatalf("ZAR cashbook: %s", zar.ClosingBalance)
 	}
+	// Receivables: 850.00 of ledger receivables plus the cottage's rent arrears (700.00 45 days overdue, 400.00 of the part-paid due).
 	recv := decode[ledger.Receivables](t, e.get(ledgerPath(org, "/reports/receivables"), staff))
-	if len(recv.Currencies) != 1 || recv.Currencies[0].Outstanding != "850.00" {
+	if len(recv.Currencies) != 1 || recv.Currencies[0].Outstanding != "1950.00" || recv.Currencies[0].RentOutstanding != "1100.00" ||
+		len(recv.Currencies[0].RentItems) != 2 || recv.Currencies[0].RentItems[0].DaysOverdue != 45 || recv.Currencies[0].RentItems[0].Bucket != "31-60" {
 		t.Fatalf("receivables: %+v", recv)
 	}
 	d := decode[struct {

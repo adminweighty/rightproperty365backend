@@ -27,7 +27,8 @@ var (
 	// the sample tenant account's (tenant@example.test), with landlord Tapiwa
 	// Chirwa and the sample draft lease.
 	TenancyFlat1ID = id("b721")
-	// TenancyCottageID is ACTIVE: Tariro Moyo, periodic (no end date).
+	// TenancyCottageID is ACTIVE: Tariro Moyo, periodic (no end date), due on
+	// CottageDueDay (so one due is exactly 45 days overdue).
 	TenancyCottageID = id("b722")
 	// TenancyFlat2EndedID is ENDED: Tariro Moyo's earlier tenancy of Flat 2.
 	TenancyFlat2EndedID = id("b723")
@@ -82,7 +83,7 @@ func TenancySamples(now time.Time) tenancies.Change {
 			EndDate: flat1Start.AddDate(1, 0, -1).Format(time.DateOnly), Status: tenancies.StatusActive,
 			Notes: "Deposit held in the trust account."}, chipo, "Chipo Dube", -70),
 		base(tenancies.Tenancy{ID: TenancyCottageID, PropertyID: PropertyCottageID, Parties: []tenancies.Party{tenant(ContactTariroID, "Tariro Moyo")},
-			RentAmount: "700.00", RentDueDay: 5, StartDate: day(-120), Status: tenancies.StatusActive}, chipo, "Chipo Dube", -125),
+			RentAmount: "700.00", RentDueDay: CottageDueDay(now), StartDate: day(-120), Status: tenancies.StatusActive}, chipo, "Chipo Dube", -125),
 	}
 	ended := base(tenancies.Tenancy{ID: TenancyFlat2EndedID, PropertyID: PropertyAvondaleID, UnitID: ptr(UnitFlat2ID),
 		Parties: []tenancies.Party{tenant(ContactTariroID, "Tariro Moyo"), landlord}, RentAmount: "650.00", RentDueDay: 1,
@@ -92,6 +93,10 @@ func TenancySamples(now time.Time) tenancies.Change {
 	ch.Tenancies = append(ch.Tenancies, ended)
 	return ch
 }
+
+// CottageDueDay is the cottage's due day: the day of the month 45 days ago,
+// so its schedule has a due exactly 45 days overdue (API 0.36.1 seed).
+func CottageDueDay(now time.Time) int { return now.UTC().AddDate(0, 0, -45).Day() }
 
 // SeedMemoryTenancies stores the sample properties and tenancies in memory (no audit).
 func SeedMemoryTenancies(store *tenancies.MemoryStore, now time.Time) { store.Put(TenancySamples(now)) }

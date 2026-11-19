@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"rightproperty365.com/backend/internal/modules/ledger"
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/logging"
 	"rightproperty365.com/backend/internal/platform/money"
@@ -50,8 +51,11 @@ type Deps struct {
 	Markets func(ctx context.Context) ([]string, error)
 	// Account returns a user's email and whether it is verified.
 	Account func(ctx context.Context, userID uuid.UUID) (email string, verified bool, err error)
-	Logger  *slog.Logger
-	Now     func() time.Time
+	// Ledger posts the RENT_RECEIVED entry of a rent receipt (part b); it may
+	// also be set later with SetLedger.
+	Ledger *ledger.Service
+	Logger *slog.Logger
+	Now    func() time.Time
 }
 
 // Service is properties, units and tenancies.
@@ -61,13 +65,15 @@ type Service struct {
 	currencies func(ctx context.Context) ([]string, error)
 	markets    func(ctx context.Context) ([]string, error)
 	account    func(ctx context.Context, userID uuid.UUID) (string, bool, error)
+	ledger     *ledger.Service
 	logger     *slog.Logger
 	now        func() time.Time
 }
 
 // NewService builds the service.
 func NewService(d Deps) *Service {
-	s := &Service{store: d.Store, links: d.Links, currencies: d.Currencies, markets: d.Markets, account: d.Account, logger: d.Logger, now: d.Now}
+	s := &Service{store: d.Store, links: d.Links, currencies: d.Currencies, markets: d.Markets, account: d.Account, ledger: d.Ledger,
+		logger: d.Logger, now: d.Now}
 	if s.now == nil {
 		s.now = time.Now
 	}
@@ -78,6 +84,13 @@ func NewService(d Deps) *Service {
 }
 
 func (s *Service) clock() time.Time { return s.now().UTC().Truncate(time.Microsecond) }
+
+// SetLedger connects the ledger service that posts rent receipts' entries
+// (the ledger's receivables report reads this service's arrears, so the two
+// are built one after the other).
+func (s *Service) SetLedger(l *ledger.Service) { s.ledger = l }
+
+func (s *Service) today() string { return s.clock().Format(time.DateOnly) }
 
 // access is what the caller may do in one book.
 type access struct {
@@ -1301,7 +1314,13 @@ func (s *Service) UpdateTenancy(ctx context.Context, p *auth.Principal, bookID, 
 		return TenancyView{}, err
 	}
 	t.UpdatedAt = s.clock()
-	if err := s.store.Apply(ctx, Change{ExpectStatus: map[uuid.UUID]string{id: cur.Status}, Tenancies: []Tenancy{t}}); err != nil {
+	ch := Change{ExpectStatus: map[uuid.UUID]string{id: cur.Status}, Tenancies: []Tenancy{t}}
+	if t.Status == StatusActive && t.EndDate != cur.EndDate {
+		if err := s.resync(ctx, &ch, t); err != nil {
+			return TenancyView{}, err
+		}
+	}
+	if err := s.store.Apply(ctx, ch); err != nil {
 		return TenancyView{}, err
 	}
 	return s.oneTenancyView(ctx, a, id)
@@ -1358,7 +1377,9 @@ func (s *Service) Activate(ctx context.Context, p *auth.Principal, bookID, id uu
 	before := tenancyAudit(t)
 	now := s.clock()
 	t.Status, t.ActivatedAt, t.ActivatedBy, t.ActivatedByName, t.UpdatedAt = StatusActive, &now, a.actor(), a.p.Name, now
-	ch := Change{ExpectStatus: map[uuid.UUID]string{id: StatusDraft}, Tenancies: []Tenancy{t},
+	// The rent schedule is generated in the activation's transaction.
+	dues, _ := planSchedule(t, nil, s.today(), now)
+	ch := Change{ExpectStatus: map[uuid.UUID]string{id: StatusDraft}, Tenancies: []Tenancy{t}, Dues: dues,
 		Audit: s.event(ctx, a, orgaudit.ActionTenancyActivated, id, Label(prop, t), before, tenancyAudit(t))}
 	if err := s.store.Apply(ctx, ch); err != nil {
 		return TenancyView{}, err
@@ -1406,6 +1427,9 @@ func (s *Service) End(ctx context.Context, p *auth.Principal, bookID, id uuid.UU
 	after["reason"] = reason
 	ch := Change{ExpectStatus: map[uuid.UUID]string{id: StatusActive}, Tenancies: []Tenancy{t},
 		Audit: s.event(ctx, a, orgaudit.ActionTenancyEnded, id, Label(prop, t), before, after)}
+	if err := s.resync(ctx, &ch, t); err != nil {
+		return TenancyView{}, err
+	}
 	if err := s.store.Apply(ctx, ch); err != nil {
 		return TenancyView{}, err
 	}

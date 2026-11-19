@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"rightproperty365.com/backend/internal/modules/ledger"
 	"rightproperty365.com/backend/internal/platform/money"
 	"rightproperty365.com/backend/internal/platform/orgaudit"
 )
@@ -415,6 +416,11 @@ func ApplyTx(ctx context.Context, tx pgx.Tx, ch Change) error {
 			return fmt.Errorf("lock tenancy: %w", err)
 		}
 	}
+	if ch.Ledger != nil {
+		if err := ledger.ApplyTx(ctx, tx, *ch.Ledger); err != nil {
+			return err
+		}
+	}
 	for _, id := range ch.PropertyFree {
 		if _, err := lockProperty(ctx, tx, id); err != nil {
 			return err
@@ -488,6 +494,9 @@ func ApplyTx(ctx context.Context, tx pgx.Tx, ch Change) error {
 			return err
 		}
 	}
+	if err := applyRentTx(ctx, tx, ch); err != nil {
+		return err
+	}
 	for _, e := range ch.Audit {
 		if err := orgaudit.Insert(ctx, tx, e); err != nil {
 			return err
@@ -532,7 +541,9 @@ func writeTenancy(ctx context.Context, tx pgx.Tx, t Tenancy) error {
 // deletion's transaction (the users row is anonymised, so nothing
 // cascades): the direct owner's DRAFT tenancies are deleted, the manager
 // name shown to the tenants of their personal book is replaced with
-// deletedName, and the person is unlinked as creator, activator and ender.
+// deletedName, and the person is unlinked as creator, activator and ender
+// (and as who recorded a rent receipt or waived a due; the names stay, as
+// the ledger's author names do).
 func ForgetUserTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, deletedName string) error {
 	for _, q := range []struct {
 		sql  string
@@ -544,6 +555,8 @@ func ForgetUserTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, deletedName 
 		{`UPDATE tenancies SET activated_by = NULL WHERE activated_by = $1`, []any{userID}},
 		{`UPDATE tenancies SET ended_by = NULL WHERE ended_by = $1`, []any{userID}},
 		{`UPDATE properties SET created_by = NULL WHERE created_by = $1`, []any{userID}},
+		{`UPDATE rent_dues SET waived_by = NULL WHERE waived_by = $1`, []any{userID}},
+		{`UPDATE rent_receipts SET recorded_by = NULL WHERE recorded_by = $1`, []any{userID}},
 	} {
 		if _, err := tx.Exec(ctx, q.sql, q.args...); err != nil {
 			return fmt.Errorf("forget the deleted account's tenancies: %w", err)

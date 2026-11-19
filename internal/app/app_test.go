@@ -384,6 +384,9 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 	e.tenancies = tenancies.NewMemoryStore()
 	e.tenancies.SetAuditSink(e.team.AuditSink())
 	devseed.SeedMemoryTenancies(e.tenancies, e.now)
+	if err := devseed.SeedMemoryRent(e.tenancies, e.ledger, e.now); err != nil {
+		t.Fatal(err)
+	}
 	if err := devseed.SeedApplicationFiles(context.Background(), e.files); err != nil {
 		t.Fatal(err)
 	}

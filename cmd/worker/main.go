@@ -33,6 +33,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/reference"
 	"rightproperty365.com/backend/internal/modules/saved"
 	"rightproperty365.com/backend/internal/modules/subscriptions"
+	"rightproperty365.com/backend/internal/modules/tenancies"
 	"rightproperty365.com/backend/internal/modules/venues"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/database"
@@ -244,6 +245,11 @@ func run() error {
 	// Subscriptions: an ACTIVE subscription whose end has passed is recorded
 	// EXPIRED (and its holder emailed) every few minutes.
 	go app.RunSubscriptionSweeps(ctx, subscriptions.NewService(subscriptions.Deps{Store: subscriptionStore, Logger: logger}), logger)
+
+	// Rent schedules (API 0.36.1): every ACTIVE tenancy's rule is re-run daily,
+	// so a rolling schedule gains the next month's due when the month turns.
+	go app.RunRentScheduleSweeps(ctx, tenancies.NewService(tenancies.Deps{Store: tenancies.NewPostgresStore(pool), Logger: logger}), logger)
+	logger.Info("rent schedule job scheduled", slog.Duration("interval", app.RentScheduleSweepInterval))
 
 	err = dispatcher.Run(ctx)
 	logger.Info("worker stopped")

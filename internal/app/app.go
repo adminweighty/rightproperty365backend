@@ -414,14 +414,25 @@ func NewRouter(d Deps) (http.Handler, error) {
 	if d.Ledger == nil {
 		return nil, errors.New("app: no ledger store")
 	}
-	ledgerH := ledger.NewHandler(LedgerService(d.Ledger, d.Files, d.CRM, d.Listings, d.Leases, d.Markets, logger, d.Now), logger)
-	ledgerLimiter := httpx.NewRateLimiter(ledgerChangesPerMinute, ledgerChangesBurst)
 	// Properties, units and tenancies (BR-019, FR-047): the same books as the
 	// CRM and the ledger; tenants read their own through /v1/me/tenancies.
+	// Rent (API 0.36.1): a receipt posts its RENT_RECEIVED entry through the
+	// ledger in its own transaction, a ledger reversal of that entry undoes
+	// the receipt (ConnectLedger), and the ledger's receivables report
+	// includes the rent arrears.
 	if d.Tenancies == nil {
 		return nil, errors.New("app: no tenancy store")
 	}
-	tenanciesH := tenancies.NewHandler(TenanciesService(d.Tenancies, d.CRM, d.Listings, d.Leases, d.Markets, d.Identity, logger, d.Now), logger)
+	if err := tenancies.ConnectLedger(d.Tenancies, d.Ledger); err != nil {
+		return nil, err
+	}
+	tenancySvc := TenanciesService(d.Tenancies, d.CRM, d.Listings, d.Leases, d.Markets, d.Identity, logger, d.Now)
+	ledgerSvc := LedgerService(d.Ledger, d.Files, d.CRM, d.Listings, d.Leases, d.Markets, logger, d.Now)
+	ledgerSvc.SetRentArrears(tenancySvc.LedgerArrears)
+	tenancySvc.SetLedger(ledgerSvc)
+	ledgerH := ledger.NewHandler(ledgerSvc, logger)
+	ledgerLimiter := httpx.NewRateLimiter(ledgerChangesPerMinute, ledgerChangesBurst)
+	tenanciesH := tenancies.NewHandler(tenancySvc, logger)
 	tenancyLimiter := httpx.NewRateLimiter(tenancyChangesPerMinute, tenancyChangesBurst)
 	directorySvc := directory.NewService(d.Directory, vocab, listingsSvc)
 	directorySvc.SetPlaces(geography)
@@ -813,6 +824,9 @@ func NewRouter(d Deps) (http.Handler, error) {
 			r.Use(auth.RequireAuth)
 			r.Get("/", tenanciesH.MyTenancies)
 			r.Get("/{id}", tenanciesH.MyTenancy)
+			r.Get("/{id}/dues", tenanciesH.MyDues)
+			r.Get("/{id}/receipts", tenanciesH.MyReceipts)
+			r.Get("/{id}/statement", tenanciesH.MyStatement)
 		})
 
 		// A customer's hourly bookings (FR-025): another customer's is 404.
@@ -1214,6 +1228,9 @@ func NewRouter(d Deps) (http.Handler, error) {
 			// OwnsPropertyBook); 403 to STAFF for every change.
 			r.Route("/properties", func(r chi.Router) { tenanciesH.PropertyRoutes(r, tenancyLimiter.Middleware) })
 			r.Route("/tenancies", func(r chi.Router) { tenanciesH.TenancyRoutes(r, tenancyLimiter.Middleware) })
+			// Rent (API 0.36.1): waive a due; the book's arrears.
+			r.Route("/dues", func(r chi.Router) { tenanciesH.DueRoutes(r, tenancyLimiter.Middleware) })
+			r.Get("/arrears", tenanciesH.Arrears)
 			r.Route("/venue-bookings", func(r chi.Router) {
 				r.Get("/", orgVenues.List)
 				r.Get("/{bookingId}", orgVenues.Get)

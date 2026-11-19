@@ -21,7 +21,18 @@ import (
 // posted entries and every delete; the partial unique index
 // ledger_entries_opening_idx allows one live opening balance per currency,
 // method and branch.
-type PostgresStore struct{ pool *pgxpool.Pool }
+type PostgresStore struct {
+	pool       *pgxpool.Pool
+	onReversed TxReversalHook
+}
+
+// TxReversalHook runs inside the transaction of a Change that reverses
+// entries, after the Change is written: an error rolls everything back.
+type TxReversalHook func(ctx context.Context, tx pgx.Tx, list []Reversal) error
+
+// SetReversalHook sets the hook run by Apply when entries are reversed (the
+// tenancies module undoes a rent receipt's allocations there).
+func (s *PostgresStore) SetReversalHook(hook TxReversalHook) { s.onReversed = hook }
 
 // NewPostgresStore returns the Postgres store.
 func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore { return &PostgresStore{pool: pool} }
@@ -50,7 +61,7 @@ type querier interface {
 const entryColumns = `e.id, e.organisation_id, e.book_user_id, e.type, e.direction, COALESCE(e.category, ''), COALESCE(e.method, ''),
 	e.amount::text, e.currency, e.effective_date::text, e.recorded_at, e.author_user_id, e.author_name, e.status, e.reconciled_at,
 	e.reconciled_by, e.reconciled_by_name, COALESCE(e.reconcile_note, ''), e.reversal_of, e.reversed_by, e.correction_of, e.corrected_by,
-	e.transfer_pair, e.settles_entry_id, COALESCE(e.reason, ''), e.contact_id, e.listing_id, e.lease_id, COALESCE(e.branch, ''),
+	e.transfer_pair, e.settles_entry_id, COALESCE(e.reason, ''), e.contact_id, e.listing_id, e.lease_id, e.tenancy_id, COALESCE(e.branch, ''),
 	e.description, e.reference,
 	(SELECT count(*) FROM ledger_entry_notes n WHERE n.entry_id = e.id),
 	(SELECT count(*) FROM ledger_attachments a WHERE a.entry_id = e.id)`
@@ -60,7 +71,7 @@ func scanEntry(row pgx.Row) (Entry, error) {
 	if err := row.Scan(&e.ID, &e.Book.OrganisationID, &e.Book.UserID, &e.Type, &e.Direction, &e.Category, &e.Method, &e.Amount, &e.Currency,
 		&e.EffectiveDate, &e.RecordedAt, &e.AuthorUserID, &e.AuthorName, &e.Status, &e.ReconciledAt, &e.ReconciledBy, &e.ReconciledName,
 		&e.ReconcileNote, &e.ReversalOf, &e.ReversedBy, &e.CorrectionOf, &e.CorrectedBy, &e.TransferPair, &e.Settles, &e.Reason,
-		&e.ContactID, &e.ListingID, &e.LeaseID, &e.Branch, &e.Description, &e.Reference, &e.NoteCount, &e.AttachmentCount); err != nil {
+		&e.ContactID, &e.ListingID, &e.LeaseID, &e.TenancyID, &e.Branch, &e.Description, &e.Reference, &e.NoteCount, &e.AttachmentCount); err != nil {
 		return Entry{}, err
 	}
 	e.Currency = strings.TrimSpace(e.Currency)
@@ -345,7 +356,15 @@ func (s *PostgresStore) UpdateCategory(ctx context.Context, c Category) error {
 
 // Apply implements Store.
 func (s *PostgresStore) Apply(ctx context.Context, ch Change) error {
-	return s.inTx(ctx, func(tx pgx.Tx) error { return ApplyTx(ctx, tx, ch) })
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		if err := ApplyTx(ctx, tx, ch); err != nil {
+			return err
+		}
+		if rev := ch.reversals(); len(rev) > 0 && s.onReversed != nil {
+			return s.onReversed(ctx, tx, rev)
+		}
+		return nil
+	})
 }
 
 func nullable(s string) *string {
@@ -377,13 +396,13 @@ func insertEntry(ctx context.Context, tx pgx.Tx, e Entry) error {
 	}
 	_, err := tx.Exec(ctx, `INSERT INTO ledger_entries (id, organisation_id, book_user_id, type, direction, category, method, amount, currency,
 		effective_date, recorded_at, author_user_id, author_name, status, reconciled_at, reconciled_by, reconciled_by_name, reconcile_note,
-		reversal_of, correction_of, transfer_pair, settles_entry_id, reason, contact_id, listing_id, lease_id, branch, description, reference)
+		reversal_of, correction_of, transfer_pair, settles_entry_id, reason, contact_id, listing_id, lease_id, tenancy_id, branch, description, reference)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::numeric, $9, $10::date, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24,
-		$25, $26, $27, $28, $29)`,
+		$25, $26, $27, $28, $29, $30)`,
 		e.ID, e.Book.OrganisationID, e.Book.UserID, e.Type, e.Direction, nullable(e.Category), nullable(e.Method), e.Amount, e.Currency,
 		e.EffectiveDate, e.RecordedAt, e.AuthorUserID, e.AuthorName, e.Status, e.ReconciledAt, e.ReconciledBy, e.ReconciledName,
 		nullable(e.ReconcileNote), e.ReversalOf, e.CorrectionOf, e.TransferPair, e.Settles, nullable(e.Reason), e.ContactID, e.ListingID,
-		e.LeaseID, nullable(e.Branch), e.Description, e.Reference)
+		e.LeaseID, e.TenancyID, nullable(e.Branch), e.Description, e.Reference)
 	var pg *pgconn.PgError
 	if errors.As(err, &pg) && pg.Code == "23505" && pg.ConstraintName == "ledger_entries_opening_idx" {
 		return ErrOpeningBalanceExists
@@ -408,8 +427,9 @@ func applyLinks(ctx context.Context, tx pgx.Tx, list []LinkSet) error {
 	return nil
 }
 
-// ApplyTx writes a Change inside the caller's transaction (the store, and
-// the development seed).
+// ApplyTx writes a Change inside the caller's transaction (the store, the
+// tenancies module's rent receipts and the development seed). It does not
+// run the reversal hook: only the store's Apply does.
 func ApplyTx(ctx context.Context, tx pgx.Tx, ch Change) error {
 	if len(ch.NotReversed) > 0 {
 		rows, err := tx.Query(ctx, `SELECT id, reversed_by FROM ledger_entries WHERE id = ANY($1) ORDER BY id FOR UPDATE`, ch.NotReversed)

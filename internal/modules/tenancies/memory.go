@@ -21,12 +21,19 @@ type MemoryStore struct {
 	properties map[uuid.UUID]Property
 	units      map[uuid.UUID]Unit
 	tenancies  map[uuid.UUID]Tenancy
+	dues       map[uuid.UUID]Due
+	receipts   map[uuid.UUID]Receipt
 	audit      orgaudit.Sink
+	// ledger posts a rent receipt's entry in the same "transaction" (ConnectLedger).
+	ledger LedgerMemory
+	// failNext, when set, fails the next Apply after its checks (tests).
+	failNext error
 }
 
 // NewMemoryStore returns an empty store.
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{properties: map[uuid.UUID]Property{}, units: map[uuid.UUID]Unit{}, tenancies: map[uuid.UUID]Tenancy{}}
+	return &MemoryStore{properties: map[uuid.UUID]Property{}, units: map[uuid.UUID]Unit{}, tenancies: map[uuid.UUID]Tenancy{},
+		dues: map[uuid.UUID]Due{}, receipts: map[uuid.UUID]Receipt{}}
 }
 
 // SetAuditSink receives the organisation audit records this store writes.
@@ -199,11 +206,32 @@ func (s *MemoryStore) TenanciesOfTenants(_ context.Context, contactIDs []uuid.UU
 	return out, nil
 }
 
-// Apply implements Store.
-func (s *MemoryStore) Apply(_ context.Context, ch Change) error {
+// Apply implements Store. A Change with a Ledger part is applied through
+// the ledger store's ApplyWith: both are kept, or neither.
+func (s *MemoryStore) Apply(ctx context.Context, ch Change) error {
+	if ch.Ledger != nil {
+		s.mu.Lock()
+		l := s.ledger
+		s.mu.Unlock()
+		if l == nil {
+			return ErrNoLedger
+		}
+		return l.ApplyWith(ctx, *ch.Ledger, func() error { return s.apply(ch) })
+	}
+	return s.apply(ch)
+}
+
+func (s *MemoryStore) apply(ch Change) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.check(ch); err != nil {
+		return err
+	}
+	if err := s.checkRent(ch); err != nil {
+		return err
+	}
+	if err := s.failNext; err != nil {
+		s.failNext = nil
 		return err
 	}
 	for _, p := range ch.Properties {
@@ -219,6 +247,7 @@ func (s *MemoryStore) Apply(_ context.Context, ch Change) error {
 	for _, t := range ch.Tenancies {
 		s.tenancies[t.ID] = cloneTenancy(t)
 	}
+	s.applyRent(ch)
 	if s.audit != nil {
 		for _, e := range ch.Audit {
 			s.audit(e)
@@ -324,6 +353,7 @@ func (s *MemoryStore) Put(ch Change) {
 	for _, t := range ch.Tenancies {
 		s.tenancies[t.ID] = cloneTenancy(t)
 	}
+	s.applyRent(ch)
 }
 
 // ForgetUser handles a deleted account's rows (the users row is
@@ -358,6 +388,18 @@ func (s *MemoryStore) ForgetUser(userID uuid.UUID, deletedName string) {
 		if is(p.CreatedBy) {
 			p.CreatedBy = nil
 			s.properties[id] = p
+		}
+	}
+	for id, d := range s.dues {
+		if is(d.WaivedBy) {
+			d.WaivedBy = nil
+			s.dues[id] = d
+		}
+	}
+	for id, r := range s.receipts {
+		if is(r.RecordedBy) {
+			r.RecordedBy = nil
+			s.receipts[id] = r
 		}
 	}
 }

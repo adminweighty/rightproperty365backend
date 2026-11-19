@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.36.0
+  version: 0.36.1
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,21 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Rent schedule, receipts and arrears (new in 0.36.1)
+    - **What it is** (BR-019, FR-047, Phase 2 part b): activating a tenancy generates its rent schedule (dues) from its
+      rent rule, through its end or 12 months rolling (the worker extends rolling schedules daily, so a month is added
+      when the month turns). A month without the due day uses its last day (due_day 31 in February: the 28th or 29th).
+      Dues are DUE, PART_PAID, PAID or WAIVED; what is paid is the sum of the allocations of receipts not reversed.
+    - **Receipts** (`POST .../tenancies/{tenancyId}/receipts`): in the rent currency, allocated oldest due first or
+      explicitly, never over-allocated. Each writes exactly one RENT_RECEIVED ledger entry (USER_RECORDED_UNVERIFIED,
+      with `tenancy_id` and the tenant contact) in the same transaction, through the ledger's own rules. **Undo** a receipt
+      by reversing its ledger entry (`POST .../ledger/entries/{ledger_entry_id}/reverse`): the receipt becomes REVERSED and
+      its allocations stop counting, in the reversal's transaction. A receipt's entry is never "corrected" (`409`).
+    - **Waive** a due (`POST .../dues/{dueId}/waive`, audited), the tenant **statement** per currency (JSON, CSV, PDF), the
+      **arrears** ageing (`GET .../arrears`; 0-30, 31-60, 61-90, 90+ days) which the ledger's receivables report includes.
+    - **Tenants** read their own dues, receipts and statement under `/v1/me/tenancies/{id}/...` (anybody else's: `404`).
+    - **Who**: as for tenancies; another book is `404 BOOK_NOT_FOUND` on every route, before any validation.
 
     Properties, units and tenancies (new in 0.36.0)
     - **What it is** (BR-019, FR-047, Phase 2 part a): an organisation's (or an approved direct owner's)
@@ -724,6 +739,10 @@ tags:
     description: |
       Tenancies (new in 0.36.0): parties from the CRM, rent and deposit, DRAFT / ACTIVE / ENDED / TERMINATED,
       and the tenant's own read-only view (`/v1/me/tenancies`).
+  - name: rent
+    description: |
+      Rent (new in 0.36.1): the schedule of dues of an activated tenancy, receipts (each with one RENT_RECEIVED ledger
+      entry), waivers, the tenant statement and the arrears ageing; the tenant's own read-only view.
   - name: venues
     description: |
       Showroom and venue hourly rental (new in 0.33.0): hourly settings, public availability
@@ -12341,7 +12360,8 @@ paths:
       description: |
         FR-027: the predecessor stays (with `reversed_by` and `corrected_by`), the reversal and the corrected entry
         (`correction_of`) are posted together. Same rights as reverse. Audited (`LEDGER_ENTRY_CORRECTED` and
-        `LEDGER_ENTRY_CREATED`).
+        `LEDGER_ENTRY_CREATED`). A rent receipt's entry is `409 LEDGER_ENTRY_IS_RENT_RECEIPT` (0.36.1): reverse it and record a
+        new receipt on the tenancy.
       security: [{ cookieSession: [] }, { bearerToken: [] }]
       requestBody:
         required: true
@@ -12533,7 +12553,10 @@ paths:
       tags: [ledger]
       operationId: ledgerReceivables
       summary: Open receivables (or payables) and arrears ageing, per currency (new in 0.34.0)
-      description: Buckets 0-30, 31-60, 61-90 and 90+ days after the due (effective) date. Until tenancies exist only RECEIVABLE / PAYABLE entries count.
+      description: |
+        Buckets 0-30, 31-60, 61-90 and 90+ days after the due (effective) date. Since 0.36.1 side RECEIVABLE without a
+        `branch` filter includes the book's **rent arrears** as of `as_of` (filtered by `currency`, and by `contact_id` as a
+        tenant): `outstanding`, `count` and the buckets add them, `rent_outstanding` is their part, `rent_items` lists them.
       security: [{ cookieSession: [] }, { bearerToken: [] }]
       responses:
         "200": { description: The ageing., content: { application/json: { schema: { $ref: "#/components/schemas/LedgerReceivables" } } } }
@@ -13104,6 +13127,160 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/TenancyNotFound" }
         "409": { $ref: "#/components/responses/TenancyConflict" }
+  /v1/agent/organisations/{id}/tenancies/{tenancyId}/dues:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - $ref: "#/components/parameters/TenancyID"
+      - { name: status, in: query, schema: { $ref: "#/components/schemas/RentDueStatus" } }
+      - { name: from, in: query, schema: { type: string, format: date }, description: Due date on or after (inclusive). }
+      - { name: to, in: query, schema: { type: string, format: date }, description: Due date on or before (inclusive). }
+    get:
+      tags: [rent]
+      operationId: rentDuesList
+      summary: The tenancy's rent schedule, oldest due first, with its summary today (new in 0.36.1)
+      description: |
+        Never paged. The filters apply to `items` only; `summary` covers every due. `schedule` is null for a DRAFT.
+        Generated on activation from the rent rule through the end (`ended_on`, else `end_date`, else rolling: the end of
+        the month 12 months ahead, extended by the worker daily). A month without the due day uses its last day.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { description: The schedule., content: { application/json: { schema: { $ref: "#/components/schemas/RentDuesPage" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/TenancyNotFound" }
+  /v1/agent/organisations/{id}/tenancies/{tenancyId}/receipts:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - $ref: "#/components/parameters/TenancyID"
+    get:
+      tags: [rent]
+      operationId: rentReceiptsList
+      summary: The tenancy's receipts, newest first, reversed ones included (new in 0.36.1)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The receipts (never paged).
+          content:
+            application/json:
+              schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: "#/components/schemas/RentReceipt" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/TenancyNotFound" }
+    post:
+      tags: [rent]
+      operationId: rentReceiptsCreate
+      summary: Record a rent receipt and its ledger entry, in one transaction (new in 0.36.1)
+      description: |
+        The currency must be the rent currency. Without `allocations` the amount goes oldest due first (WAIVED and PAID skipped);
+        with them, each line at most its due's outstanding and the lines add up to `amount`. Never over-allocated: an amount above
+        the schedule's outstanding is `400`; a concurrent change found under the row locks is `409 RENT_DUE_CHANGED`. ACTIVE, ENDED
+        and TERMINATED tenancies (a DRAFT is `409 TENANCY_INVALID_STATE`). In the same transaction the ledger posts one
+        RENT_RECEIVED entry (USER_RECORDED_UNVERIFIED) with `tenancy_id`, the tenant contact, the lease and the property's
+        listing, through its own rules (a broken ledger rule is `400` with `ledger.<field>`). Audited (`LEDGER_ENTRY_CREATED`,
+        `RENT_RECEIPT_RECORDED`). Undo it with `POST .../ledger/entries/{ledger_entry_id}/reverse`.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/RentReceiptInput" } } }
+      responses:
+        "201": { description: Recorded., content: { application/json: { schema: { $ref: "#/components/schemas/RentReceiptResult" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/TenancyNotFound" }
+        "409": { $ref: "#/components/responses/RentConflict" }
+  /v1/agent/organisations/{id}/tenancies/{tenancyId}/receipts/{receiptId}:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - $ref: "#/components/parameters/TenancyID"
+      - $ref: "#/components/parameters/RentReceiptID"
+    get:
+      tags: [rent]
+      operationId: rentReceiptsGet
+      summary: One receipt of the tenancy (new in 0.36.1)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The receipt.
+          content: { application/json: { schema: { type: object, required: [receipt], properties: { receipt: { $ref: "#/components/schemas/RentReceipt" } } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/RentNotFound" }
+  /v1/agent/organisations/{id}/tenancies/{tenancyId}/statement:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - $ref: "#/components/parameters/TenancyID"
+      - $ref: "#/components/parameters/RentStatementFrom"
+      - $ref: "#/components/parameters/RentStatementTo"
+      - $ref: "#/components/parameters/RentStatementFormat"
+    get:
+      tags: [rent]
+      operationId: rentStatement
+      summary: The tenant statement, per currency, as JSON, CSV or PDF (new in 0.36.1)
+      description: |
+        Lines CHARGE (debit), PAYMENT (credit), PAYMENT_REVERSED (debit) and WAIVER (credit) with a running balance (positive:
+        the tenant owes). `closing_balance = opening_balance + charged - paid + reversed - waived`. CSV: columns
+        `currency,row,date,type,description,reference,debit,credit,balance` (OPENING, LINE, CLOSING rows; text cells guarded
+        against formula injection). PDF: the leases' gofpdf stack. Both as attachments named
+        `statement-<first 8 of the tenancy id>-<from>-<to>.<csv|pdf>`.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The statement.
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/RentStatement" } }
+            text/csv: { schema: { type: string } }
+            application/pdf: { schema: { type: string, format: binary } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/TenancyNotFound" }
+  /v1/agent/organisations/{id}/dues/{dueId}/waive:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - $ref: "#/components/parameters/RentDueID"
+    post:
+      tags: [rent]
+      operationId: rentDuesWaive
+      summary: Waive what is outstanding on a due (new in 0.36.1)
+      description: |
+        OWNER, MANAGER and AGENT. A PAID or WAIVED due is `409 RENT_DUE_NOT_WAIVABLE` (`details.status`). Audited (`RENT_DUE_WAIVED`).
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties: { reason: { type: string, minLength: 1, maxLength: 500 } }
+      responses:
+        "200":
+          description: The due.
+          content: { application/json: { schema: { type: object, required: [due], properties: { due: { $ref: "#/components/schemas/RentDue" } } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/RentNotFound" }
+        "409": { $ref: "#/components/responses/RentConflict" }
+  /v1/agent/organisations/{id}/arrears:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - { name: as_of, in: query, schema: { type: string, format: date }, description: Defaults to today (UTC). }
+      - { name: currency, in: query, schema: { type: string, pattern: "^[A-Za-z]{3}$" } }
+      - { name: property_id, in: query, schema: { type: string, format: uuid } }
+    get:
+      tags: [rent]
+      operationId: rentArrears
+      summary: The book's rent arrears ageing, per currency, by tenancy (new in 0.36.1)
+      description: |
+        A due of a non-DRAFT tenancy dated before `as_of`, not waived by then, with something outstanding as of then (receipts
+        received by then and not reversed by then). Buckets 0-30 (1 to 30 days), 31-60, 61-90 and 90+ (91 and more), always
+        all four. Tenancies most overdue first. The ledger's receivables report includes the same arrears.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { description: The ageing., content: { application/json: { schema: { $ref: "#/components/schemas/RentArrears" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/TenancyNotFound" }
   /v1/me/tenancies:
     get:
       tags: [tenancies]
@@ -13136,8 +13313,78 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "404": { $ref: "#/components/responses/TenancyNotFound" }
 
+  /v1/me/tenancies/{id}/dues:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: status, in: query, schema: { $ref: "#/components/schemas/RentDueStatus" } }
+      - { name: from, in: query, schema: { type: string, format: date } }
+      - { name: to, in: query, schema: { type: string, format: date } }
+    get:
+      tags: [rent]
+      operationId: myRentDues
+      summary: The rent schedule of one of the caller's tenancies (tenant view, read-only; new in 0.36.1)
+      description: "Anybody else's tenancy (and a DRAFT) is `404 TENANCY_NOT_FOUND`. No rights, waiver names or reasons."
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { description: The schedule., content: { application/json: { schema: { $ref: "#/components/schemas/MyRentDuesPage" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/TenancyNotFound" }
+  /v1/me/tenancies/{id}/receipts:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [rent]
+      operationId: myRentReceipts
+      summary: The receipts of one of the caller's tenancies (tenant view, read-only; new in 0.36.1)
+      description: "Anybody else's tenancy is `404 TENANCY_NOT_FOUND`. No ledger IDs or audit names."
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The receipts, newest first.
+          content:
+            application/json:
+              schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: "#/components/schemas/MyRentReceipt" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/TenancyNotFound" }
+  /v1/me/tenancies/{id}/statement:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - $ref: "#/components/parameters/RentStatementFrom"
+      - $ref: "#/components/parameters/RentStatementTo"
+      - $ref: "#/components/parameters/RentStatementFormat"
+    get:
+      tags: [rent]
+      operationId: myRentStatement
+      summary: The statement of one of the caller's tenancies, as JSON, CSV or PDF (new in 0.36.1)
+      description: "The agent's statement, for the tenant. Anybody else's tenancy is `404 TENANCY_NOT_FOUND`."
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The statement.
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/RentStatement" } }
+            text/csv: { schema: { type: string } }
+            application/pdf: { schema: { type: string, format: binary } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/TenancyNotFound" }
+
 components:
   parameters:
+    RentDueID:
+      name: dueId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    RentReceiptID:
+      name: receiptId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    RentStatementFrom: { name: from, in: query, schema: { type: string, format: date }, description: "Default: the tenancy's start date." }
+    RentStatementTo: { name: to, in: query, schema: { type: string, format: date }, description: "Default: today (UTC); on or after from." }
+    RentStatementFormat: { name: format, in: query, schema: { type: string, enum: [json, csv, pdf], default: json } }
     PropertyID:
       name: propertyId
       in: path
@@ -13455,6 +13702,15 @@ components:
         type: string
 
   responses:
+    RentNotFound:
+      description: |
+        `BOOK_NOT_FOUND` (answered before any validation), `TENANCY_NOT_FOUND`, `RENT_DUE_NOT_FOUND` or `RENT_RECEIPT_NOT_FOUND`.
+      content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } }
+    RentConflict:
+      description: |
+        `RENT_DUE_NOT_WAIVABLE` (`details.status`), `RENT_DUE_CHANGED` (a concurrent change: nothing was written) or
+        `TENANCY_INVALID_STATE` (`details.status`: a DRAFT).
+      content: { application/json: { schema: { $ref: "#/components/schemas/RentErrorEnvelope" } } }
     TenancyNotFound:
       description: |
         `BOOK_NOT_FOUND` (not the caller's book: another organisation, a consumer, a tenant, an administrator; answered
@@ -20539,7 +20795,7 @@ components:
           required: [id, title, reference]
           properties: { id: { type: string, format: uuid }, title: { type: string }, reference: { type: string } }
         lease: { type: [object, "null"], required: [id, reference], properties: { id: { type: string, format: uuid }, reference: { type: string } } }
-        tenancy_id: { type: "null" }
+        tenancy_id: { type: [string, "null"], format: uuid, description: The tenancy of a rent receipt's RENT_RECEIVED entry (and of its reversal; new in 0.36.1). }
         reversal_of: { type: [string, "null"], format: uuid }
         reversed_by: { type: [string, "null"], format: uuid }
         correction_of: { type: [string, "null"], format: uuid }
@@ -20576,7 +20832,7 @@ components:
         contact_id: { type: [string, "null"], format: uuid }
         listing_id: { type: [string, "null"], format: uuid }
         lease_id: { type: [string, "null"], format: uuid }
-        tenancy_id: { type: "null", description: Tenancies do not exist yet. }
+        tenancy_id: { type: "null", description: "Must be null: rent is recorded with POST .../tenancies/{tenancyId}/receipts (0.36.1)." }
         branch: { type: [string, "null"], maxLength: 80 }
         notes: { type: [string, "null"], maxLength: 5000, description: A first note. }
         transfer_to:
@@ -20775,12 +21031,14 @@ components:
           type: array
           items:
             type: object
-            required: [currency, minor_unit, outstanding, count, buckets, items]
+            required: [currency, minor_unit, outstanding, count, buckets, items, rent_outstanding, rent_items]
             properties:
               currency: { type: string }
               minor_unit: { type: integer }
               outstanding: { $ref: "#/components/schemas/LedgerAmount" }
               count: { type: integer }
+              rent_outstanding: { $ref: "#/components/schemas/LedgerAmount" }
+              rent_items: { type: array, items: { $ref: "#/components/schemas/RentAgedItem" }, description: The rent arrears (new in 0.36.1), most overdue first. }
               buckets:
                 type: array
                 items:
@@ -20814,7 +21072,8 @@ components:
           type: object
           required: [code, message]
           properties:
-            code: { type: string, enum: [LEDGER_ENTRY_ALREADY_REVERSED, LEDGER_ENTRY_NOT_REVERSIBLE, LEDGER_OPENING_BALANCE_EXISTS, LEDGER_CATEGORY_EXISTS] }
+            code: { type: string, enum: [LEDGER_ENTRY_ALREADY_REVERSED, LEDGER_ENTRY_NOT_REVERSIBLE, LEDGER_OPENING_BALANCE_EXISTS, LEDGER_CATEGORY_EXISTS,
+              LEDGER_ENTRY_IS_RENT_RECEIPT] }
             message: { type: string }
             details: { type: object, additionalProperties: true }
         trace_id: { type: string }
@@ -21073,6 +21332,331 @@ components:
         start_date: { type: string, format: date }
         end_date: { type: [string, "null"], format: date }
         ended_on: { type: [string, "null"], format: date }
+    RentDueStatus:
+      type: string
+      enum: [DUE, PART_PAID, PAID, WAIVED]
+    TenancyBrief:
+      type: object
+      required: [id, status, status_label, property, unit, tenants]
+      properties:
+        id: { type: string, format: uuid }
+        status: { $ref: "#/components/schemas/TenancyStatus" }
+        status_label: { type: string }
+        property:
+          type: object
+          required: [id, name, archived]
+          properties: { id: { type: string, format: uuid }, name: { type: string }, archived: { type: boolean } }
+        unit:
+          oneOf:
+            - type: "null"
+            - type: object
+              required: [id, label, archived]
+              properties: { id: { type: string, format: uuid }, label: { type: string }, archived: { type: boolean } }
+        tenants: { type: array, items: { $ref: "#/components/schemas/TenancyContactRef" } }
+    RentDueCore:
+      type: object
+      required: [id, tenancy_id, sequence, due_date, period, amount, currency, minor_unit, paid, waived, outstanding, status, status_label,
+        overdue, days_overdue]
+      properties:
+        id: { type: string, format: uuid }
+        tenancy_id: { type: string, format: uuid }
+        sequence: { type: integer, minimum: 1, description: The due's place in the rule (1 = the first due). }
+        due_date: { type: string, format: date }
+        period:
+          type: object
+          required: [from, to]
+          properties:
+            from: { type: string, format: date }
+            to: { type: string, format: date, description: The day before the next due date, cut at the tenancy's end. }
+        amount: { $ref: "#/components/schemas/TenancyAmount" }
+        currency: { type: string, pattern: "^[A-Z]{3}$" }
+        minor_unit: { type: integer }
+        paid: { $ref: "#/components/schemas/LedgerAmount" }
+        waived: { $ref: "#/components/schemas/LedgerAmount" }
+        outstanding: { $ref: "#/components/schemas/LedgerAmount" }
+        status: { $ref: "#/components/schemas/RentDueStatus" }
+        status_label: { type: string }
+        overdue: { type: boolean, description: Dated before today (UTC) with something outstanding. }
+        days_overdue: { type: integer, description: Today minus the due date; 0 when not overdue. }
+    RentDue:
+      allOf:
+        - $ref: "#/components/schemas/RentDueCore"
+        - type: object
+          required: [waiver, can]
+          properties:
+            waiver:
+              oneOf:
+                - type: "null"
+                - type: object
+                  required: [at, by, reason]
+                  properties:
+                    at: { type: string, format: date-time }
+                    by: { $ref: "#/components/schemas/LedgerPersonRef" }
+                    reason: { type: string }
+            can: { type: object, required: [waive], properties: { waive: { type: boolean } } }
+    MyRentDue:
+      allOf:
+        - $ref: "#/components/schemas/RentDueCore"
+        - type: object
+          required: [waiver]
+          properties:
+            waiver: { oneOf: [{ type: "null" }, { type: object, required: [at], properties: { at: { type: string, format: date-time } } }] }
+    RentDueSummaryCore:
+      type: object
+      required: [currency, minor_unit, charged, paid, waived, outstanding, overdue, overdue_count, paid_in_advance]
+      description: |
+        Today: `charged` sums the dues dated today or earlier; `paid` and `waived` on those dues; `outstanding = charged - paid - waived`;
+        `overdue` / `overdue_count` the dues dated before today; `paid_in_advance` what is paid on later dues.
+      properties:
+        currency: { type: string }
+        minor_unit: { type: integer }
+        charged: { $ref: "#/components/schemas/LedgerAmount" }
+        paid: { $ref: "#/components/schemas/LedgerAmount" }
+        waived: { $ref: "#/components/schemas/LedgerAmount" }
+        outstanding: { $ref: "#/components/schemas/LedgerAmount" }
+        overdue: { $ref: "#/components/schemas/LedgerAmount" }
+        overdue_count: { type: integer }
+        paid_in_advance: { $ref: "#/components/schemas/LedgerAmount" }
+    RentSchedule:
+      oneOf:
+        - type: "null"
+        - type: object
+          required: [rolling, through, count, rule]
+          properties:
+            rolling: { type: boolean }
+            through: { type: string, format: date }
+            count: { type: integer }
+            rule: { type: string, examples: ["Monthly on day 31 (the last day in shorter months)", "Weekly on Monday"] }
+    RentDuesPage:
+      type: object
+      required: [items, summary, schedule]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/RentDue" } }
+        summary:
+          allOf:
+            - $ref: "#/components/schemas/RentDueSummaryCore"
+            - type: object
+              required: [next_due]
+              properties: { next_due: { oneOf: [{ type: "null" }, { $ref: "#/components/schemas/RentDue" }] } }
+        schedule: { $ref: "#/components/schemas/RentSchedule" }
+    MyRentDuesPage:
+      type: object
+      required: [items, summary, schedule]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/MyRentDue" } }
+        summary:
+          allOf:
+            - $ref: "#/components/schemas/RentDueSummaryCore"
+            - type: object
+              required: [next_due]
+              properties: { next_due: { oneOf: [{ type: "null" }, { $ref: "#/components/schemas/MyRentDue" }] } }
+        schedule: { $ref: "#/components/schemas/RentSchedule" }
+    RentAllocation:
+      type: object
+      required: [due_id, due_date, amount, currency, minor_unit]
+      properties:
+        due_id: { type: string, format: uuid }
+        due_date: { type: string, format: date }
+        amount: { $ref: "#/components/schemas/TenancyAmount" }
+        currency: { type: string }
+        minor_unit: { type: integer }
+    RentReceiptInput:
+      type: object
+      additionalProperties: false
+      required: [amount, currency, method, received_on]
+      properties:
+        amount: { $ref: "#/components/schemas/TenancyAmount" }
+        currency: { type: string, description: Must be the rent currency. }
+        method: { type: string, enum: [CASH, BANK, MOBILE_MONEY, OTHER] }
+        received_on: { type: string, format: date, description: Not before the start date, not after today. }
+        reference: { type: [string, "null"], maxLength: 120 }
+        tenant_contact_id: { type: [string, "null"], format: uuid, description: "One of the tenants (default: the first live one)." }
+        allocations:
+          type: [array, "null"]
+          maxItems: 100
+          description: Absent, null or empty is oldest due first.
+          items:
+            type: object
+            additionalProperties: false
+            required: [due_id, amount]
+            properties:
+              due_id: { type: string, format: uuid }
+              amount: { $ref: "#/components/schemas/TenancyAmount" }
+    RentReceipt:
+      type: object
+      required: [id, tenancy_id, amount, currency, minor_unit, method, method_label, received_on, reference, tenant, status, status_label,
+        allocations, ledger_entry_id, ledger_status, ledger_status_label, reversal, recorded_by, recorded_at, can]
+      properties:
+        id: { type: string, format: uuid }
+        tenancy_id: { type: string, format: uuid }
+        amount: { $ref: "#/components/schemas/TenancyAmount" }
+        currency: { type: string }
+        minor_unit: { type: integer }
+        method: { type: string, enum: [CASH, BANK, MOBILE_MONEY, OTHER] }
+        method_label: { type: string }
+        received_on: { type: string, format: date }
+        reference: { type: string }
+        tenant: { oneOf: [{ type: "null" }, { $ref: "#/components/schemas/TenancyContactRef" }] }
+        status: { type: string, enum: [RECORDED, REVERSED] }
+        status_label: { type: string }
+        allocations: { type: array, items: { $ref: "#/components/schemas/RentAllocation" }, description: Kept after a reversal (no longer counted). }
+        ledger_entry_id: { type: string, format: uuid }
+        ledger_status: { type: string, enum: [USER_RECORDED_UNVERIFIED, RECONCILED, GATEWAY_CONFIRMED] }
+        ledger_status_label: { type: string }
+        reversal:
+          oneOf:
+            - type: "null"
+            - type: object
+              required: [ledger_entry_id, reversed_on, at]
+              properties:
+                ledger_entry_id: { type: string, format: uuid }
+                reversed_on: { type: string, format: date }
+                at: { type: string, format: date-time }
+        recorded_by: { $ref: "#/components/schemas/LedgerPersonRef" }
+        recorded_at: { type: string, format: date-time }
+        can: { type: object, required: [reverse], properties: { reverse: { type: boolean, description: The ledger's reversal rule for the entry. } } }
+    MyRentReceipt:
+      type: object
+      required: [id, amount, currency, minor_unit, method, method_label, received_on, reference, status, status_label, allocations, reversed_on]
+      properties:
+        id: { type: string, format: uuid }
+        amount: { $ref: "#/components/schemas/TenancyAmount" }
+        currency: { type: string }
+        minor_unit: { type: integer }
+        method: { type: string, enum: [CASH, BANK, MOBILE_MONEY, OTHER] }
+        method_label: { type: string }
+        received_on: { type: string, format: date }
+        reference: { type: string }
+        status: { type: string, enum: [RECORDED, REVERSED] }
+        status_label: { type: string }
+        allocations: { type: array, items: { $ref: "#/components/schemas/RentAllocation" } }
+        reversed_on: { type: [string, "null"], format: date }
+    RentReceiptResult:
+      type: object
+      required: [receipt, dues]
+      properties:
+        receipt: { $ref: "#/components/schemas/RentReceipt" }
+        dues: { type: array, items: { $ref: "#/components/schemas/RentDue" }, description: The dues it was allocated to, oldest first. }
+    RentStatement:
+      type: object
+      required: [tenancy, from, to, generated_at, currencies]
+      properties:
+        tenancy:
+          type: object
+          required: [id, status, status_label, managed_by, property, unit, tenants]
+          properties:
+            id: { type: string, format: uuid }
+            status: { $ref: "#/components/schemas/TenancyStatus" }
+            status_label: { type: string }
+            managed_by:
+              type: object
+              required: [kind, name]
+              properties: { kind: { type: string, enum: [ORGANISATION, DIRECT_OWNER] }, name: { type: string } }
+            property: { type: object, required: [name, address], properties: { name: { type: string }, address: { type: string } } }
+            unit: { oneOf: [{ type: "null" }, { type: object, required: [label], properties: { label: { type: string } } }] }
+            tenants: { type: array, items: { type: object, required: [name], properties: { name: { type: string } } } }
+        from: { type: string, format: date }
+        to: { type: string, format: date }
+        generated_at: { type: string, format: date-time }
+        currencies:
+          type: array
+          items:
+            type: object
+            required: [currency, minor_unit, opening_balance, charged, paid, reversed, waived, closing_balance, overdue, lines]
+            properties:
+              currency: { type: string }
+              minor_unit: { type: integer }
+              opening_balance: { $ref: "#/components/schemas/LedgerAmount" }
+              charged: { $ref: "#/components/schemas/LedgerAmount" }
+              paid: { $ref: "#/components/schemas/LedgerAmount" }
+              reversed: { $ref: "#/components/schemas/LedgerAmount" }
+              waived: { $ref: "#/components/schemas/LedgerAmount" }
+              closing_balance: { $ref: "#/components/schemas/LedgerAmount" }
+              overdue: { $ref: "#/components/schemas/LedgerAmount" }
+              lines:
+                type: array
+                items:
+                  type: object
+                  required: [date, type, description, reference, currency, debit, credit, balance, due_id, receipt_id]
+                  properties:
+                    date: { type: string, format: date }
+                    type: { type: string, enum: [CHARGE, PAYMENT, PAYMENT_REVERSED, WAIVER] }
+                    description: { type: string }
+                    reference: { type: string }
+                    currency: { type: string }
+                    debit: { $ref: "#/components/schemas/LedgerAmount" }
+                    credit: { $ref: "#/components/schemas/LedgerAmount" }
+                    balance: { $ref: "#/components/schemas/LedgerAmount" }
+                    due_id: { type: [string, "null"], format: uuid }
+                    receipt_id: { type: [string, "null"], format: uuid }
+    RentBucket:
+      type: object
+      required: [bucket, currency, minor_unit, outstanding, count]
+      properties:
+        bucket: { type: string, enum: ["0-30", "31-60", "61-90", "90+"] }
+        currency: { type: string }
+        minor_unit: { type: integer }
+        outstanding: { $ref: "#/components/schemas/LedgerAmount" }
+        count: { type: integer }
+    RentArrears:
+      type: object
+      required: [as_of, currencies]
+      properties:
+        as_of: { type: string, format: date }
+        currencies:
+          type: array
+          items:
+            type: object
+            required: [currency, minor_unit, outstanding, count, buckets, tenancies]
+            properties:
+              currency: { type: string }
+              minor_unit: { type: integer }
+              outstanding: { $ref: "#/components/schemas/LedgerAmount" }
+              count: { type: integer }
+              buckets: { type: array, minItems: 4, maxItems: 4, items: { $ref: "#/components/schemas/RentBucket" } }
+              tenancies:
+                type: array
+                items:
+                  type: object
+                  required: [tenancy, currency, minor_unit, outstanding, count, oldest_due_date, days_overdue, buckets]
+                  properties:
+                    tenancy: { $ref: "#/components/schemas/TenancyBrief" }
+                    currency: { type: string }
+                    minor_unit: { type: integer }
+                    outstanding: { $ref: "#/components/schemas/LedgerAmount" }
+                    count: { type: integer }
+                    oldest_due_date: { type: string, format: date }
+                    days_overdue: { type: integer }
+                    buckets: { type: array, minItems: 4, maxItems: 4, items: { $ref: "#/components/schemas/RentBucket" } }
+    RentAgedItem:
+      type: object
+      required: [tenancy, due_id, due_date, currency, minor_unit, amount, settled, outstanding, days_overdue, bucket]
+      properties:
+        tenancy: { $ref: "#/components/schemas/TenancyBrief" }
+        due_id: { type: string, format: uuid }
+        due_date: { type: string, format: date }
+        currency: { type: string }
+        minor_unit: { type: integer }
+        amount: { $ref: "#/components/schemas/LedgerAmount" }
+        settled: { $ref: "#/components/schemas/LedgerAmount" }
+        outstanding: { $ref: "#/components/schemas/LedgerAmount" }
+        days_overdue: { type: integer }
+        bucket: { type: string, enum: ["0-30", "31-60", "61-90", "90+"] }
+    RentErrorEnvelope:
+      type: object
+      required: [error, trace_id]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, enum: [RENT_DUE_NOT_WAIVABLE, RENT_DUE_CHANGED, TENANCY_INVALID_STATE] }
+            message: { type: string }
+            details:
+              type: object
+              additionalProperties: true
+              description: "`RENT_DUE_NOT_WAIVABLE` and `TENANCY_INVALID_STATE`: `status`."
+        trace_id: { type: string }
     TenancyErrorEnvelope:
       type: object
       required: [error, trace_id]

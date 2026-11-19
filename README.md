@@ -267,6 +267,8 @@ All configuration comes from environment variables. For local development you ma
 | GET, POST, PATCH | `/v1/agent/organisations/{id}/ledger/*` (`/options`, `/entries[/{entryId}]` + `/reverse`, `/correct`, `/reconcile`, `/notes`, `/attachments`; `/reports/*`, `/categories`) | The agent ledger / books, per currency (API 0.34.0) |
 | GET, POST, PATCH, DELETE | `/v1/agent/organisations/{id}/properties[/{propertyId}]` (+ `/units[/{unitId}]`) | Properties and their units (API 0.36.0) |
 | GET, POST, PATCH, DELETE | `/v1/agent/organisations/{id}/tenancies[/{tenancyId}]` (+ `/options`, `/activate`, `/end`) | Tenancies (API 0.36.0) |
+| GET, POST | `/v1/agent/organisations/{id}/tenancies/{tenancyId}/dues`, `/receipts[/{receiptId}]`, `/statement`; `/dues/{dueId}/waive`; `/arrears` | Rent schedule, receipts, statement and arrears (API 0.36.1) |
+| GET | `/v1/me/tenancies/{id}/dues`, `/receipts`, `/statement` | The tenant's own rent (API 0.36.1) |
 | GET | `/v1/me/tenancies`, `/v1/me/tenancies/{id}` | A tenant's own tenancies, read-only (matched by verified email) |
 | GET | `/v1/trust/summary` | How many advertisers are verified and how many listings are public (public, cacheable) |
 | POST | `/v1/property-requests` | The single entry point for every customer enquiry (guest or signed-in) |
@@ -470,6 +472,25 @@ change; follow-up dates and reminders; editing or deleting a note; listing analy
 funnels and response-time KPIs (no event data exists); seeker favourites, saved searches and
 alerts.
 
+## Rent schedule, receipts and arrears (API 0.36.1)
+
+Migration `0036_rent_schedule`, module `internal/modules/tenancies` (files `schedule.go`, `rent*.go`, `postgres_rent.go`, `memory_rent.go`; BR-019, FR-047; Phase 2 part b), with the ledger's `rent.go`. Routes under `/v1/agent/organisations/{id}`: `/tenancies/{tenancyId}/dues`, `/tenancies/{tenancyId}/receipts[/{receiptId}]`, `/tenancies/{tenancyId}/statement`, `/dues/{dueId}/waive`, `/arrears`; the tenant's `/v1/me/tenancies/{id}/dues|receipts|statement` (OpenAPI tag `rent`). The exact JSON is the 0.36 contract's "Response shapes (b)".
+
+- **The schedule rule** (`schedule.go`, table-tested). Activating a tenancy generates its dues in the same transaction: from `start_date`, the first due day on or after it, every week (ISO weekday) or every 1 / 3 / 12 months on `due_day`; **a month without that day uses its last day** (31 → 28 or 29 February, 30 April), computed from the first due so it never drifts. Through `ended_on`, else the agreed `end_date`, else **rolling: the end of the month 12 months ahead** (an end more than 10 years away counts as rolling). No pro-rating: each due is the full rent. One due per tenancy and date (`rent_dues_tenancy_date_key`), so re-running is idempotent. Ending a tenancy or changing an ACTIVE one's `end_date` re-runs the rule: dues after the end with no allocation and no waiver are removed.
+- **The worker** (`app.RunRentScheduleSweeps`, daily and at start) re-runs the rule of every ACTIVE tenancy: a rolling schedule gains the next month's due when the month turns, and tenancies activated under 0.36.0 get their schedules.
+- **Dues** are DUE, PART_PAID, PAID or WAIVED. What is paid is **never stored on a due**: it is the sum of the allocations of receipts that are not reversed, so a reversal can never leave a stale figure. Figures "as of" a date (arrears, statements) count receipts received by then and not reversed by then.
+- **Receipts** (`POST .../receipts`): the rent currency only; allocated oldest due first or by explicit lines; never above a due's outstanding or the schedule's (checked again under row locks: `409 RENT_DUE_CHANGED`). **One transaction** writes the receipt, its allocations and **one RENT_RECEIVED ledger entry** (USER_RECORDED_UNVERIFIED, `tenancy_id`, tenant contact, lease, listing): `ledger.Service.PrepareRentReceipt` validates the entry with the ledger's own rules and returns its `ledger.Change`, which the tenancies store applies inside its transaction (`ledger.ApplyTx`; in memory `ledger.MemoryStore.ApplyWith`). Audited (`LEDGER_ENTRY_CREATED`, `RENT_RECEIPT_RECORDED`).
+- **Undo = ledger reversal.** Reversing the entry (`POST .../ledger/entries/{id}/reverse`, the ledger's rules and rights) runs the ledger stores' **reversal hook** (`tenancies.ConnectLedger`, wired in `app.NewRouter`): in the reversal's transaction the receipt gets `reversed_at`, `reversal_entry_id` and `reversed_on`, and its allocations stop counting. Correcting a receipt's entry is `409 LEDGER_ENTRY_IS_RENT_RECEIPT`; a manual entry still cannot carry `tenancy_id`.
+- **Waive** (`POST .../dues/{dueId}/waive {reason}`): forgives what is outstanding; PAID or WAIVED is `409 RENT_DUE_NOT_WAIVABLE`. Audited (`RENT_DUE_WAIVED`).
+- **Statement** (`?from&to&format=json|csv|pdf`): CHARGE / PAYMENT / PAYMENT_REVERSED / WAIVER lines with a running balance, per currency; CSV cells guarded against formula injection; the PDF uses the leases' gofpdf stack and Go fonts.
+- **Arrears** (`GET .../arrears?as_of&currency&property_id`): per currency, by tenancy, buckets 0-30 (1-30 days), 31-60, 61-90, 90+. The **ledger's receivables report includes them** (`ledger.Service.SetRentArrears`): `outstanding`, `count` and buckets add them, plus `rent_outstanding` and `rent_items` (side RECEIVABLE, no branch filter).
+- **Tenant view**: their own dues, receipts and statement; no ledger IDs, contact IDs, audit names, waiver reasons or `can`; anybody else's `404 TENANCY_NOT_FOUND`.
+- **Rights and 404s** as part a: every agent route answers `404 BOOK_NOT_FOUND` to anybody outside the book, before any validation (tested on every endpoint); STAFF read; OWNER, MANAGER, AGENT record and waive.
+- **Account deletion.** `ForgetUserTx` also unlinks the person as who recorded a receipt (`recorded_by`) or waived a due (`waived_by`); the names stay, as the ledger's author names do.
+- **Sample data.** Flat 1's first two dues are PAID; Borrowdale Cottage's due day is now the day of the month 45 days ago (`devseed.CottageDueDay`), so its four past dues are PAID, PAID, DUE (exactly 45 days overdue) and PART_PAID (300.00 of 700.00). Five RENT_RECEIVED ledger entries (IDs `…b74x`, receipts `…b73x`) are posted once; a Postgres re-seed replaces the seeded tenancies' dues, receipts and allocations and keeps the entries.
+
+**Not verified / follow-ups:** migration `0036` and `postgres_rent.go` have only run where `RP365_TEST_DATABASE_URL` is set (`TestPostgresRentStoreContract`, `TestPostgresRentGuards`). The worker sweeps every ACTIVE tenancy once a day (fine at today's scale; batch it if books grow large).
+
 ## Properties, units and tenancies (API 0.36.0)
 
 Migration `0035_properties_tenancies`, module `internal/modules/tenancies` (BR-019, FR-047; Phase 2 part a). Routes: `/v1/agent/organisations/{id}/properties` (+ `/{propertyId}`, `/{propertyId}/units[/{unitId}]`), `/v1/agent/organisations/{id}/tenancies` (+ `/options`, `/{tenancyId}`, `/activate`, `/end`) and `/v1/me/tenancies[/{id}]` (OpenAPI tags `properties`, `tenancies`). The exact JSON is the 0.36 contract's "Response shapes (a)".
@@ -482,14 +503,14 @@ Migration `0035_properties_tenancies`, module `internal/modules/tenancies` (BR-0
   - An ACTIVE tenancy may change its parties, lease, deposit, end date and notes; an ended one only its notes.
   - Create, activate, end and delete are `organisation_audit_events` rows (`TENANCY_*`, target `TENANCY`) in the same transaction; a direct owner's book logs them (`audit=true`).
 - **Tenant view.** `GET /v1/me/tenancies[/{id}]`: the tenancies (never a DRAFT) where one of the **tenant** contacts is a live contact of the tenancy's own book with the caller's **verified** account email (`crm.Store.WithEmail`). Names, property, unit, rent, deposit, dates and the lease reference only: no notes, contact IDs, emails, phones or audit names. Anybody else's is `404 TENANCY_NOT_FOUND`.
-- **Ready for parts b to e.** `ledger_entries.tenancy_id` now references `tenancies` (its CHECK still keeps it NULL until part b); units have stable IDs for maintenance and inspections.
+- **Ready for parts b to e.** `ledger_entries.tenancy_id` references `tenancies` (part b lifted the CHECK that kept it NULL: rent receipts set it); units have stable IDs for maintenance and inspections.
 - **Account deletion.** The users row is anonymised, so nothing cascades. `tenancies.ForgetUserTx` (and `MemoryStore.ForgetUser`) deletes the person's personal-book DRAFT tenancies, replaces the manager name their tenants see, and unlinks them as creator, activator and ender. The personal book's other records are kept (rent records), as the ledger's are.
 - **Sample data** (IDs `…b7xx`): Sample Estates has Avondale Court (Flat 1-3, linked to listing 2) and Borrowdale Cottage (no units).
   - ACTIVE Flat 1: Kudzai Sithole, whose CRM contact now also has `tenant@example.test`, so the sample tenant sees it; landlord Tapiwa Chirwa; USD 950.00 monthly; the sample draft lease.
   - ACTIVE Borrowdale Cottage: Tariro Moyo, USD 700.00, periodic. ENDED Flat 2: Tariro Moyo's earlier tenancy.
   - Second Street Realty has Second Street House (the isolation tests). In Postgres the samples are upserted by ID on every seed.
 
-**Not verified / follow-ups:** migration `0035` and `tenancies/postgres.go` have only run where `RP365_TEST_DATABASE_URL` is set. Rent schedules, receipts, arrears, maintenance, inspections and reviews are parts b to e.
+**Not verified / follow-ups:** migration `0035` and `tenancies/postgres.go` have only run where `RP365_TEST_DATABASE_URL` is set. Rent schedules, receipts and arrears are part b (API 0.36.1, above); maintenance, inspections and reviews are parts c to e.
 
 ## Notifications and push (API 0.35.0)
 
@@ -610,8 +631,8 @@ post), `/entries/{entryId}` (+ `/reverse`, `/correct`, `/reconcile`, `/notes`, `
   ways through `transfer_pair`), and the memo types RECEIVABLE / PAYABLE (no method; never in a
   cashbook balance) that cash entries settle (`settles`, same currency, at most the outstanding,
   checked again under a row lock). Methods CASH, BANK, MOBILE_MONEY, OTHER. Links to a contact
-  (CRM), listing or lease must be the same book's (`400`); `tenancy_id` must be null (tenancies do
-  not exist yet).
+  (CRM), listing or lease must be the same book's (`400`); `tenancy_id` must be null (since 0.36.1
+  only a rent receipt sets it).
 - **No false verification** (FR-028, BR-012). Manual entries are `USER_RECORDED_UNVERIFIED`
   ("Recorded by you, not verified"). `RECONCILED` ("Marked reconciled by your team") is the
   organisation's own mark against its own statement, set and cleared by OWNER / MANAGER.
@@ -3418,6 +3439,7 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0036_rent_schedule` (API 0.36.1): `rent_dues` (one per tenancy and due date, `numeric(20,4)` + ISO 4217, a waiver with its reason; unique `(id, tenancy_id)`), `rent_receipts` (method, received date, reference, the tenant contact DEFERRABLE INITIALLY DEFERRED, exactly one `ledger_entry_id` (unique), the reversal: `reversed_at` / `reversal_entry_id` / `reversed_on` all set or all NULL) and `rent_allocations` (receipt and due tied to the same tenancy by composite foreign keys). `ledger_entries`: the CHECK that kept `tenancy_id` NULL is replaced by `ledger_entries_tenancy_type_check` (RENT_RECEIVED and REVERSAL only) plus an index; the organisation audit check gains `RENT_RECEIPT_RECORDED` and `RENT_DUE_WAIVED`. New tables and a wider check; the down migration restores the old CHECK `NOT VALID` (posted entries are never deleted).
 - `0035_properties_tenancies` (API 0.36.0): `properties` (organisation_id XOR book_user_id, archived by `deleted_at`, optional `listing_id` ON DELETE SET NULL), `property_units` (live label unique per property, case-insensitive; unique `(id, property_id)`), `tenancies` (rent `numeric(20,4)` + ISO 4217, frequency, due day, deposit in the rent currency, dates, DRAFT / ACTIVE / ENDED / TERMINATED with state CHECKs, one ACTIVE per unit or whole property by a partial unique index, the unit tied to its property by a composite foreign key, `lease_id` ON DELETE SET NULL) and `tenancy_parties` (TENANT / LANDLORD contacts; the contact key DEFERRABLE INITIALLY DEFERRED for the development re-seed). `ledger_entries.tenancy_id` gains its foreign key; the organisation audit checks gain the `TENANCY_*` actions and the `TENANCY` target. New tables, a key on an always-NULL column and wider checks.
 - `0034_notifications_push` (API 0.35.0): `user_devices` (unique `token`, `session_id` of the
   registering session), `notifications` (unique `(source_event_id, user_id)`: one per event and

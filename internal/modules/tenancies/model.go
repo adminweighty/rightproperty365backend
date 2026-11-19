@@ -35,6 +35,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"rightproperty365.com/backend/internal/modules/ledger"
 	"rightproperty365.com/backend/internal/platform/orgaudit"
 )
 
@@ -310,21 +311,31 @@ type TenancyFilter struct {
 
 // Change is one atomic write. Stores apply it in this order: lock the
 // tenancies of ExpectStatus and fail with ErrConflict when one is missing
-// or has another status; lock the properties of PropertyFree and fail with
+// or has another status; apply Ledger (the ledger's own Change: a rent
+// receipt's entry) in the same transaction; lock the properties of PropertyFree and fail with
 // ErrPropertyInUse when one has an open tenancy, and the same for UnitFree
 // (ErrUnitInUse); upsert Properties (by ID; the units are not touched);
 // upsert Units (a live label taken in the property: ErrUnitLabelTaken);
 // delete DeleteTenancies; upsert Tenancies with their parties (a second
 // ACTIVE tenancy of a unit: ErrUnitOccupied; a property that is archived:
-// ErrPropertyNotFound); insert Audit.
+// ErrPropertyNotFound); insert Dues (a due date the tenancy already has is
+// skipped); delete DeleteDues (one with an allocation or a waiver is
+// skipped); apply Waive (a due already waived or with nothing outstanding:
+// ErrDueChanged); insert Receipts with their allocations (a line above its
+// due's outstanding amount, or on a waived due: ErrDueChanged); insert Audit.
 type Change struct {
 	ExpectStatus    map[uuid.UUID]string
+	Ledger          *ledger.Change
 	PropertyFree    []uuid.UUID
 	UnitFree        []uuid.UUID
 	Properties      []Property
 	Units           []Unit
 	DeleteTenancies []uuid.UUID
 	Tenancies       []Tenancy
+	Dues            []Due
+	DeleteDues      []uuid.UUID
+	Waive           *Waiver
+	Receipts        []Receipt
 	Audit           []orgaudit.Event
 }
 
@@ -346,6 +357,16 @@ type Store interface {
 	// TenanciesOfTenants returns the tenancies that are not DRAFT and have
 	// one of the contacts as a tenant.
 	TenanciesOfTenants(ctx context.Context, contactIDs []uuid.UUID) ([]Tenancy, error)
+	// ActiveTenancies returns every ACTIVE tenancy (the schedule worker).
+	ActiveTenancies(ctx context.Context) ([]Tenancy, error)
+	// Dues returns the dues of the tenancies with their allocations, by
+	// tenancy and due date.
+	Dues(ctx context.Context, tenancyIDs []uuid.UUID) ([]Due, error)
+	// Due returns one due with its allocations, or ErrDueNotFound.
+	Due(ctx context.Context, id uuid.UUID) (Due, error)
+	// Receipts returns a tenancy's receipts with their allocations, the
+	// newest received first.
+	Receipts(ctx context.Context, tenancyID uuid.UUID) ([]Receipt, error)
 	// Apply writes a Change atomically.
 	Apply(ctx context.Context, ch Change) error
 }

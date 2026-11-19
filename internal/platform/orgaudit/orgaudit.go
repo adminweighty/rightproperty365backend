@@ -74,6 +74,9 @@ const (
 	ActionTenancyActivated = "TENANCY_ACTIVATED"
 	ActionTenancyEnded     = "TENANCY_ENDED"
 	ActionTenancyDeleted   = "TENANCY_DELETED"
+	// Rent (API 0.36.1, FR-047): a receipt recorded and a due waived.
+	ActionRentReceiptRecorded = "RENT_RECEIPT_RECORDED"
+	ActionRentDueWaived       = "RENT_DUE_WAIVED"
 )
 
 var actionLabels = map[string]string{
@@ -114,6 +117,8 @@ var actionLabels = map[string]string{
 	ActionTenancyActivated:           "Tenancy activated",
 	ActionTenancyEnded:               "Tenancy ended",
 	ActionTenancyDeleted:             "Draft tenancy deleted",
+	ActionRentReceiptRecorded:        "Rent receipt recorded",
+	ActionRentDueWaived:              "Rent due waived",
 }
 
 // Actions returns every action, in a stable order.

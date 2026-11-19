@@ -30,8 +30,9 @@ const (
 	DefaultPageSize, MaxPageSize = 25, 100
 )
 
-// Handler serves /v1/agent/organisations/{id}/properties and .../tenancies
-// (the book is the route's {id}) and /v1/me/tenancies.
+// Handler serves /v1/agent/organisations/{id}/properties, .../tenancies
+// (with their dues, receipts and statement), .../dues and .../arrears (the
+// book is the route's {id}), and /v1/me/tenancies.
 type Handler struct {
 	svc    *Service
 	logger *slog.Logger
@@ -61,6 +62,9 @@ func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 	var verr *ValidationError
 	var occupied *OccupiedError
 	var state *StateError
+	if h.failRent(w, r, err) {
+		return
+	}
 	switch {
 	case errors.As(err, &verr):
 		httpx.WriteError(w, r, http.StatusBadRequest, httpx.CodeValidationFailed, "Some fields need your attention.", verr.Fields)
@@ -145,6 +149,10 @@ func (h *Handler) begin(w http.ResponseWriter, r *http.Request, names ...string)
 				h.fail(w, r, ErrPropertyNotFound)
 			case "unitId":
 				h.fail(w, r, ErrUnitNotFound)
+			case "dueId":
+				h.fail(w, r, ErrDueNotFound)
+			case "receiptId":
+				h.fail(w, r, ErrReceiptNotFound)
 			default:
 				h.fail(w, r, ErrTenancyNotFound)
 			}
@@ -487,6 +495,7 @@ func (h *Handler) TenancyRoutes(r chi.Router, limit func(http.Handler) http.Hand
 	r.With(limit).Delete("/{tenancyId}", h.DeleteTenancy)
 	r.With(limit).Post("/{tenancyId}/activate", h.Activate)
 	r.With(limit).Post("/{tenancyId}/end", h.End)
+	h.rentRoutes(r, limit)
 }
 
 // ---------------------------------------------------------------------------

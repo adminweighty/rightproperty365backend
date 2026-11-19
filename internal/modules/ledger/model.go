@@ -209,6 +209,9 @@ var (
 	ErrUnsupportedFile      = errors.New("unsupported file type")
 	ErrFileTooLarge         = errors.New("file too large")
 	ErrImmutable            = errors.New("posted ledger entries are immutable")
+	// ErrRentReceipt refuses a correction of a rent receipt's entry: reverse
+	// it and record a new receipt on the tenancy.
+	ErrRentReceipt = errors.New("ledger entry is a rent receipt")
 )
 
 // Book is whose books: an organisation's, or a direct owner's personal
@@ -277,9 +280,12 @@ type Entry struct {
 	ContactID      *uuid.UUID
 	ListingID      *uuid.UUID
 	LeaseID        *uuid.UUID
-	Branch         string // "" when none
-	Description    string
-	Reference      string
+	// TenancyID is set on the RENT_RECEIVED entry of a rent receipt (and
+	// its reversal) only: the tenancies module posts those (API 0.36.1).
+	TenancyID   *uuid.UUID
+	Branch      string // "" when none
+	Description string
+	Reference   string
 
 	// Read-only, computed by the stores.
 	NoteCount       int
@@ -402,6 +408,33 @@ type Change struct {
 	Notes       []Note
 	Attachments []Attachment
 	Audit       []orgaudit.Event
+}
+
+// Reversal is one entry reversed by a Change: the entry, its REVERSAL entry
+// and the reversal's effective date and time.
+type Reversal struct {
+	EntryID       uuid.UUID
+	ReversalID    uuid.UUID
+	EffectiveDate string
+	At            time.Time
+}
+
+// reversals lists the entries a Change reverses (its Links with ReversedBy).
+func (ch Change) reversals() []Reversal {
+	var out []Reversal
+	for _, l := range ch.Links {
+		if l.ReversedBy == nil {
+			continue
+		}
+		r := Reversal{EntryID: l.EntryID, ReversalID: *l.ReversedBy}
+		for _, e := range ch.Reversals {
+			if e.ID == *l.ReversedBy {
+				r.EffectiveDate, r.At = e.EffectiveDate, e.RecordedAt
+			}
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // Store persists books.

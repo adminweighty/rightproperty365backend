@@ -36,8 +36,11 @@ type Deps struct {
 	Links Links
 	// Currencies returns the ISO 4217 codes a book may use (reference data).
 	Currencies func(ctx context.Context) ([]string, error)
-	Logger     *slog.Logger
-	Now        func() time.Time
+	// RentArrears returns the overdue rent dues of a book as of a date (the
+	// tenancies module): the receivables report includes them. nil: none.
+	RentArrears func(ctx context.Context, book Book, asOf string) ([]RentArrear, error)
+	Logger      *slog.Logger
+	Now         func() time.Time
 }
 
 // Service is the agent ledger.
@@ -46,13 +49,14 @@ type Service struct {
 	files      storage.Storage
 	links      Links
 	currencies func(ctx context.Context) ([]string, error)
+	arrears    func(ctx context.Context, book Book, asOf string) ([]RentArrear, error)
 	logger     *slog.Logger
 	now        func() time.Time
 }
 
 // NewService builds the service.
 func NewService(d Deps) *Service {
-	s := &Service{store: d.Store, files: d.Files, links: d.Links, currencies: d.Currencies, logger: d.Logger, now: d.Now}
+	s := &Service{store: d.Store, files: d.Files, links: d.Links, currencies: d.Currencies, arrears: d.RentArrears, logger: d.Logger, now: d.Now}
 	if s.now == nil {
 		s.now = time.Now
 	}
@@ -115,7 +119,7 @@ func (a access) mayAnnotate(e Entry) bool { return a.manage || (a.write && a.min
 func (a access) can(e Entry) Can {
 	reversible := e.Type != TypeReversal && e.ReversedBy == nil
 	return Can{
-		Reverse: reversible && a.mayCorrect(e), Correct: reversible && a.mayCorrect(e), Reconcile: a.manage,
+		Reverse: reversible && a.mayCorrect(e), Correct: reversible && a.mayCorrect(e) && e.TenancyID == nil, Reconcile: a.manage,
 		Note: a.mayAnnotate(e), Attach: a.mayAnnotate(e),
 	}
 }
@@ -164,6 +168,9 @@ func entryAudit(e Entry) map[string]any {
 	}
 	if e.Branch != "" {
 		m["branch"] = e.Branch
+	}
+	if e.TenancyID != nil {
+		m["tenancy_id"] = e.TenancyID.String()
 	}
 	return m
 }
@@ -269,7 +276,7 @@ func (v *viewer) view(ctx context.Context, e Entry) (EntryView, error) {
 		EffectiveDate: e.EffectiveDate, RecordedAt: e.RecordedAt, Author: PersonRef{UserID: e.AuthorUserID, Name: e.AuthorName},
 		Status: e.Status, StatusLabel: StatusLabel(e.Status), Description: e.Description, Reference: e.Reference,
 		Branch: strPtr(e.Branch), ReversalOf: e.ReversalOf, ReversedBy: e.ReversedBy, CorrectionOf: e.CorrectionOf,
-		CorrectedBy: e.CorrectedBy, TransferPair: e.TransferPair, Settles: e.Settles, Reason: strPtr(e.Reason),
+		CorrectedBy: e.CorrectedBy, TransferPair: e.TransferPair, Settles: e.Settles, Reason: strPtr(e.Reason), TenancyID: e.TenancyID,
 		IsReversed: e.ReversedBy != nil, Cash: e.Cash(), NoteCount: e.NoteCount, AttachmentCount: e.AttachmentCount, Can: v.a.can(e),
 	}
 	if e.Category != "" {
@@ -883,7 +890,7 @@ func (s *Service) build(ctx context.Context, a access, in EntryInput, f map[stri
 	}
 	// Links: the same book only.
 	if in.TenancyID != nil {
-		f["tenancy_id"] = "must be null: tenancies are not available yet"
+		f["tenancy_id"] = "is set by POST .../tenancies/{id}/receipts: record rent there"
 	}
 	if in.ContactID != nil && s.links != nil {
 		if _, found, err := s.links.Contact(ctx, a.book, *in.ContactID); err != nil {
@@ -1157,7 +1164,7 @@ func reversalOf(a access, e Entry, reason, date string, now time.Time) Entry {
 	return Entry{
 		ID: newID(), Book: e.Book, Type: TypeReversal, Direction: dir, Category: e.Category, Method: e.Method, Amount: e.Amount,
 		Currency: e.Currency, EffectiveDate: date, RecordedAt: now, AuthorUserID: &author, AuthorName: a.p.Name, Status: StatusUnverified,
-		ReversalOf: &orig, Reason: reason, ContactID: e.ContactID, ListingID: e.ListingID, LeaseID: e.LeaseID, Branch: e.Branch,
+		ReversalOf: &orig, Reason: reason, ContactID: e.ContactID, ListingID: e.ListingID, LeaseID: e.LeaseID, TenancyID: e.TenancyID, Branch: e.Branch,
 		Description: desc, Reference: e.Reference,
 	}
 }
@@ -1261,6 +1268,9 @@ func (s *Service) Correct(ctx context.Context, p *auth.Principal, bookID, id uui
 	}
 	if !a.write {
 		return Posted{}, ErrForbidden
+	}
+	if e.TenancyID != nil {
+		return Posted{}, ErrRentReceipt
 	}
 	list, err := s.targets(ctx, a, e)
 	if err != nil {

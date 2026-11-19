@@ -282,6 +282,10 @@ func run() error {
 		memTenancies := tenancies.NewMemoryStore()
 		memTenancies.SetAuditSink(memTeams.AuditSink())
 		devseed.SeedMemoryTenancies(memTenancies, time.Now())
+		// Rent: the active tenancies' schedules and receipts (with their ledger entries).
+		if err := devseed.SeedMemoryRent(memTenancies, memLedger, time.Now()); err != nil {
+			return err
+		}
 		tenancyStore = memTenancies
 		crmItems = app.MemoryCRMItems{Requests: memRequests, Enquiries: memEnquiries, Appointments: memAppointments,
 			Identity: memIdentity, Listings: memListings, Applications: memApplications}

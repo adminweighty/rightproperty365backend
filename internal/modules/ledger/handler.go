@@ -34,6 +34,7 @@ const (
 	CodeCategoryExists           = "LEDGER_CATEGORY_EXISTS"
 	CodeUnsupportedFileType      = "UNSUPPORTED_FILE_TYPE"
 	CodeFileTooLarge             = "FILE_TOO_LARGE"
+	CodeRentReceipt              = "LEDGER_ENTRY_IS_RENT_RECEIPT"
 	DefaultPageSize, MaxPageSize = 25, 100
 )
 
@@ -101,6 +102,9 @@ func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 		writeDetails(w, r, http.StatusConflict, CodeAlreadyReversed, "This entry has already been reversed.", map[string]any{"reversed_by": nil})
 	case errors.Is(err, ErrNotReversible):
 		httpx.WriteError(w, r, http.StatusConflict, CodeNotReversible, "A reversal cannot be reversed or corrected. Post a new entry instead.", nil)
+	case errors.Is(err, ErrRentReceipt):
+		httpx.WriteError(w, r, http.StatusConflict, CodeRentReceipt,
+			"This entry is a rent receipt. Reverse it, then record a new receipt on the tenancy.", nil)
 	case errors.Is(err, ErrOpeningBalanceExists):
 		writeDetails(w, r, http.StatusConflict, CodeOpeningBalanceExists,
 			"This book already has an opening balance for that currency, method and branch. Reverse it first, or correct it.", map[string]any{})

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -186,14 +187,18 @@ type AgedItem struct {
 	Bucket      string    `json:"bucket"`
 }
 
-// AgedCurrency is the ageing in one currency.
+// AgedCurrency is the ageing in one currency. For receivables it includes
+// the book's rent arrears (API 0.36.1): Outstanding, Count and Buckets add
+// them, RentOutstanding is their part and RentItems lists them.
 type AgedCurrency struct {
-	Currency    string     `json:"currency"`
-	MinorUnit   int        `json:"minor_unit"`
-	Outstanding string     `json:"outstanding"`
-	Count       int        `json:"count"`
-	Buckets     []Bucket   `json:"buckets"`
-	Items       []AgedItem `json:"items"`
+	Currency        string         `json:"currency"`
+	MinorUnit       int            `json:"minor_unit"`
+	Outstanding     string         `json:"outstanding"`
+	Count           int            `json:"count"`
+	Buckets         []Bucket       `json:"buckets"`
+	Items           []AgedItem     `json:"items"`
+	RentOutstanding string         `json:"rent_outstanding"`
+	RentItems       []RentAgedItem `json:"rent_items"`
 }
 
 // Receivables is GET .../reports/receivables.
@@ -716,17 +721,28 @@ func (s *Service) Receivables(ctx context.Context, p *auth.Principal, bookID uui
 	if err != nil {
 		return Receivables{}, err
 	}
+	rent, err := s.rentArrears(ctx, a.book, q)
+	if err != nil {
+		return Receivables{}, err
+	}
 	out := Receivables{AsOf: q.AsOf, Side: q.Side, Currencies: []AgedCurrency{}}
 	codes, per := byCurrency(list)
+	for _, r := range rent {
+		if _, ok := per[r.Currency]; !ok {
+			per[r.Currency] = nil
+			codes = append(codes, r.Currency)
+		}
+	}
+	slices.Sort(codes)
 	for _, cur := range codes {
 		mu := money.MinorUnit(cur)
-		total := new(big.Rat)
+		total, rentTotal := new(big.Rat), new(big.Rat)
 		perBucket := map[string]*big.Rat{}
 		counts := map[string]int{}
 		for _, b := range bucketNames {
 			perBucket[b] = new(big.Rat)
 		}
-		ac := AgedCurrency{Currency: cur, MinorUnit: mu, Items: []AgedItem{}}
+		ac := AgedCurrency{Currency: cur, MinorUnit: mu, Items: []AgedItem{}, RentItems: []RentAgedItem{}}
 		for _, e := range per[cur] {
 			paid, rest := left[e.ID][0], left[e.ID][1]
 			if rest.Sign() <= 0 {
@@ -744,14 +760,59 @@ func (s *Service) Receivables(ctx context.Context, p *auth.Principal, bookID uui
 			ac.Items = append(ac.Items, AgedItem{Entry: ev, Currency: cur, MinorUnit: mu, Amount: e.Amount, Settled: money.Format(paid, cur),
 				Outstanding: money.Format(rest, cur), DaysOverdue: days, Bucket: b})
 		}
-		if len(ac.Items) == 0 {
+		for _, r := range rent {
+			if r.Currency != cur {
+				continue
+			}
+			rest := money.Rat(r.Outstanding)
+			days := max(daysBetween(r.DueDate, q.AsOf), 0)
+			b := bucketOf(days)
+			perBucket[b].Add(perBucket[b], rest)
+			counts[b]++
+			total.Add(total, rest)
+			rentTotal.Add(rentTotal, rest)
+			ac.RentItems = append(ac.RentItems, RentAgedItem{Tenancy: r.Tenancy, DueID: r.DueID, DueDate: r.DueDate, Currency: cur, MinorUnit: mu,
+				Amount: r.Amount, Settled: r.Settled, Outstanding: r.Outstanding, DaysOverdue: days, Bucket: b})
+		}
+		if len(ac.Items) == 0 && len(ac.RentItems) == 0 {
 			continue
 		}
-		ac.Outstanding, ac.Count = money.Format(total, cur), len(ac.Items)
+		sort.SliceStable(ac.RentItems, func(i, j int) bool {
+			if ac.RentItems[i].DaysOverdue != ac.RentItems[j].DaysOverdue {
+				return ac.RentItems[i].DaysOverdue > ac.RentItems[j].DaysOverdue
+			}
+			return ac.RentItems[i].DueID.String() < ac.RentItems[j].DueID.String()
+		})
+		ac.Outstanding, ac.Count = money.Format(total, cur), len(ac.Items)+len(ac.RentItems)
+		ac.RentOutstanding = money.Format(rentTotal, cur)
 		for _, b := range bucketNames {
 			ac.Buckets = append(ac.Buckets, Bucket{Currency: cur, MinorUnit: mu, Bucket: b, Outstanding: money.Format(perBucket[b], cur), Count: counts[b]})
 		}
 		out.Currencies = append(out.Currencies, ac)
+	}
+	return out, nil
+}
+
+// rentArrears returns the book's rent arrears the receivables report
+// includes: side RECEIVABLE, no branch filter (rent has no branch), the
+// currency and contact (a tenant) filters applied.
+func (s *Service) rentArrears(ctx context.Context, book Book, q ReportQuery) ([]RentArrear, error) {
+	if s.arrears == nil || q.Side != TypeReceivable || q.Branch != nil {
+		return nil, nil
+	}
+	list, err := s.arrears(ctx, book, q.AsOf)
+	if err != nil {
+		return nil, err
+	}
+	var out []RentArrear
+	for _, r := range list {
+		if q.Currency != "" && r.Currency != q.Currency {
+			continue
+		}
+		if q.ContactID != nil && !slices.Contains(r.Tenants, *q.ContactID) {
+			continue
+		}
+		out = append(out, r)
 	}
 	return out, nil
 }

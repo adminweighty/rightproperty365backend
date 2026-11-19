@@ -8,6 +8,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/agreements"
 	"rightproperty365.com/backend/internal/modules/leases"
 	"rightproperty365.com/backend/internal/modules/subscriptions"
+	"rightproperty365.com/backend/internal/modules/tenancies"
 )
 
 // AgreementSweepInterval is how often expiries and reminders are checked.
@@ -54,6 +55,32 @@ func RunSubscriptionSweeps(ctx context.Context, svc *subscriptions.Service, logg
 			logger.ErrorContext(ctx, "subscription sweep failed", slog.String("error", err.Error()))
 		} else if expired > 0 {
 			logger.InfoContext(ctx, "subscription sweep", slog.Int("expired", expired))
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// RentScheduleSweepInterval is how often the rent schedules are re-run.
+const RentScheduleSweepInterval = 24 * time.Hour
+
+// RunRentScheduleSweeps re-runs the rent rule of every ACTIVE tenancy at
+// start and then every RentScheduleSweepInterval until ctx ends: a rolling
+// schedule gains the next month's due when the month turns (the horizon is
+// the end of the month 12 months ahead), and a tenancy activated before
+// API 0.36.1 gets its schedule. Idempotent.
+func RunRentScheduleSweeps(ctx context.Context, svc *tenancies.Service, logger *slog.Logger) {
+	ticker := time.NewTicker(RentScheduleSweepInterval)
+	defer ticker.Stop()
+	for {
+		added, err := svc.ExtendSchedules(ctx)
+		if err != nil {
+			logger.ErrorContext(ctx, "rent schedule sweep failed", slog.String("error", err.Error()))
+		} else if added > 0 {
+			logger.InfoContext(ctx, "rent schedule sweep", slog.Int("dues_added", added))
 		}
 		select {
 		case <-ctx.Done():
