@@ -168,6 +168,10 @@ func SampleData(name string) Data {
 			d.StatusText = "New time requested"
 			d.ProposedTime = LocalSlot(start.Add(48*time.Hour), start.Add(52*time.Hour), "Africa/Harare")
 		}
+	case "review-moderated":
+		d.Path, d.ProfileName, d.StatusText = "/account/reviews", "Sample Plumbers", "Published"
+	case "review-published":
+		d.Name, d.Path, d.ProfileName, d.StatusText = "Tendai Ncube", "/agent/reviews", "Sample Plumbers", "Published"
 	case "inspection-scheduled", "inspection-completed":
 		d.Name, d.Path, d.Reference, d.RequestType = "Tendai Ncube", "/account/tenancies", "RPI-2026-000042", "Routine"
 		if name == "inspection-scheduled" {

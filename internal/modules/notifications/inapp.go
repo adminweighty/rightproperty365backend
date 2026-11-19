@@ -148,6 +148,19 @@ var inAppTemplates = map[string]inAppTemplate{
 	}},
 	"inspection-completed": {typ: inapp.TypeInspection, title: fixed("Inspection report ready"), body: inspectionBody},
 
+	// Reviews (API 0.36.4): the outcome to the reviewer (their reviews
+	// page), a first publication to the provider. No reference, no names.
+	"review-moderated": {typ: inapp.TypeReview, noRef: true, body: reviewBody, title: func(d mail.Data) string {
+		switch d.StatusText {
+		case "Published":
+			return "Your review was published"
+		case "Hidden":
+			return "Your review was hidden"
+		}
+		return "Your review was not published"
+	}},
+	"review-published": {typ: inapp.TypeReview, title: fixed("New review of your business"), path: PathAgentReviews, noRef: true, body: reviewBody},
+
 	"listing-approved": {typ: inapp.TypeListingReviewed, path: pathAgentListings, title: func(d mail.Data) string {
 		if d.Edit {
 			return "Listing changes approved"
@@ -177,6 +190,9 @@ func subscriptionBody(d mail.Data) string { return joinSafe(d.InvoiceNumber, d.P
 
 // maintenanceBody is the reference and the category label (safe text).
 func maintenanceBody(d mail.Data) string { return joinSafe(d.Reference, d.Service) }
+
+// reviewBody is the outcome (safe text).
+func reviewBody(d mail.Data) string { return joinSafe(d.StatusText) }
 
 // inspectionBody is the reference, the type and the scheduled time (safe text).
 func inspectionBody(d mail.Data) string {

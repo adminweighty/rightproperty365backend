@@ -46,6 +46,7 @@ const (
 	TypeTeamInvitation          = "TEAM_INVITATION"
 	TypeMaintenance             = "MAINTENANCE"
 	TypeInspection              = "INSPECTION"
+	TypeReview                  = "REVIEW"
 	TypeAccount                 = "ACCOUNT"
 	TypeSecurity                = "SECURITY"
 
@@ -86,6 +87,7 @@ var catalogue = []TypeInfo{
 	{TypeTeamInvitation, "Team invitations", false, ""},
 	{TypeMaintenance, "Maintenance requests", false, ""},
 	{TypeInspection, "Inspections", false, ""},
+	{TypeReview, "Reviews (your reviews moderated, new reviews of your business)", false, ""},
 	{TypeAccount, "Account suspension and reactivation", true, "We must tell you when access to your account changes."},
 	{TypeSecurity, "Security (password changes, administrator sign-ins)", true, "Security notices protect your account and cannot be turned off."},
 }

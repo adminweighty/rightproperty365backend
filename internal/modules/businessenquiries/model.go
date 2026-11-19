@@ -186,6 +186,25 @@ type NewEnquiry struct {
 	ConsentAcceptedAt time.Time  // UTC
 	Recipient         *Recipient // nil when routing failed
 	CreatedAt         time.Time  // UTC, microsecond precision
+	// RepliedAt / RepliedBy: the recipient marked the enquiry as replied to
+	// (API 0.36.4; nil when not). Create never sets them; the seed may.
+	RepliedAt *time.Time
+	RepliedBy *uuid.UUID
+}
+
+// CustomerEnquiry is what reviews read of an enquiry (API 0.36.4): who sent
+// it to which profile, when, and whether the recipient replied. It holds no
+// contact details and no message.
+type CustomerEnquiry struct {
+	ID             uuid.UUID
+	Reference      string
+	ProfileID      uuid.UUID
+	CustomerUserID *uuid.UUID
+	// PrivacyVersion tells an enquiry sent by maintenance assignment
+	// (maintenance.DefaultEnquiryPrivacyVer) from a customer's own.
+	PrivacyVersion string
+	CreatedAt      time.Time
+	RepliedAt      *time.Time
 }
 
 // Record is the persisted identity of an enquiry, used for idempotent replay.
@@ -229,6 +248,11 @@ type InboxItem struct {
 	Contact                InboxContact   `json:"contact"`
 	Status                 string         `json:"status"`
 	CreatedAt              time.Time      `json:"created_at"`
+	// RepliedAt is when the recipient marked the enquiry as replied to
+	// (POST /v1/inbox/business-enquiries/{id}/replied, API 0.36.4); null
+	// until then. A replied enquiry at least 14 days old lets its customer
+	// review the provider.
+	RepliedAt *time.Time `json:"replied_at"`
 }
 
 // InboxRecipient is the profile the enquiry was addressed to.

@@ -57,6 +57,10 @@ type MemoryDeps struct {
 	// ForgetInspections unlinks the user from inspections (inspector, creator,
 	// completer, canceller) and their photos (nil: nothing to do).
 	ForgetInspections func(userID uuid.UUID, deletedName string)
+	// ForgetReviews unlinks the user from reviews of service providers (a
+	// customer's review shows "Former customer"), reports, replies and the
+	// enquiries they marked replied (nil: nothing to do).
+	ForgetReviews func(userID uuid.UUID, deletedName string)
 	// Now is the clock used for listing expiry in the detail (nil: time.Now).
 	Now func() time.Time
 }
@@ -315,6 +319,9 @@ func (s *MemoryStore) Delete(ctx context.Context, d Deletion) (Deleted, error) {
 	}
 	if s.deps.ForgetInspections != nil {
 		s.deps.ForgetInspections(d.UserID, DeletedName)
+	}
+	if s.deps.ForgetReviews != nil {
+		s.deps.ForgetReviews(d.UserID, DeletedName)
 	}
 	s.deps.Audit.Append(d.Audit)
 	return out, nil

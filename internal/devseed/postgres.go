@@ -453,6 +453,13 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 		return err
 	}
 
+	// The sample reviews of Sample Plumbers: the closed drain job, the
+	// replied enquiries and the reviews (needs migration 0039), after the
+	// maintenance samples.
+	if err := seedPostgresReviews(ctx, tx, now); err != nil {
+		return err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}

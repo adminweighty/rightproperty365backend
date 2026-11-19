@@ -40,6 +40,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
 	"rightproperty365.com/backend/internal/modules/reports"
+	"rightproperty365.com/backend/internal/modules/reviews"
 	"rightproperty365.com/backend/internal/modules/saved"
 	"rightproperty365.com/backend/internal/modules/subscriptions"
 	"rightproperty365.com/backend/internal/modules/teams"
@@ -160,6 +161,7 @@ func run() error {
 		tenancyStore     tenancies.Store
 		maintenanceStore maintenance.Store
 		inspectionStore  inspections.Store
+		reviewStore      reviews.Store
 		// memSubscriptions is set without a database (its expiry sweep runs here).
 		memSubscriptions *subscriptions.MemoryStore
 	)
@@ -308,6 +310,13 @@ func run() error {
 			return fmt.Errorf("seed sample inspections: %w", err)
 		}
 		inspectionStore = memInspections
+		// Reviews of Sample Plumbers: a closed drain job, replied enquiries,
+		// two published reviews (one reported) and one awaiting moderation.
+		memReviews := reviews.NewMemoryStore()
+		if err := devseed.SeedMemoryReviews(ctx, memReviews, memMaintenance, memEnquiries, time.Now()); err != nil {
+			return fmt.Errorf("seed sample reviews: %w", err)
+		}
+		reviewStore = memReviews
 		crmItems = app.MemoryCRMItems{Requests: memRequests, Enquiries: memEnquiries, Appointments: memAppointments,
 			Identity: memIdentity, Listings: memListings, Applications: memApplications}
 		// The notification centre, and its push sender in this process.
@@ -327,6 +336,7 @@ func run() error {
 		memAudit := &adminaudit.MemoryLog{}
 		adminAuditLog = memAudit
 		memReference.SetAuditLog(memAudit)
+		memReviews.SetAuditLog(memAudit)
 		memSubscriptions = subscriptions.NewMemoryStore(memAudit)
 		memSubscriptions.SetActiveListings(app.MemoryActiveListings(memListings))
 		subscriptionStore = memSubscriptions
@@ -336,7 +346,11 @@ func run() error {
 			EraseApplications:   func(userID uuid.UUID, at time.Time) { memApplications.EraseApplicant(userID, at) },
 			DeleteVenueBookings: memVenues.DeleteCustomer, DeleteNotifications: memInbox.DeleteUser,
 			ForgetTenancies: memTenancies.ForgetUser, ForgetMaintenance: memMaintenance.ForgetUser,
-			ForgetInspections: memInspections.ForgetUser})
+			ForgetInspections: memInspections.ForgetUser,
+			ForgetReviews: func(userID uuid.UUID, deletedName string) {
+				memReviews.ForgetUser(userID, deletedName)
+				memEnquiries.ForgetUser(userID)
+			}})
 		reportStore = app.MemoryReports(app.MemoryReportStores{Identity: memIdentity, Onboarding: memOnboarding, Listings: memListings,
 			Requests: memRequests, Enquiries: memEnquiries, Leases: memLeases, Agreements: memAgreements, Subscriptions: memSubscriptions,
 			Markets: marketStore})
@@ -367,6 +381,7 @@ func run() error {
 		handlers.SetVenueSource(app.VenueNotices(memVenues, memListings, marketStore, referenceStore, logger))
 		handlers.SetMaintenanceSource(app.MaintenanceNotices(memMaintenance, memTenancies, memCRM, memIdentity))
 		handlers.SetInspectionSource(app.InspectionNotices(memInspections, memTenancies, memCRM, memIdentity, marketStore))
+		handlers.SetReviewSource(reviews.Notices(memReviews))
 		// In-app notifications (and their pushes) for the same recipients,
 		// and the preferences the emails consult.
 		handlers.SetInbox(inboxSvc)
@@ -429,6 +444,7 @@ func run() error {
 		memVenues.SetOutboxSink(sink)
 		memMaintenance.SetOutboxSink(sink)
 		memInspections.SetOutboxSink(sink)
+		memReviews.SetOutboxSink(sink)
 		// The application retention job (and the purge of deleted files).
 		go app.RunApplicationJobs(ctx, app.ApplicationsService(memApplications, files,
 			listings.NewService(memListings, memListings, reference.NewService(referenceStore, nil)), memListings, memIdentity, logger, nil))
@@ -500,6 +516,7 @@ func run() error {
 		tenancyStore = tenancies.NewPostgresStore(pool)
 		maintenanceStore = maintenance.NewPostgresStore(pool)
 		inspectionStore = inspections.NewPostgresStore(pool)
+		reviewStore = reviews.NewPostgresStore(pool)
 		adminAuditLog = adminaudit.PostgresLog{Q: pool}
 		inboxSvc = inapp.NewService(inapp.NewPostgresStore(pool), pushProvider, logger, nil)
 	}
@@ -572,6 +589,7 @@ func run() error {
 		Tenancies:     tenancyStore,
 		Maintenance:   maintenanceStore,
 		Inspections:   inspectionStore,
+		Reviews:       reviewStore,
 		Inbox:         inboxSvc,
 	})
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -188,36 +189,125 @@ func (s *PostgresStore) Create(ctx context.Context, enq NewEnquiry) (Record, boo
 	return Record{ID: enq.ID, Reference: enq.Reference, Status: enq.Status, RequestHash: enq.RequestHash, CreatedAt: enq.CreatedAt}, true, nil
 }
 
+// inboxColumns / inboxFrom are the inbox's view of an enquiry.
+const inboxColumns = `e.id, e.reference, p.kind, p.slug, p.name, e.service, e.message,
+		       e.preferred_contact_method,
+		       COALESCE(e.guest_name, u.full_name, ''),
+		       COALESCE(e.guest_email, u.email, ''),
+		       e.guest_phone, e.status, e.created_at, e.replied_at`
+
+const inboxFrom = ` FROM business_enquiries e
+		JOIN directory_profiles p ON p.id = e.profile_id
+		LEFT JOIN users u ON u.id = e.customer_user_id `
+
+// inboxVisible is the rule of InboxScope ($1 managed organisations, $2
+// member organisations, $3 the caller).
+const inboxVisible = `(e.recipient_organisation_id IN (SELECT unnest($1::text[])::uuid)
+		   OR (e.recipient_organisation_id IN (SELECT unnest($2::text[])::uuid)
+		       AND e.recipient_user_id = $3))`
+
+func scanInbox(row pgx.CollectableRow) (InboxItem, error) {
+	var it InboxItem
+	err := row.Scan(&it.EnquiryID, &it.Reference, &it.Recipient.Kind, &it.Recipient.Slug, &it.Recipient.Name,
+		&it.Service, &it.Message, &it.PreferredContactMethod,
+		&it.Contact.Name, &it.Contact.Email, &it.Contact.Phone, &it.Status, &it.CreatedAt, &it.RepliedAt)
+	it.CreatedAt = it.CreatedAt.UTC()
+	if it.RepliedAt != nil {
+		at := it.RepliedAt.UTC()
+		it.RepliedAt = &at
+	}
+	return it, err
+}
+
 // ListInbox implements Store. Organisation IDs are passed as text arrays and
 // cast in SQL; the visibility rule is documented on InboxScope. Routing
 // exceptions have no recipient organisation, so no branch can match them.
 func (s *PostgresStore) ListInbox(ctx context.Context, scope InboxScope) ([]InboxItem, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT e.id, e.reference, p.kind, p.slug, p.name, e.service, e.message,
-		       e.preferred_contact_method,
-		       COALESCE(e.guest_name, u.full_name, ''),
-		       COALESCE(e.guest_email, u.email, ''),
-		       e.guest_phone, e.status, e.created_at
-		FROM business_enquiries e
-		JOIN directory_profiles p ON p.id = e.profile_id
-		LEFT JOIN users u ON u.id = e.customer_user_id
-		WHERE e.recipient_organisation_id IN (SELECT unnest($1::text[])::uuid)
-		   OR (e.recipient_organisation_id IN (SELECT unnest($2::text[])::uuid)
-		       AND e.recipient_user_id = $3)
+	rows, err := s.pool.Query(ctx, `SELECT `+inboxColumns+inboxFrom+`WHERE `+inboxVisible+`
 		ORDER BY e.created_at DESC, e.id DESC
 		LIMIT $4`,
 		uuidStrings(scope.ManagedOrganisationIDs), uuidStrings(scope.MemberOrganisationIDs), scope.UserID, scope.Limit)
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (InboxItem, error) {
-		var it InboxItem
-		err := row.Scan(&it.EnquiryID, &it.Reference, &it.Recipient.Kind, &it.Recipient.Slug, &it.Recipient.Name,
-			&it.Service, &it.Message, &it.PreferredContactMethod,
-			&it.Contact.Name, &it.Contact.Email, &it.Contact.Phone, &it.Status, &it.CreatedAt)
-		it.CreatedAt = it.CreatedAt.UTC()
-		return it, err
-	})
+	return pgx.CollectRows(rows, scanInbox)
+}
+
+// MarkReplied implements Store: the first mark sets replied_at and adds a
+// REPLIED timeline row, in one transaction; a repeat changes nothing.
+func (s *PostgresStore) MarkReplied(ctx context.Context, scope InboxScope, id, by uuid.UUID, at time.Time) (InboxItem, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return InboxItem{}, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	args := []any{uuidStrings(scope.ManagedOrganisationIDs), uuidStrings(scope.MemberOrganisationIDs), scope.UserID, id}
+	tag, err := tx.Exec(ctx, `UPDATE business_enquiries e SET replied_at = $5, replied_by = $6, updated_at = $5
+		WHERE e.id = $4 AND e.replied_at IS NULL AND `+inboxVisible, append(args, at.UTC(), by)...)
+	if err != nil {
+		return InboxItem{}, fmt.Errorf("mark enquiry replied: %w", err)
+	}
+	if tag.RowsAffected() == 1 {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO business_enquiry_timeline (id, enquiry_id, event_type, actor_type, actor_user_id, created_at)
+			VALUES ($1, $2, $3, 'AGENT', $4, $5)`, uuid.New(), id, TimelineReplied, by, at.UTC()); err != nil {
+			return InboxItem{}, fmt.Errorf("insert enquiry timeline: %w", err)
+		}
+	}
+	rows, err := tx.Query(ctx, `SELECT `+inboxColumns+inboxFrom+`WHERE e.id = $4 AND `+inboxVisible, args...)
+	if err != nil {
+		return InboxItem{}, err
+	}
+	items, err := pgx.CollectRows(rows, scanInbox)
+	if err != nil {
+		return InboxItem{}, err
+	}
+	if len(items) == 0 {
+		return InboxItem{}, ErrNotFound
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return InboxItem{}, err
+	}
+	return items[0], nil
+}
+
+const customerEnquiryColumns = `id, reference, profile_id, customer_user_id, consent_privacy_version, created_at, replied_at`
+
+func scanCustomerEnquiry(row pgx.CollectableRow) (CustomerEnquiry, error) {
+	var e CustomerEnquiry
+	err := row.Scan(&e.ID, &e.Reference, &e.ProfileID, &e.CustomerUserID, &e.PrivacyVersion, &e.CreatedAt, &e.RepliedAt)
+	e.CreatedAt = e.CreatedAt.UTC()
+	if e.RepliedAt != nil {
+		at := e.RepliedAt.UTC()
+		e.RepliedAt = &at
+	}
+	return e, err
+}
+
+// Enquiry implements Store.
+func (s *PostgresStore) Enquiry(ctx context.Context, id uuid.UUID) (CustomerEnquiry, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+customerEnquiryColumns+` FROM business_enquiries WHERE id = $1`, id)
+	if err != nil {
+		return CustomerEnquiry{}, err
+	}
+	list, err := pgx.CollectRows(rows, scanCustomerEnquiry)
+	if err != nil {
+		return CustomerEnquiry{}, err
+	}
+	if len(list) == 0 {
+		return CustomerEnquiry{}, ErrNotFound
+	}
+	return list[0], nil
+}
+
+// CustomerEnquiries implements Store.
+func (s *PostgresStore) CustomerEnquiries(ctx context.Context, userID, profileID uuid.UUID) ([]CustomerEnquiry, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+customerEnquiryColumns+` FROM business_enquiries
+		WHERE customer_user_id = $1 AND profile_id = $2 ORDER BY created_at DESC, id DESC LIMIT 200`, userID, profileID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, scanCustomerEnquiry)
 }
 
 func uuidStrings(ids []uuid.UUID) []string {

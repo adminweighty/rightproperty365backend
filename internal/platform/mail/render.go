@@ -100,6 +100,8 @@ func Templates() []Template {
 		{"maintenance-status-changed", "Maintenance request status changed (to the managers and the tenants)", true},
 		{"inspection-scheduled", "Inspection scheduled or rescheduled (to the tenants)", true},
 		{"inspection-completed", "Inspection report ready (to the tenants)", true},
+		{"review-moderated", "Your review published, hidden or not published (to the reviewer)", true},
+		{"review-published", "New review of your business published (to the provider's owners and managers)", true},
 
 		{"request-update", "Reply or status update to the customer", false},
 		{"listing-expiring", "Listing expiring in 14, 7 or 1 days", false},

@@ -1,7 +1,7 @@
 // Package adminaudit is the durable audit trail of what platform
 // administrators do: suspending, reactivating and deleting accounts,
-// managing subscription plans, deciding subscriptions and changing
-// reference data.
+// managing subscription plans, deciding subscriptions, changing reference
+// data and moderating reviews of service providers.
 //
 // The records are kept in admin_audit_events (migration 0024), written in
 // the same transaction as the change they describe, and are immutable: a row
@@ -44,6 +44,12 @@ const (
 	ActionReferenceUpdated     = "REFERENCE_ITEM_UPDATED"
 	ActionReferenceDeactivated = "REFERENCE_ITEM_DEACTIVATED"
 	ActionReferenceReactivated = "REFERENCE_ITEM_REACTIVATED"
+	// Review moderation (API 0.36.4): a review of a service provider
+	// published, hidden or rejected, or its provider's reply removed.
+	ActionReviewPublished    = "REVIEW_PUBLISHED"
+	ActionReviewHidden       = "REVIEW_HIDDEN"
+	ActionReviewRejected     = "REVIEW_REJECTED"
+	ActionReviewReplyRemoved = "REVIEW_REPLY_REMOVED"
 )
 
 // Target types.
@@ -52,6 +58,9 @@ const (
 	TargetPlan          = "SUBSCRIPTION_PLAN"
 	TargetSubscription  = "SUBSCRIPTION"
 	TargetReferenceItem = "REFERENCE_ITEM"
+	// TargetProviderReview is one review of a service provider (labelled
+	// with the provider's name).
+	TargetProviderReview = "PROVIDER_REVIEW"
 )
 
 // Event is one audit record.

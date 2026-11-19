@@ -5,6 +5,9 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
+
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/httpx"
 )
@@ -14,6 +17,7 @@ const (
 	CodeRecipientNotFound    = "RECIPIENT_NOT_FOUND"
 	CodeRecipientUnavailable = "RECIPIENT_UNAVAILABLE"
 	CodeIdempotencyConflict  = "IDEMPOTENCY_CONFLICT"
+	CodeEnquiryNotFound      = "BUSINESS_ENQUIRY_NOT_FOUND"
 )
 
 // HeaderIdempotencyKey may carry the idempotency key instead of the body.
@@ -100,4 +104,44 @@ func (h *Handler) Inbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, inboxResponse{Items: items})
+}
+
+// inboxScope is the caller's inbox (see Inbox).
+func inboxScope(p *auth.Principal) InboxScope {
+	return InboxScope{
+		UserID:                 p.UserID,
+		ManagedOrganisationIDs: p.OrganisationIDs(auth.RoleOwner, auth.RoleManager),
+		MemberOrganisationIDs:  p.OrganisationIDs(auth.RoleAgent, auth.RoleStaff),
+	}
+}
+
+type inboxItemResponse struct {
+	Item InboxItem `json:"item"`
+}
+
+// MarkReplied handles POST /v1/inbox/business-enquiries/{enquiryId}/replied
+// (API 0.36.4): whoever may read the enquiry in their inbox records that it
+// was replied to (the reply itself happens by email, phone or WhatsApp).
+// Idempotent. Another organisation's enquiry is 404.
+func (h *Handler) MarkReplied(w http.ResponseWriter, r *http.Request) {
+	p := auth.FromContext(r.Context())
+	if p == nil {
+		httpx.WriteError(w, r, http.StatusUnauthorized, httpx.CodeUnauthenticated, "You need to sign in to do this.", nil)
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "enquiryId"))
+	if err != nil {
+		err = ErrNotFound
+	} else {
+		var item InboxItem
+		if item, err = h.svc.MarkReplied(r.Context(), inboxScope(p), id); err == nil {
+			httpx.WriteJSON(w, http.StatusOK, inboxItemResponse{Item: item})
+			return
+		}
+	}
+	if !errors.Is(err, ErrNotFound) {
+		httpx.WriteInternalError(w, r, h.logger, err)
+		return
+	}
+	httpx.WriteError(w, r, http.StatusNotFound, CodeEnquiryNotFound, "This enquiry does not exist or is not in your inbox.", nil)
 }

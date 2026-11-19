@@ -18,6 +18,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/maintenance"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
+	"rightproperty365.com/backend/internal/modules/reviews"
 	"rightproperty365.com/backend/internal/modules/tenancies"
 	"rightproperty365.com/backend/internal/platform/adminaudit"
 	"rightproperty365.com/backend/internal/platform/auth"
@@ -464,6 +465,11 @@ func (s *PostgresStore) Delete(ctx context.Context, d Deletion) (Deleted, error)
 		// Inspections (migration 0038): kept with the book; the person is
 		// unlinked (the freeze trigger allows exactly this).
 		if err := inspections.ForgetUserTx(ctx, tx, d.UserID, DeletedName); err != nil {
+			return err
+		}
+		// Reviews of service providers (migration 0039): kept; a customer's
+		// shows "Former customer", the person is unlinked everywhere.
+		if err := reviews.ForgetUserTx(ctx, tx, d.UserID, DeletedName); err != nil {
 			return err
 		}
 		return adminaudit.Insert(ctx, tx, d.Audit)

@@ -107,8 +107,23 @@ type Profile struct {
 	Logo         *listings.Logo       `json:"logo"`
 	Agency       *listings.ProfileRef `json:"agency"`
 	ListingCount int                  `json:"listing_count"`
-	UpdatedAt    time.Time            `json:"updated_at"`
+	// Rating is the profile's published reviews (API 0.36.4): their mean
+	// with one decimal (null when none) and their count. Only service
+	// providers are reviewed; every other profile has {null, 0}.
+	Rating    Rating    `json:"rating"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
+
+// Rating is a profile's published reviews: the average ("4.5", one
+// decimal, null when there is none) and the count.
+type Rating struct {
+	Average *string `json:"average"`
+	Count   int     `json:"count"`
+}
+
+// RatingSource returns the rating of each profile (by ID) that has
+// published reviews.
+type RatingSource func(ctx context.Context, profileIDs []uuid.UUID) (map[uuid.UUID]Rating, error)
 
 // Detail is one profile with its agents and its public listings.
 type Detail struct {
@@ -241,6 +256,32 @@ type Service struct {
 	files  storage.Storage
 	logger *slog.Logger
 	now    func() time.Time
+	// ratings supplies the reviews' ratings; nil means none.
+	ratings RatingSource
+}
+
+// SetRatings gives the Service the ratings of the reviews (API 0.36.4).
+func (s *Service) SetRatings(src RatingSource) { s.ratings = src }
+
+// rate sets the rating of each profile (records[i] is profiles[i]).
+func (s *Service) rate(ctx context.Context, records []Record, profiles []*Profile) error {
+	if s.ratings == nil || len(records) == 0 {
+		return nil
+	}
+	ids := make([]uuid.UUID, 0, len(records))
+	for _, r := range records {
+		ids = append(ids, r.ID)
+	}
+	got, err := s.ratings(ctx, ids)
+	if err != nil {
+		return fmt.Errorf("load ratings: %w", err)
+	}
+	for i, r := range records {
+		if rt, ok := got[r.ID]; ok {
+			profiles[i].Rating = rt
+		}
+	}
+	return nil
 }
 
 // SetPlaces gives the Service the location hierarchy behind the country and
@@ -488,6 +529,13 @@ func (s *Service) List(ctx context.Context, kindCode string, f Filter, page, siz
 		places.locate(&p, r)
 		out.Items = append(out.Items, p)
 	}
+	ptrs := make([]*Profile, len(out.Items))
+	for i := range out.Items {
+		ptrs[i] = &out.Items[i]
+	}
+	if err := s.rate(ctx, records, ptrs); err != nil {
+		return Page{}, err
+	}
 	return out, nil
 }
 
@@ -515,6 +563,9 @@ func (s *Service) Get(ctx context.Context, kindCode, slug string) (Detail, error
 	p, owned, err := s.present(ctx, r, cities, trades)
 	places.locate(&p, r)
 	if err != nil {
+		return Detail{}, err
+	}
+	if err := s.rate(ctx, []Record{r}, []*Profile{&p}); err != nil {
 		return Detail{}, err
 	}
 	d := Detail{Profile: p, Agents: []listings.ProfileRef{}, Listings: owned}

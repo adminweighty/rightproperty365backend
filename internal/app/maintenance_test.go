@@ -200,8 +200,9 @@ func TestMaintenanceManagerFlow(t *testing.T) {
 		Total        int               `json:"total"`
 		StatusCounts map[string]int    `json:"status_counts"`
 	}](t, e.get(maintenancePath(org, ""), staff))
-	if page.Total != 4 || page.StatusCounts["ASSIGNED"] != 1 || page.StatusCounts["IN_PROGRESS"] != 1 || page.StatusCounts["NEW"] != 1 ||
-		page.StatusCounts["CLOSED"] != 1 || len(page.StatusCounts) != 7 {
+	// Five with RPM-2026-900005, the closed drain job of the review seed (API 0.36.4).
+	if page.Total != 5 || page.StatusCounts["ASSIGNED"] != 1 || page.StatusCounts["IN_PROGRESS"] != 1 || page.StatusCounts["NEW"] != 1 ||
+		page.StatusCounts["CLOSED"] != 2 || len(page.StatusCounts) != 7 {
 		t.Fatalf("seed list: %d %+v", page.Total, page.StatusCounts)
 	}
 	tap := decode[maintenanceOne](t, e.get(maintenancePath(org, "/"+devseed.MaintenanceTapID.String()), staff)).Request

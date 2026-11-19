@@ -33,6 +33,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/onboarding"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
+	"rightproperty365.com/backend/internal/modules/reviews"
 	"rightproperty365.com/backend/internal/modules/saved"
 	"rightproperty365.com/backend/internal/modules/subscriptions"
 	"rightproperty365.com/backend/internal/modules/tenancies"
@@ -156,6 +157,10 @@ func run() error {
 	// verified account at send time.
 	handlers.SetInspectionSource(app.InspectionNotices(inspections.NewPostgresStore(pool), tenancies.NewPostgresStore(pool),
 		crm.NewPostgresStore(pool), identity.NewPostgresStore(pool), markets.NewPostgresStore(pool)))
+
+	// Reviews (API 0.36.4): the moderation emails read the review (its
+	// provider and reviewer) at send time.
+	handlers.SetReviewSource(reviews.Notices(reviews.NewPostgresStore(pool)))
 
 	// The notification centre (API 0.35.0): every notification email's
 	// recipient who has an account also gets one in-app notification per

@@ -3,7 +3,13 @@ package businessenquiries
 import (
 	"context"
 	"encoding/json"
+	"time"
+
+	"github.com/google/uuid"
 )
+
+// TimelineReplied is the timeline row of an enquiry marked as replied to.
+const TimelineReplied = "REPLIED"
 
 // Names shared by both store implementations so the memory store mirrors
 // exactly what Postgres persists.
@@ -41,6 +47,18 @@ type Store interface {
 	// ListInbox returns the enquiries visible under scope (see InboxScope),
 	// newest first, at most scope.Limit.
 	ListInbox(ctx context.Context, scope InboxScope) ([]InboxItem, error)
+
+	// MarkReplied records that the recipient replied to an enquiry visible
+	// under scope (the first time only: a repeat keeps the first time) and
+	// returns it as the inbox shows it; ErrNotFound when it is not visible.
+	MarkReplied(ctx context.Context, scope InboxScope, id, by uuid.UUID, at time.Time) (InboxItem, error)
+
+	// Enquiry returns what reviews need of one enquiry, or ErrNotFound.
+	Enquiry(ctx context.Context, id uuid.UUID) (CustomerEnquiry, error)
+
+	// CustomerEnquiries returns the enquiries a signed-in customer sent to a
+	// profile, newest first.
+	CustomerEnquiries(ctx context.Context, userID, profileID uuid.UUID) ([]CustomerEnquiry, error)
 }
 
 // timelineEvent is one row of business_enquiry_timeline.

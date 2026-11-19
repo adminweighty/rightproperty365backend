@@ -36,6 +36,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
 	"rightproperty365.com/backend/internal/modules/reports"
+	"rightproperty365.com/backend/internal/modules/reviews"
 	"rightproperty365.com/backend/internal/modules/saved"
 	"rightproperty365.com/backend/internal/modules/subscriptions"
 	"rightproperty365.com/backend/internal/modules/teams"
@@ -191,6 +192,10 @@ const (
 	// Property, unit and tenancy writes per member.
 	tenancyChangesPerMinute = 120
 	tenancyChangesBurst     = 120
+	// Review writes (reviews, replies, reports, marking enquiries replied,
+	// moderation) per caller.
+	reviewChangesPerMinute = 60
+	reviewChangesBurst     = 30
 )
 
 // uploadPath matches POST /v1/me/onboarding/{role}/documents and logoPath
@@ -328,6 +333,9 @@ type Deps struct {
 	// are kept in Files.
 	Inspections inspections.Store
 
+	// Reviews holds the reviews of service providers (API 0.36.4).
+	Reviews reviews.Store
+
 	// Inbox is the notification centre (API 0.35.0): devices, in-app
 	// notifications, preferences and the delivery health. Logging out
 	// removes the session's devices through it.
@@ -458,6 +466,11 @@ func NewRouter(d Deps) (http.Handler, error) {
 	if d.Now != nil {
 		directorySvc.SetClock(d.Now)
 	}
+	// Directory profiles show the rating of their published reviews (API 0.36.4).
+	if d.Reviews == nil {
+		return nil, errors.New("app: no reviews store")
+	}
+	directorySvc.SetRatings(DirectoryRatings(d.Reviews))
 	directoryH := directory.NewHandler(directorySvc, logger)
 	// The numbers behind "every listing is from a verified advertiser".
 	trustH := trust.NewHandler(trust.Sources{
@@ -542,6 +555,10 @@ func NewRouter(d Deps) (http.Handler, error) {
 	}
 	inspectionsH := inspections.NewHandler(InspectionsService(InspectionsDeps{Store: d.Inspections, Tenancies: tenancySvc,
 		Reference: referenceSvc, Teams: d.Teams, Files: d.Files, Logger: logger, Now: d.Now}), logger)
+	// Reviews of service providers (API 0.36.4): the tenancies' books,
+	// public directory profiles, maintenance requests and enquiries.
+	reviewsH := reviews.NewHandler(ReviewsService(ReviewsDeps{Store: d.Reviews, Tenancies: tenancySvc, Directory: d.Directory,
+		Maintenance: d.Maintenance, Enquiries: d.Enquiries, Logger: logger, Now: d.Now}), logger)
 	appointmentsH := appointments.NewHandler(appointmentsSvc, inboxCounts{requests: requestsSvc, enquiries: enquiriesSvc}, logger)
 	appointmentLimiter := httpx.NewRateLimiter(appointmentsPerMinute, appointmentsBurst)
 	authn := auth.NewMiddleware(identitySvc, cfg.CORSAllowedOrigins, logger)
@@ -648,6 +665,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 
 	requestLimiter := httpx.NewRateLimiter(propertyRequestsPerMinute, propertyRequestsBurst)
 	enquiryLimiter := httpx.NewRateLimiter(businessEnquiriesPerMinute, businessEnquiriesBurst)
+	reviewLimiter := httpx.NewRateLimiter(reviewChangesPerMinute, reviewChangesBurst)
 	authLimiter := httpx.NewRateLimiter(AuthRequestsPerMinute, AuthRequestsBurst)
 	adminAuthLimiter := httpx.NewRateLimiter(AdminAuthRequestsPerMinute, AdminAuthRequestsBurst)
 	captchaLimiter := httpx.NewRateLimiter(CaptchaRequestsPerMinute, CaptchaRequestsBurst)
@@ -733,6 +751,9 @@ func NewRouter(d Deps) (http.Handler, error) {
 		r.Get("/directory/{kind}/{slug}", directoryH.Get)
 		// A public profile's logo: an image, no session, no cookie.
 		r.Get("/directory/{kind}/{slug}/logo", directoryH.Logo)
+		// A profile's published reviews with the provider's replies (public,
+		// cacheable; API 0.36.4).
+		r.Get("/directory/{kind}/{slug}/reviews", reviewsH.Public)
 		// A listing photo: public (and cacheable for a year with its ?v=) while
 		// the listing and the photo are public; otherwise only for the
 		// listing's managers and reviewers (404 for everyone else).
@@ -757,6 +778,18 @@ func NewRouter(d Deps) (http.Handler, error) {
 		// enter; the handler scopes the data to the caller's organisations
 		// and, for agents and staff, to their own agent profile.
 		r.With(auth.RequireMembership()).Get("/inbox/business-enquiries", enquiriesH.Inbox)
+		// Marking an enquiry as replied to (API 0.36.4): whoever reads it in
+		// their inbox; another organisation's is 404.
+		r.With(auth.RequireMembership(), reviewLimiter.Middleware).Post("/inbox/business-enquiries/{enquiryId}/replied", enquiriesH.MarkReplied)
+
+		// Reviews of service providers (API 0.36.4). A customer's own
+		// (basis ENQUIRY), and reporting a published review (anybody signed
+		// in, one open report per person and review).
+		r.Route("/me/reviews", func(r chi.Router) {
+			r.Use(auth.RequireAuth)
+			reviewsH.MyRoutes(r, reviewLimiter.Middleware)
+		})
+		r.With(auth.RequireAuth, reviewLimiter.Middleware).Post("/reviews/{id}/report", reviewsH.Report)
 
 		// The question of the registration form, in its own bucket so that
 		// asking for one does not use up the sign-in allowance.
@@ -1169,6 +1202,14 @@ func NewRouter(d Deps) (http.Handler, error) {
 				r.Get("/", requestsH.Exceptions)
 				r.With(requestWorkLimiter.Middleware).Post("/{id}/resolve", requestsH.ResolveException)
 			})
+
+			// Moderating reviews of service providers (API 0.36.4):
+			// SUPER_ADMIN, CONTENT_ADMIN and MODERATOR. Every action is in
+			// the admin audit.
+			r.Route("/reviews", func(r chi.Router) {
+				r.Use(auth.RequirePlatformRole(reviews.AdminRoles()...))
+				reviewsH.AdminRoutes(r, reviewLimiter.Middleware)
+			})
 		})
 
 		// Request inbox for organisation members and direct sellers. The
@@ -1277,6 +1318,11 @@ func NewRouter(d Deps) (http.Handler, error) {
 			r.Route("/maintenance", func(r chi.Router) { maintenanceH.Routes(r, tenancyLimiter.Middleware) })
 			// Inspections (API 0.36.3): the same books and roles.
 			r.Route("/inspections", func(r chi.Router) { inspectionsH.Routes(r, tenancyLimiter.Middleware) })
+			// Reviews (API 0.36.4): the book's own reviews of providers
+			// (basis MAINTENANCE; 404 BOOK_NOT_FOUND to anyone else), and
+			// /received + /{reviewId}/reply for the members of a provider
+			// organisation (404 BOOK_NOT_FOUND to non-members).
+			r.Route("/reviews", func(r chi.Router) { reviewsH.BookRoutes(r, reviewLimiter.Middleware) })
 			r.Route("/venue-bookings", func(r chi.Router) {
 				r.Get("/", orgVenues.List)
 				r.Get("/{bookingId}", orgVenues.Get)

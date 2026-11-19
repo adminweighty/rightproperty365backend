@@ -41,6 +41,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/onboarding"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
+	"rightproperty365.com/backend/internal/modules/reviews"
 	"rightproperty365.com/backend/internal/modules/saved"
 	"rightproperty365.com/backend/internal/modules/subscriptions"
 	"rightproperty365.com/backend/internal/modules/teams"
@@ -292,6 +293,8 @@ type env struct {
 	maintenance *maintenance.MemoryStore
 	// inspections holds the inspections (the samples).
 	inspections *inspections.MemoryStore
+	// reviews holds the reviews of service providers (the samples).
+	reviews *reviews.MemoryStore
 	// inbox holds devices, in-app notifications and preferences (empty).
 	inbox    *inapp.MemoryStore
 	inboxSvc *inapp.Service
@@ -403,6 +406,10 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 	if err := devseed.SeedMemoryInspections(e.inspections, e.now); err != nil {
 		t.Fatal(err)
 	}
+	e.reviews = reviews.NewMemoryStore()
+	if err := devseed.SeedMemoryReviews(context.Background(), e.reviews, e.maintenance, nil, e.now); err != nil {
+		t.Fatal(err)
+	}
 	if err := devseed.SeedApplicationFiles(context.Background(), e.files); err != nil {
 		t.Fatal(err)
 	}
@@ -421,6 +428,7 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 	e.calendars = availability.NewMemoryStore()
 	e.audit = &adminaudit.MemoryLog{}
 	e.reference.SetAuditLog(e.audit)
+	e.reviews.SetAuditLog(e.audit)
 	e.subs = subscriptions.NewMemoryStore(e.audit)
 	e.subs.SetActiveListings(MemoryActiveListings(e.listings))
 	if err := devseed.SeedMemorySubscriptions(context.Background(), e.subs, e.now); err != nil {
@@ -440,7 +448,11 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		ForgetTenancies:     e.tenancies.ForgetUser,
 		ForgetMaintenance:   e.maintenance.ForgetUser,
 		ForgetInspections:   e.inspections.ForgetUser,
-		Now:                 func() time.Time { return e.now }})
+		ForgetReviews: func(u uuid.UUID, name string) {
+			e.reviews.ForgetUser(u, name)
+			e.enquiries.ForgetUser(u)
+		},
+		Now: func() time.Time { return e.now }})
 	reportStore := MemoryReports(MemoryReportStores{Identity: e.identity, Onboarding: e.onboard, Listings: e.listings, Requests: e.requests,
 		Enquiries: e.enquiries, Leases: e.leases, Agreements: e.agree, Subscriptions: e.subs, Markets: e.marketStore,
 		Now: func() time.Time { return e.now }})
@@ -470,6 +482,7 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		Tenancies:    e.tenancies,
 		Maintenance:  e.maintenance,
 		Inspections:  e.inspections,
+		Reviews:      e.reviews,
 		Inbox:        e.inboxSvc,
 		Now:          func() time.Time { return e.now },
 		Hasher:       &hasher,

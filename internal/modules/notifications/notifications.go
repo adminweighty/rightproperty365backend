@@ -41,6 +41,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/maintenance"
 	"rightproperty365.com/backend/internal/modules/onboarding"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
+	"rightproperty365.com/backend/internal/modules/reviews"
 	"rightproperty365.com/backend/internal/modules/subscriptions"
 	"rightproperty365.com/backend/internal/modules/teams"
 	"rightproperty365.com/backend/internal/modules/venues"
@@ -302,6 +303,8 @@ type Handlers struct {
 	maintenance func(ctx context.Context, id uuid.UUID) (maintenance.NotificationInfo, error)
 	// inspection loads the inspection behind an inspection event.
 	inspection func(ctx context.Context, id uuid.UUID) (inspections.NotificationInfo, error)
+	// review loads the review behind a moderation event.
+	review func(ctx context.Context, id uuid.UUID) (reviews.NotificationInfo, error)
 	// inbox is the notification centre (API 0.35.0): the in-app notification
 	// of each (event, recipient), its push deliveries, and the preferences
 	// the emails consult. Nil: email only, no preference check.
@@ -504,7 +507,7 @@ func EventTypes() []string {
 		identity.EventPasswordChanged,
 		identity.EventAdminSignedIn,
 	}, onboarding.EventTypes()...), append(append(append(appointments.EventTypes(), listings.ReviewEventTypes()...),
-		accounts.EventTypes()...), append(append(subscriptions.EventTypes(), applications.OutboxEventTypes()...), append(append(venues.EventTypes(), maintenance.OutboxEventTypes()...), inspections.OutboxEventTypes()...)...)...)...)
+		accounts.EventTypes()...), append(append(subscriptions.EventTypes(), applications.OutboxEventTypes()...), append(append(append(venues.EventTypes(), maintenance.OutboxEventTypes()...), inspections.OutboxEventTypes()...), reviews.OutboxEventTypes()...)...)...)...)
 }
 
 // PathOnboarding is the web page where an applicant fills in an application.
@@ -810,6 +813,11 @@ func (h *Handlers) build(ctx context.Context, ev outbox.Event) ([]plan, error) {
 
 	case maintenance.OutboxRequestCreated, maintenance.OutboxStatusChanged:
 		if err := h.maintenanceNotes(ctx, ev, add); err != nil {
+			return nil, err
+		}
+
+	case reviews.OutboxModerated:
+		if err := h.reviewNotes(ctx, ev, add); err != nil {
 			return nil, err
 		}
 

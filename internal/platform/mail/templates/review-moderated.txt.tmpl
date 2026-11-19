@@ -1,0 +1,12 @@
+{{define "subject"}}Your review of {{.ProfileName}}: {{.StatusText}}{{end}}
+{{define "heading"}}Your review: {{.StatusText}}{{end}}
+{{define "button"}}Open your reviews{{end}}
+{{define "why"}}You are receiving this because you reviewed a service provider on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+{{if eq .StatusText "Published"}}Your review is now public on the provider's profile.{{else if eq .StatusText "Hidden"}}Your review is no longer shown on the provider's profile.{{else}}Your review was not published.{{end}}
+
+Provider: {{.ProfileName}}
+Outcome: {{.StatusText}}
+
+The moderator's note, if any, is with your review on RightProperty365.{{end}}

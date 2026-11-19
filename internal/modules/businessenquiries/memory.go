@@ -144,6 +144,42 @@ func (s *MemoryStore) Create(_ context.Context, enq NewEnquiry) (Record, bool, e
 	return rec, true, nil
 }
 
+// visible is the inbox rule of InboxScope (routing exceptions are in
+// nobody's inbox).
+func visible(scope InboxScope, enq NewEnquiry) bool {
+	if enq.Recipient == nil {
+		return false
+	}
+	org, addressee := enq.Recipient.OrganisationID, enq.Recipient.UserID
+	return slices.Contains(scope.ManagedOrganisationIDs, org) ||
+		(slices.Contains(scope.MemberOrganisationIDs, org) && addressee != nil && *addressee == scope.UserID)
+}
+
+func inboxItem(enq NewEnquiry) InboxItem {
+	item := InboxItem{
+		EnquiryID: enq.ID, Reference: enq.Reference,
+		Recipient:              InboxRecipient{Kind: enq.ProfileKind, Slug: enq.ProfileSlug, Name: enq.ProfileName},
+		Message:                enq.Message,
+		PreferredContactMethod: enq.PreferredContactMethod,
+		Contact:                InboxContact{Name: enq.GuestName, Email: enq.GuestEmail},
+		Status:                 enq.Status,
+		CreatedAt:              enq.CreatedAt,
+	}
+	if enq.Service != "" {
+		service := enq.Service
+		item.Service = &service
+	}
+	if enq.GuestPhone != "" {
+		phone := enq.GuestPhone
+		item.Contact.Phone = &phone
+	}
+	if enq.RepliedAt != nil {
+		at := enq.RepliedAt.UTC()
+		item.RepliedAt = &at
+	}
+	return item
+}
+
 // ListInbox implements Store with the same visibility rule as the Postgres query.
 func (s *MemoryStore) ListInbox(_ context.Context, scope InboxScope) ([]InboxItem, error) {
 	s.mu.Lock()
@@ -151,33 +187,9 @@ func (s *MemoryStore) ListInbox(_ context.Context, scope InboxScope) ([]InboxIte
 
 	items := []InboxItem{}
 	for _, enq := range s.enquiries {
-		if enq.Recipient == nil {
-			continue // routing exception: in nobody's inbox
+		if visible(scope, enq) {
+			items = append(items, inboxItem(enq))
 		}
-		org, addressee := enq.Recipient.OrganisationID, enq.Recipient.UserID
-		visible := slices.Contains(scope.ManagedOrganisationIDs, org) ||
-			(slices.Contains(scope.MemberOrganisationIDs, org) && addressee != nil && *addressee == scope.UserID)
-		if !visible {
-			continue
-		}
-		item := InboxItem{
-			EnquiryID: enq.ID, Reference: enq.Reference,
-			Recipient:              InboxRecipient{Kind: enq.ProfileKind, Slug: enq.ProfileSlug, Name: enq.ProfileName},
-			Message:                enq.Message,
-			PreferredContactMethod: enq.PreferredContactMethod,
-			Contact:                InboxContact{Name: enq.GuestName, Email: enq.GuestEmail},
-			Status:                 enq.Status,
-			CreatedAt:              enq.CreatedAt,
-		}
-		if enq.Service != "" {
-			service := enq.Service
-			item.Service = &service
-		}
-		if enq.GuestPhone != "" {
-			phone := enq.GuestPhone
-			item.Contact.Phone = &phone
-		}
-		items = append(items, item)
 	}
 	// Newest first; UUIDv7 IDs break ties in creation order.
 	sort.SliceStable(items, func(i, j int) bool {
@@ -190,6 +202,82 @@ func (s *MemoryStore) ListInbox(_ context.Context, scope InboxScope) ([]InboxIte
 		items = items[:scope.Limit]
 	}
 	return items, nil
+}
+
+// MarkReplied implements Store.
+func (s *MemoryStore) MarkReplied(_ context.Context, scope InboxScope, id, by uuid.UUID, at time.Time) (InboxItem, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.enquiries {
+		enq := &s.enquiries[i]
+		if enq.ID != id || !visible(scope, *enq) {
+			continue
+		}
+		if enq.RepliedAt == nil {
+			at, who := at.UTC(), by
+			enq.RepliedAt, enq.RepliedBy = &at, &who
+			s.timeline = append(s.timeline, MemoryTimelineEntry{EnquiryID: id, EventType: TimelineReplied, ActorType: "AGENT", CreatedAt: at})
+		}
+		return inboxItem(*enq), nil
+	}
+	return InboxItem{}, ErrNotFound
+}
+
+func customerEnquiry(enq NewEnquiry) CustomerEnquiry {
+	out := CustomerEnquiry{ID: enq.ID, Reference: enq.Reference, ProfileID: enq.ProfileID, PrivacyVersion: enq.PrivacyVersion,
+		CreatedAt: enq.CreatedAt.UTC()}
+	if enq.CustomerUserID != nil {
+		u := *enq.CustomerUserID
+		out.CustomerUserID = &u
+	}
+	if enq.RepliedAt != nil {
+		at := enq.RepliedAt.UTC()
+		out.RepliedAt = &at
+	}
+	return out
+}
+
+// Enquiry implements Store.
+func (s *MemoryStore) Enquiry(_ context.Context, id uuid.UUID) (CustomerEnquiry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, enq := range s.enquiries {
+		if enq.ID == id {
+			return customerEnquiry(enq), nil
+		}
+	}
+	return CustomerEnquiry{}, ErrNotFound
+}
+
+// CustomerEnquiries implements Store.
+func (s *MemoryStore) CustomerEnquiries(_ context.Context, userID, profileID uuid.UUID) ([]CustomerEnquiry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []CustomerEnquiry{}
+	for _, enq := range s.enquiries {
+		if enq.CustomerUserID != nil && *enq.CustomerUserID == userID && enq.ProfileID == profileID {
+			out = append(out, customerEnquiry(enq))
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.After(out[j].CreatedAt)
+		}
+		return out[i].ID.String() > out[j].ID.String()
+	})
+	return out, nil
+}
+
+// ForgetUser unlinks a deleted account as the person who marked enquiries
+// replied (account deletion; the enquiries themselves are the customer's).
+func (s *MemoryStore) ForgetUser(userID uuid.UUID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.enquiries {
+		if s.enquiries[i].RepliedBy != nil && *s.enquiries[i].RepliedBy == userID {
+			s.enquiries[i].RepliedBy = nil
+		}
+	}
 }
 
 // Enquiries returns a copy of the stored enquiries (test helper).

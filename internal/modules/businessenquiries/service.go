@@ -200,6 +200,16 @@ func (s *Service) Inbox(ctx context.Context, scope InboxScope) ([]InboxItem, err
 	return items, nil
 }
 
+// MarkReplied records that the caller's organisation replied to an enquiry
+// in their inbox (API 0.36.4). The first mark counts; a repeat returns the
+// enquiry unchanged. ErrNotFound when the enquiry is not in their inbox.
+func (s *Service) MarkReplied(ctx context.Context, scope InboxScope, id uuid.UUID) (InboxItem, error) {
+	if len(scope.ManagedOrganisationIDs) == 0 && len(scope.MemberOrganisationIDs) == 0 {
+		return InboxItem{}, ErrNotFound
+	}
+	return s.store.MarkReplied(ctx, scope, id, scope.UserID, s.now().UTC().Truncate(time.Microsecond))
+}
+
 func replay(rec Record, hash string) (Result, error) {
 	if rec.RequestHash != hash {
 		return Result{}, ErrIdempotencyConflict

@@ -30,7 +30,7 @@ loses its sample account.
 | Email | Role(s) | What to look at when signed in |
 | --- | --- | --- |
 | `consumer@example.test` | `CONSUMER` (Prospective Buyer) | Seeker dashboard; *My appointments*: five upcoming (one with a new time proposed by the agent, to accept) and one past |
-| `tenant@example.test` | `TENANT` (Prospective Tenant) | Seeker dashboard; *My appointments*: consultations with a property manager, a developer (confirmed) and a plumber |
+| `tenant@example.test` | `TENANT` (Prospective Tenant) | Seeker dashboard; *My appointments*: consultations with a property manager, a developer (confirmed) and a plumber; a replied enquiry to Sample Plumbers it may review (`/v1/me/reviews`) |
 
 ## Real estate professionals and agencies
 
@@ -66,7 +66,7 @@ loses its sample account.
 | `sample-falls-stays@example.test` | `HOST`; owner of Sample Falls Stays | Short stays 22 and 24 (24 is in Mauritius); availability calendars |
 | `sample-showrooms@example.test` | `HOST`; owner of Sample Showrooms | Short stay 23 and its calendar |
 | `sample-developments@example.test` | `DEVELOPER`; owner of Sample Developments | Profile `developers/sample-developments`; a confirmed consultation with the tenant |
-| `sample-plumbers@example.test` | `SERVICE_PROVIDER`; owner of Sample Plumbers | Profile `service-providers/sample-plumbers`; a consultation request from the tenant |
+| `sample-plumbers@example.test` | `SERVICE_PROVIDER`; owner of Sample Plumbers | Profile `service-providers/sample-plumbers` (rating 4.5 from 2 reviews); a consultation request from the tenant; received reviews, one to reply to |
 
 Every other business profile has an owner too, at `<profile slug>@example.test` (for example
 `sample-electricians@example.test`, `sample-conveyancing-attorneys@example.test`,
