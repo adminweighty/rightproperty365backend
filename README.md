@@ -265,6 +265,7 @@ All configuration comes from environment variables. For local development you ma
 | GET, PUT | `/v1/me/notification-preferences` | Email and push per type (essential types locked on) |
 | GET | `/v1/marketing-consent-texts/{version}` | One marketing consent wording by version (public, cacheable; API 0.37.1) |
 | GET, PUT | `/v1/me/marketing-preferences` | The caller's marketing opt-in with its newest consent records; a change is recorded with its `X-Client` source (API 0.37.1) |
+| GET | `/v1/agent/organisations/{id}/reports/lead-funnel`, `/v1/me/reports/lead-funnel` | The request inbox's lead funnel, response-time KPIs and breakdowns, JSON or `?format=csv` (API 0.38.0) |
 | GET | `/v1/admin/notifications/health` | Delivery counts, dead-letter backlog, oldest unattempted push |
 | GET, POST, PATCH | `/v1/agent/organisations/{id}/ledger/*` (`/options`, `/entries[/{entryId}]` + `/reverse`, `/correct`, `/reconcile`, `/notes`, `/attachments`; `/reports/*`, `/categories`) | The agent ledger / books, per currency (API 0.34.0) |
 | GET, POST, PATCH, DELETE | `/v1/agent/organisations/{id}/properties[/{propertyId}]` (+ `/units[/{unitId}]`) | Properties and their units (API 0.36.0) |
@@ -484,9 +485,24 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
   60 per minute.
 
 **Not built** (dashboards and requests): replies to the customer and any email about a stage
-change; follow-up dates and reminders; editing or deleting a note; listing analytics, conversion
-funnels and response-time KPIs (no event data exists); seeker favourites, saved searches and
-alerts.
+change; follow-up dates and reminders; editing or deleting a note; listing analytics; seeker
+favourites, saved searches and alerts. (Conversion funnels and response-time KPIs: API 0.38.0,
+below.)
+
+## Lead funnel and response-time KPIs (API 0.38.0)
+
+No migration (the existing indexes `property_requests_recipient_org_idx`, `property_requests_recipient_user_idx` and `request_timeline_request_idx` serve it). In `internal/modules/propertyrequests`: `funnel.go` (the rules and the counting), `funnel_handler.go`, `memory_funnel.go`, `postgres_funnel.go`; sample data in `devseed/lead_funnel.go` (BR-005). Routes: `GET /v1/agent/organisations/{id}/reports/lead-funnel` and the direct seller's `GET /v1/me/reports/lead-funnel` (OpenAPI tags `reports`, `property-requests`; every answer `Cache-Control: private, no-store`). The exact JSON is the 0.38 lead funnel contract.
+
+- **Who sees what**: the inbox's own `InboxScope`, limited to the organisation. OWNER and MANAGER: every request it received (`scope: ORGANISATION`). AGENT and STAFF: their own requests **and the unassigned organisation inbox**, exactly what their inbox lists (`MEMBER`); `agent_user_id` only narrows. Not a member of `{id}` (or not a UUID): `404 ORGANISATION_NOT_FOUND`. `/v1/me/...`: the requests routed to the caller as a direct seller (`DIRECT_SELLER`), for whoever may open the inbox (`403` otherwise). Routing exceptions are never counted.
+- **Cohort**: requests **created** from `from` 00:00 UTC to the end of `to` (UTC dates, inclusive; default the last 30 days to today, at most 366 days; `400 VALIDATION_FAILED` otherwise). Filters: `agent_user_id` (the current assignee), `listing_id`, `request_type`, `market_code` (an unknown code is `400`). The cohort is described as it is now, moves after `to` included.
+- **Reached** (the rule): ranks NEW_ENQUIRY 0, ASSIGNED 1, CONTACTED 2, VIEWING_REQUESTED 3, VIEWING_SCHEDULED 4, CONVERTED 5; FOLLOW_UP_REQUIRED and CLOSED have none. A request reached a step when the highest rank of its current stage and of every `STAGE_CHANGED` to-stage is at least the step's: **skipped stages count** (CONTACTED straight to VIEWING_SCHEDULED reached VIEWING_REQUESTED, anything converted reached every step) and **moving back undoes nothing**. ASSIGNED is also reached with an `ASSIGNED` timeline row or when the request is routed to a person now (recipient AGENT or SELLER). Conversion from the previous step and from received are 4-place decimal strings (half up), `null` at a zero denominator; `current` is the number at that stage now.
+- **Side states**: closed without converting, converted then closed, follow-up required (now and ever), open (not CONVERTED or CLOSED) and closed.
+- **A response** is the first `STAGE_CHANGED` by the receiving side (actor `AGENT`) to CONTACTED or any later ranked stage. Assigning, FOLLOW_UP_REQUIRED, CLOSED, internal notes (the customer never sees them) and appointments (the one created with a request is the customer's; later appointment changes are in another module) are not responses. KPIs: median and p90 (nearest rank) in minutes over the responded requests, the counts and shares (of **all** received) answered within 60 and 1440 minutes, the never answered; time to conversion as the median days to the first move to CONVERTED.
+- **Breakdowns** with received, contacted, converted, conversion rate and median first response: by **current** assignee (`user_id: null` is the organisation inbox), by request type (all five), by listing (top 20 by received). `?format=csv` returns them stacked (`table,key,label,...`), formula-like cells prefixed with `'` as in the CRM export.
+- **One computation**: both stores only return the cohort's facts (`FunnelFacts`: the request, its current routing, its `STAGE_CHANGED` moves and whether it was ever assigned; Postgres reads them with the inbox's WHERE clause and one LEFT JOIN on the timeline) and `ComputeFunnel` counts. `TestPostgresFunnelMatchesMemory` runs the same fixture through both and requires equal reports.
+- **Sample data** (`devseed/lead_funnel.go`, memory and Postgres): 24 received requests with stage histories over the four weeks before the seed runs, 21 for Sample Estates (Tendai Ncube's listings 1, 2, 5; Chipo Dube's 7, 10, 17; the rest through the organisation inbox, assigned by Rudo Moyo) and 3 for Grace Mhlanga's listing 6. Sample Estates: 4 converted (one later closed), 6 closed without converting, 2 at follow-up, 7 never answered, first responses from 15 minutes to two days. Re-runnable: the fixed-ID samples (`LeadFunnelRequestID`) are deleted and written again with fresh dates (one an appointment points at is kept). The existing tests' counts are unchanged: the app tests do not load this seed.
+
+**Not verified:** `postgres_funnel.go` (the cohort query and the seed) has only run where `RP365_TEST_DATABASE_URL` is set. The report counts the cohort live on every call (no rollup); fine for an organisation's year of requests, not tuned beyond that.
 
 ## Marketing preferences (API 0.37.1)
 

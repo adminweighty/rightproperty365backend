@@ -109,6 +109,18 @@ Every other business profile has an owner too, at `<profile slug>@example.test` 
   `DEV MAIL (not sent): agreement-signing-code`, or set `AUTH_DEMO_CODE`).
 - Seeded in memory by the API in development and by `cmd/seed` (needs migrations 0022 and 0023).
 
+## Lead funnel (API 0.38.0)
+
+No account changed. The seed adds 24 received property requests (`LFDEMO01`..`LFDEMO24`, guests
+`lead01@example.test`..) with stage histories over the four weeks before it runs:
+
+- `estates.owner@example.test`: `GET /v1/agent/organisations/{Sample Estates id}/reports/lead-funnel` shows 21
+  requests: 4 converted (one later closed), 6 closed without converting, 2 at follow-up, 7 never answered.
+- `agent@example.test` (Tendai Ncube) and `estates.agent2@example.test` (Chipo Dube): the same route shows their
+  own requests plus the unassigned organisation inbox, as their inbox does.
+- `seller@example.test` (Grace Mhlanga): `GET /v1/me/reports/lead-funnel` shows the 3 requests on listing 6.
+- The requests also appear in each person's request inbox. Re-running the seed rewrites them with fresh dates.
+
 ## Marketing preferences (API 0.37.1)
 
 No account changed. `GET /v1/me/marketing-preferences` shows:

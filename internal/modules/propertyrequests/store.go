@@ -45,6 +45,9 @@ type Store interface {
 	// and the routing exceptions (see work.go).
 	WorkStore
 
+	// FunnelStore reads the cohort of a lead funnel report (funnel.go).
+	FunnelStore
+
 	// IsDirectSeller reports whether the user is the direct seller of at
 	// least one listing (in any status).
 	IsDirectSeller(ctx context.Context, userID uuid.UUID) (bool, error)

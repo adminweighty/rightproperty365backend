@@ -474,6 +474,13 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 		return err
 	}
 
+	// The sample property requests with their stage histories over the last
+	// four weeks, for the lead funnel report (needs nothing new: API
+	// 0.38.0), after the listings and the people.
+	if err := seedPostgresLeadFunnel(ctx, tx, now); err != nil {
+		return err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}

@@ -187,6 +187,11 @@ func run() error {
 		// Development sample data: 18 published listings, each with its
 		// organisation and assigned agent (or its direct seller).
 		devseed.SeedMemoryListings(memRequests)
+		// ...and 24 received requests with their stage histories over the
+		// last four weeks, for the lead funnel report (API 0.38.0).
+		if err := devseed.SeedMemoryLeadFunnel(ctx, memRequests, time.Now()); err != nil {
+			return fmt.Errorf("seed sample requests: %w", err)
+		}
 		requestStore = memRequests
 		// ...and the 29 directory profiles that can be sent an enquiry.
 		memEnquiries := businessenquiries.NewMemoryStore()

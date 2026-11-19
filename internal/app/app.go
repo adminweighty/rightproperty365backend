@@ -878,6 +878,10 @@ func NewRouter(d Deps) (http.Handler, error) {
 			r.Get("/", requestsH.Mine)
 			r.Get("/{id}", requestsH.MineOne)
 		})
+		// The lead funnel and response-time KPIs of the requests the caller
+		// received as a direct seller (API 0.38.0, BR-005). Who may call it is
+		// who may open the request inbox.
+		r.With(auth.RequireAuth).Get("/me/reports/lead-funnel", requestsH.MyLeadFunnel)
 
 		// Saved listings (FR-016): any customer-scope session (an admin
 		// session gets 403). Saving and removing share the listing-changes
@@ -1292,6 +1296,10 @@ func NewRouter(d Deps) (http.Handler, error) {
 			// The listing package and quota usage (API 0.37.0): any member of
 			// a listings-managing organisation, or the direct owner's own id.
 			r.Get("/package", packagesH.AgentUsage)
+			// The lead funnel and response-time KPIs of the request inbox (API
+			// 0.38.0, BR-005): OWNER and MANAGER the whole organisation, AGENT
+			// and STAFF what their inbox shows, 404 for anybody else.
+			r.Get("/reports/lead-funnel", requestsH.LeadFunnel)
 			r.Get("/members", teamsH.Members)
 			r.With(teamLimiter.Middleware).Patch("/members/{userId}", teamsH.PatchMember)
 			r.With(teamLimiter.Middleware).Delete("/members/{userId}", teamsH.RemoveMember)

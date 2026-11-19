@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.37.1
+  version: 0.38.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,22 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Lead funnel and response-time KPIs (new in 0.38.0)
+    - **`GET /v1/agent/organisations/{id}/reports/lead-funnel`** (BR-005) and the direct seller's
+      **`GET /v1/me/reports/lead-funnel`**: for the requests received from `from` to `to` (UTC dates,
+      inclusive; default the last 30 days, at most 366), how many ever reached each step of the
+      request inbox (received, assigned, contacted, viewing requested, viewing scheduled,
+      converted) with the conversion between steps, the time to first response (median, p90,
+      share within 1 h and 24 h, never answered), the median time to conversion, and breakdowns by
+      agent, request type and listing (top 20). `?format=csv` gives the breakdowns as CSV.
+    - **Reached** uses the stage history: skipped stages count as reached and moving back undoes
+      nothing. **A response** is the first move by the receiving side to CONTACTED or a later
+      stage; notes, assignment, follow-up and closing are not. Rates are 4-place decimal strings,
+      `null` when the denominator is 0.
+    - Scoping is the inbox's: OWNER and MANAGER see the organisation, AGENT and STAFF their own
+      requests and the unassigned organisation inbox; any other organisation is
+      `404 ORGANISATION_NOT_FOUND`.
 
     Marketing preferences (new in 0.37.1)
     - **`/v1/me/marketing-preferences`** (BR-017, FR-003): the signed-in person's marketing choice
@@ -931,7 +947,7 @@ tags:
       Paid plans for professionals and organisations, invoiced and paid outside the platform (no
       online payment, nothing charged automatically). New in 0.25.0.
   - name: reports
-    description: Administrators' counts and CSV exports. New in 0.25.0.
+    description: Administrators' counts and CSV exports (new in 0.25.0), and the request inbox's lead funnel and response-time KPIs (new in 0.38.0).
 
 paths:
   /healthz:
@@ -14840,6 +14856,54 @@ paths:
         "400": { $ref: "#/components/responses/ValidationFailed" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "404": { description: "`PACKAGE_ACCOUNT_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/PackageErrorEnvelope" } } } }
+  /v1/agent/organisations/{id}/reports/lead-funnel:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: "An organisation the caller is a member of. Anybody else: 404 ORGANISATION_NOT_FOUND." }
+    get:
+      tags: [reports, property-requests]
+      operationId: organisationLeadFunnel
+      summary: "The organisation's lead funnel and response-time KPIs (OWNER/MANAGER: everything; AGENT/STAFF: what their inbox shows; new in 0.38.0)"
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date }, description: "First day (UTC), inclusive. Default: `to` minus 29 days." }
+        - { name: to, in: query, schema: { type: string, format: date }, description: "Last day (UTC), inclusive. Default: today (UTC). At most 366 days from `from`, not before it." }
+        - { name: agent_user_id, in: query, schema: { type: string, format: uuid }, description: "The request's current assignee. Never widens the scope." }
+        - { name: listing_id, in: query, schema: { type: string, format: uuid } }
+        - { name: request_type, in: query, schema: { type: string, enum: [ENQUIRY, PROPERTY_INFORMATION, VIEWING_REQUEST, CONSULTATION_REQUEST, STAY_REQUEST] } }
+        - { name: market_code, in: query, schema: { type: string }, description: "A known market's country code, else 400." }
+        - { name: format, in: query, schema: { type: string, enum: [json, csv], default: json }, description: "`csv`: the three breakdown tables stacked, columns table,key,label,received,contacted,converted,conversion_rate,median_first_response_minutes." }
+      responses:
+        "200":
+          description: "The report (`Cache-Control: private, no-store`)."
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/LeadFunnelReport" } }
+            text/csv: { schema: { type: string } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`ORGANISATION_NOT_FOUND`: not a member of the organisation (or it does not exist).", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+  /v1/me/reports/lead-funnel:
+    get:
+      tags: [reports, property-requests]
+      operationId: myLeadFunnel
+      summary: "The direct seller's own lead funnel and response-time KPIs (callers who may not open the inbox: 403; new in 0.38.0)"
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date }, description: "First day (UTC), inclusive. Default: `to` minus 29 days." }
+        - { name: to, in: query, schema: { type: string, format: date }, description: "Last day (UTC), inclusive. Default: today (UTC). At most 366 days from `from`, not before it." }
+        - { name: agent_user_id, in: query, schema: { type: string, format: uuid }, description: "The request's current assignee. Never widens the scope." }
+        - { name: listing_id, in: query, schema: { type: string, format: uuid } }
+        - { name: request_type, in: query, schema: { type: string, enum: [ENQUIRY, PROPERTY_INFORMATION, VIEWING_REQUEST, CONSULTATION_REQUEST, STAY_REQUEST] } }
+        - { name: market_code, in: query, schema: { type: string }, description: "A known market's country code, else 400." }
+        - { name: format, in: query, schema: { type: string, enum: [json, csv], default: json }, description: "`csv`: the three breakdown tables stacked, columns table,key,label,received,contacted,converted,conversion_rate,median_first_response_minutes." }
+      responses:
+        "200":
+          description: "The report (`Cache-Control: private, no-store`)."
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/LeadFunnelReport" } }
+            text/csv: { schema: { type: string } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
   /v1/me/package:
     get:
       tags: [packages]
@@ -15842,6 +15906,114 @@ components:
               in_app: { type: boolean, const: true }
               changed_at: { type: [string, "null"], format: date-time }
               source: { type: [string, "null"], enum: [web, app, api, null] }
+    LeadFunnelReport:
+      type: object
+      description: |
+        The cohort is every visible request created in the window. `reached`: the highest rank among
+        the current stage and every STAGE_CHANGED to-stage (NEW_ENQUIRY 0, ASSIGNED 1, CONTACTED 2,
+        VIEWING_REQUESTED 3, VIEWING_SCHEDULED 4, CONVERTED 5; FOLLOW_UP_REQUIRED and CLOSED have
+        none) is at least the step's; ASSIGNED is also reached with an ASSIGNED timeline row or a
+        request routed to a person. A response is the first move by the receiving side to CONTACTED
+        or later. Median: the middle value (mean of the two middle); p90: nearest rank.
+      required: [organisation_id, scope, window, filters, generated_at, received, steps, side_states, response_time, time_to_conversion, by_agent, by_request_type, by_listing]
+      properties:
+        organisation_id: { type: [string, "null"], format: uuid, description: null on /v1/me. }
+        scope: { type: string, enum: [ORGANISATION, MEMBER, DIRECT_SELLER] }
+        window:
+          type: object
+          required: [from, to, days, timezone]
+          properties:
+            from: { type: string, format: date }
+            to: { type: string, format: date }
+            days: { type: integer }
+            timezone: { type: string, enum: [UTC] }
+        filters:
+          type: object
+          properties:
+            agent_user_id: { type: [string, "null"], format: uuid }
+            listing_id: { type: [string, "null"], format: uuid }
+            request_type: { type: [string, "null"] }
+            market_code: { type: [string, "null"] }
+        generated_at: { type: string, format: date-time }
+        received: { type: integer }
+        steps:
+          type: array
+          description: Always six, in order.
+          items:
+            type: object
+            required: [step, label, reached, conversion_from_previous, conversion_from_received, current]
+            properties:
+              step: { type: string, enum: [RECEIVED, ASSIGNED, CONTACTED, VIEWING_REQUESTED, VIEWING_SCHEDULED, CONVERTED] }
+              label: { type: string }
+              reached: { type: integer }
+              conversion_from_previous: { type: [string, "null"], pattern: "^[0-9]+\\.[0-9]{4}$", description: "4 decimal places, rounded half up; null when the denominator is 0." }
+              conversion_from_received: { type: [string, "null"], pattern: "^[0-9]+\\.[0-9]{4}$", description: "4 decimal places, rounded half up; null when the denominator is 0." }
+              current: { type: integer, description: At this stage now (RECEIVED counts NEW_ENQUIRY). }
+        side_states:
+          type: object
+          properties:
+            closed_without_converting: { type: integer }
+            converted_then_closed: { type: integer }
+            follow_up_required: { type: object, properties: { current: { type: integer }, ever: { type: integer } } }
+            open: { type: integer, description: Not CONVERTED or CLOSED now. }
+            closed: { type: integer, description: CONVERTED or CLOSED now. }
+        response_time:
+          type: object
+          properties:
+            responded: { type: integer }
+            never_responded: { type: integer }
+            median_minutes: { type: [number, "null"] }
+            p90_minutes: { type: [number, "null"] }
+            within_1h: { type: integer }
+            within_1h_rate: { type: [string, "null"], pattern: "^[0-9]+\\.[0-9]{4}$", description: "4 decimal places, rounded half up; null when the denominator is 0." }
+            within_24h: { type: integer }
+            within_24h_rate: { type: [string, "null"], pattern: "^[0-9]+\\.[0-9]{4}$", description: "4 decimal places, rounded half up; null when the denominator is 0." }
+        time_to_conversion:
+          type: object
+          properties:
+            converted: { type: integer }
+            median_days: { type: [number, "null"] }
+        by_agent:
+          type: array
+          items: { $ref: "#/components/schemas/LeadFunnelAgentRow" }
+        by_request_type:
+          type: array
+          items: { $ref: "#/components/schemas/LeadFunnelTypeRow" }
+        by_listing:
+          type: array
+          maxItems: 20
+          items: { $ref: "#/components/schemas/LeadFunnelListingRow" }
+    LeadFunnelAgentRow:
+      type: object
+      description: Grouped by the current assignee; user_id null is the organisation inbox.
+      properties:
+        user_id: { type: [string, "null"], format: uuid }
+        name: { type: string }
+        received: { type: integer }
+        contacted: { type: integer, description: Reached CONTACTED or later. }
+        converted: { type: integer, description: Ever CONVERTED. }
+        conversion_rate: { type: [string, "null"], pattern: "^[0-9]+\\.[0-9]{4}$", description: "4 decimal places, rounded half up; null when the denominator is 0." }
+        median_first_response_minutes: { type: [number, "null"] }
+    LeadFunnelTypeRow:
+      type: object
+      properties:
+        request_type: { type: string }
+        label: { type: string }
+        received: { type: integer }
+        contacted: { type: integer, description: Reached CONTACTED or later. }
+        converted: { type: integer, description: Ever CONVERTED. }
+        conversion_rate: { type: [string, "null"], pattern: "^[0-9]+\\.[0-9]{4}$", description: "4 decimal places, rounded half up; null when the denominator is 0." }
+        median_first_response_minutes: { type: [number, "null"] }
+    LeadFunnelListingRow:
+      type: object
+      properties:
+        listing_id: { type: string, format: uuid }
+        listing: { type: [object, "null"], properties: { slug: { type: string }, title: { type: string }, reference: { type: string } } }
+        received: { type: integer }
+        contacted: { type: integer, description: Reached CONTACTED or later. }
+        converted: { type: integer, description: Ever CONVERTED. }
+        conversion_rate: { type: [string, "null"], pattern: "^[0-9]+\\.[0-9]{4}$", description: "4 decimal places, rounded half up; null when the denominator is 0." }
+        median_first_response_minutes: { type: [number, "null"] }
     ErrorEnvelope:
       type: object
       required: [error, trace_id]
