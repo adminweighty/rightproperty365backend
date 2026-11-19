@@ -51,6 +51,7 @@ import (
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/database"
 	"rightproperty365.com/backend/internal/platform/elastic"
+	"rightproperty365.com/backend/internal/platform/ics"
 	"rightproperty365.com/backend/internal/platform/logging"
 	"rightproperty365.com/backend/internal/platform/mail"
 	"rightproperty365.com/backend/internal/platform/outbox"
@@ -389,6 +390,8 @@ func run() error {
 		})
 		handlers.SetOnboardingSource(app.OnboardingNotifications(memOnboarding, files, referenceStore, logger))
 		handlers.SetAppointmentSource(memAppointments.Get)
+		// Calendar invitations on the appointment and venue booking emails (API 0.39.0).
+		handlers.SetCalendar(ics.Organizer(cfg.EmailFrom), memAppointments.Timeline)
 		handlers.SetListingSource(app.ListingRecord(memListings))
 		handlers.SetSuspensionReasons(app.SuspensionReasons(accountStore))
 		handlers.SetSubscriptionSource(memSubscriptions.Subscription)

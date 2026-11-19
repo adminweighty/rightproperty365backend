@@ -16,7 +16,7 @@ Status: Cancelled
 No payment was taken on RightProperty365. If you paid the host a deposit, contact the host about it.
 
 View your hourly bookings:
-https://rightproperty365.com/account/hourly-bookings
+https://rightproperty365.com/account/venue-bookings
 
 --
 You are receiving this because you booked a venue by the hour on RightProperty365.

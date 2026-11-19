@@ -40,6 +40,17 @@ type Message struct {
 	// DevCode is the sign-in code of a sign-in-code email, for the same
 	// development LogSender only; never stored, ignored by real transports.
 	DevCode string
+	// Attachments are sent with the message (a calendar invitation). They are
+	// built at send time from the event's data and never stored: not in the
+	// outbox, not in the delivery log.
+	Attachments []Attachment
+}
+
+// Attachment is one file sent with a message.
+type Attachment struct {
+	Filename    string
+	ContentType string
+	Content     []byte
 }
 
 // Sender is an email transport.

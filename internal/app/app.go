@@ -48,6 +48,7 @@ import (
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/httpx"
+	"rightproperty365.com/backend/internal/platform/ics"
 	"rightproperty365.com/backend/internal/platform/storage"
 )
 
@@ -447,6 +448,9 @@ func NewRouter(d Deps) (http.Handler, error) {
 	venuesSvc := VenuesService(d.Venues, listingsSvc, d.Listings, d.Markets, d.Reference, logger, d.Now)
 	listingsSvc.SetHourlyRates(venueRates{svc: venuesSvc})
 	venuesH := venues.NewHandler(venuesSvc, logger)
+	// Calendar downloads (API 0.39.0): the web app's pages and the platform
+	// sender as ORGANIZER, never a party's address.
+	venuesH.SetCalendar(venues.CalendarConfig{PublicWebURL: cfg.PublicWebURL, Organizer: ics.Organizer(cfg.EmailFrom)})
 	venueQuoteLimiter := httpx.NewRateLimiter(venueQuotesPerMinute, venueQuotesBurst)
 	venueLimiter := httpx.NewRateLimiter(venueChangesPerMinute, venueChangesBurst)
 	orgVenues, ownerVenues := venuesH.Organisation("id"), venuesH.DirectOwner()
@@ -576,6 +580,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 	reviewsH := reviews.NewHandler(ReviewsService(ReviewsDeps{Store: d.Reviews, Tenancies: tenancySvc, Directory: d.Directory,
 		Maintenance: d.Maintenance, Enquiries: d.Enquiries, Logger: logger, Now: d.Now}), logger)
 	appointmentsH := appointments.NewHandler(appointmentsSvc, inboxCounts{requests: requestsSvc, enquiries: enquiriesSvc}, logger)
+	appointmentsH.SetCalendar(appointments.CalendarConfig{PublicWebURL: cfg.PublicWebURL, Organizer: ics.Organizer(cfg.EmailFrom)})
 	appointmentLimiter := httpx.NewRateLimiter(appointmentsPerMinute, appointmentsBurst)
 	authn := auth.NewMiddleware(identitySvc, cfg.CORSAllowedOrigins, logger)
 
@@ -949,6 +954,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 			r.Get("/", venuesH.ListMine)
 			r.With(venueLimiter.Middleware).Post("/", venuesH.Request)
 			r.Get("/{bookingId}", venuesH.GetMine)
+			r.Get("/{bookingId}/calendar.ics", venuesH.CalendarMine)
 			r.With(venueLimiter.Middleware).Post("/{bookingId}/cancel", venuesH.CancelMine)
 			r.With(venueLimiter.Middleware).Post("/{bookingId}/reschedule", venuesH.RescheduleMine)
 			r.With(venueLimiter.Middleware).Post("/{bookingId}/accept", venuesH.AcceptMine)
@@ -959,6 +965,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 			r.Use(auth.RequireAuth)
 			r.Get("/", ownerVenues.List)
 			r.Get("/{bookingId}", ownerVenues.Get)
+			r.Get("/{bookingId}/calendar.ics", ownerVenues.Calendar)
 			r.With(venueLimiter.Middleware).Post("/{bookingId}/confirm", ownerVenues.Confirm)
 			r.With(venueLimiter.Middleware).Post("/{bookingId}/decline", ownerVenues.Decline)
 			r.With(venueLimiter.Middleware).Post("/{bookingId}/cancel", ownerVenues.Cancel)
@@ -1071,6 +1078,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 			r.Use(auth.RequireAuth)
 			r.Get("/", appointmentsH.ListMine)
 			r.Get("/{id}", appointmentsH.GetMine)
+			r.Get("/{id}/calendar.ics", appointmentsH.CalendarMine)
 			r.Post("/{id}/cancel", appointmentsH.CancelMine)
 			r.Post("/{id}/reschedule", appointmentsH.RescheduleMine)
 			r.Post("/{id}/accept", appointmentsH.AcceptMine)
@@ -1082,6 +1090,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 			r.Use(auth.RequireAuth)
 			r.Get("/", appointmentsH.Inbox)
 			r.Get("/{id}", appointmentsH.Received)
+			r.Get("/{id}/calendar.ics", appointmentsH.CalendarReceived)
 			r.Post("/{id}/confirm", appointmentsH.Confirm)
 			r.Post("/{id}/reschedule", appointmentsH.Reschedule)
 			r.Post("/{id}/cancel", appointmentsH.Cancel)
@@ -1393,6 +1402,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 			r.Route("/venue-bookings", func(r chi.Router) {
 				r.Get("/", orgVenues.List)
 				r.Get("/{bookingId}", orgVenues.Get)
+				r.Get("/{bookingId}/calendar.ics", orgVenues.Calendar)
 				r.With(venueLimiter.Middleware).Post("/{bookingId}/confirm", orgVenues.Confirm)
 				r.With(venueLimiter.Middleware).Post("/{bookingId}/decline", orgVenues.Decline)
 				r.With(venueLimiter.Middleware).Post("/{bookingId}/cancel", orgVenues.Cancel)

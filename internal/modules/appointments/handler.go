@@ -43,6 +43,8 @@ type Handler struct {
 	svc    *Service
 	inbox  InboxCounts
 	logger *slog.Logger
+	// calendar configures the calendar downloads (SetCalendar).
+	calendar CalendarConfig
 }
 
 // NewHandler builds the handler. inbox may be nil (the summary then reports

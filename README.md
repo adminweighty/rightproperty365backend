@@ -266,6 +266,7 @@ All configuration comes from environment variables. For local development you ma
 | GET | `/v1/marketing-consent-texts/{version}` | One marketing consent wording by version (public, cacheable; API 0.37.1) |
 | GET, PUT | `/v1/me/marketing-preferences` | The caller's marketing opt-in with its newest consent records; a change is recorded with its `X-Client` source (API 0.37.1) |
 | GET | `/v1/agent/organisations/{id}/reports/lead-funnel`, `/v1/me/reports/lead-funnel` | The request inbox's lead funnel, response-time KPIs and breakdowns, JSON or `?format=csv` (API 0.38.0) |
+| GET | `/v1/me/appointments/{id}/calendar.ics`, `/v1/inbox/appointments/{id}/calendar.ics`, `/v1/me/venue-bookings/{bookingId}/calendar.ics`, `/v1/me/hosted-venue-bookings/{bookingId}/calendar.ics`, `/v1/agent/organisations/{id}/venue-bookings/{bookingId}/calendar.ics` | "Add to calendar" iCalendar downloads for the parties who can see the appointment or booking, 404 otherwise (API 0.39.0) |
 | GET | `/v1/admin/notifications/health` | Delivery counts, dead-letter backlog, oldest unattempted push |
 | GET, POST, PATCH | `/v1/agent/organisations/{id}/ledger/*` (`/options`, `/entries[/{entryId}]` + `/reverse`, `/correct`, `/reconcile`, `/notes`, `/attachments`; `/reports/*`, `/categories`) | The agent ledger / books, per currency (API 0.34.0) |
 | GET, POST, PATCH, DELETE | `/v1/agent/organisations/{id}/properties[/{propertyId}]` (+ `/units[/{unitId}]`) | Properties and their units (API 0.36.0) |
@@ -488,6 +489,20 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 change; follow-up dates and reminders; editing or deleting a note; listing analytics; seeker
 favourites, saved searches and alerts. (Conversion funnels and response-time KPIs: API 0.38.0,
 below.)
+
+## Calendar invitations (API 0.39.0)
+
+FR-021. No migration: nothing new is stored. The exact rules are the 0.39 calendar invitations contract.
+
+- **Generator**: `internal/platform/ics` writes one VCALENDAR with one VEVENT (RFC 5545): CRLF line endings, lines folded at 75 octets without splitting a UTF-8 character, TEXT values escaped (`\\`, `\;`, `\,`, newline as `\n`). Every time is UTC with `Z` (no `VTIMEZONE`); the market's zone is in `X-WR-TIMEZONE` and the description's `Time:` line. Golden files: `internal/platform/ics/testdata/{request,update,cancel}.ics` (kept byte-exact by `*.ics -text` in `.gitattributes`; rewrite with `go test ./internal/platform/ics -update`).
+- **One entry per appointment / booking**: UID `appointment-<id>@rightproperty365.com` / `venue-booking-<id>@rightproperty365.com`. **SEQUENCE is derived**, not stored: the number of entries in the append-only history (`appointment_timeline`, `venue_booking_events`) at or before the moment described, minus one, so it never goes down. `appointments/calendar.go`, `venues/calendar.go`.
+- **Emails** (`notifications.Handlers.SetCalendar`, wired in the worker and the database-less API): `METHOD:REQUEST` on `appointment-confirmed` (customer), `venue-booking-confirmed` (customer) and `venue-booking-accepted` (host); `METHOD:CANCEL` on `appointment-cancelled`, `appointment-cancelled-by-customer`, `venue-booking-cancelled` and `venue-booking-cancelled-by-customer`, only when the appointment or booking had been confirmed. Proposals of a new time carry nothing (the confirmed time stands until accepted). The attachment rides on the existing email only, so the notification preferences apply unchanged.
+- **Privacy**: ORGANIZER is the platform sender (`EMAIL_FROM`), ATTENDEE only the email's own recipient (`RSVP=FALSE`); no file holds the other party's address or phone, or the customer's name towards the professional. LOCATION is the appointment's location note as the confirmation email shows it (contact details removed); venue entries have none.
+- **Outbox**: payloads stay identifiers-only. The worker rebuilds the file at send time from the event (DTSTAMP is the event's `occurred_at`), so a retry produces the same bytes and no blob is ever stored.
+- **Mail platform**: `mail.Message.Attachments` (`Filename`, `ContentType`, `Content`); Resend gets `attachments: [{filename, content (base64), content_type}]`; the log driver logs name, type and size only.
+- **Downloads** (`METHOD:PUBLISH`, `text/calendar; charset=utf-8`, `Content-Disposition: attachment; filename="..."`, `Cache-Control: private, no-store`): `GET /v1/me/appointments/{id}/calendar.ics`, `GET /v1/inbox/appointments/{id}/calendar.ics` (404, not 403, without a professional scope), `GET /v1/me/venue-bookings/{bookingId}/calendar.ics`, `GET /v1/me/hosted-venue-bookings/{bookingId}/calendar.ics` and `GET /v1/agent/organisations/{id}/venue-bookings/{bookingId}/calendar.ics`; 404 for anybody else. `Content-Disposition` is in the CORS expose list.
+
+**Not verified / follow-ups:** not checked in real calendar apps (Gmail, Outlook, Apple Calendar); no Resend send with an attachment was made. The existing venue booking emails still link customers to `/account/hourly-bookings`, while the web page is `/account/venue-bookings` (the calendar entries use the latter).
 
 ## Lead funnel and response-time KPIs (API 0.38.0)
 
@@ -854,7 +869,7 @@ contract's "Response shapes".
 **Not verified / follow-ups:** migration `0032` and `venues/postgres.go` have only run where
 `RP365_TEST_DATABASE_URL` is set. Reservation mode and payments are not built. Account deletion
 removes a customer's bookings through the database cascade only (the memory store keeps them).
-`booking_confirm` is recorded as a raw event but has no rollup column yet. No ICS invites.
+`booking_confirm` is recorded as a raw event but has no rollup column yet. Calendar invitations: API 0.39.0, below.
 
 ## Questionnaires and applications (API 0.32.0)
 
@@ -3550,6 +3565,8 @@ exists today, nothing in this repository provides them, and nobody has been name
 Until these have owners, a disk failure or a bad migration on the server means data loss.
 
 ### Schema
+
+- API 0.39.0 (calendar invitations) adds no migration: SEQUENCE is derived from the existing timelines.
 
 - `0041_marketing_consent` (API 0.37.1): `marketing_consent_events` (user, `opt_in`, `changed_at`, `source` web / app / api `marketing_consent_events_source_allowed`, `context` REGISTRATION / PREFERENCES / MIGRATION / ADMIN / UNSUBSCRIBE `marketing_consent_events_context_allowed`, `consent_text_version` 1-40 characters `marketing_consent_events_version_length` and only on opt-in `marketing_consent_events_version_on_opt_in`; index `marketing_consent_events_by_user`), append-only through the trigger `marketing_consent_events_no_update`. Backfills one MIGRATION record (at the account's `created_at`, source api) for every account already opted in. `marketing_consent_texts` (`version` primary key, `text`, `status` DRAFT / APPROVED, `created_at`; immutable through the trigger `marketing_consent_texts_immutable`), with `marketing-2026-01` inserted as DRAFT. New tables, triggers and inserts.
 - `0040_listing_packages` (API 0.37.0): `listing_packages` (market by code, code unique per market `listing_packages_code_per_market`, name, description, `listing_limit` 0-100000, active, `is_default` with at most one per market `listing_packages_one_default` and only when active `listing_packages_default_is_active`, sort, creator), `listing_package_prices` (per package and billing term MONTHLY / QUARTERLY / ANNUAL, `listing_package_prices_one_per_term`; exact numeric amount, currency, `sample`; cascade with the package) and `listing_package_assignments` (organisation XOR user `listing_package_assignments_one_account`, market, package RESTRICT, `starts_on` / `ends_on` UTC dates inclusive `listing_package_assignments_dates_ordered`, source ADMIN / INVOICE, note, assigner and name, `cancelled_at` / `cancelled_by`). The admin audit target CHECK `admin_audit_events_target_type_allowed` gains `LISTING_PACKAGE` and `ORGANISATION`. Nothing is seeded by the migration. New tables and a wider check.

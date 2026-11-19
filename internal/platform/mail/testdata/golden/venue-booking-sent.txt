@@ -16,7 +16,7 @@ Status: Requested
 This is an estimate. No payment is taken on RightProperty365; the host confirms and arranges payment with you.
 
 View your hourly bookings:
-https://rightproperty365.com/account/hourly-bookings
+https://rightproperty365.com/account/venue-bookings
 
 --
 You are receiving this because you asked to book a venue by the hour on RightProperty365.

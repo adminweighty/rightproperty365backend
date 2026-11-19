@@ -40,6 +40,26 @@ func (s *LogSender) Send(ctx context.Context, _ string, m Message) (string, erro
 	if m.DevCode != "" {
 		attrs = append(attrs, slog.String("code", m.DevCode))
 	}
+	if len(m.Attachments) > 0 {
+		attrs = append(attrs, slog.Any("attachments", AttachmentSummaries(m.Attachments)))
+	}
 	s.logger.InfoContext(ctx, "DEV MAIL (not sent): "+label, attrs...)
 	return "log-" + uuid.NewString(), nil
+}
+
+// AttachmentSummary is what a log line says about an attachment: its name,
+// type and size, never its content.
+type AttachmentSummary struct {
+	Filename    string `json:"filename"`
+	ContentType string `json:"content_type"`
+	Size        int    `json:"size"`
+}
+
+// AttachmentSummaries describes attachments for a log line.
+func AttachmentSummaries(list []Attachment) []AttachmentSummary {
+	out := make([]AttachmentSummary, 0, len(list))
+	for _, a := range list {
+		out = append(out, AttachmentSummary{Filename: a.Filename, ContentType: a.ContentType, Size: len(a.Content)})
+	}
+	return out
 }

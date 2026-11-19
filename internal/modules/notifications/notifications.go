@@ -46,6 +46,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/teams"
 	"rightproperty365.com/backend/internal/modules/venues"
 	"rightproperty365.com/backend/internal/platform/config"
+	"rightproperty365.com/backend/internal/platform/ics"
 	"rightproperty365.com/backend/internal/platform/mail"
 	"rightproperty365.com/backend/internal/platform/outbox"
 )
@@ -312,7 +313,30 @@ type Handlers struct {
 	// place names a listing's place (suburb, else city) for the in-app and
 	// push text. Nil leaves the place out.
 	place func(ctx context.Context, listingID uuid.UUID) string
+	// calendar turns on the calendar invitations attached to the
+	// appointment and venue booking emails (API 0.39.0). Nil: none.
+	calendar *calendarConfig
 }
+
+// calendarConfig is what the calendar attachments need.
+type calendarConfig struct {
+	// organizer is the platform's sender (EMAIL_FROM), never a party.
+	organizer *ics.Address
+	// appointmentTimeline reads an appointment's timeline (its SEQUENCE).
+	appointmentTimeline func(ctx context.Context, id uuid.UUID) ([]appointments.TimelineEntry, error)
+}
+
+// SetCalendar attaches calendar invitations (RFC 5545) to the appointment
+// and venue booking emails that confirm or cancel a time (API 0.39.0).
+// organizer is the platform's sender address (EMAIL_FROM); the appointment
+// timeline gives the SEQUENCE. The files are rebuilt from the event at send
+// time and never stored.
+func (h *Handlers) SetCalendar(organizer *ics.Address, appointmentTimeline func(ctx context.Context, id uuid.UUID) ([]appointments.TimelineEntry, error)) {
+	h.calendar = &calendarConfig{organizer: organizer, appointmentTimeline: appointmentTimeline}
+}
+
+// attendee is the email's own recipient as an ATTENDEE.
+func attendee(p Person) *ics.Address { return &ics.Address{Name: p.Name, Email: p.Email} }
 
 // SetListingSource supplies the listing behind a listing review event (the
 // listing store's record, whatever its status). Without it those events are
@@ -414,6 +438,35 @@ func (h *Handlers) appointmentNotes(ctx context.Context, ev outbox.Event, add fu
 		d.ProposedTime = mail.LocalDateTime(*payload.ProposedStartUTC, a.Timezone)
 	}
 
+	// The calendar invitation (API 0.39.0): REQUEST with a confirmation,
+	// CANCEL with the cancellation of an appointment that had been
+	// confirmed. Built here, at send time, from the event: retries rebuild
+	// the same bytes and the outbox never holds the file.
+	method := ""
+	var entries []appointments.TimelineEntry
+	at := occurredAt(ev)
+	if h.calendar != nil && h.calendar.appointmentTimeline != nil && (ev.Type == appointments.EventConfirmed || ev.Type == appointments.EventCancelled) {
+		if entries, err = h.calendar.appointmentTimeline(ctx, a.ID); err != nil {
+			return err
+		}
+		switch {
+		case ev.Type == appointments.EventConfirmed:
+			method = ics.MethodRequest
+		case appointments.EverConfirmed(entries, at):
+			method = ics.MethodCancel
+		}
+	}
+	invite := func(d *mail.Data, to Person, forCustomer bool) {
+		if method == "" {
+			return
+		}
+		file := appointments.CalendarFile(a, appointments.CalendarInput{
+			Method: method, ForCustomer: forCustomer, Start: start, Stamp: at, Sequence: appointments.CalendarSequence(entries, &at),
+			PublicWebURL: h.renderer.PublicURL(), Organizer: h.calendar.organizer, Attendee: attendee(to),
+		})
+		d.Attachments = []mail.Attachment{appointments.CalendarAttachment(a, method, file)}
+	}
+
 	toCustomer := func(template string) error {
 		d := d
 		d.Name, d.Path, d.WithName = a.CustomerName, PathMyAppointments, a.WithName
@@ -421,7 +474,9 @@ func (h *Handlers) appointmentNotes(ctx context.Context, ev outbox.Event, add fu
 			// A guest has no account page to open.
 			d.Path = PathHome
 		}
-		return add(template, "customer", Person{UserID: a.CustomerUserID, Name: a.CustomerName, Email: a.CustomerEmail}, d)
+		to := Person{UserID: a.CustomerUserID, Name: a.CustomerName, Email: a.CustomerEmail}
+		invite(&d, to, true)
+		return add(template, "customer", to, d)
 	}
 	toProfessional := func(template string) error {
 		people, err := h.source.Recipients(ctx, a.AssignedUserID, a.OrganisationID)
@@ -431,6 +486,7 @@ func (h *Handlers) appointmentNotes(ctx context.Context, ev outbox.Event, add fu
 		for _, r := range people {
 			d := d
 			d.Name, d.Path = r.Name, PathAppointmentsInbox
+			invite(&d, r, false)
 			if err := add(template, recipientKey(r), r, d); err != nil {
 				return err
 			}

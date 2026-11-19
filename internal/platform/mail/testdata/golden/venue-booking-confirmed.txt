@@ -18,7 +18,7 @@ The host will contact you to arrange payment and the deposit. No payment is take
 If you can no longer come, cancel the booking from your account. The venue's cancellation policy applies.
 
 View your hourly bookings:
-https://rightproperty365.com/account/hourly-bookings
+https://rightproperty365.com/account/venue-bookings
 
 --
 You are receiving this because you asked to book a venue by the hour on RightProperty365.

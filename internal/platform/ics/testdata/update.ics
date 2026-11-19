@@ -1,0 +1,25 @@
+BEGIN:VCALENDAR
+PRODID:-//RightProperty365//Calendar invitations//EN
+VERSION:2.0
+CALSCALE:GREGORIAN
+METHOD:REQUEST
+X-WR-TIMEZONE:Africa/Harare
+BEGIN:VEVENT
+UID:appointment-0b6f3a52-6c1e-4b8e-9d7e-2f1c5a9e8d10@rightproperty365.com
+SEQUENCE:3
+DTSTAMP:20261102T090000Z
+DTSTART:20261119T080000Z
+DTEND:20261119T083000Z
+SUMMARY:Property viewing: 3-bedroom house\, Borrowdale (RPA-2026-000123)
+LOCATION:Meet at the gate\; ask for the caretaker\, then the blue door
+DESCRIPTION:Reference: RPA-2026-000123\nAppointment: Property viewing\nTime
+ : Thursday 19 November 2026\, 10:00 (Central Africa Time)\nManage: https:/
+ /rightproperty365.com/account/appointments
+URL:https://rightproperty365.com/account/appointments
+STATUS:CONFIRMED
+TRANSP:OPAQUE
+ORGANIZER;CN="RightProperty365":mailto:no-reply@rightproperty365.com
+ATTENDEE;CN="Rudo Moyo";ROLE=REQ-PARTICIPANT;PARTSTAT=ACCEPTED;RSVP=FALSE:m
+ ailto:rudo@example.test
+END:VEVENT
+END:VCALENDAR

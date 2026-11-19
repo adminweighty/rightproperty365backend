@@ -9,7 +9,8 @@
 // and written to the outbox in the same transaction.
 //
 // Not here (see the README): venue and short-stay bookings, availability
-// calendars, ICS invites, calendar sync, reminders and push notifications.
+// calendars, calendar sync, reminders and push notifications. Calendar
+// invitations (ICS) are in calendar.go (API 0.39.0).
 package appointments
 
 import (

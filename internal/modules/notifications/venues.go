@@ -9,13 +9,14 @@ import (
 	"github.com/google/uuid"
 
 	"rightproperty365.com/backend/internal/modules/venues"
+	"rightproperty365.com/backend/internal/platform/ics"
 	"rightproperty365.com/backend/internal/platform/mail"
 	"rightproperty365.com/backend/internal/platform/outbox"
 )
 
 // Where the venue booking emails send the customer and the host.
 const (
-	PathMyHourlyBookings  = "/account/hourly-bookings"
+	PathMyHourlyBookings  = "/account/venue-bookings"
 	PathHostVenueBookings = "/agent/venue-bookings"
 )
 
@@ -75,11 +76,37 @@ func (h *Handlers) venueNotes(ctx context.Context, ev outbox.Event, add func(tem
 	if total.TotalExcludingDeposit != "" {
 		d.Amount = total.Currency + " " + total.TotalExcludingDeposit
 	}
+	// The calendar invitation (API 0.39.0): REQUEST with a confirmation (to
+	// the customer, and to the host when the customer accepted the host's
+	// time), CANCEL with the cancellation of a booking that had been
+	// confirmed. Rebuilt at send time from the event; never stored.
+	method := ""
+	at := occurredAt(ev)
+	if h.calendar != nil {
+		switch {
+		case ev.Type == venues.EventConfirmed:
+			method = ics.MethodRequest
+		case ev.Type == venues.EventCancelled && venues.EverConfirmed(n.Events, at):
+			method = ics.MethodCancel
+		}
+	}
+	invite := func(d *mail.Data, to Person, forCustomer bool) {
+		if method == "" {
+			return
+		}
+		file := venues.CalendarFile(b, venues.CalendarInput{
+			Method: method, ForCustomer: forCustomer, Start: start, End: end, Stamp: at, Sequence: venues.CalendarSequence(n.Events, &at),
+			PublicWebURL: h.renderer.PublicURL(), Organizer: h.calendar.organizer, Attendee: attendee(to),
+		})
+		d.Attachments = []mail.Attachment{venues.CalendarAttachment(b, method, file)}
+	}
 	customer := func(template string) error {
 		d := d
 		d.Name, d.Path = b.CustomerName, PathMyHourlyBookings
 		user := b.CustomerUserID
-		return add(template, "customer", Person{UserID: &user, Name: b.CustomerName, Email: b.CustomerEmail}, d)
+		to := Person{UserID: &user, Name: b.CustomerName, Email: b.CustomerEmail}
+		invite(&d, to, true)
+		return add(template, "customer", to, d)
 	}
 	host := func(template string) error {
 		var people []Person
@@ -96,6 +123,7 @@ func (h *Handlers) venueNotes(ctx context.Context, ev outbox.Event, add func(tem
 		for _, r := range people {
 			d := d
 			d.Name, d.Path = r.Name, PathHostVenueBookings
+			invite(&d, r, false)
 			if err := add(template, recipientKey(r), r, d); err != nil {
 				return err
 			}

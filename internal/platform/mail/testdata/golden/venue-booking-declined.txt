@@ -16,7 +16,7 @@ Status: Declined
 You can choose another time and send a new request.
 
 Find another time:
-https://rightproperty365.com/account/hourly-bookings
+https://rightproperty365.com/account/venue-bookings
 
 --
 You are receiving this because you asked to book a venue by the hour on RightProperty365.

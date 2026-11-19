@@ -3,6 +3,7 @@ package mail
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -120,14 +121,22 @@ type resendTag struct {
 	Value string `json:"value"`
 }
 
+// resendAttachment is one attachment of POST /emails: the content is base64.
+type resendAttachment struct {
+	Filename    string `json:"filename"`
+	Content     string `json:"content"`
+	ContentType string `json:"content_type,omitempty"`
+}
+
 type resendRequest struct {
-	From    string      `json:"from"`
-	To      []string    `json:"to"`
-	Subject string      `json:"subject"`
-	HTML    string      `json:"html,omitempty"`
-	Text    string      `json:"text,omitempty"`
-	ReplyTo string      `json:"reply_to,omitempty"`
-	Tags    []resendTag `json:"tags,omitempty"`
+	From        string             `json:"from"`
+	To          []string           `json:"to"`
+	Subject     string             `json:"subject"`
+	HTML        string             `json:"html,omitempty"`
+	Text        string             `json:"text,omitempty"`
+	ReplyTo     string             `json:"reply_to,omitempty"`
+	Tags        []resendTag        `json:"tags,omitempty"`
+	Attachments []resendAttachment `json:"attachments,omitempty"`
 }
 
 var (
@@ -143,6 +152,11 @@ func (s *ResendSender) Send(ctx context.Context, idempotencyKey string, m Messag
 	req := resendRequest{From: s.cfg.From, To: []string{m.To}, Subject: m.Subject, HTML: m.HTML, Text: m.Text, ReplyTo: s.cfg.ReplyTo}
 	if kind := tagValueRe.ReplaceAllString(m.Kind, "_"); kind != "" {
 		req.Tags = []resendTag{{Name: "kind", Value: kind}}
+	}
+	for _, a := range m.Attachments {
+		req.Attachments = append(req.Attachments, resendAttachment{
+			Filename: a.Filename, Content: base64.StdEncoding.EncodeToString(a.Content), ContentType: a.ContentType,
+		})
 	}
 	body, err := json.Marshal(req)
 	if err != nil {

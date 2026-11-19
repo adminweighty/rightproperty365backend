@@ -195,6 +195,10 @@ type Data struct {
 	// template renders it: it is the place of the in-app and push text
 	// built from the same data (API 0.35.0).
 	Place string
+
+	// Attachments are not rendered: they are copied onto the Message (the
+	// calendar invitation of an appointment or venue booking, API 0.39.0).
+	Attachments []Attachment
 }
 
 // LocalDateTime writes an instant in an IANA time zone and names the zone,
@@ -345,7 +349,8 @@ func (r *Renderer) Render(name, to string, d Data) (Message, error) {
 	subject := strings.Join(strings.Fields(subjectBuf.String()), " ")
 	text := strings.TrimSpace(blankLines.ReplaceAllString(strings.ReplaceAll(textBuf.String(), "\r\n", "\n"), "\n\n")) + "\n"
 
-	return Message{To: to, Subject: subject, HTML: htmlBuf.String(), Text: text, Kind: name, DevLink: v.ActionURL, DevCode: d.Code}, nil
+	return Message{To: to, Subject: subject, HTML: htmlBuf.String(), Text: text, Kind: name, DevLink: v.ActionURL, DevCode: d.Code,
+		Attachments: d.Attachments}, nil
 }
 
 var (

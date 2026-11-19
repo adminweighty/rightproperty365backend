@@ -16,6 +16,9 @@ type BookingNotice struct {
 	OrganisationID *uuid.UUID
 	AgentUserID    *uuid.UUID
 	OwnerUserID    *uuid.UUID
+	// Events is the booking's history, oldest first: the calendar
+	// invitation's SEQUENCE is derived from it (API 0.39.0).
+	Events []Event
 }
 
 // Notice loads the data behind a venue booking outbox event.
@@ -33,6 +36,9 @@ func (s *Service) Notice(ctx context.Context, id uuid.UUID) (BookingNotice, erro
 		case !errors.Is(err, ErrListingNotFound):
 			return BookingNotice{}, err
 		}
+	}
+	if n.Events, err = s.d.Store.Events(ctx, id); err != nil {
+		return BookingNotice{}, err
 	}
 	return n, nil
 }

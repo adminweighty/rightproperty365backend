@@ -41,6 +41,7 @@ import (
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/database"
 	"rightproperty365.com/backend/internal/platform/elastic"
+	"rightproperty365.com/backend/internal/platform/ics"
 	"rightproperty365.com/backend/internal/platform/logging"
 	"rightproperty365.com/backend/internal/platform/mail"
 	"rightproperty365.com/backend/internal/platform/outbox"
@@ -111,7 +112,11 @@ func run() error {
 	handlers.SetOnboardingSource(app.OnboardingNotifications(onboarding.NewPostgresStore(pool), nil, reference.NewPostgresStore(pool), logger))
 
 	// Appointment emails read the appointment at send time.
-	handlers.SetAppointmentSource(appointments.NewPostgresStore(pool).Get)
+	appointmentStore := appointments.NewPostgresStore(pool)
+	handlers.SetAppointmentSource(appointmentStore.Get)
+	// Calendar invitations (API 0.39.0) on the appointment and venue booking
+	// emails, rebuilt at send time from the event and its history.
+	handlers.SetCalendar(ics.Organizer(cfg.EmailFrom), appointmentStore.Timeline)
 
 	listingStore := listings.NewPostgresStore(pool)
 	// Listing review emails (approved, changes requested, rejected) read the

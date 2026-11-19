@@ -37,6 +37,8 @@ const (
 type Handler struct {
 	svc    *Service
 	logger *slog.Logger
+	// calendar configures the calendar downloads (SetCalendar).
+	calendar CalendarConfig
 }
 
 // NewHandler builds the handler.

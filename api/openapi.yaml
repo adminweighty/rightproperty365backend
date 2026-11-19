@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.38.0
+  version: 0.39.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,20 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Calendar invitations (new in 0.39.0, FR-021)
+    - The appointment and venue booking emails that confirm a time carry an iCalendar invitation
+      (`METHOD:REQUEST`), and those that cancel a confirmed one a `METHOD:CANCEL` with the same UID
+      and a higher SEQUENCE: `appointment-confirmed`, `appointment-cancelled`,
+      `appointment-cancelled-by-customer`, `venue-booking-confirmed`, `venue-booking-accepted`,
+      `venue-booking-cancelled`, `venue-booking-cancelled-by-customer`. No new emails; the same
+      notification preferences apply.
+    - **"Add to calendar"** downloads (`METHOD:PUBLISH`): `GET /v1/me/appointments/{id}/calendar.ics`,
+      `GET /v1/inbox/appointments/{id}/calendar.ics`, `GET /v1/me/venue-bookings/{bookingId}/calendar.ics`,
+      `GET /v1/me/hosted-venue-bookings/{bookingId}/calendar.ics` and
+      `GET /v1/agent/organisations/{id}/venue-bookings/{bookingId}/calendar.ics`, for the parties who
+      can already see it; 404 for anybody else. No file names a party's email address or phone
+      number; the ORGANIZER is the platform's sender address.
 
     Lead funnel and response-time KPIs (new in 0.38.0)
     - **`GET /v1/agent/organisations/{id}/reports/lead-funnel`** (BR-005) and the direct seller's
@@ -7258,6 +7272,21 @@ paths:
               schema: { $ref: "#/components/schemas/VenueBooking" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "404": { description: "`VENUE_BOOKING_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+  /v1/me/venue-bookings/{bookingId}/calendar.ics:
+    parameters:
+      - { name: bookingId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [venues]
+      operationId: getMyVenueBookingCalendar
+      summary: The customer's own hourly booking as a calendar file (new in 0.39.0)
+      description: |
+        `METHOD:PUBLISH`, UID `venue-booking-<id>@rightproperty365.com`. 404 for anybody else's booking.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/CalendarFile" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`VENUE_BOOKING_NOT_FOUND`: no such booking, or the caller cannot see it.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+
   /v1/me/venue-bookings/{bookingId}/cancel:
     parameters:
       - { name: bookingId, in: path, required: true, schema: { type: string, format: uuid } }
@@ -7377,6 +7406,22 @@ paths:
               schema: { $ref: "#/components/schemas/VenueBooking" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "404": { description: "`VENUE_BOOKING_NOT_FOUND` (also another organisation's).", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+  /v1/agent/organisations/{id}/venue-bookings/{bookingId}/calendar.ics:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: bookingId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [venues]
+      operationId: getOrganisationVenueBookingCalendar
+      summary: A hosted hourly booking as a calendar file (new in 0.39.0)
+      description: |
+        Same access as the organisation's booking GET; 404 otherwise. No customer details in the file.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/CalendarFile" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`VENUE_BOOKING_NOT_FOUND`: no such booking, or the caller cannot see it.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+
   /v1/agent/organisations/{id}/venue-bookings/{bookingId}/confirm:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
@@ -7566,6 +7611,22 @@ paths:
               schema: { $ref: "#/components/schemas/VenueBooking" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "404": { description: "`VENUE_BOOKING_NOT_FOUND` (also another organisation's).", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+  /v1/me/hosted-venue-bookings/{bookingId}/calendar.ics:
+    parameters:
+      - { name: bookingId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [venues]
+      operationId: getHostedVenueBookingCalendar
+      summary: A direct owner's hosted hourly booking as a calendar file (new in 0.39.0)
+      description: |
+        Same access as the direct owner's booking GET, but 404 (not 403) for a caller who is not an
+        approved direct owner.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/CalendarFile" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`VENUE_BOOKING_NOT_FOUND`: no such booking, or the caller cannot see it.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+
   /v1/me/hosted-venue-bookings/{bookingId}/confirm:
     parameters:
       - { name: bookingId, in: path, required: true, schema: { type: string, format: uuid } }
@@ -8915,6 +8976,22 @@ paths:
         "504":
           $ref: "#/components/responses/Timeout"
 
+  /v1/me/appointments/{id}/calendar.ics:
+    parameters:
+      - $ref: "#/components/parameters/AppointmentId"
+    get:
+      tags: [appointments]
+      operationId: getMyAppointmentCalendar
+      summary: The customer's own appointment as a calendar file (new in 0.39.0)
+      description: |
+        `METHOD:PUBLISH` iCalendar (RFC 5545) for "Add to calendar", with the same UID as the emailed
+        invitations (`appointment-<id>@rightproperty365.com`). 404 for anybody else's appointment.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/CalendarFile" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/AppointmentNotFound" }
+
   /v1/me/appointments/{id}/cancel:
     post:
       tags: [appointments]
@@ -9125,6 +9202,22 @@ paths:
           $ref: "#/components/responses/InternalError"
         "504":
           $ref: "#/components/responses/Timeout"
+
+  /v1/inbox/appointments/{id}/calendar.ics:
+    parameters:
+      - $ref: "#/components/parameters/AppointmentId"
+    get:
+      tags: [appointments]
+      operationId: getReceivedAppointmentCalendar
+      summary: An appointment the professional can see, as a calendar file (new in 0.39.0)
+      description: |
+        Same scoping as `GET /v1/inbox/appointments/{id}`, but 404 (not 403) for a caller with no
+        professional scope. No customer contact details are in the file.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/CalendarFile" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/AppointmentNotFound" }
 
   /v1/inbox/appointments/{id}/confirm:
     post:
@@ -15425,6 +15518,22 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
+    CalendarFile:
+      description: |
+        An iCalendar file (RFC 5545, new in 0.39.0): CRLF lines folded at 75 octets, one VEVENT with
+        UID, SEQUENCE (derived from the history, never decreasing), DTSTAMP / DTSTART / DTEND in UTC
+        (`Z`), SUMMARY, DESCRIPTION, URL, STATUS (`CONFIRMED`, `TENTATIVE` or `CANCELLED`) and the
+        platform sender as ORGANIZER; X-WR-TIMEZONE names the market's zone. Downloads use
+        `METHOD:PUBLISH` and carry no ATTENDEE.
+      headers:
+        Content-Disposition:
+          description: '`attachment; filename="appointment-<REFERENCE>.ics"` or `"venue-booking-<REFERENCE>.ics"` (exposed to CORS clients).'
+          schema: { type: string }
+        Cache-Control:
+          schema: { type: string, enum: ["private, no-store"] }
+      content:
+        text/calendar:
+          schema: { type: string }
     AppointmentNotFound:
       description: "`APPOINTMENT_NOT_FOUND`: no such appointment, or it is not the caller's to see."
       content:

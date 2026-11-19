@@ -152,7 +152,7 @@ func SampleData(name string) Data {
 		start := time.Date(2026, 12, 5, 8, 0, 0, 0, time.UTC)
 		d.Reference, d.ListingTitle, d.ListingRef = "VB-7K3M9QXD", "Glass-fronted showroom to hire by the hour", "RP-ZW-10021"
 		d.AppointmentTime, d.Amount = LocalSlot(start, start.Add(4*time.Hour), "Africa/Harare"), "USD 230.00"
-		d.Path, d.StatusText = "/account/hourly-bookings", "Requested"
+		d.Path, d.StatusText = "/account/venue-bookings", "Requested"
 		switch name {
 		case "venue-booking-new", "venue-booking-cancelled-by-customer", "venue-booking-reschedule-requested", "venue-booking-accepted":
 			d.Name, d.Path = "Tendai Ncube", "/agent/venue-bookings"
