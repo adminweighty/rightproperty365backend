@@ -33,6 +33,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/maintenance"
 	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/modules/onboarding"
+	"rightproperty365.com/backend/internal/modules/packages"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
 	"rightproperty365.com/backend/internal/modules/reports"
@@ -336,6 +337,12 @@ type Deps struct {
 	// Reviews holds the reviews of service providers (API 0.36.4).
 	Reviews reviews.Store
 
+	// Packages holds the listing packages and their assignments (API
+	// 0.37.0). The listing store must check the quota on a go-live: the
+	// Postgres listing store always does (packages.EnforceTx); the memory one
+	// once MemoryPackages has been called on it.
+	Packages packages.Store
+
 	// Inbox is the notification centre (API 0.35.0): devices, in-app
 	// notifications, preferences and the delivery health. Logging out
 	// removes the session's devices through it.
@@ -392,7 +399,16 @@ func NewRouter(d Deps) (http.Handler, error) {
 	if !ok {
 		return nil, errors.New("app: the listing store does not implement listing management")
 	}
-	manageH := listings.NewManageHandler(listings.NewManager(listingsSvc, manageStore, d.Files, logger), logger)
+	// Listing packages and quotas (FR-008): the approval of a NEW review is
+	// refused when the advertiser's package is full; the views show the usage.
+	if d.Packages == nil {
+		return nil, errors.New("app: no listing packages store")
+	}
+	packagesSvc := packages.NewService(packages.Deps{Store: d.Packages, Markets: d.Markets, Logger: logger, Now: d.Now})
+	packagesH := packages.NewHandler(packagesSvc, logger)
+	manager := listings.NewManager(listingsSvc, manageStore, d.Files, logger)
+	manager.SetQuota(packagesSvc)
+	manageH := listings.NewManageHandler(manager, logger)
 	listingLimiter := httpx.NewRateLimiter(listingChangesPerMinute, listingChangesBurst)
 	// Saved listings: a customer's hearts. Whether a listing may be saved
 	// (public right now) is the listings service's own rule.
@@ -724,6 +740,9 @@ func NewRouter(d Deps) (http.Handler, error) {
 		// of the same data, kept for existing clients.
 		r.Get("/countries", marketsH.List)
 		r.Get("/markets", marketsH.List)
+		// A country's active listing packages with their prices, for the
+		// pricing page (public, cacheable; API 0.37.0).
+		r.Get("/markets/{code}/packages", packagesH.Public)
 
 		// Reference data behind every drop-down, filter and list. Public and cacheable.
 		r.Get("/reference", referenceH.All)
@@ -835,6 +854,10 @@ func NewRouter(d Deps) (http.Handler, error) {
 		// applies, counters, next actions and recent items, each scoped as
 		// the endpoint it summarises.
 		r.With(auth.RequireAuth).Get("/me/dashboard", dashboardH.Me)
+
+		// The listing package and quota usage of the caller's own
+		// direct-owner account (API 0.37.0; 403 for anybody else).
+		r.With(auth.RequireAuth).Get("/me/package", packagesH.MyUsage)
 
 		// The requests this account sent while signed in, as their customer
 		// sees them: never the lead stage, an internal note or who handles it.
@@ -1124,14 +1147,22 @@ func NewRouter(d Deps) (http.Handler, error) {
 			// SUPER_ADMIN and PLATFORM_ADMIN suspend, reactivate and delete
 			// (an administrator account only by a SUPER_ADMIN, never one's own).
 			r.Route("/users", func(r chi.Router) {
-				r.Use(auth.RequirePlatformRole(accounts.ReadRoles()...))
-				r.Get("/", accountsH.List)
-				r.Get("/{id}", accountsH.Get)
 				r.Group(func(r chi.Router) {
-					r.Use(auth.RequirePlatformRole(accounts.ManageRoles()...), adminLimiter.Middleware)
-					r.Post("/{id}/suspend", accountsH.Suspend)
-					r.Post("/{id}/reactivate", accountsH.Reactivate)
-					r.Post("/{id}/delete", accountsH.Delete)
+					r.Use(auth.RequirePlatformRole(accounts.ReadRoles()...))
+					r.Get("/", accountsH.List)
+					r.Get("/{id}", accountsH.Get)
+					r.Group(func(r chi.Router) {
+						r.Use(auth.RequirePlatformRole(accounts.ManageRoles()...), adminLimiter.Middleware)
+						r.Post("/{id}/suspend", accountsH.Suspend)
+						r.Post("/{id}/reactivate", accountsH.Reactivate)
+						r.Post("/{id}/delete", accountsH.Delete)
+					})
+				})
+				// A direct owner's listing package (API 0.37.0): the package
+				// administrators (MARKET_ADMIN for its own markets).
+				r.Group(func(r chi.Router) {
+					r.Use(auth.RequirePlatformRole(packages.AdminRoles()...))
+					packagesH.AccountRoutes(r, packages.KindDirectOwner, "/{id}", adminLimiter.Middleware)
 				})
 			})
 			// Notification delivery health (FR-065): counts by status, the
@@ -1210,6 +1241,19 @@ func NewRouter(d Deps) (http.Handler, error) {
 				r.Use(auth.RequirePlatformRole(reviews.AdminRoles()...))
 				reviewsH.AdminRoutes(r, reviewLimiter.Middleware)
 			})
+
+			// Listing packages and their assignment to organisations and
+			// direct owners (API 0.37.0): SUPER_ADMIN, PLATFORM_ADMIN, and
+			// MARKET_ADMIN for its own markets (the service limits it). Every
+			// change is in the admin audit.
+			r.Route("/packages", func(r chi.Router) {
+				r.Use(auth.RequirePlatformRole(packages.AdminRoles()...))
+				packagesH.AdminRoutes(r, adminLimiter.Middleware)
+			})
+			r.Route("/organisations/{id}", func(r chi.Router) {
+				r.Use(auth.RequirePlatformRole(packages.AdminRoles()...))
+				packagesH.AccountRoutes(r, packages.KindOrganisation, "", adminLimiter.Middleware)
+			})
 		})
 
 		// Request inbox for organisation members and direct sellers. The
@@ -1233,6 +1277,9 @@ func NewRouter(d Deps) (http.Handler, error) {
 		// who is not an active member and 403 to its AGENT and STAFF.
 		r.Route("/agent/organisations/{id}", func(r chi.Router) {
 			r.Use(auth.RequireAuth)
+			// The listing package and quota usage (API 0.37.0): any member of
+			// a listings-managing organisation, or the direct owner's own id.
+			r.Get("/package", packagesH.AgentUsage)
 			r.Get("/members", teamsH.Members)
 			r.With(teamLimiter.Middleware).Patch("/members/{userId}", teamsH.PatchMember)
 			r.With(teamLimiter.Middleware).Delete("/members/{userId}", teamsH.RemoveMember)

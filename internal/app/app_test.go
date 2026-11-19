@@ -39,6 +39,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/maintenance"
 	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/modules/onboarding"
+	"rightproperty365.com/backend/internal/modules/packages"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
 	"rightproperty365.com/backend/internal/modules/reviews"
@@ -295,6 +296,9 @@ type env struct {
 	inspections *inspections.MemoryStore
 	// reviews holds the reviews of service providers (the samples).
 	reviews *reviews.MemoryStore
+	// packages holds the listing packages (the samples: Starter default,
+	// Business, Professional in ZW and GB; Sample Estates on Business in ZW).
+	packages *packages.MemoryStore
 	// inbox holds devices, in-app notifications and preferences (empty).
 	inbox    *inapp.MemoryStore
 	inboxSvc *inapp.Service
@@ -429,6 +433,8 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 	e.audit = &adminaudit.MemoryLog{}
 	e.reference.SetAuditLog(e.audit)
 	e.reviews.SetAuditLog(e.audit)
+	e.packages = MemoryPackages(e.listings, e.identity, e.audit)
+	devseed.SeedMemoryPackages(e.packages, e.now)
 	e.subs = subscriptions.NewMemoryStore(e.audit)
 	e.subs.SetActiveListings(MemoryActiveListings(e.listings))
 	if err := devseed.SeedMemorySubscriptions(context.Background(), e.subs, e.now); err != nil {
@@ -452,7 +458,8 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 			e.reviews.ForgetUser(u, name)
 			e.enquiries.ForgetUser(u)
 		},
-		Now: func() time.Time { return e.now }})
+		ForgetPackages: e.packages.ForgetUser,
+		Now:            func() time.Time { return e.now }})
 	reportStore := MemoryReports(MemoryReportStores{Identity: e.identity, Onboarding: e.onboard, Listings: e.listings, Requests: e.requests,
 		Enquiries: e.enquiries, Leases: e.leases, Agreements: e.agree, Subscriptions: e.subs, Markets: e.marketStore,
 		Now: func() time.Time { return e.now }})
@@ -483,6 +490,7 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		Maintenance:  e.maintenance,
 		Inspections:  e.inspections,
 		Reviews:      e.reviews,
+		Packages:     e.packages,
 		Inbox:        e.inboxSvc,
 		Now:          func() time.Time { return e.now },
 		Hasher:       &hasher,

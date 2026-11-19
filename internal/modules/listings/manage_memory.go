@@ -189,6 +189,9 @@ func (s *MemoryStore) SaveListing(_ context.Context, m ManagedListing, expect ti
 	if s.taken(m) {
 		return nil, ErrDuplicate
 	}
+	if err := s.enforceLocked(ch.Quota, m.ID); err != nil {
+		return nil, err
+	}
 	// Photos: the ones kept get their alt, position and approval; the others go.
 	keep := map[uuid.UUID]StoredPhoto{}
 	for _, p := range m.AllPhotos {

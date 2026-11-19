@@ -238,6 +238,14 @@ func (p *Principal) MayEditListing(organisationID, agentUserID, sellerUserID *uu
 	return sellerUserID != nil && *sellerUserID == p.UserID && p.IsDirectOwner()
 }
 
+// MayReadListingPackage reports whether the caller may see the listing
+// package and quota usage of the organisation (API 0.37.0): any member
+// (STAFF included) of an organisation whose kind manages listings.
+func (p *Principal) MayReadListingPackage(organisationID uuid.UUID) bool {
+	m, ok := p.membership(organisationID)
+	return ok && KindManagesListings(m.OrganisationKind)
+}
+
 // ListingReviewRoles are the platform roles that review listings: the
 // moderators and the platform and super administrators everywhere, a market
 // administrator in its own markets (the scope of the listings section of

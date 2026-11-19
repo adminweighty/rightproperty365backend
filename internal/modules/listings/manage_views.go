@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"rightproperty365.com/backend/internal/modules/packages"
 )
 
 // What the management endpoints return. Codes are returned as codes: the
@@ -231,6 +233,12 @@ type ManagedView struct {
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
 	Timeline    []TimelineView `json:"timeline"`
+	// PackageUsage is the listing package and active listings of the
+	// listing's account in its country (null without a country, API 0.37.0);
+	// QuotaWarning is set when that account is at its limit and the listing
+	// is not live.
+	PackageUsage *packages.MarketUsage `json:"package_usage"`
+	QuotaWarning *string               `json:"quota_warning"`
 }
 
 func timePtr(t time.Time) *time.Time {

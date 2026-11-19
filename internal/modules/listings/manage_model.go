@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"rightproperty365.com/backend/internal/modules/packages"
 )
 
 // Listing management: advertisers create and edit their own listings, with
@@ -376,6 +378,18 @@ type Change struct {
 	// NewCycle records a new publication cycle (an approval that publishes
 	// the listing): its published_at and expires_at are the listing's.
 	NewCycle bool
+	// Quota, when set, is the listing-package check of a go-live: the store
+	// checks it in the same transaction as the write, under the account and
+	// market's lock, and refuses the write with a *packages.QuotaError when
+	// the account's other active listings already reach its limit.
+	Quota *QuotaCheck
+}
+
+// QuotaCheck names the account and market a go-live is counted against.
+type QuotaCheck struct {
+	Account packages.Account
+	Market  string
+	Now     time.Time
 }
 
 // EventListingRelisted is written when an advertiser relists an archived or

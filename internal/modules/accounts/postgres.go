@@ -17,6 +17,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/inspections"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/maintenance"
+	"rightproperty365.com/backend/internal/modules/packages"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reviews"
 	"rightproperty365.com/backend/internal/modules/tenancies"
@@ -470,6 +471,11 @@ func (s *PostgresStore) Delete(ctx context.Context, d Deletion) (Deleted, error)
 		// Reviews of service providers (migration 0039): kept; a customer's
 		// shows "Former customer", the person is unlinked everywhere.
 		if err := reviews.ForgetUserTx(ctx, tx, d.UserID, DeletedName); err != nil {
+			return err
+		}
+		// Listing packages (migration 0040): the person's own current and
+		// scheduled assignments end; they are unlinked as an assigner.
+		if err := packages.ForgetUserTx(ctx, tx, d.UserID, DeletedName, d.At); err != nil {
 			return err
 		}
 		return adminaudit.Insert(ctx, tx, d.Audit)

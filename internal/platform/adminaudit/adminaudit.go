@@ -1,7 +1,8 @@
 // Package adminaudit is the durable audit trail of what platform
 // administrators do: suspending, reactivating and deleting accounts,
 // managing subscription plans, deciding subscriptions, changing reference
-// data and moderating reviews of service providers.
+// data, moderating reviews of service providers and managing listing
+// packages and their assignments.
 //
 // The records are kept in admin_audit_events (migration 0024), written in
 // the same transaction as the change they describe, and are immutable: a row
@@ -50,6 +51,13 @@ const (
 	ActionReviewHidden       = "REVIEW_HIDDEN"
 	ActionReviewRejected     = "REVIEW_REJECTED"
 	ActionReviewReplyRemoved = "REVIEW_REPLY_REMOVED"
+	// Listing packages (API 0.37.0): a package created, changed or deleted,
+	// and a package assigned to (or ended for) a listing account.
+	ActionPackageCreated         = "PACKAGE_CREATED"
+	ActionPackageUpdated         = "PACKAGE_UPDATED"
+	ActionPackageDeleted         = "PACKAGE_DELETED"
+	ActionPackageAssigned        = "PACKAGE_ASSIGNED"
+	ActionPackageAssignmentEnded = "PACKAGE_ASSIGNMENT_ENDED"
 )
 
 // Target types.
@@ -61,6 +69,10 @@ const (
 	// TargetProviderReview is one review of a service provider (labelled
 	// with the provider's name).
 	TargetProviderReview = "PROVIDER_REVIEW"
+	// TargetListingPackage is a listing package (labelled "Starter (ZW)").
+	TargetListingPackage = "LISTING_PACKAGE"
+	// TargetOrganisation is an organisation (a package assigned to it).
+	TargetOrganisation = "ORGANISATION"
 )
 
 // Event is one audit record.

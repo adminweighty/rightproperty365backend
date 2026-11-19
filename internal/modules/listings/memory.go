@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"rightproperty365.com/backend/internal/modules/packages"
 	"rightproperty365.com/backend/internal/platform/outbox"
 )
 
@@ -33,6 +34,10 @@ type MemoryStore struct {
 	timeline []TimelineEntry
 	outbox   []outbox.Event
 	sink     outbox.Sink
+
+	// quota resolves the listing package of an account in a market (the
+	// memory twin of packages.EnforceTx; nil: no limit). See quota.go.
+	quota func(acct packages.Account, market string, now time.Time) packages.Resolved
 }
 
 // SetAdvertisers makes the store resolve the advertiser of every record it

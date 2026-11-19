@@ -460,6 +460,13 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 		return err
 	}
 
+	// The sample listing packages (Starter, the default, Business and
+	// Professional in ZW and GB, with SAMPLE prices) and Sample Estates on
+	// Business in ZW (needs migration 0040).
+	if err := seedPostgresPackages(ctx, tx, now); err != nil {
+		return err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}

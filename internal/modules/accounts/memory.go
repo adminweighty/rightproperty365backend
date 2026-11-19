@@ -61,6 +61,9 @@ type MemoryDeps struct {
 	// customer's review shows "Former customer"), reports, replies and the
 	// enquiries they marked replied (nil: nothing to do).
 	ForgetReviews func(userID uuid.UUID, deletedName string)
+	// ForgetPackages ends the user's own listing package assignments and
+	// unlinks them as the administrator who made any (nil: nothing to do).
+	ForgetPackages func(userID uuid.UUID, deletedName string, at time.Time)
 	// Now is the clock used for listing expiry in the detail (nil: time.Now).
 	Now func() time.Time
 }
@@ -322,6 +325,9 @@ func (s *MemoryStore) Delete(ctx context.Context, d Deletion) (Deleted, error) {
 	}
 	if s.deps.ForgetReviews != nil {
 		s.deps.ForgetReviews(d.UserID, DeletedName)
+	}
+	if s.deps.ForgetPackages != nil {
+		s.deps.ForgetPackages(d.UserID, DeletedName, d.At)
 	}
 	s.deps.Audit.Append(d.Audit)
 	return out, nil

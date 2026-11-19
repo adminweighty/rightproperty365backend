@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"rightproperty365.com/backend/internal/modules/packages"
 )
 
 // The Postgres side of listing management (migration 0020).
@@ -331,6 +333,13 @@ func (s *PostgresStore) SaveListing(ctx context.Context, m ManagedListing, expec
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	if err := lockListing(ctx, tx, m.ID, expect); err != nil {
 		return nil, err
+	}
+	// A go-live: the quota is checked under the account and market's
+	// advisory lock, held until this transaction ends (FR-008).
+	if q := ch.Quota; q != nil {
+		if err := packages.EnforceTx(ctx, tx, q.Account, q.Market, m.ID, q.Now); err != nil {
+			return nil, err
+		}
 	}
 	revision, revisionStatus, err := revisionJSON(m.Revision)
 	if err != nil {

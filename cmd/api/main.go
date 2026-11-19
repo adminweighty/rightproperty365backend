@@ -37,6 +37,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/modules/notifications"
 	"rightproperty365.com/backend/internal/modules/onboarding"
+	"rightproperty365.com/backend/internal/modules/packages"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reference"
 	"rightproperty365.com/backend/internal/modules/reports"
@@ -162,6 +163,8 @@ func run() error {
 		maintenanceStore maintenance.Store
 		inspectionStore  inspections.Store
 		reviewStore      reviews.Store
+		// packageStore holds the listing packages and their assignments.
+		packageStore packages.Store
 		// memSubscriptions is set without a database (its expiry sweep runs here).
 		memSubscriptions *subscriptions.MemoryStore
 	)
@@ -337,6 +340,12 @@ func run() error {
 		adminAuditLog = memAudit
 		memReference.SetAuditLog(memAudit)
 		memReviews.SetAuditLog(memAudit)
+		// Listing packages (API 0.37.0): Starter (the default), Business and
+		// Professional in ZW and GB with SAMPLE prices; Sample Estates holds
+		// Business in ZW. The listing store checks the quota on approval.
+		memPackages := app.MemoryPackages(memListings, memIdentity, memAudit)
+		devseed.SeedMemoryPackages(memPackages, time.Now())
+		packageStore = memPackages
 		memSubscriptions = subscriptions.NewMemoryStore(memAudit)
 		memSubscriptions.SetActiveListings(app.MemoryActiveListings(memListings))
 		subscriptionStore = memSubscriptions
@@ -350,7 +359,8 @@ func run() error {
 			ForgetReviews: func(userID uuid.UUID, deletedName string) {
 				memReviews.ForgetUser(userID, deletedName)
 				memEnquiries.ForgetUser(userID)
-			}})
+			},
+			ForgetPackages: memPackages.ForgetUser})
 		reportStore = app.MemoryReports(app.MemoryReportStores{Identity: memIdentity, Onboarding: memOnboarding, Listings: memListings,
 			Requests: memRequests, Enquiries: memEnquiries, Leases: memLeases, Agreements: memAgreements, Subscriptions: memSubscriptions,
 			Markets: marketStore})
@@ -517,6 +527,7 @@ func run() error {
 		maintenanceStore = maintenance.NewPostgresStore(pool)
 		inspectionStore = inspections.NewPostgresStore(pool)
 		reviewStore = reviews.NewPostgresStore(pool)
+		packageStore = packages.NewPostgresStore(pool)
 		adminAuditLog = adminaudit.PostgresLog{Q: pool}
 		inboxSvc = inapp.NewService(inapp.NewPostgresStore(pool), pushProvider, logger, nil)
 	}
@@ -590,6 +601,7 @@ func run() error {
 		Maintenance:   maintenanceStore,
 		Inspections:   inspectionStore,
 		Reviews:       reviewStore,
+		Packages:      packageStore,
 		Inbox:         inboxSvc,
 	})
 	if err != nil {

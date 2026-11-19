@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.36.4
+  version: 0.37.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,22 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Listing packages and quotas (new in 0.37.0)
+    - **Packages** (FR-008) belong to one market: Starter, Business, Professional ... each allowing a number of **active
+      published listings** (`listing_limit`), with a price per billing term (MONTHLY, QUARTERLY, ANNUAL) in the market's
+      currency. Public pricing: `GET /v1/markets/{code}/packages`. Administered at `/v1/admin/packages` (SUPER_ADMIN,
+      PLATFORM_ADMIN, MARKET_ADMIN for its own markets; audited). Prices with `sample: true` are development seed samples.
+    - **Assignment.** A listing account (an organisation, or a direct owner) holds at most one package per market on any
+      date (`/v1/admin/organisations/{id}/package`, `/v1/admin/users/{id}/package`; source ADMIN, INVOICE reserved).
+      Without one, the market's default package applies; a market without a default is not limited.
+    - **Enforcement.** The only transition that makes a listing publicly live is the approval of a NEW review (a first
+      publication or a relist): it is refused with `409 LISTING_QUOTA_REACHED` (details: limit, used, package) when the
+      account's PUBLISHED, unexpired listings in that market already reach the limit, under a lock that makes two
+      simultaneous approvals unable to exceed it. PAUSED and pending listings do not count. Submit and relist are never
+      blocked; listing views carry `package_usage` and `quota_warning`.
+    - **Grace.** A lower limit (downgrade, an assignment ending) never unpublishes anything: listings already live stay
+      live until they expire or are archived; the usage view shows `over_limit`, `over_by` and `grace_until`.
 
     Reviews of service providers (new in 0.36.4)
     - **Who may review** (BR-019, FR-047, Phase 2 part e): only someone with a completed, linked job or enquiry may review a
@@ -798,6 +814,10 @@ tags:
     description: |
       Maintenance requests (new in 0.36.2): requests with a timeline, photos, assignment to a directory service provider
       (a business enquiry) and costs (EXPENSE ledger entries); the tenant's own requests.
+  - name: packages
+    description: |
+      Listing packages and quotas (new in 0.37.0): packages per market with prices per billing term, their assignment to
+      organisations and direct owners, the usage view, and the quota enforced when a listing is approved.
   - name: reviews
     description: |
       Reviews of service providers (new in 0.36.4): eligibility (a completed maintenance job or a replied enquiry),
@@ -8393,6 +8413,9 @@ paths:
         `verification.listing_reviewed`), a timeline entry and the outbox events
         `LISTING_PUBLISHED` / `LISTING_UPDATED` (search index) and `LISTING_APPROVED` (email to
         the advertiser). `409 LISTING_STATE_CONFLICT` when nothing waits for review.
+        New in 0.37.0: approving a NEW review is refused with `409 LISTING_QUOTA_REACHED` (`ListingQuotaError`) when the
+        advertiser's active listings in the country already reach their package's limit; nothing changes. An EDIT is
+        never refused.
       security:
         - cookieSession: []
       responses:
@@ -8408,7 +8431,11 @@ paths:
         "404":
           $ref: "#/components/responses/ListingNotFound"
         "409":
-          $ref: "#/components/responses/ListingStateConflict"
+          description: "`LISTING_STATE_CONFLICT`, `LISTING_IN_REVIEW`, `LISTING_CHANGED`, or `LISTING_QUOTA_REACHED` (new in 0.37.0)."
+          content:
+            application/json:
+              schema:
+                oneOf: [{ $ref: "#/components/schemas/ErrorEnvelope" }, { $ref: "#/components/schemas/ListingQuotaError" }]
 
   /v1/admin/listings/{id}/request-changes:
     parameters:
@@ -14545,6 +14572,197 @@ paths:
         "404": { $ref: "#/components/responses/ReviewNotFound" }
         "409": { $ref: "#/components/responses/ReviewConflict" }
 
+  /v1/markets/{code}/packages:
+    parameters:
+      - { name: code, in: path, required: true, schema: { type: string, pattern: "^[A-Za-z]{2}$" }, description: ISO 3166-1 alpha-2 (case-insensitive). }
+    get:
+      tags: [packages]
+      operationId: marketPackages
+      summary: "A country's active listing packages with their prices, for the pricing page (public, cacheable 5 minutes; unknown country 404 MARKET_NOT_FOUND; new in 0.37.0)"
+      description: |
+        Only active packages, by `sort` then `name`. A country without packages answers `items: []` (and is not limited).
+        Prices with `sample: true` come from the development seed: label them as samples. Approved prices are entered by
+        an administrator (`sample: false`).
+      responses:
+        "200": { description: The packages., content: { application/json: { schema: { $ref: "#/components/schemas/PublicPackageList" } } } }
+        "404": { description: "`MARKET_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/PackageErrorEnvelope" } } } }
+  /v1/admin/packages:
+    get:
+      tags: [packages, admin]
+      operationId: adminPackages
+      summary: "The packages the caller manages (SUPER_ADMIN, PLATFORM_ADMIN; MARKET_ADMIN its own markets, another market 403 PACKAGE_MARKET_FORBIDDEN; never paged; new in 0.37.0)"
+      security: [{ cookieSession: [] }]
+      parameters:
+        - { name: market_code, in: query, schema: { type: string } }
+        - { name: include_inactive, in: query, schema: { type: boolean, default: true } }
+      responses:
+        "200": { description: "The packages by market, sort and name; markets is null for every market.", content: { application/json: { schema: { type: object, required: [items, markets], properties: { items: { type: array, items: { $ref: "#/components/schemas/ListingPackage" } }, markets: { type: [array, "null"], items: { type: string } } } } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { description: "`FORBIDDEN` (another platform role) or `PACKAGE_MARKET_FORBIDDEN`.", content: { application/json: { schema: { $ref: "#/components/schemas/PackageErrorEnvelope" } } } }
+    post:
+      tags: [packages, admin]
+      operationId: adminCreatePackage
+      summary: "Create a package (audited PACKAGE_CREATED; is_default moves the market's default to it; duplicate code 409 PACKAGE_CODE_TAKEN; new in 0.37.0)"
+      security: [{ cookieSession: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/PackageInput" } } } }
+      responses:
+        "201": { description: The package., content: { application/json: { schema: { type: object, required: [package], properties: { package: { $ref: "#/components/schemas/ListingPackage" } } } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { description: "`FORBIDDEN` or `PACKAGE_MARKET_FORBIDDEN`.", content: { application/json: { schema: { $ref: "#/components/schemas/PackageErrorEnvelope" } } } }
+        "409": { description: "`PACKAGE_CODE_TAKEN`.", content: { application/json: { schema: { $ref: "#/components/schemas/PackageErrorEnvelope" } } } }
+  /v1/admin/packages/{packageId}:
+    parameters:
+      - { name: packageId, in: path, required: true, schema: { type: string, format: uuid }, description: "A package (malformed, unknown or another market's for a MARKET_ADMIN: 404 PACKAGE_NOT_FOUND)." }
+    get:
+      tags: [packages, admin]
+      operationId: adminPackage
+      summary: "One package (new in 0.37.0)"
+      security: [{ cookieSession: [] }]
+      responses:
+        "200": { description: The package., content: { application/json: { schema: { type: object, required: [package], properties: { package: { $ref: "#/components/schemas/ListingPackage" } } } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "`PACKAGE_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/PackageErrorEnvelope" } } } }
+    patch:
+      tags: [packages, admin]
+      operationId: adminUpdatePackage
+      summary: "Change a package (code and market are fixed; prices replaced; deactivating the default 409 PACKAGE_IS_DEFAULT; audited PACKAGE_UPDATED; new in 0.37.0)"
+      security: [{ cookieSession: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/PackagePatch" } } } }
+      responses:
+        "200": { description: The package., content: { application/json: { schema: { type: object, required: [package], properties: { package: { $ref: "#/components/schemas/ListingPackage" } } } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "`PACKAGE_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/PackageErrorEnvelope" } } } }
+        "409": { description: "`PACKAGE_IS_DEFAULT`.", content: { application/json: { schema: { $ref: "#/components/schemas/PackageErrorEnvelope" } } } }
+    delete:
+      tags: [packages, admin]
+      operationId: adminDeletePackage
+      summary: "Delete a package no assignment names and that is not the default (else 409 PACKAGE_IN_USE with details.assignments, or PACKAGE_IS_DEFAULT; audited PACKAGE_DELETED; new in 0.37.0)"
+      security: [{ cookieSession: [] }]
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "`PACKAGE_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/PackageErrorEnvelope" } } } }
+        "409": { description: "`PACKAGE_IN_USE` or `PACKAGE_IS_DEFAULT`.", content: { application/json: { schema: { $ref: "#/components/schemas/PackageErrorEnvelope" } } } }
+  /v1/admin/organisations/{id}/package:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: "An organisation (unknown or malformed: 404 ORGANISATION_NOT_FOUND)." }
+    get:
+      tags: [packages, admin]
+      operationId: adminOrganisationPackage
+      summary: "An organisation's package usage per market and its assignment history (the caller's markets only; new in 0.37.0)"
+      security: [{ cookieSession: [] }]
+      parameters:
+        - { name: market_code, in: query, schema: { type: string } }
+      responses:
+        "200": { description: Usage and history., content: { application/json: { schema: { $ref: "#/components/schemas/AdminPackageAccount" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "`ORGANISATION_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/PackageErrorEnvelope" } } } }
+    post:
+      tags: [packages, admin]
+      operationId: adminAssignOrganisationPackage
+      summary: "Assign a package from a date (replaces what overlaps from then on; source ADMIN; audited PACKAGE_ASSIGNED, target ORGANISATION; new in 0.37.0)"
+      security: [{ cookieSession: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/PackageAssignInput" } } } }
+      responses:
+        "201": { description: The assignment and the usage it gives., content: { application/json: { schema: { $ref: "#/components/schemas/PackageAssignResult" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { description: "`FORBIDDEN` or `PACKAGE_MARKET_FORBIDDEN`.", content: { application/json: { schema: { $ref: "#/components/schemas/PackageErrorEnvelope" } } } }
+        "404": { description: "`ORGANISATION_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/PackageErrorEnvelope" } } } }
+        "409": { description: "`PACKAGE_INACTIVE`.", content: { application/json: { schema: { $ref: "#/components/schemas/PackageErrorEnvelope" } } } }
+  /v1/admin/organisations/{id}/package/end:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [packages, admin]
+      operationId: adminEndOrganisationPackage
+      summary: "End the current assignment of a market (yesterday, or cancelled if it started today) and cancel the scheduled ones; the default applies again (audited PACKAGE_ASSIGNMENT_ENDED; nothing to end 404 PACKAGE_ASSIGNMENT_NOT_FOUND; new in 0.37.0)"
+      security: [{ cookieSession: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/PackageEndInput" } } } }
+      responses:
+        "200": { description: The usage now., content: { application/json: { schema: { type: object, required: [usage], properties: { usage: { $ref: "#/components/schemas/PackageUsage" } } } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { description: "`FORBIDDEN` or `PACKAGE_MARKET_FORBIDDEN`.", content: { application/json: { schema: { $ref: "#/components/schemas/PackageErrorEnvelope" } } } }
+        "404": { description: "`ORGANISATION_NOT_FOUND` or `PACKAGE_ASSIGNMENT_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/PackageErrorEnvelope" } } } }
+  /v1/admin/users/{id}/package:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: "A direct owner's user id (unknown, deleted or malformed: 404 USER_NOT_FOUND)." }
+    get:
+      tags: [packages, admin]
+      operationId: adminUserPackage
+      summary: "A direct owner's package usage per market and assignment history (as for an organisation; new in 0.37.0)"
+      security: [{ cookieSession: [] }]
+      parameters:
+        - { name: market_code, in: query, schema: { type: string } }
+      responses:
+        "200": { description: Usage and history., content: { application/json: { schema: { $ref: "#/components/schemas/AdminPackageAccount" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "`USER_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/PackageErrorEnvelope" } } } }
+    post:
+      tags: [packages, admin]
+      operationId: adminAssignUserPackage
+      summary: "Assign a package to a direct owner (as for an organisation; audited PACKAGE_ASSIGNED, target USER; new in 0.37.0)"
+      security: [{ cookieSession: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/PackageAssignInput" } } } }
+      responses:
+        "201": { description: The assignment and the usage it gives., content: { application/json: { schema: { $ref: "#/components/schemas/PackageAssignResult" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { description: "`FORBIDDEN` or `PACKAGE_MARKET_FORBIDDEN`.", content: { application/json: { schema: { $ref: "#/components/schemas/PackageErrorEnvelope" } } } }
+        "404": { description: "`USER_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/PackageErrorEnvelope" } } } }
+        "409": { description: "`PACKAGE_INACTIVE`.", content: { application/json: { schema: { $ref: "#/components/schemas/PackageErrorEnvelope" } } } }
+  /v1/admin/users/{id}/package/end:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [packages, admin]
+      operationId: adminEndUserPackage
+      summary: "End a direct owner's current assignment of a market (as for an organisation; new in 0.37.0)"
+      security: [{ cookieSession: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/PackageEndInput" } } } }
+      responses:
+        "200": { description: The usage now., content: { application/json: { schema: { type: object, required: [usage], properties: { usage: { $ref: "#/components/schemas/PackageUsage" } } } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "`USER_NOT_FOUND` or `PACKAGE_ASSIGNMENT_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/PackageErrorEnvelope" } } } }
+  /v1/agent/organisations/{id}/package:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: "An organisation the caller is a member of (any role) whose kind manages listings, or the caller's own user id while an approved direct owner. Anybody else: 404 PACKAGE_ACCOUNT_NOT_FOUND." }
+    get:
+      tags: [packages]
+      operationId: agentPackage
+      summary: "The listing package and quota usage per market (private, noindex; new in 0.37.0)"
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      parameters:
+        - { name: market_code, in: query, schema: { type: string }, description: "Exactly this market (a country code, else 400)." }
+      responses:
+        "200": { description: The usage., content: { application/json: { schema: { $ref: "#/components/schemas/PackageAccountUsage" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`PACKAGE_ACCOUNT_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/PackageErrorEnvelope" } } } }
+  /v1/me/package:
+    get:
+      tags: [packages]
+      operationId: myPackage
+      summary: "The caller's own direct-owner listing package and quota usage (not an approved direct owner: 403 FORBIDDEN; new in 0.37.0)"
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      parameters:
+        - { name: market_code, in: query, schema: { type: string } }
+      responses:
+        "200": { description: The usage., content: { application/json: { schema: { $ref: "#/components/schemas/PackageAccountUsage" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
 components:
   parameters:
     RentDueID:
@@ -15990,7 +16208,8 @@ components:
       type: object
       description: New in 0.22.0. A listing as its managers see it (`GET /v1/me/listings/{id}`).
       required: [id, slug, reference, status, status_label, public, review, pending_changes, content, photos, photo_limit,
-                 completeness, owner, advertiser, can_edit, actions, published_at, expires_at, created_at, updated_at, timeline]
+                 completeness, owner, advertiser, can_edit, actions, published_at, expires_at, created_at, updated_at, timeline,
+                 package_usage, quota_warning]
       properties:
         id: { type: string, format: uuid }
         slug: { type: string }
@@ -16050,6 +16269,12 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         timeline: { type: array, items: { $ref: "#/components/schemas/ListingTimelineEntry" } }
+        package_usage:
+          description: "New in 0.37.0. The listing package and active listings of the listing's account in its country (null without a country). The reviewer sees it before approving."
+          oneOf: [{ $ref: "#/components/schemas/PackageUsage" }, { type: "null" }]
+        quota_warning:
+          type: [string, "null"]
+          description: "New in 0.37.0. Set when the account is at its limit and the listing is not live (DRAFT, PENDING_REVIEW, CHANGES_REQUESTED, ARCHIVED, EXPIRED): it can be submitted, but approval is refused until a slot is free."
 
     ManagedListingEnvelope:
       type: object
@@ -23738,4 +23963,212 @@ components:
               description: |
                 `INSPECTION_CLOSED`: `status`; `INSPECTION_INVALID_TRANSITION`: `status`, `allowed`; `INSPECTION_INCOMPLETE`:
                 `missing`, `item_ids` (at most 50).
+        trace_id: { type: string }
+    PackageMarket:
+      type: object
+      required: [code, name, currency, minor_unit]
+      properties:
+        code: { type: string, examples: [ZW] }
+        name: { type: string, examples: [Zimbabwe] }
+        currency: { type: string, examples: [USD] }
+        minor_unit: { type: integer, examples: [2] }
+    PackagePrice:
+      type: object
+      required: [billing_term, billing_term_label, amount, currency, minor_unit, sample]
+      properties:
+        billing_term: { type: string, enum: [MONTHLY, QUARTERLY, ANNUAL] }
+        billing_term_label: { type: string, examples: [Monthly] }
+        amount: { type: string, description: "Exactly the currency's minor-unit decimals.", examples: ["25.00"] }
+        currency: { type: string, examples: [USD] }
+        minor_unit: { type: integer }
+        sample: { type: boolean, description: "A development seed price, never an approved one: label it as a sample." }
+    PackageRef:
+      type: object
+      required: [id, code, name, listing_limit, active]
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string, examples: [STARTER] }
+        name: { type: string, examples: [Starter] }
+        listing_limit: { type: integer, examples: [20] }
+        active: { type: boolean }
+    ListingPackage:
+      type: object
+      description: New in 0.37.0. A listing package as administrators see it.
+      required: [id, code, name, market, listing_limit, description, active, is_default, sort, prices, current_assignments, created_at, updated_at, can]
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string }
+        name: { type: string }
+        market: { $ref: "#/components/schemas/PackageMarket" }
+        listing_limit: { type: integer, minimum: 0, maximum: 100000, description: Active published listings allowed in the market. }
+        description: { type: string }
+        active: { type: boolean }
+        is_default: { type: boolean, description: "The package of every account without an assignment in the market (at most one per market)." }
+        sort: { type: integer }
+        prices: { type: array, items: { $ref: "#/components/schemas/PackagePrice" }, description: "MONTHLY, QUARTERLY, ANNUAL order; only the terms with a price." }
+        current_assignments: { type: integer, description: Assignments in force today. }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        can: { type: object, required: [edit, delete], properties: { edit: { type: boolean }, delete: { type: boolean } } }
+    PublicPackageList:
+      type: object
+      required: [market, billing_terms, items]
+      properties:
+        market: { $ref: "#/components/schemas/PackageMarket" }
+        billing_terms: { type: array, items: { type: object, required: [code, label, months], properties: { code: { type: string }, label: { type: string }, months: { type: integer } } } }
+        items:
+          type: array
+          items:
+            type: object
+            required: [code, name, description, listing_limit, is_default, sort, prices]
+            properties:
+              code: { type: string }
+              name: { type: string }
+              description: { type: string }
+              listing_limit: { type: integer }
+              is_default: { type: boolean }
+              sort: { type: integer }
+              prices: { type: array, items: { $ref: "#/components/schemas/PackagePrice" } }
+    PackageInput:
+      type: object
+      required: [code, name, market_code, listing_limit]
+      additionalProperties: false
+      properties:
+        code: { type: string, pattern: "^[A-Za-z][A-Za-z0-9_]{1,31}$", description: Upper-cased; unique per market. }
+        name: { type: string, minLength: 1, maxLength: 80 }
+        market_code: { type: string }
+        listing_limit: { type: integer, minimum: 0, maximum: 100000 }
+        description: { type: string, maxLength: 1000 }
+        active: { type: boolean, default: true }
+        is_default: { type: boolean, default: false }
+        sort: { type: integer, minimum: 0, maximum: 10000, default: 100 }
+        prices: { type: array, maxItems: 3, items: { $ref: "#/components/schemas/PackagePriceInput" } }
+    PackagePatch:
+      type: object
+      additionalProperties: false
+      description: "Any of these; `code` and `market_code` are refused (400). `prices` replaces the set ([] removes every price)."
+      properties:
+        name: { type: string, minLength: 1, maxLength: 80 }
+        description: { type: string, maxLength: 1000 }
+        listing_limit: { type: integer, minimum: 0, maximum: 100000 }
+        active: { type: boolean }
+        is_default: { type: boolean, description: "false leaves the market with no default: unassigned accounts are then not limited." }
+        sort: { type: integer, minimum: 0, maximum: 10000 }
+        prices: { type: array, maxItems: 3, items: { $ref: "#/components/schemas/PackagePriceInput" } }
+    PackagePriceInput:
+      type: object
+      required: [billing_term, amount]
+      additionalProperties: false
+      properties:
+        billing_term: { type: string, enum: [MONTHLY, QUARTERLY, ANNUAL] }
+        amount: { type: string, description: "A positive decimal string with at most the market currency's minor-unit decimals (a JSON number is 400 INVALID_JSON)." }
+    PackageUsage:
+      type: object
+      description: New in 0.37.0. An account's package and active listings in one market.
+      required: [market, package, basis, assignment, scheduled, limit, used, remaining, at_limit, over_limit, over_by, grace_until, message]
+      properties:
+        market: { $ref: "#/components/schemas/PackageMarket" }
+        package: { oneOf: [{ $ref: "#/components/schemas/PackageRef" }, { type: "null" }] }
+        basis: { type: string, enum: [ASSIGNED, DEFAULT, NONE], description: "NONE: no assignment and no default, no limit." }
+        assignment: { type: [object, "null"], properties: { id: { type: string, format: uuid }, starts_on: { type: string, format: date }, ends_on: { type: [string, "null"], format: date }, source: { type: string, enum: [ADMIN, INVOICE] } } }
+        scheduled: { type: [object, "null"], properties: { id: { type: string, format: uuid }, package: { $ref: "#/components/schemas/PackageRef" }, starts_on: { type: string, format: date }, ends_on: { type: [string, "null"], format: date }, source: { type: string, enum: [ADMIN, INVOICE] } } }
+        limit: { type: [integer, "null"] }
+        used: { type: integer, description: "PUBLISHED listings whose publication period is not over (PAUSED and pending ones do not count)." }
+        remaining: { type: [integer, "null"] }
+        at_limit: { type: boolean, description: New go-lives are refused while true. }
+        over_limit: { type: boolean, description: "Grace: the listings already live stay live until they expire or are archived." }
+        over_by: { type: integer }
+        grace_until: { type: [string, "null"], format: date-time, description: "While over_limit: when the account is back within its limit if nothing changes." }
+        message: { type: string }
+    PackageAccountRef:
+      type: object
+      required: [kind, id, name]
+      properties:
+        kind: { type: string, enum: [ORGANISATION, DIRECT_OWNER] }
+        id: { type: string, format: uuid }
+        name: { type: string }
+    PackageAccountUsage:
+      type: object
+      required: [account, markets]
+      properties:
+        account: { $ref: "#/components/schemas/PackageAccountRef" }
+        markets: { type: array, items: { $ref: "#/components/schemas/PackageUsage" }, description: "The home market (organisations), the markets of the account's listings and of its current or scheduled assignments; or exactly ?market_code." }
+    PackageAssignment:
+      type: object
+      required: [id, account, market_code, package, starts_on, ends_on, source, note, status, assigned_by, created_at, cancelled_at]
+      properties:
+        id: { type: string, format: uuid }
+        account: { $ref: "#/components/schemas/PackageAccountRef" }
+        market_code: { type: string }
+        package: { $ref: "#/components/schemas/PackageRef" }
+        starts_on: { type: string, format: date }
+        ends_on: { type: [string, "null"], format: date }
+        source: { type: string, enum: [ADMIN, INVOICE] }
+        note: { type: string }
+        status: { type: string, enum: [SCHEDULED, CURRENT, ENDED, CANCELLED] }
+        assigned_by: { type: object, required: [user_id, name], properties: { user_id: { type: [string, "null"], format: uuid }, name: { type: string } } }
+        created_at: { type: string, format: date-time }
+        cancelled_at: { type: [string, "null"], format: date-time }
+    AdminPackageAccount:
+      type: object
+      required: [account, markets, assignments]
+      properties:
+        account: { $ref: "#/components/schemas/PackageAccountRef" }
+        markets: { type: array, items: { $ref: "#/components/schemas/PackageUsage" } }
+        assignments: { type: array, maxItems: 200, items: { $ref: "#/components/schemas/PackageAssignment" }, description: Newest first. }
+    PackageAssignInput:
+      type: object
+      required: [package_id]
+      additionalProperties: false
+      properties:
+        package_id: { type: string, format: uuid }
+        starts_on: { type: string, format: date, description: "Default today (UTC); never in the past." }
+        ends_on: { type: [string, "null"], format: date, description: "Inclusive; null is open-ended." }
+        note: { type: string, maxLength: 500 }
+        source: { type: string, enum: [ADMIN], description: INVOICE is reserved for invoices. }
+    PackageAssignResult:
+      type: object
+      required: [assignment, usage]
+      properties:
+        assignment: { $ref: "#/components/schemas/PackageAssignment" }
+        usage: { $ref: "#/components/schemas/PackageUsage" }
+    PackageEndInput:
+      type: object
+      required: [market_code]
+      additionalProperties: false
+      properties:
+        market_code: { type: string }
+        note: { type: string, maxLength: 500 }
+    PackageErrorEnvelope:
+      type: object
+      required: [error, trace_id]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, enum: [MARKET_NOT_FOUND, PACKAGE_NOT_FOUND, PACKAGE_ASSIGNMENT_NOT_FOUND, PACKAGE_ACCOUNT_NOT_FOUND, ORGANISATION_NOT_FOUND, USER_NOT_FOUND, PACKAGE_CODE_TAKEN, PACKAGE_IN_USE, PACKAGE_IS_DEFAULT, PACKAGE_INACTIVE, PACKAGE_MARKET_FORBIDDEN, FORBIDDEN] }
+            message: { type: string }
+            details: { type: object, additionalProperties: true, description: "`PACKAGE_IN_USE`: `assignments`." }
+        trace_id: { type: string }
+    ListingQuotaError:
+      type: object
+      description: "New in 0.37.0. 409 LISTING_QUOTA_REACHED: the approval of a NEW review when the advertiser's active listings already reach their package's limit. Nothing changes."
+      required: [error, trace_id]
+      properties:
+        error:
+          type: object
+          required: [code, message, details]
+          properties:
+            code: { type: string, enum: [LISTING_QUOTA_REACHED] }
+            message: { type: string }
+            details:
+              type: object
+              required: [limit, used, package, market_code, account]
+              properties:
+                limit: { type: integer }
+                used: { type: integer }
+                package: { $ref: "#/components/schemas/PackageRef" }
+                market_code: { type: string }
+                account: { $ref: "#/components/schemas/PackageAccountRef" }
         trace_id: { type: string }

@@ -17,6 +17,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"rightproperty365.com/backend/internal/modules/packages"
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/httpx"
 )
@@ -63,6 +64,7 @@ func (h *ManageHandler) fail(w http.ResponseWriter, r *http.Request, err error) 
 	var incomplete *IncompleteError
 	var state *StateError
 	var tooLarge *http.MaxBytesError
+	var quota *packages.QuotaError
 	switch {
 	case errors.As(err, &verr):
 		httpx.WriteError(w, r, http.StatusBadRequest, httpx.CodeValidationFailed, "Some fields need your attention.", verr.Fields)
@@ -76,6 +78,9 @@ func (h *ManageHandler) fail(w http.ResponseWriter, r *http.Request, err error) 
 		httpx.WriteError(w, r, http.StatusUnprocessableEntity, CodeListingIncomplete, "The listing needs more information before it can be submitted.", fields)
 	case errors.As(err, &state):
 		httpx.WriteError(w, r, http.StatusConflict, state.Code, state.Message, nil)
+	case errors.As(err, &quota):
+		message, details := h.mg.QuotaAnswer(r.Context(), quota)
+		packages.WriteDetails(w, r, http.StatusConflict, packages.CodeQuotaReached, message, details)
 	case errors.Is(err, ErrNotFound):
 		httpx.WriteError(w, r, http.StatusNotFound, CodeListingNotFound, "This listing does not exist.", nil)
 	case errors.Is(err, ErrForbidden):

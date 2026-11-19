@@ -109,6 +109,18 @@ Every other business profile has an owner too, at `<profile slug>@example.test` 
   `DEV MAIL (not sent): agreement-signing-code`, or set `AUTH_DEMO_CODE`).
 - Seeded in memory by the API in development and by `cmd/seed` (needs migrations 0022 and 0023).
 
+## Listing packages (API 0.37.0)
+
+No account changed. The development seed adds Starter (20 active listings, the default), Business (40) and
+Professional (60) in ZW and GB, with **sample** prices, and gives **Sample Estates** Business in ZW. So:
+
+- `estates.owner@example.test` (or any Sample Estates member, STAFF included): `/v1/agent/organisations/{Sample Estates id}/package`
+  shows Business, assigned.
+- `agent-b@example.test`: Second Street Realty is on the Starter default with nothing live.
+- `seller@example.test`: `/v1/me/package` shows the Starter default with listing 6 counted.
+- `admin@example.test`, `admin.platform@example.test`: `/v1/admin/packages` for every market; `admin.market@example.test`
+  manages ZW only. The admin listing review screen shows the advertiser's usage before approving.
+
 ## Platform administrators (administrator sign-in only)
 
 | Email | Platform role | What to look at when signed in |

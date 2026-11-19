@@ -82,6 +82,8 @@ type Manager struct {
 	store  ManageStore
 	files  storage.Storage
 	logger *slog.Logger
+	// quota is the listing package usage of the views (nil: none; see quota.go).
+	quota Quota
 }
 
 // NewManager builds the Manager. files is the private object storage the
@@ -311,6 +313,9 @@ func (mg *Manager) view(ctx context.Context, m ManagedListing, canEdit bool, rev
 	}
 	if m.OrganisationID != nil {
 		v.Owner.Type, v.Owner.OrganisationID = "organisation", m.OrganisationID
+	}
+	if err := mg.usage(ctx, &v, m, status, reviewer); err != nil {
+		return ManagedView{}, err
 	}
 	if r := m.Revision; r != nil {
 		pc := &PendingChanges{Status: r.Status, StatusLabel: StatusLabel(r.Status), Reason: opt(r.Reason), SubmittedAt: utcTime(r.SubmittedAt), UpdatedAt: r.UpdatedAt.UTC()}
@@ -1031,6 +1036,8 @@ func (mg *Manager) Decide(ctx context.Context, p *auth.Principal, id uuid.UUID, 
 		m.Status, m.PublishedAt, m.ExpiresAt = StatusPublished, now, now.Add(PublicationPeriod)
 		m.ReviewedAt, m.ReviewedBy, m.ReviewReason, m.Revision = &now, &reviewer, "", nil
 		ch.NewCycle = true
+		// The go-live: refused when the advertiser's package is full (FR-008).
+		ch.Quota = quotaCheck(m, now)
 		ch.Events = []ChangeEvent{indexEvent(EventListingPublished, m.ID), reviewEvent(EventListingApproved, m, kind, "", now)}
 	case decision == DecisionApprove:
 		mergeRevision(&m)
