@@ -188,6 +188,9 @@ type File struct {
 	SHA256        string
 	ObjectKey     string
 	UploadedAt    time.Time
+	// ScanStatus is the malware scan status (storage.Scan*), read from the
+	// scan records when a view is built; "" when it has none. Never stored.
+	ScanStatus string
 }
 
 // Timeline kinds.

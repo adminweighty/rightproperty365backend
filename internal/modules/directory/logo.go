@@ -218,9 +218,16 @@ func upright(img *image.RGBA, orientation int) *image.RGBA { return imaging.Upri
 // needs to be (PrepareLogo) and stores it under a new random key. The Logo
 // returned describes the STORED image. The caller attaches it to a profile,
 // and removes the object again if that fails.
+//
+// The ORIGINAL image is scanned for malware before anything is stored (API
+// 0.41.0): a small logo is stored byte for byte, so this matters here.
 func StoreLogo(ctx context.Context, files storage.Storage, content []byte, now time.Time) (Logo, error) {
+	original := content
 	img, content, err := PrepareLogo(content)
 	if err != nil {
+		return Logo{}, err
+	}
+	if err := storage.Screen(ctx, files, "logo", original); err != nil {
 		return Logo{}, err
 	}
 	key, err := storage.NewKey(LogoKeyPrefix)

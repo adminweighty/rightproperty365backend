@@ -396,6 +396,10 @@ type Document struct {
 	SHA256        string
 	ObjectKey     string
 	UploadedAt    time.Time
+	// ScanStatus is the file's malware scan status (storage.Scan*), read
+	// from the scan records when a view is built; "" when it has none
+	// (scanning off). Never stored with the document.
+	ScanStatus string
 }
 
 // Applicant is the person behind an application.

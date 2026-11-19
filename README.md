@@ -242,6 +242,7 @@ All configuration comes from environment variables. For local development you ma
 | `MFA_ENCRYPTION_KEY` | _(empty)_ | 32 random bytes, base64 (`openssl rand -base64 32`); a **secret** sealing the administrators' TOTP secrets (AES-256-GCM). **Required outside development when `ADMIN_MFA_REQUIRED` is true (startup fails).** Unset in staging/production with MFA not required: MFA answers `503 MFA_UNAVAILABLE`. Unset in development: a fixed, public development key (loud warning). Never logged |
 | `ANALYTICS_RAW_RETENTION_DAYS` | `90` | Days raw analytics events are kept before the worker deletes them (7..3650); rollups are kept. See "Listing analytics" |
 | `STORAGE_DRIVER`, `STORAGE_LOCAL_DIR`, `S3_*` | | Private file storage for onboarding documents: see "File storage". **Staging and production must use `STORAGE_DRIVER=s3`** |
+| `MALWARE_SCANNER`, `CLAMD_ADDRESS`, `MALWARE_SCAN_TIMEOUT`, `MALWARE_SCAN_MAX_BYTES` | `none` | Malware scanning of uploads: see "Uploads and malware scanning". **Off unless `MALWARE_SCANNER=clamav`; the ClamAV host is yours to provide** |
 | `FCM_PROJECT_ID`, `FCM_SERVICE_ACCOUNT_JSON`, `FCM_SERVICE_ACCOUNT_FILE` | _(empty)_ | Push through FCM: see "Notifications and push". Without them push is **disabled** in staging/production (one log line, never a startup failure) and logged in development. The key is a secret, never logged |
 | `ADMINCTL_PASSWORD` | _(empty)_ | `cmd/adminctl` only: the administrator password, as an alternative to stdin |
 
@@ -274,6 +275,7 @@ All configuration comes from environment variables. For local development you ma
 | GET, POST, DELETE | `/v1/admin/auth/mfa`, `/v1/admin/auth/mfa/totp/setup`, `/v1/admin/auth/mfa/totp/confirm`, `/v1/admin/auth/mfa/recovery-codes/regenerate`, `/v1/admin/auth/mfa/totp` | The signed-in administrator's own MFA: status, set up, confirm, new recovery codes, remove (API 0.40.0) |
 | GET, POST | `/v1/admin/users/{id}/mfa`, `/v1/admin/users/{id}/mfa/reset` | A SUPER_ADMIN reads or resets another administrator's MFA (API 0.40.0) |
 | GET | `/v1/admin/notifications/health` | Delivery counts, dead-letter backlog, oldest unattempted push |
+| GET | `/v1/admin/file-scans` | Malware scanning: counts by status and the latest PENDING and INFECTED files (SUPER_ADMIN, PLATFORM_ADMIN; API 0.41.0) |
 | GET, POST, PATCH | `/v1/agent/organisations/{id}/ledger/*` (`/options`, `/entries[/{entryId}]` + `/reverse`, `/correct`, `/reconcile`, `/notes`, `/attachments`; `/reports/*`, `/categories`) | The agent ledger / books, per currency (API 0.34.0) |
 | GET, POST, PATCH, DELETE | `/v1/agent/organisations/{id}/properties[/{propertyId}]` (+ `/units[/{unitId}]`) | Properties and their units (API 0.36.0) |
 | GET, POST, PATCH, DELETE | `/v1/agent/organisations/{id}/tenancies[/{tenancyId}]` (+ `/options`, `/activate`, `/end`) | Tenancies (API 0.36.0) |
@@ -495,6 +497,105 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 change; follow-up dates and reminders; editing or deleting a note; listing analytics; seeker
 favourites, saved searches and alerts. (Conversion funnels and response-time KPIs: API 0.38.0,
 below.)
+
+## Uploads and malware scanning (API 0.41.0)
+
+BR-014, FR-009/010. Migration `0043_malware_scanning`; `platform/malware` (the adapter, the
+storage guard, the worker job, the admin view) and `platform/storage/scan.go` (what the modules
+call). The exact JSON is the 0.41 malware scanning contract.
+
+**Scanning is OFF unless configured.** With `MALWARE_SCANNER` unset (`none`) nothing is scanned
+and every upload behaves exactly as before 0.41.0. **A ClamAV host is yours to provide**: run
+`clamd` (for example the official `clamav/clamav` image, with `freshclam` keeping its signatures
+current) somewhere the API and the worker can reach over TCP, then set `MALWARE_SCANNER=clamav`
+and `CLAMD_ADDRESS=host:3310` on **both** the API and the worker. Nothing in this repository runs
+or updates ClamAV, and a clamd port must never be reachable from the internet.
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `MALWARE_SCANNER` | `none` | `none` or `clamav`. Startup fails on anything else |
+| `CLAMD_ADDRESS` | _(empty)_ | `host:port` of clamd (TCP, usually 3310). Required with `clamav` |
+| `MALWARE_SCAN_TIMEOUT` | `60s` | One scan: connect, stream, verdict (1s..10m) |
+| `MALWARE_SCAN_MAX_BYTES` | `26214400` | **Must equal clamd's `StreamMaxLength`** (25 MB is clamd's default). At least 20 MB, the largest upload the API accepts |
+
+At startup the API and the worker log one line naming the scanner and ping clamd; an unreachable
+clamd is a warning, never a startup failure (uploads then fail closed, below).
+
+### Every upload path
+
+Storage is Amazon S3 (one private bucket; the `local` disk in development). **Every upload goes
+through the API, as `multipart/form-data` (base64 JSON for signature images); there are no
+presigned uploads**, so the bytes are always in the API's hands before anything is stored.
+
+| Path | What | Stored as | Scanned |
+| --- | --- | --- | --- |
+| `POST /v1/me/listings/{id}/photos` | Listing photo | Re-encoded JPEG (three sizes) | **Sync**, original bytes, before storing |
+| `POST .../maintenance/{requestId}/photos` (agent and tenant) | Maintenance photo | Re-encoded JPEG | **Sync**, original bytes |
+| `POST .../inspections/{id}/items/{itemId}/photos` | Inspection photo | Re-encoded JPEG | **Sync**, original bytes |
+| `PUT /v1/me/profiles/{kind}/{slug}/logo` | Profile logo | A scaled copy, or **the original byte for byte** when small enough | **Sync**, original bytes (again when an onboarding LOGO is promoted on approval) |
+| `PUT /v1/me/signature` | Saved signature or initials (DRAWN, UPLOADED) | Re-encoded PNG | **Sync**, original bytes |
+| `POST /v1/signing/{token}/submit` | Adopted signature or initials (DRAWN, UPLOADED) | Re-encoded PNG | **Sync**, original bytes |
+| `POST /v1/me/onboarding/{role}/documents` | Onboarding document (PDF, JPEG, PNG) | As uploaded | **Async**: quarantined, scanned by the worker |
+| `POST /v1/me/applications/{id}/files` | Application file | As uploaded | **Async** |
+| `POST .../ledger/entries/{id}/attachments` | Ledger attachment (PDF, JPEG, PNG, WebP) | As uploaded | **Async** |
+| `PUT /v1/me/agreements/{id}/document` | Uploaded agreement PDF (20 MB) | As uploaded | **Async**; cannot be opened or **sent for signature** until CLEAN |
+| `POST /v1/agent/organisations/{id}/contacts/import` | CRM contacts CSV | **Not stored**: parsed into text fields | Not scanned |
+| `POST /v1/verify` | A PDF to check against a completed agreement | **Not stored**: hashed and compared | Not scanned |
+| _(generated)_ | Lease PDFs, signed agreement PDFs, stamps | Rendered by the platform | Not scanned (not user bytes; an uploaded original is CLEAN before it can be sent) |
+
+**Images: synchronous.** The image is validated as before, then its **original bytes** are
+scanned, then the re-encoded copy is stored. (Re-encoding neutralises most image payloads, but a
+small logo is kept byte for byte and bytes after an image's end marker survive decoding, so the
+original is what is scanned.) Infected: `422 FILE_INFECTED`, nothing stored, an audit log line
+(`event=file_scan.infected`, the signature, the actor). **Scanner unavailable: fail closed,
+`503 SCANNER_UNAVAILABLE` with `Retry-After: 60`, nothing stored**: an unscanned image is never
+accepted, and an image upload is small and simply repeated. Larger than the scanner accepts:
+`413 FILE_TOO_LARGE_TO_SCAN`. Images get no scan record (only clean ones are ever stored).
+
+**Documents: asynchronous and quarantined.** The file is stored under its usual random key and a
+scan record (`file_scans`) says `PENDING`. **Every read refuses it** while PENDING (`409
+FILE_SCAN_PENDING`) and once INFECTED (`409 FILE_INFECTED`): the guard sits in front of the
+storage itself, so the owner's and the reviewers' downloads, an agent's application files, the
+signing pages, the promotion of an onboarding logo and an agreement's send all see it. The upload
+answers as before with `scan_status: "PENDING"`; views carry `scan_status` (`PENDING`, `CLEAN`,
+`INFECTED`, `LEGACY_UNSCANNED`; absent when scanning is off). The **worker** (`cmd/worker`; the API
+process itself without a database) takes due records every 5 seconds (batches of 10, a 5-minute
+lease, `FOR UPDATE SKIP LOCKED`):
+
+- **CLEAN**: served from then on.
+- **INFECTED**: recorded with the signature name, then the **object is deleted** from storage (not
+  moved: nothing infected is kept; the record stays for the administrators, even when the document
+  is deleted later). An audit log line, and the uploader gets an in-app **SECURITY** notice
+  (essential, cannot be switched off) in safe text: no file name, no signature name.
+- **Scanner (or storage) unavailable: fail closed.** The file stays PENDING and is retried with
+  backoff (30 s, 1, 2, 4 minutes and so on, capped at 1 hour) and is **never given up**;
+  `last_error` says why. With `MALWARE_SCANNER=none` the worker does not scan, and **switching
+  scanning off does not release files already quarantined**: they stay PENDING until it is back on.
+- A file deleted while PENDING drops its record.
+
+**Legacy files.** The migration adds a `LEGACY_UNSCANNED` record for every onboarding document,
+application file, ledger attachment and uploaded agreement PDF that existed before it. They are
+**served as before (treated as clean) and are not scanned on read**; the admin view counts them.
+Scanning them is a separate, deliberate job (not built).
+
+**Metrics and logs.** Every scan is logged (`file scanned`, `file scan failed`) with the mode
+(`sync`, `async`), the kind of file, the result, the size and the duration, **never the content
+or the user's file name**. Counts per mode and result are kept per process (`process_counts` on the
+admin view: the API's synchronous scans; the worker's are in its logs); the database counts by
+status.
+
+**Admin.** `GET /v1/admin/file-scans` (SUPER_ADMIN, PLATFORM_ADMIN): the scanner, counts by
+status, the oldest PENDING time, the latest 50 PENDING and INFECTED records (kind, status,
+signature, size, attempts, last error, times; never a file name, an owner or a link) and
+`process_counts`.
+
+**Account deletion** unlinks the person from their scan records (`malware.ForgetUploaderTx`; the
+users row is anonymised, so the foreign key's `ON DELETE SET NULL` never fires).
+
+**Not verified:** the clamd protocol is tested against a fake TCP server (clean, FOUND, ERROR, the
+size limit, no reply, unreachable) and the flows with a fake scanner that finds the EICAR test
+string; it has **not been run against a real clamd**. `malware/postgres.go` and the migration's
+backfill have only run where `RP365_TEST_DATABASE_URL` is set.
 
 ## Administrator MFA (API 0.40.0)
 
@@ -2826,8 +2927,11 @@ delete have also been run against MinIO and Amazon S3.
 - the SHA-256 of the content is stored;
 - attaching a type again replaces the document and deletes the old object.
 
-**Not built:** malware scanning and quarantine (a file is stored and can be downloaded by a
-reviewer unscanned: **open it with care**), image re-encoding and EXIF/metadata stripping,
+**Malware scanning** (API 0.41.0, when `MALWARE_SCANNER=clamav`): a document is quarantined until
+the worker has scanned it and cannot be downloaded meanwhile; see "Uploads and malware scanning".
+With scanning off a file is stored and can be downloaded unscanned: **open it with care**.
+
+**Not built:** image re-encoding and EXIF/metadata stripping,
 presigned direct uploads, a retention and deletion policy (documents are kept indefinitely,
 including after a rejection), cleanup of orphan objects if a delete fails (it is logged), and
 encryption settings for the bucket (an infrastructure decision).

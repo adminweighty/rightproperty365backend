@@ -311,6 +311,21 @@ type AdoptInput struct {
 // adoptedImage decodes, checks and re-encodes a signature image as a PNG
 // flattened onto white (dropping metadata). DRAWN: PNG only, 200 KB;
 // UPLOADED: PNG or JPEG, 500 KB.
+// adoptedOriginal returns the bytes of an adopted image exactly as they
+// were sent (decoded from base64), for the malware scan; nil when they
+// cannot be decoded (adoptedImage has refused them then).
+func adoptedOriginal(raw string) []byte {
+	raw = strings.TrimSpace(raw)
+	if i := strings.Index(raw, ";base64,"); strings.HasPrefix(raw, "data:") && i > 0 {
+		raw = raw[i+len(";base64,"):]
+	}
+	content, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		return nil
+	}
+	return content
+}
+
 func adoptedImage(kind, raw string) ([]byte, string) {
 	raw = strings.TrimSpace(raw)
 	if i := strings.Index(raw, ";base64,"); strings.HasPrefix(raw, "data:") && i > 0 {

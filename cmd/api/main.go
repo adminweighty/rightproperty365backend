@@ -54,6 +54,7 @@ import (
 	"rightproperty365.com/backend/internal/platform/ics"
 	"rightproperty365.com/backend/internal/platform/logging"
 	"rightproperty365.com/backend/internal/platform/mail"
+	"rightproperty365.com/backend/internal/platform/malware"
 	"rightproperty365.com/backend/internal/platform/outbox"
 	"rightproperty365.com/backend/internal/platform/push"
 	"rightproperty365.com/backend/internal/platform/storage"
@@ -114,10 +115,18 @@ func run() error {
 
 	// Object storage: onboarding documents (private) and profile logos
 	// (public, but only ever served by the API).
-	files, err := storage.Open(cfg, logger)
+	baseFiles, err := storage.Open(cfg, logger)
 	if err != nil {
 		return err
 	}
+	// Malware scanning of uploads (API 0.41.0): off (none) unless
+	// MALWARE_SCANNER=clamav. The guard wraps the storage either way, so a
+	// file quarantined while scanning was on is never served. Its scan
+	// records are set below (memory or Postgres).
+	scanner := malware.Open(ctx, cfg, logger)
+	fileGuard := malware.NewGuard(baseFiles, scanner, logger)
+	fileGuard.SetUnscannedPrefixes(app.UnscannedKeyPrefixes()...)
+	var files storage.Storage = fileGuard
 	// onboardingInfo loads the data behind an onboarding email. It is set
 	// once the router's service exists; events only arrive after that.
 	var onboardingStore onboarding.Store
@@ -331,6 +340,8 @@ func run() error {
 		// The notification centre, and its push sender in this process.
 		memInbox := inapp.NewMemoryStore()
 		inboxSvc = inapp.NewService(memInbox, pushProvider, logger, nil)
+		// Scan records in memory; the scans run in this process (below).
+		fileGuard.SetStore(malware.NewMemoryStore())
 		if pusher != nil {
 			go inapp.NewSender(memInbox, pusher, logger, nil).Run(ctx)
 		}
@@ -550,6 +561,13 @@ func run() error {
 		packageStore = packages.NewPostgresStore(pool)
 		adminAuditLog = adminaudit.PostgresLog{Q: pool}
 		inboxSvc = inapp.NewService(inapp.NewPostgresStore(pool), pushProvider, logger, nil)
+		// Scan records; the worker scans the quarantined documents.
+		fileGuard.SetStore(malware.NewPostgresStore(pool))
+	}
+	// Without a database there is no worker: quarantined documents are
+	// scanned in this process (development only).
+	if cfg.UseMemoryStore() && fileGuard.Enabled() {
+		go malware.NewWorker(fileGuard.Store(), baseFiles, scanner, app.FileScanNotifier(inboxSvc), logger, fileGuard.Metrics()).Run(ctx, fileGuard.Wake())
 	}
 
 	// Search engine. Elasticsearch only proposes listing IDs: every hit is

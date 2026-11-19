@@ -1,7 +1,6 @@
 package agreements
 
 import (
-	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -318,6 +317,11 @@ type DocumentView struct {
 	SizeBytes int64      `json:"size_bytes"`
 	FileName  string     `json:"file_name"`
 	Pages     []PageSize `json:"pages,omitempty"`
+	// ScanStatus is the malware scan status of an uploaded PDF (API
+	// 0.41.0): PENDING while it is being checked (it cannot be opened or
+	// sent yet), CLEAN, INFECTED (removed: upload another) or
+	// LEGACY_UNSCANNED. Omitted when scanning is off and on the signed copy.
+	ScanStatus string `json:"scan_status,omitempty"`
 }
 
 // View is an agreement as its sender (and their organisation) sees it.
@@ -570,7 +574,17 @@ func (s *Service) Get(ctx context.Context, p *auth.Principal, id uuid.UUID) (Vie
 			a = *done
 		}
 	}
-	return view(a, callerEmail(p)), nil
+	v := view(a, callerEmail(p))
+	s.withScan(ctx, &v, a)
+	return v, nil
+}
+
+// withScan sets the scan status of the agreement's uploaded document.
+func (s *Service) withScan(ctx context.Context, v *View, a Agreement) {
+	if v.Document == nil || a.Original == nil || s.files == nil {
+		return
+	}
+	v.Document.ScanStatus = storage.ScanStatuses(ctx, s.files, a.Original.ObjectKey)[a.Original.ObjectKey]
 }
 
 // Patch changes a DRAFT: name, message, expiry, reminders and recipients
@@ -617,7 +631,11 @@ func (s *Service) AddDocument(ctx context.Context, p *auth.Principal, id uuid.UU
 	if err != nil {
 		return View{}, err
 	}
-	if err := s.files.Put(ctx, key, bytes.NewReader(content), int64(len(content)), "application/pdf"); err != nil {
+	// Quarantined until scanned when malware scanning is on (API 0.41.0):
+	// it cannot be opened or sent for signature until it is CLEAN.
+	scanStatus, err := storage.PutUpload(ctx, s.files, key, content, "application/pdf",
+		storage.Upload{Kind: storage.UploadAgreementDocument, UploadedBy: p.UserID})
+	if err != nil {
 		return View{}, fmt.Errorf("store agreement document: %w", err)
 	}
 	name := cleanFileName(fileName)
@@ -639,7 +657,11 @@ func (s *Service) AddDocument(ctx context.Context, p *auth.Principal, id uuid.UU
 		return View{}, err
 	}
 	s.dropObject(ctx, old)
-	return view(saved, callerEmail(p)), nil
+	v := view(saved, callerEmail(p))
+	if v.Document != nil {
+		v.Document.ScanStatus = scanStatus
+	}
+	return v, nil
 }
 
 // PutFields replaces the fields of a DRAFT.
@@ -808,8 +830,16 @@ func checkReady(a *Agreement) error {
 // Send sends a DRAFT: the recipients of the first order are emailed their
 // links; the others wait for their turn.
 func (s *Service) Send(ctx context.Context, p *auth.Principal, id uuid.UUID) (View, error) {
-	if _, err := s.visible(ctx, p, id); err != nil {
+	a, err := s.visible(ctx, p, id)
+	if err != nil {
 		return View{}, err
+	}
+	// An uploaded PDF still being scanned (or found infected) is not sent:
+	// 409 FILE_SCAN_PENDING / FILE_INFECTED (API 0.41.0).
+	if a.Original != nil && a.Source == SourceUpload {
+		if err := storage.Servable(ctx, s.files, a.Original.ObjectKey); err != nil {
+			return View{}, err
+		}
 	}
 	return s.send(ctx, p, id)
 }

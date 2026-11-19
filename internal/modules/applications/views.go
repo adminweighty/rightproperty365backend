@@ -128,10 +128,15 @@ type FileView struct {
 	ContentType string    `json:"content_type"`
 	Size        int64     `json:"size"`
 	UploadedAt  time.Time `json:"uploaded_at"`
+	// ScanStatus is the malware scan status (API 0.41.0): PENDING while
+	// the file is being checked (it cannot be downloaded yet), CLEAN,
+	// INFECTED (removed) or LEGACY_UNSCANNED. Omitted when scanning is off.
+	ScanStatus string `json:"scan_status,omitempty"`
 }
 
 func fileView(f File) FileView {
-	return FileView{ID: f.ID, Field: f.FieldKey, FileName: f.FileName, ContentType: f.ContentType, Size: f.Size, UploadedAt: f.UploadedAt.UTC()}
+	return FileView{ID: f.ID, Field: f.FieldKey, FileName: f.FileName, ContentType: f.ContentType, Size: f.Size, UploadedAt: f.UploadedAt.UTC(),
+		ScanStatus: f.ScanStatus}
 }
 
 // TimelineEntry is one entry of an application's timeline.

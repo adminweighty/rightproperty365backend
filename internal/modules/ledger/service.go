@@ -329,7 +329,7 @@ func noteView(n Note) NoteView {
 
 func attachmentView(book Book, a Attachment) AttachmentView {
 	return AttachmentView{ID: a.ID, FileName: a.FileName, ContentType: a.ContentType, Size: a.Size,
-		UploadedBy: PersonRef{UserID: a.UploadedBy, Name: a.UploadedByName}, UploadedAt: a.UploadedAt,
+		UploadedBy: PersonRef{UserID: a.UploadedBy, Name: a.UploadedByName}, UploadedAt: a.UploadedAt, ScanStatus: a.ScanStatus,
 		DownloadPath: fmt.Sprintf("/v1/agent/organisations/%s/ledger/entries/%s/attachments/%s", book.ID(), a.EntryID, a.ID)}
 }
 
@@ -659,6 +659,16 @@ func (s *Service) detail(ctx context.Context, a access, e Entry) (EntryDetail, e
 	files, err := s.store.Attachments(ctx, e.ID)
 	if err != nil {
 		return EntryDetail{}, err
+	}
+	if s.files != nil && len(files) > 0 {
+		keys := make([]string, len(files))
+		for i, f := range files {
+			keys[i] = f.ObjectKey
+		}
+		statuses := storage.ScanStatuses(ctx, s.files, keys...)
+		for i := range files {
+			files[i].ScanStatus = statuses[files[i].ObjectKey]
+		}
 	}
 	for _, f := range files {
 		out.Attachments = append(out.Attachments, attachmentView(a.book, f))

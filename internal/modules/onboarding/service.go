@@ -1,7 +1,6 @@
 package onboarding
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -241,6 +240,10 @@ type DocumentView struct {
 	ContentType string     `json:"content_type"`
 	SizeBytes   int64      `json:"size_bytes"`
 	UploadedAt  time.Time  `json:"uploaded_at"`
+	// ScanStatus is the malware scan status (API 0.41.0): PENDING while
+	// the file is being checked (it cannot be downloaded yet), CLEAN,
+	// INFECTED (removed) or LEGACY_UNSCANNED. Omitted when scanning is off.
+	ScanStatus string `json:"scan_status,omitempty"`
 }
 
 // Missing lists what still has to be provided before submitting.
@@ -284,7 +287,7 @@ func (c *catalogue) documentViews(docs []Document) []DocumentView {
 			label = t.Label
 		}
 		out = append(out, DocumentView{ID: d.ID, Type: CodedLabel{Code: d.Type, Label: label}, FileName: d.FileName,
-			ContentType: d.ContentType, SizeBytes: d.Size, UploadedAt: d.UploadedAt.UTC()})
+			ContentType: d.ContentType, SizeBytes: d.Size, UploadedAt: d.UploadedAt.UTC(), ScanStatus: d.ScanStatus})
 	}
 	return out
 }
@@ -363,6 +366,7 @@ func (s *Service) Mine(ctx context.Context, p *auth.Principal) ([]ApplicationVie
 	for _, role := range c.order {
 		for _, a := range apps {
 			if a.Role == role && p.HasAccountRole(role) {
+				s.withScans(ctx, &a)
 				out = append(out, c.view(a))
 			}
 		}
@@ -396,10 +400,26 @@ func (s *Service) mine(ctx context.Context, p *auth.Principal, role string) (*ca
 	}
 	for _, a := range apps {
 		if a.Role == role {
+			s.withScans(ctx, &a)
 			return c, a, nil
 		}
 	}
 	return nil, Application{}, ErrNotFound
+}
+
+// withScans sets the scan status of the application's documents.
+func (s *Service) withScans(ctx context.Context, a *Application) {
+	if s.files == nil || len(a.Documents) == 0 {
+		return
+	}
+	keys := make([]string, len(a.Documents))
+	for i, d := range a.Documents {
+		keys[i] = d.ObjectKey
+	}
+	statuses := storage.ScanStatuses(ctx, s.files, keys...)
+	for i := range a.Documents {
+		a.Documents[i].ScanStatus = statuses[a.Documents[i].ObjectKey]
+	}
 }
 
 func (s *Service) reload(ctx context.Context, c *catalogue, id uuid.UUID) (ApplicationView, error) {
@@ -407,6 +427,7 @@ func (s *Service) reload(ctx context.Context, c *catalogue, id uuid.UUID) (Appli
 	if err != nil {
 		return ApplicationView{}, err
 	}
+	s.withScans(ctx, &a)
 	return c.view(a), nil
 }
 
@@ -779,7 +800,10 @@ func (s *Service) Upload(ctx context.Context, p *auth.Principal, role, typeCode,
 		ID: id, ApplicationID: app.ID, Type: typeCode, FileName: SanitiseFileName(fileName, contentType), ContentType: contentType,
 		Size: int64(len(content)), SHA256: hex.EncodeToString(sum[:]), ObjectKey: key, UploadedAt: s.clock(),
 	}
-	if err := s.files.Put(ctx, key, bytes.NewReader(content), doc.Size, contentType); err != nil {
+	// Quarantined until scanned when malware scanning is on (API 0.41.0).
+	doc.ScanStatus, err = storage.PutUpload(ctx, s.files, key, content, contentType,
+		storage.Upload{Kind: storage.UploadOnboardingDocument, UploadedBy: p.UserID})
+	if err != nil {
 		return DocumentView{}, fmt.Errorf("store document: %w", err)
 	}
 	replaced, err := s.store.AddDocument(ctx, doc)
@@ -1064,6 +1088,7 @@ func (s *Service) adminView(ctx context.Context, c *catalogue, a Application) (A
 	if err != nil {
 		return AdminApplication{}, err
 	}
+	s.withScans(ctx, &a)
 	out := AdminApplication{
 		ID: a.ID, Role: a.Role, RoleLabel: c.roleLabel(a.Role), Status: a.Status, StatusLabel: StatusLabel(a.Status), Outcome: c.outcomes[a.Role].Outcome,
 		MarketCode: nullable(a.MarketCode),

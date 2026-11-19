@@ -24,6 +24,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/tenancies"
 	"rightproperty365.com/backend/internal/platform/adminaudit"
 	"rightproperty365.com/backend/internal/platform/auth"
+	"rightproperty365.com/backend/internal/platform/malware"
 	"rightproperty365.com/backend/internal/platform/orgaudit"
 )
 
@@ -487,6 +488,12 @@ func (s *PostgresStore) Delete(ctx context.Context, d Deletion) (Deleted, error)
 		// An administrator's authenticator and recovery codes (migration
 		// 0042): deleted explicitly, the cascade never fires here.
 		if _, err := identity.DeleteAdminMFATx(ctx, tx, d.UserID); err != nil {
+			return err
+		}
+		// Scan records of the person's uploads (migration 0043): kept (an
+		// INFECTED one stays on the administrators' list); the person is
+		// unlinked (ON DELETE SET NULL never fires here).
+		if err := malware.ForgetUploaderTx(ctx, tx, d.UserID); err != nil {
 			return err
 		}
 		return adminaudit.Insert(ctx, tx, d.Audit)

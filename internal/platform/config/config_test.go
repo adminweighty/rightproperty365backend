@@ -694,3 +694,31 @@ func TestAdminMFASettings(t *testing.T) {
 		t.Fatal("the key must not format")
 	}
 }
+
+// Malware scanning is off unless MALWARE_SCANNER=clamav, which needs
+// CLAMD_ADDRESS; the timeout and the size limit are bounded.
+func TestMalwareScannerSettings(t *testing.T) {
+	cfg, err := FromLookup(lookup(map[string]string{}))
+	if err != nil || cfg.MalwareScanner != MalwareScannerNone || cfg.MalwareScanTimeout != 60*time.Second || cfg.MalwareScanMaxBytes != 25<<20 {
+		t.Fatalf("defaults: %q %s %d %v", cfg.MalwareScanner, cfg.MalwareScanTimeout, cfg.MalwareScanMaxBytes, err)
+	}
+	cfg, err = FromLookup(lookup(map[string]string{"MALWARE_SCANNER": "ClamAV", "CLAMD_ADDRESS": "clamav.internal:3310",
+		"MALWARE_SCAN_TIMEOUT": "30s", "MALWARE_SCAN_MAX_BYTES": "52428800"}))
+	if err != nil || cfg.MalwareScanner != MalwareScannerClamAV || cfg.ClamdAddress != "clamav.internal:3310" ||
+		cfg.MalwareScanTimeout != 30*time.Second || cfg.MalwareScanMaxBytes != 50<<20 {
+		t.Fatalf("clamav: %+v %v", cfg, err)
+	}
+	for name, env := range map[string]map[string]string{
+		"no address":     {"MALWARE_SCANNER": "clamav"},
+		"no port":        {"MALWARE_SCANNER": "clamav", "CLAMD_ADDRESS": "clamav.internal"},
+		"unknown driver": {"MALWARE_SCANNER": "virustotal"},
+		"bad timeout":    {"MALWARE_SCAN_TIMEOUT": "forever"},
+		"short timeout":  {"MALWARE_SCAN_TIMEOUT": "10ms"},
+		"small limit":    {"MALWARE_SCAN_MAX_BYTES": "1048576"},
+		"bad limit":      {"MALWARE_SCAN_MAX_BYTES": "lots"},
+	} {
+		if _, err := FromLookup(lookup(env)); err == nil {
+			t.Fatalf("%s: accepted", name)
+		}
+	}
+}

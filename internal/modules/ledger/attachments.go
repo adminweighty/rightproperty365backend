@@ -1,7 +1,6 @@
 package ledger
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -105,7 +104,9 @@ func (s *Service) AddAttachment(ctx context.Context, p *auth.Principal, bookID, 
 	by := p.UserID
 	att := Attachment{ID: newID(), EntryID: e.ID, FileName: fileName(name, kind), ContentType: contentType, Size: int64(len(content)),
 		SHA256: hex.EncodeToString(sum[:]), ObjectKey: key, UploadedBy: &by, UploadedByName: p.Name, UploadedAt: s.clock()}
-	if err := s.files.Put(ctx, key, bytes.NewReader(content), att.Size, contentType); err != nil {
+	// Quarantined until scanned when malware scanning is on (API 0.41.0).
+	if att.ScanStatus, err = storage.PutUpload(ctx, s.files, key, content, contentType,
+		storage.Upload{Kind: storage.UploadLedgerAttachment, UploadedBy: p.UserID}); err != nil {
 		return AttachmentView{}, fmt.Errorf("store ledger attachment: %w", err)
 	}
 	ch := Change{Attachments: []Attachment{att},

@@ -66,9 +66,29 @@ func WriteError(w http.ResponseWriter, r *http.Request, status int, code, messag
 	})
 }
 
+// PublicError is an error that carries its own response: a status, an
+// error code and a message that is safe to show (storage.PublicError: a
+// file still being scanned for viruses, the scanner being down).
+type PublicError interface {
+	error
+	HTTPStatus() int
+	ErrorCode() string
+	PublicMessage() string
+}
+
 // WriteInternalError logs err and returns an opaque 500 (or 504 when the
 // request deadline was exceeded). Internal details never reach the client.
+// A PublicError is answered with its own status, code and message.
 func WriteInternalError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err error) {
+	var pe PublicError
+	if errors.As(err, &pe) {
+		logger.WarnContext(r.Context(), "request refused", slog.String("code", pe.ErrorCode()), slog.Int("status", pe.HTTPStatus()))
+		if pe.HTTPStatus() == http.StatusServiceUnavailable {
+			w.Header().Set("Retry-After", "60")
+		}
+		WriteError(w, r, pe.HTTPStatus(), pe.ErrorCode(), pe.PublicMessage(), nil)
+		return
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		logger.ErrorContext(r.Context(), "request timed out", slog.String("error", err.Error()))
 		WriteError(w, r, http.StatusGatewayTimeout, CodeTimeout, "The request took too long. Please try again.", nil)

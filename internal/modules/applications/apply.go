@@ -1,7 +1,6 @@
 package applications
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -240,7 +239,9 @@ func (s *Service) Upload(ctx context.Context, p *auth.Principal, id uuid.UUID, f
 	now := s.clock()
 	rec := File{ID: newID(), ApplicationID: a.ID, FieldKey: fieldKey, FileName: fileNameFor(fileName, kind), ContentType: contentType,
 		Size: int64(len(content)), SHA256: hex.EncodeToString(sum[:]), ObjectKey: key, UploadedAt: now}
-	if err := s.files.Put(ctx, key, bytes.NewReader(content), rec.Size, contentType); err != nil {
+	// Quarantined until scanned when malware scanning is on (API 0.41.0).
+	if rec.ScanStatus, err = storage.PutUpload(ctx, s.files, key, content, contentType,
+		storage.Upload{Kind: storage.UploadApplicationFile, UploadedBy: p.UserID}); err != nil {
 		return FileView{}, ApplicantView{}, fmt.Errorf("store application file: %w", err)
 	}
 	ids, _ := a.Answers[fieldKey].([]string)
@@ -567,6 +568,7 @@ func (s *Service) base(ctx context.Context, a Application, full bool, withActors
 		if files, err = s.store.Files(ctx, a.ID); err != nil {
 			return ApplicantView{}, Form{}, nil, ListingInfo{}, err
 		}
+		s.withScans(ctx, files)
 		v.Form = publicForm(f)
 		answers := a.Answers
 		if answers == nil {
@@ -599,5 +601,20 @@ func (s *Service) applicantView(ctx context.Context, a Application, full bool) (
 func (s *Service) purgeSoon(ctx context.Context) {
 	if _, err := s.Purge(context.WithoutCancel(ctx)); err != nil {
 		s.logger.WarnContext(ctx, "application file purge failed; the worker retries", slog.String("error", err.Error()))
+	}
+}
+
+// withScans sets the malware scan status of files (API 0.41.0).
+func (s *Service) withScans(ctx context.Context, files []File) {
+	if s.files == nil || len(files) == 0 {
+		return
+	}
+	keys := make([]string, len(files))
+	for i, f := range files {
+		keys[i] = f.ObjectKey
+	}
+	statuses := storage.ScanStatuses(ctx, s.files, keys...)
+	for i := range files {
+		files[i].ScanStatus = statuses[files[i].ObjectKey]
 	}
 }

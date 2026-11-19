@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/mail"
 	"net/url"
 	"os"
@@ -147,7 +148,30 @@ type Config struct {
 	FCMProjectID          string
 	FCMServiceAccountJSON Secret
 	FCMServiceAccountFile string
+
+	// Malware scanning of uploads (API 0.41.0, BR-014). MalwareScanner is
+	// MALWARE_SCANNER: none (the default: nothing is scanned) or clamav.
+	// ClamdAddress is CLAMD_ADDRESS (host:port, required with clamav);
+	// MalwareScanTimeout bounds one scan (MALWARE_SCAN_TIMEOUT, default
+	// 60s); MalwareScanMaxBytes is MALWARE_SCAN_MAX_BYTES and must equal
+	// clamd's StreamMaxLength (default 26214400, clamd's own default).
+	MalwareScanner      string
+	ClamdAddress        string
+	MalwareScanTimeout  time.Duration
+	MalwareScanMaxBytes int64
 }
+
+// Malware scanners (MALWARE_SCANNER).
+const (
+	MalwareScannerNone   = "none"
+	MalwareScannerClamAV = "clamav"
+
+	defaultMalwareScanTimeout        = 60 * time.Second
+	defaultMalwareScanMaxBytes int64 = 25 << 20
+	// The largest upload the API accepts is 20 MB (an agreement PDF): a
+	// smaller limit would refuse it.
+	minMalwareScanMaxBytes int64 = 20 << 20
+)
 
 // Storage drivers (STORAGE_DRIVER).
 const (
@@ -534,6 +558,38 @@ func FromLookup(get func(string) string) (Config, error) {
 	cfg.FCMProjectID = val("FCM_PROJECT_ID", "")
 	cfg.FCMServiceAccountJSON = Secret(val("FCM_SERVICE_ACCOUNT_JSON", ""))
 	cfg.FCMServiceAccountFile = val("FCM_SERVICE_ACCOUNT_FILE", "")
+
+	// Malware scanning: off unless MALWARE_SCANNER=clamav (the ClamAV host
+	// is the operator's to provide).
+	cfg.MalwareScanner = strings.ToLower(val("MALWARE_SCANNER", MalwareScannerNone))
+	cfg.ClamdAddress = val("CLAMD_ADDRESS", "")
+	cfg.MalwareScanTimeout = defaultMalwareScanTimeout
+	if raw := val("MALWARE_SCAN_TIMEOUT", ""); raw != "" {
+		v, err := time.ParseDuration(raw)
+		if err != nil || v < time.Second || v > 10*time.Minute {
+			errs = append(errs, errors.New("MALWARE_SCAN_TIMEOUT must be a Go duration between 1s and 10m, for example 60s"))
+		} else {
+			cfg.MalwareScanTimeout = v
+		}
+	}
+	cfg.MalwareScanMaxBytes = defaultMalwareScanMaxBytes
+	if raw := val("MALWARE_SCAN_MAX_BYTES", ""); raw != "" {
+		v, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || v < minMalwareScanMaxBytes || v > 4<<30 {
+			errs = append(errs, fmt.Errorf("MALWARE_SCAN_MAX_BYTES must be a number of bytes from %d (the largest upload) to 4294967296, and equal clamd's StreamMaxLength", minMalwareScanMaxBytes))
+		} else {
+			cfg.MalwareScanMaxBytes = v
+		}
+	}
+	switch cfg.MalwareScanner {
+	case MalwareScannerNone:
+	case MalwareScannerClamAV:
+		if host, port, err := net.SplitHostPort(cfg.ClamdAddress); err != nil || host == "" || port == "" {
+			errs = append(errs, errors.New("MALWARE_SCANNER=clamav needs CLAMD_ADDRESS as host:port, for example clamav.internal:3310"))
+		}
+	default:
+		errs = append(errs, errors.New("MALWARE_SCANNER must be none or clamav"))
+	}
 
 	if len(errs) > 0 {
 		return Config{}, fmt.Errorf("invalid configuration: %w", errors.Join(errs...))

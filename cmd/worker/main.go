@@ -44,6 +44,7 @@ import (
 	"rightproperty365.com/backend/internal/platform/ics"
 	"rightproperty365.com/backend/internal/platform/logging"
 	"rightproperty365.com/backend/internal/platform/mail"
+	"rightproperty365.com/backend/internal/platform/malware"
 	"rightproperty365.com/backend/internal/platform/outbox"
 	"rightproperty365.com/backend/internal/platform/push"
 	"rightproperty365.com/backend/internal/platform/storage"
@@ -144,6 +145,17 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// Malware scanning (API 0.41.0): with MALWARE_SCANNER=clamav this
+	// process scans the quarantined documents (PENDING scan records) and
+	// retries them with backoff while clamd is unreachable; an infected file
+	// is deleted and its uploader told in-app. Deletions go through the
+	// guard so a deleted file's scan record goes with it.
+	scanner := malware.Open(ctx, cfg, logger)
+	scanStore := malware.NewPostgresStore(pool)
+	guard := malware.NewGuard(files, scanner, logger)
+	guard.SetUnscannedPrefixes(app.UnscannedKeyPrefixes()...)
+	guard.SetStore(scanStore)
+	var scannedFiles storage.Storage = guard
 	applicationStore := applications.NewPostgresStore(pool)
 	handlers.SetApplicationSource(app.ApplicationNotices(applicationStore, listingStore, reference.NewPostgresStore(pool),
 		identity.NewPostgresStore(pool), logger))
@@ -179,10 +191,18 @@ func run() error {
 		pushProvider = pusher.Name()
 	}
 	inboxStore := inapp.NewPostgresStore(pool)
-	handlers.SetInbox(inapp.NewService(inboxStore, pushProvider, logger, nil))
+	inboxSvc := inapp.NewService(inboxStore, pushProvider, logger, nil)
+	handlers.SetInbox(inboxSvc)
 	handlers.SetPlaceLookup(app.ListingPlace(listingStore, reference.NewPostgresStore(pool), logger))
 	if pusher != nil {
 		go inapp.NewSender(inboxStore, pusher, logger, nil).Run(ctx)
+	}
+
+	if malware.Enabled(scanner) {
+		go malware.NewWorker(scanStore, files, scanner, app.FileScanNotifier(inboxSvc), logger, guard.Metrics()).Run(ctx, nil)
+		logger.Info("file scan job scheduled", slog.Duration("interval", malware.WorkerPollInterval))
+	} else {
+		logger.Info("file scan job not scheduled (MALWARE_SCANNER=none): a document quarantined while scanning was on stays quarantined")
 	}
 
 	dispatcher := outbox.NewDispatcher(outbox.NewPostgresQueue(pool), logger, outbox.Config{})
@@ -228,7 +248,7 @@ func run() error {
 	// Application retention, every hour: final applications past their
 	// form version's retention_days keep a tombstone only (each erasure is
 	// logged); then the purge of deleted files' objects.
-	applicationSvc := app.ApplicationsService(applicationStore, files,
+	applicationSvc := app.ApplicationsService(applicationStore, scannedFiles,
 		listings.NewService(listingStore, listingStore, reference.NewService(reference.NewPostgresStore(pool), nil)), listingStore,
 		identity.NewPostgresStore(pool), logger, nil)
 	go app.RunApplicationJobs(ctx, applicationSvc)

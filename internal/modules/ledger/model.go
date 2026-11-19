@@ -320,6 +320,9 @@ type Attachment struct {
 	UploadedBy     *uuid.UUID
 	UploadedByName string
 	UploadedAt     time.Time
+	// ScanStatus is the malware scan status (storage.Scan*), read from the
+	// scan records when a view is built; "" when it has none. Never stored.
+	ScanStatus string
 }
 
 // Category is one category of a book.

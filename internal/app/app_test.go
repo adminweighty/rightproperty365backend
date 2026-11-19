@@ -53,6 +53,7 @@ import (
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/httpx"
 	"rightproperty365.com/backend/internal/platform/logging"
+	"rightproperty365.com/backend/internal/platform/malware"
 	"rightproperty365.com/backend/internal/platform/storage"
 )
 
@@ -303,10 +304,13 @@ type env struct {
 	inbox    *inapp.MemoryStore
 	inboxSvc *inapp.Service
 	files    *storage.Local
-	mail     *captureMailer
-	logs     *bytes.Buffer
-	now      time.Time
-	seq      int
+	// guard is the storage with malware scanning (newScanningEnv only);
+	// nil otherwise, and the router gets files directly.
+	guard *malware.Guard
+	mail  *captureMailer
+	logs  *bytes.Buffer
+	now   time.Time
+	seq   int
 	// captchaSeq numbers the registration questions the tests ask for.
 	captchaSeq int
 	// twoStepLogin turns off the helper that completes the sign-in code step
@@ -321,6 +325,13 @@ func newEnv(t *testing.T) *env {
 // newEnvWithConfig builds the full router on memory stores with the
 // development seed users. Argon2 runs with minimal parameters to keep tests fast.
 func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
+	t.Helper()
+	return newEnvWith(t, mutate, nil)
+}
+
+// newEnvWith is newEnvWithConfig; with a scanner, the router's storage is
+// a malware.Guard (scan records in memory) over the same files.
+func newEnvWith(t *testing.T, mutate func(*config.Config), scanner malware.Scanner) *env {
 	t.Helper()
 	cfg, err := config.FromLookup(func(string) string { return "" })
 	if err != nil {
@@ -461,6 +472,13 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		},
 		ForgetPackages: e.packages.ForgetUser,
 		Now:            func() time.Time { return e.now }})
+	var files storage.Storage = e.files
+	if scanner != nil {
+		e.guard = malware.NewGuard(e.files, scanner, logging.New(e.logs, slog.LevelInfo, "api", cfg.Env))
+		e.guard.SetStore(malware.NewMemoryStore())
+		e.guard.SetUnscannedPrefixes(UnscannedKeyPrefixes()...)
+		files = e.guard
+	}
 	reportStore := MemoryReports(MemoryReportStores{Identity: e.identity, Onboarding: e.onboard, Listings: e.listings, Requests: e.requests,
 		Enquiries: e.enquiries, Leases: e.leases, Agreements: e.agree, Subscriptions: e.subs, Markets: e.marketStore,
 		Now: func() time.Time { return e.now }})
@@ -475,7 +493,7 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		Listings:  e.listings, ListingSearch: e.listings, Directory: e.directory,
 		Identity:   e.identity,
 		Mailer:     e.mail,
-		Onboarding: e.onboard, Files: e.files,
+		Onboarding: e.onboard, Files: files,
 		Appointments: e.appts,
 		Availability: e.calendars,
 		Teams:        e.team,

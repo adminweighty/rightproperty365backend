@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.40.0
+  version: 0.41.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,27 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Malware scanning of uploads (new in 0.41.0, BR-014, FR-009/010)
+    - **Off unless the server is configured** (`MALWARE_SCANNER=clamav`): with scanning off nothing
+      below applies, no `scan_status` is returned and every upload behaves as in 0.40.0.
+    - **Images** (listing, maintenance and inspection photos, profile logos, saved and adopted
+      signature images) are scanned **on upload**, before anything is stored: an infected image is
+      `422 FILE_INFECTED`; while the scanner is unreachable every image upload is
+      `503 SCANNER_UNAVAILABLE` (with `Retry-After`; nothing is stored: try again later).
+    - **Documents** (onboarding documents, application files, ledger attachments, uploaded
+      agreement PDFs) are accepted as before but **quarantined** until scanned, usually within
+      seconds: the upload answers with `scan_status: PENDING`, and every download (and sending an
+      uploaded agreement for signature) answers `409 FILE_SCAN_PENDING` until the file is `CLEAN`.
+      Show "being checked" and retry. An infected document is deleted: its `scan_status` becomes
+      `INFECTED`, downloads answer `409 FILE_INFECTED`, and the uploader gets an in-app SECURITY
+      notification ("A file you uploaded was removed").
+    - `scan_status` (on `OnboardingDocument`, `ApplicationFile`, `LedgerAttachment`,
+      `AgreementDocument`): `PENDING`, `CLEAN`, `INFECTED`, or `LEGACY_UNSCANNED` (uploaded before
+      0.41.0, never scanned, served as before). Absent when the file has no scan record.
+    - `413 FILE_TOO_LARGE_TO_SCAN`: larger than the scanner accepts (does not happen with the
+      server's own upload limits and a default scanner).
+    - New: `GET /v1/admin/file-scans` (SUPER_ADMIN, PLATFORM_ADMIN).
 
     Administrator MFA (new in 0.40.0, FR-001)
     - Administrators can protect their account with an **authenticator app** (TOTP, RFC 6238:
@@ -2302,6 +2323,8 @@ paths:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
         "429":
           $ref: "#/components/responses/RateLimited"
+        "422": { $ref: "#/components/responses/UploadInfected" }
+        "503": { $ref: "#/components/responses/ScannerUnavailable" }
 
   /v1/me/listings/{id}/photos/order:
     parameters:
@@ -3105,6 +3128,8 @@ paths:
           $ref: "#/components/responses/InternalError"
         "504":
           $ref: "#/components/responses/Timeout"
+        "422": { $ref: "#/components/responses/UploadInfected" }
+        "503": { $ref: "#/components/responses/ScannerUnavailable" }
     delete:
       tags: [directory]
       operationId: deleteMyProfileLogo
@@ -5289,6 +5314,7 @@ paths:
           $ref: "#/components/responses/InternalError"
         "504":
           $ref: "#/components/responses/Timeout"
+        "409": { $ref: "#/components/responses/FileScanPending" }
 
   /v1/me/onboarding/{role}/submit:
     post:
@@ -5517,6 +5543,7 @@ paths:
           $ref: "#/components/responses/InternalError"
         "504":
           $ref: "#/components/responses/Timeout"
+        "409": { $ref: "#/components/responses/FileScanPending" }
 
   /v1/admin/onboarding/{id}/approve:
     post:
@@ -8199,6 +8226,7 @@ paths:
               schema: { type: string, format: binary }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "404": { description: "`APPLICATION_NOT_FOUND`: no such application, or not the caller's (another applicant or organisation always gets this).", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { $ref: "#/components/responses/FileScanPending" }
 
     delete:
       tags: [applications]
@@ -8471,6 +8499,7 @@ paths:
               schema: { type: string, format: binary }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "404": { description: "`APPLICATION_NOT_FOUND`: no such application, or not the caller's (another applicant or organisation always gets this).", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { $ref: "#/components/responses/FileScanPending" }
 
   /v1/agent/organisations/{id}/applications/{applicationId}/status:
     parameters:
@@ -11333,6 +11362,8 @@ paths:
           $ref: "#/components/responses/Unauthenticated"
         "500":
           $ref: "#/components/responses/InternalError"
+        "422": { $ref: "#/components/responses/UploadInfected" }
+        "503": { $ref: "#/components/responses/ScannerUnavailable" }
 
   /v1/signing/{token}:
     parameters:
@@ -11491,6 +11522,8 @@ paths:
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalError"
+        "422": { $ref: "#/components/responses/UploadInfected" }
+        "503": { $ref: "#/components/responses/ScannerUnavailable" }
 
   /v1/signing/{token}/decline:
     parameters:
@@ -13059,6 +13092,7 @@ paths:
             image/webp: { schema: { type: string, format: binary } }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "404": { $ref: "#/components/responses/LedgerNotFound" }
+        "409": { $ref: "#/components/responses/FileScanPending" }
   /v1/agent/organisations/{id}/ledger/reports/cashbook:
     parameters:
       - $ref: "#/components/parameters/LedgerBookID"
@@ -13490,6 +13524,29 @@ paths:
                   notifications_last_24h: { type: integer }
                   unread_total: { type: integer }
                   generated_at: { type: string, format: date-time }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /v1/admin/file-scans:
+    get:
+      tags: [admin]
+      operationId: fileScans
+      summary: Malware scanning of uploads (new in 0.41.0, BR-014)
+      description: |
+        SUPER_ADMIN and PLATFORM_ADMIN. Counts of scan records by status, the oldest PENDING file
+        and the latest 50 PENDING and INFECTED files. Never a file name, an owner or a link to the
+        file (an infected file has already been deleted). `scanner` is this API process's driver:
+        `none` means uploads are not scanned (the counts are then the legacy rows and anything
+        quarantined while scanning was on). `process_counts` are this API process's synchronous
+        image scans since it started; the worker logs its own.
+      responses:
+        "200":
+          description: The summary.
+          headers:
+            Cache-Control: { schema: { type: string, enum: [no-store] } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FileScanSummary" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
@@ -14279,6 +14336,8 @@ paths:
         "409": { $ref: "#/components/responses/MaintenanceConflict" }
         "413": { $ref: "#/components/responses/MaintenancePhotoRefused" }
         "415": { $ref: "#/components/responses/MaintenancePhotoRefused" }
+        "422": { $ref: "#/components/responses/UploadInfected" }
+        "503": { $ref: "#/components/responses/ScannerUnavailable" }
   /v1/agent/organisations/{id}/maintenance/{requestId}/photos/{photoId}:
     parameters:
       - $ref: "#/components/parameters/LedgerBookID"
@@ -14430,6 +14489,8 @@ paths:
         "409": { $ref: "#/components/responses/MaintenanceConflict" }
         "413": { $ref: "#/components/responses/MaintenancePhotoRefused" }
         "415": { $ref: "#/components/responses/MaintenancePhotoRefused" }
+        "422": { $ref: "#/components/responses/UploadInfected" }
+        "503": { $ref: "#/components/responses/ScannerUnavailable" }
   /v1/me/tenancies/{id}/maintenance/{requestId}/photos/{photoId}:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
@@ -14675,6 +14736,8 @@ paths:
         "409": { $ref: "#/components/responses/InspectionConflict" }
         "413": { $ref: "#/components/responses/MaintenancePhotoRefused" }
         "415": { $ref: "#/components/responses/MaintenancePhotoRefused" }
+        "422": { $ref: "#/components/responses/UploadInfected" }
+        "503": { $ref: "#/components/responses/ScannerUnavailable" }
   /v1/agent/organisations/{id}/inspections/{inspectionId}/photos/{photoId}:
     parameters:
       - $ref: "#/components/parameters/LedgerBookID"
@@ -16206,7 +16269,7 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
     AgreementConflict:
-      description: "`AGREEMENT_STATE_CONFLICT`, `AGREEMENT_DOCUMENT_REQUIRED`, `NOT_OPEN_FOR_SIGNING` (not this recipient's turn, or the agreement is no longer out for signature) or `ALREADY_SIGNED`."
+      description: "`AGREEMENT_STATE_CONFLICT`, `AGREEMENT_DOCUMENT_REQUIRED`, `NOT_OPEN_FOR_SIGNING` (not this recipient's turn, or the agreement is no longer out for signature) or `ALREADY_SIGNED`. Since 0.41.0, with malware scanning on: `FILE_SCAN_PENDING` (the uploaded PDF is still being checked: it cannot be opened or sent yet) or `FILE_INFECTED` (it was removed: upload another)."
       headers:
         X-Request-Id:
           $ref: "#/components/headers/X-Request-Id"
@@ -16237,6 +16300,38 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    FileScanPending:
+      description: |
+        `FILE_SCAN_PENDING`: the file is still being checked for viruses (show "being checked" and
+        retry in a minute), or `FILE_INFECTED`: it failed the check and was removed. New in 0.41.0;
+        only with malware scanning on.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    UploadInfected:
+      description: "`FILE_INFECTED`: the image failed the virus check and was not saved. New in 0.41.0."
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    ScannerUnavailable:
+      description: "`SCANNER_UNAVAILABLE`: files cannot be checked for viruses right now, so the image was not saved; try again later (see `Retry-After`). New in 0.41.0."
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+        Retry-After:
+          schema: { type: integer, examples: [60] }
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
     MFAUnavailable:
       description: "`MFA_UNAVAILABLE`: the server has no `MFA_ENCRYPTION_KEY` (or it changed); administrator MFA cannot be used. New in 0.40.0."
       headers:
@@ -18314,6 +18409,43 @@ components:
         job_title: { type: [string, "null"], maxLength: 80, description: "Agency members. Shown on an agent's profile." }
         bio: { type: [string, "null"], maxLength: 1000, description: "AGENT only. Plain text. Public (the agent profile's description)." }
 
+    FileScanRecord:
+      type: object
+      description: New in 0.41.0. A quarantined or infected document, as an administrator sees it.
+      required: [id, kind, status, signature, size_bytes, attempts, last_error, next_attempt_at, uploaded_at, scanned_at]
+      additionalProperties: false
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [ONBOARDING_DOCUMENT, APPLICATION_FILE, LEDGER_ATTACHMENT, AGREEMENT_DOCUMENT] }
+        status: { type: string, enum: [PENDING, CLEAN, INFECTED, LEGACY_UNSCANNED] }
+        signature: { type: [string, "null"], description: "The scanner's name for what it found (INFECTED only), e.g. Eicar-Test-Signature." }
+        size_bytes: { type: integer }
+        attempts: { type: integer, description: Scans tried. }
+        last_error: { type: [string, "null"], description: "Why the last attempt failed (PENDING only), e.g. scanner unavailable." }
+        next_attempt_at: { type: [string, "null"], format: date-time }
+        uploaded_at: { type: string, format: date-time }
+        scanned_at: { type: [string, "null"], format: date-time }
+
+    FileScanSummary:
+      type: object
+      description: New in 0.41.0. GET /v1/admin/file-scans.
+      required: [scanner, counts, oldest_pending_at, pending, infected, process_counts]
+      additionalProperties: false
+      properties:
+        scanner: { type: string, enum: [none, clamav], description: "This API process's driver." }
+        counts:
+          type: object
+          description: Scan records by status (every status present).
+          required: [PENDING, CLEAN, INFECTED, LEGACY_UNSCANNED]
+          additionalProperties: { type: integer }
+        oldest_pending_at: { type: [string, "null"], format: date-time }
+        pending: { type: array, maxItems: 50, items: { $ref: "#/components/schemas/FileScanRecord" }, description: Newest first. }
+        infected: { type: array, maxItems: 50, items: { $ref: "#/components/schemas/FileScanRecord" }, description: Most recently found first. }
+        process_counts:
+          type: object
+          description: "This API process's scans since it started, by mode and result: sync.CLEAN, sync.INFECTED, sync.ERROR, async.* (always 0 here: the worker scans documents)."
+          additionalProperties: { type: integer }
+
     OnboardingDocument:
       type: object
       description: An attached document. Where the file is stored and its checksum are never exposed.
@@ -18332,6 +18464,13 @@ components:
         content_type: { type: string, enum: [application/pdf, image/jpeg, image/png], description: "Detected from the content." }
         size_bytes: { type: integer, minimum: 1, maximum: 10485760 }
         uploaded_at: { type: string, format: date-time }
+        scan_status:
+          type: string
+          enum: [PENDING, CLEAN, INFECTED, LEGACY_UNSCANNED]
+          description: |
+            New in 0.41.0, present only with malware scanning on (or for a file stored before
+            0.41.0: LEGACY_UNSCANNED). PENDING: being checked, cannot be downloaded yet (409
+            FILE_SCAN_PENDING). INFECTED: removed (409 FILE_INFECTED).
 
     OnboardingDecision:
       type: object
@@ -21505,6 +21644,14 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PageSize"
+        scan_status:
+          type: string
+          enum: [PENDING, CLEAN, INFECTED, LEGACY_UNSCANNED]
+          description: |
+            New in 0.41.0, present only with malware scanning on (or for a file stored before
+            0.41.0: LEGACY_UNSCANNED). PENDING: being checked, cannot be downloaded yet (409
+            FILE_SCAN_PENDING). INFECTED: removed (409 FILE_INFECTED): upload another PDF.
+            Never on `final_document`; an uploaded PDF is sent for signature only once CLEAN.
     Agreement:
       type: object
       additionalProperties: false
@@ -22730,6 +22877,13 @@ components:
         content_type: { type: string }
         size: { type: integer }
         uploaded_at: { type: string, format: date-time }
+        scan_status:
+          type: string
+          enum: [PENDING, CLEAN, INFECTED, LEGACY_UNSCANNED]
+          description: |
+            New in 0.41.0, present only with malware scanning on (or for a file stored before
+            0.41.0: LEGACY_UNSCANNED). PENDING: being checked, cannot be downloaded yet (409
+            FILE_SCAN_PENDING). INFECTED: removed (409 FILE_INFECTED).
     ApplicationTimelineEntry:
       type: object
       required: [id, kind, status, label, message, at]
@@ -23256,6 +23410,13 @@ components:
         uploaded_by: { $ref: "#/components/schemas/LedgerPersonRef" }
         uploaded_at: { type: string, format: date-time }
         download_path: { type: string }
+        scan_status:
+          type: string
+          enum: [PENDING, CLEAN, INFECTED, LEGACY_UNSCANNED]
+          description: |
+            New in 0.41.0, present only with malware scanning on (or for a file stored before
+            0.41.0: LEGACY_UNSCANNED). PENDING: being checked, cannot be downloaded yet (409
+            FILE_SCAN_PENDING). INFECTED: removed (409 FILE_INFECTED).
     LedgerEntryDetail:
       type: object
       required: [entry, notes, attachments, related]

@@ -414,6 +414,18 @@ func (s *Service) Submit(ctx context.Context, token, code string, in SubmitInput
 		}
 		return SubmitResult{}, &ValidationError{Fields: map[string]string{"code": "That code is not right."}}
 	}
+	// The ORIGINAL images are scanned for malware before anything is
+	// stored (API 0.41.0); what is stored is the PNG re-encoded from them.
+	for _, pair := range []struct {
+		in  *AdoptInput
+		img []byte
+	}{{in.Signature, sigImg}, {in.Initials, iniImg}} {
+		if pair.in != nil && pair.img != nil {
+			if err := storage.Screen(ctx, s.files, "signature_image", adoptedOriginal(pair.in.ImageBase64)); err != nil {
+				return SubmitResult{}, err
+			}
+		}
+	}
 	var stored []string
 	for _, pair := range []struct {
 		a   *Adopted
@@ -916,6 +928,15 @@ func (s *Service) SaveMySignature(ctx context.Context, p *auth.Principal, in Sav
 	next.Stamp = stamp
 	if len(problems) > 0 {
 		return SavedSignatureView{}, &ValidationError{Fields: problems}
+	}
+	// The ORIGINAL images are scanned for malware before anything is
+	// stored (API 0.41.0).
+	for _, x := range []*AdoptInput{in.Signature, in.Initials} {
+		if x != nil && (x.Kind == AdoptDrawn || x.Kind == AdoptUploaded) {
+			if err := storage.Screen(ctx, s.files, "signature_image", adoptedOriginal(x.ImageBase64)); err != nil {
+				return SavedSignatureView{}, err
+			}
+		}
 	}
 	for i, img := range imgs {
 		if img == nil {

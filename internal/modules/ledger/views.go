@@ -108,6 +108,10 @@ type AttachmentView struct {
 	UploadedBy   PersonRef `json:"uploaded_by"`
 	UploadedAt   time.Time `json:"uploaded_at"`
 	DownloadPath string    `json:"download_path"`
+	// ScanStatus is the malware scan status (API 0.41.0): PENDING while
+	// the file is being checked (it cannot be downloaded yet), CLEAN,
+	// INFECTED (removed) or LEGACY_UNSCANNED. Omitted when scanning is off.
+	ScanStatus string `json:"scan_status,omitempty"`
 }
 
 // CategoryView is a category.

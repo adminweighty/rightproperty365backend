@@ -101,6 +101,11 @@ func (s *Service) AddPhoto(ctx context.Context, p *auth.Principal, bookID, id, i
 	if err != nil {
 		return PhotoView{}, err
 	}
+	// The ORIGINAL upload is scanned for malware before the re-encoded
+	// photo is stored (API 0.41.0).
+	if err := storage.Screen(ctx, s.files, "inspection_photo", content); err != nil {
+		return PhotoView{}, err
+	}
 	key, err := storage.NewKey(PhotoKeyPrefix)
 	if err != nil {
 		return PhotoView{}, err

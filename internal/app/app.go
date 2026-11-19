@@ -49,6 +49,7 @@ import (
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/httpx"
 	"rightproperty365.com/backend/internal/platform/ics"
+	"rightproperty365.com/backend/internal/platform/malware"
 	"rightproperty365.com/backend/internal/platform/storage"
 )
 
@@ -542,6 +543,11 @@ func NewRouter(d Deps) (http.Handler, error) {
 	// Signing out removes the push devices the session registered (FR-045).
 	identityH.SetLogoutHook(d.Inbox.OnLogout)
 	inboxH := inapp.NewHandler(d.Inbox, logger)
+	// Malware scanning of uploads (API 0.41.0): the administrators' view of
+	// the quarantined and infected files. Files is a *malware.Guard when
+	// scanning is wired (cmd/api); otherwise the summary is empty.
+	fileScans, _ := d.Files.(*malware.Guard)
+	fileScansH := malware.NewHandler(fileScans, logger)
 	// Countries with their listing counts: every country can be used, and
 	// ?has_listings=true is what the public's country lists show.
 	marketsH := markets.NewHandler(d.Markets, listingsSvc.CountByCountry, logger)
@@ -1225,6 +1231,9 @@ func NewRouter(d Deps) (http.Handler, error) {
 			// Notification delivery health (FR-065): counts by status, the
 			// dead-letter backlog and the oldest unattempted push.
 			r.With(auth.RequirePlatformRole(inapp.AdminRoles()...)).Get("/notifications/health", inboxH.Health)
+			// Malware scanning (API 0.41.0, BR-014): counts by status and the
+			// latest PENDING and INFECTED files. SUPER_ADMIN and PLATFORM_ADMIN.
+			r.With(httpx.PrivateNoStore, auth.RequirePlatformRole(FileScanAdminRoles()...)).Get("/file-scans", fileScansH.Summary)
 			// The administrators' audit trail: SUPER_ADMIN and PLATFORM_ADMIN.
 			r.With(auth.RequirePlatformRole(accounts.AuditRoles()...)).Get("/audit", accountsH.Audit)
 

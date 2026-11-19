@@ -682,6 +682,11 @@ func (mg *Manager) AddPhoto(ctx context.Context, p *auth.Principal, id uuid.UUID
 	if err != nil {
 		return ManagedView{}, err
 	}
+	// The ORIGINAL upload is scanned for malware before any size is stored
+	// (API 0.41.0): 422 FILE_INFECTED, or 503 SCANNER_UNAVAILABLE.
+	if err := storage.Screen(ctx, mg.files, "listing_photo", content); err != nil {
+		return ManagedView{}, err
+	}
 	now := mg.clock()
 	user := p.UserID
 	photo := StoredPhoto{ID: uuid.New(), Checksum: processed.Checksum, Width: processed.Width, Height: processed.Height, UploadedBy: &user, CreatedAt: now}
