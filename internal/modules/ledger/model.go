@@ -282,7 +282,10 @@ type Entry struct {
 	LeaseID        *uuid.UUID
 	// TenancyID is set on the RENT_RECEIVED entry of a rent receipt (and
 	// its reversal) only: the tenancies module posts those (API 0.36.1).
-	TenancyID   *uuid.UUID
+	TenancyID *uuid.UUID
+	// PropertyID is set on the EXPENSE entry of a maintenance cost (and its
+	// reversal) only: the maintenance module posts those (API 0.36.2).
+	PropertyID  *uuid.UUID
 	Branch      string // "" when none
 	Description string
 	Reference   string

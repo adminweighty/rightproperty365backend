@@ -50,6 +50,10 @@ type MemoryDeps struct {
 	// DRAFT tenancies deleted, the manager name tenants see replaced, and the
 	// user unlinked as creator, activator and ender (nil: nothing to do).
 	ForgetTenancies func(userID uuid.UUID, deletedName string)
+	// ForgetMaintenance unlinks the user from maintenance requests, their
+	// timeline, photos and costs, and replaces their name where they acted
+	// as a tenant (nil: nothing to do).
+	ForgetMaintenance func(userID uuid.UUID, deletedName string)
 	// Now is the clock used for listing expiry in the detail (nil: time.Now).
 	Now func() time.Time
 }
@@ -302,6 +306,9 @@ func (s *MemoryStore) Delete(ctx context.Context, d Deletion) (Deleted, error) {
 	}
 	if s.deps.ForgetTenancies != nil {
 		s.deps.ForgetTenancies(d.UserID, DeletedName)
+	}
+	if s.deps.ForgetMaintenance != nil {
+		s.deps.ForgetMaintenance(d.UserID, DeletedName)
 	}
 	s.deps.Audit.Append(d.Audit)
 	return out, nil

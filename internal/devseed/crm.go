@@ -25,6 +25,12 @@ func addCRMReference(sets map[string][]reference.Item) {
 	sets[reference.SetContactTypes] = rows("buyer", "Buyer", "tenant", "Tenant", "landlord", "Landlord", "owner", "Owner", "other", "Other")
 	sets[reference.SetContactSources] = rows("enquiry", "Enquiry", "walk-in", "Walk-in", "referral", "Referral", "phone", "Phone call",
 		"import", "Import", "website", "Website", "other", "Other")
+	// The maintenance categories and priorities (migration 0037).
+	sets[reference.SetMaintenanceCategories] = rows("plumbing", "Plumbing", "electrical", "Electrical", "appliances", "Appliances",
+		"structure", "Walls, roof and structure", "doors-windows", "Doors, windows and locks", "pests", "Pests",
+		"garden", "Garden and grounds", "other", "Other")
+	sets[reference.SetMaintenancePriorities] = rows("low", "Low", "normal", "Normal", "high", "High",
+		"urgent", "Urgent (safety, no water or power)")
 }
 
 // Sample contacts (fixed IDs, c5xx).

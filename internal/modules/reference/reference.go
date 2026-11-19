@@ -48,6 +48,10 @@ const (
 	// and where it came from (enquiry, walk-in, referral, ...).
 	SetContactTypes   = "contact_types"
 	SetContactSources = "contact_sources"
+	// SetMaintenanceCategories and SetMaintenancePriorities: what a
+	// maintenance request is about and how urgent it is (API 0.36.2).
+	SetMaintenanceCategories = "maintenance_categories"
+	SetMaintenancePriorities = "maintenance_priorities"
 )
 
 // Sets returns every set code in the order the API lists them.
@@ -56,6 +60,7 @@ func Sets() []string {
 		SetDealTypes, SetPropertyCategories, SetPropertyTypes, SetRequestTypes, SetContactMethods,
 		SetAccountRoles, SetDirectoryKinds, SetServiceTrades, SetRegions, SetCities, SetSuburbs, SetListingFeatures,
 		SetOnboardingDocuments, SetOrganisationKinds, SetPricePeriods, SetContactTypes, SetContactSources,
+		SetMaintenanceCategories, SetMaintenancePriorities,
 	}
 }
 

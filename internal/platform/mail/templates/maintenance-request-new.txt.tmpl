@@ -1,0 +1,13 @@
+{{define "subject"}}New maintenance request: {{.Reference}}{{end}}
+{{define "heading"}}New maintenance request{{end}}
+{{define "button"}}Open the request{{end}}
+{{define "why"}}You are receiving this because you manage this property or rent it on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+A maintenance request was raised.
+
+Reference: {{.Reference}}
+{{if .Service}}Category: {{.Service}}
+{{end}}Status: {{.StatusText}}
+
+The details, photos and comments are on RightProperty365. They are not included in this email.{{end}}

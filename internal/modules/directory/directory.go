@@ -189,6 +189,9 @@ type Store interface {
 	List(ctx context.Context, kind string, f Filter, limit, offset int) ([]Record, int, error)
 	// Get returns one profile or ErrProfileNotFound.
 	Get(ctx context.Context, kind, slug string) (Record, error)
+	// ByID returns one public profile by its ID, or ErrProfileNotFound
+	// (maintenance assigns a request to a provider by ID, API 0.36.2).
+	ByID(ctx context.Context, id uuid.UUID) (Record, error)
 	// AgencyOf returns the agency profile of an organisation, if it has one.
 	AgencyOf(ctx context.Context, organisationID uuid.UUID) (*Record, error)
 	// AgentsOf returns the agent profiles of an organisation, by name.

@@ -15,6 +15,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/inapp"
 	"rightproperty365.com/backend/internal/modules/listings"
+	"rightproperty365.com/backend/internal/modules/maintenance"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/tenancies"
 	"rightproperty365.com/backend/internal/platform/adminaudit"
@@ -452,6 +453,11 @@ func (s *PostgresStore) Delete(ctx context.Context, d Deletion) (Deleted, error)
 		// name its tenants see is anonymised, and the person is unlinked as
 		// creator, activator and ender (ON DELETE SET NULL never fires here).
 		if err := tenancies.ForgetUserTx(ctx, tx, d.UserID, DeletedName); err != nil {
+			return err
+		}
+		// Maintenance requests (migration 0037): kept with the book; the
+		// person is unlinked, and a tenant's name replaced.
+		if err := maintenance.ForgetUserTx(ctx, tx, d.UserID, DeletedName); err != nil {
 			return err
 		}
 		return adminaudit.Insert(ctx, tx, d.Audit)

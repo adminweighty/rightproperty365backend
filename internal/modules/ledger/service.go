@@ -172,6 +172,9 @@ func entryAudit(e Entry) map[string]any {
 	if e.TenancyID != nil {
 		m["tenancy_id"] = e.TenancyID.String()
 	}
+	if e.PropertyID != nil {
+		m["property_id"] = e.PropertyID.String()
+	}
 	return m
 }
 
@@ -277,7 +280,7 @@ func (v *viewer) view(ctx context.Context, e Entry) (EntryView, error) {
 		Status: e.Status, StatusLabel: StatusLabel(e.Status), Description: e.Description, Reference: e.Reference,
 		Branch: strPtr(e.Branch), ReversalOf: e.ReversalOf, ReversedBy: e.ReversedBy, CorrectionOf: e.CorrectionOf,
 		CorrectedBy: e.CorrectedBy, TransferPair: e.TransferPair, Settles: e.Settles, Reason: strPtr(e.Reason), TenancyID: e.TenancyID,
-		IsReversed: e.ReversedBy != nil, Cash: e.Cash(), NoteCount: e.NoteCount, AttachmentCount: e.AttachmentCount, Can: v.a.can(e),
+		PropertyID: e.PropertyID, IsReversed: e.ReversedBy != nil, Cash: e.Cash(), NoteCount: e.NoteCount, AttachmentCount: e.AttachmentCount, Can: v.a.can(e),
 	}
 	if e.Category != "" {
 		code := e.Category
@@ -1165,7 +1168,7 @@ func reversalOf(a access, e Entry, reason, date string, now time.Time) Entry {
 		ID: newID(), Book: e.Book, Type: TypeReversal, Direction: dir, Category: e.Category, Method: e.Method, Amount: e.Amount,
 		Currency: e.Currency, EffectiveDate: date, RecordedAt: now, AuthorUserID: &author, AuthorName: a.p.Name, Status: StatusUnverified,
 		ReversalOf: &orig, Reason: reason, ContactID: e.ContactID, ListingID: e.ListingID, LeaseID: e.LeaseID, TenancyID: e.TenancyID, Branch: e.Branch,
-		Description: desc, Reference: e.Reference,
+		Description: desc, Reference: e.Reference, PropertyID: e.PropertyID,
 	}
 }
 

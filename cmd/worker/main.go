@@ -26,6 +26,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/inapp"
 	"rightproperty365.com/backend/internal/modules/leases"
 	"rightproperty365.com/backend/internal/modules/listings"
+	"rightproperty365.com/backend/internal/modules/maintenance"
 	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/modules/notifications"
 	"rightproperty365.com/backend/internal/modules/onboarding"
@@ -143,6 +144,11 @@ func run() error {
 	// Hourly venue bookings: the emails read the booking at send time.
 	handlers.SetVenueSource(app.VenueNotices(venues.NewPostgresStore(pool), listingStore, markets.NewPostgresStore(pool),
 		reference.NewPostgresStore(pool), logger))
+
+	// Maintenance requests (API 0.36.2): the emails read the request, its
+	// book and its tenancy's tenants with a verified account at send time.
+	handlers.SetMaintenanceSource(app.MaintenanceNotices(maintenance.NewPostgresStore(pool), tenancies.NewPostgresStore(pool),
+		crm.NewPostgresStore(pool), identity.NewPostgresStore(pool)))
 
 	// The notification centre (API 0.35.0): every notification email's
 	// recipient who has an account also gets one in-app notification per

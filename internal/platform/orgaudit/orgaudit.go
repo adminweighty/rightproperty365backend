@@ -77,6 +77,11 @@ const (
 	// Rent (API 0.36.1, FR-047): a receipt recorded and a due waived.
 	ActionRentReceiptRecorded = "RENT_RECEIPT_RECORDED"
 	ActionRentDueWaived       = "RENT_DUE_WAIVED"
+	// Maintenance (API 0.36.2, FR-047): a request assigned to a provider, a
+	// cost recorded (with its ledger entry) and a request cancelled.
+	ActionMaintenanceAssigned     = "MAINTENANCE_ASSIGNED"
+	ActionMaintenanceCostRecorded = "MAINTENANCE_COST_RECORDED"
+	ActionMaintenanceCancelled    = "MAINTENANCE_CANCELLED"
 )
 
 var actionLabels = map[string]string{
@@ -119,6 +124,9 @@ var actionLabels = map[string]string{
 	ActionTenancyDeleted:             "Draft tenancy deleted",
 	ActionRentReceiptRecorded:        "Rent receipt recorded",
 	ActionRentDueWaived:              "Rent due waived",
+	ActionMaintenanceAssigned:        "Maintenance request assigned to a provider",
+	ActionMaintenanceCostRecorded:    "Maintenance cost recorded",
+	ActionMaintenanceCancelled:       "Maintenance request cancelled",
 }
 
 // Actions returns every action, in a stable order.
@@ -160,6 +168,8 @@ const (
 	TargetLedgerBook  = "LEDGER_BOOK"
 	// TargetTenancy is one tenancy (labelled "<property> <unit>").
 	TargetTenancy = "TENANCY"
+	// TargetMaintenanceRequest is one maintenance request (labelled with its reference).
+	TargetMaintenanceRequest = "MAINTENANCE_REQUEST"
 )
 
 // Event is one audit record.

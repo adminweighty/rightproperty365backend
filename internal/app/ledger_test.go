@@ -76,8 +76,8 @@ func TestLedgerSeedAndPerCurrencyReports(t *testing.T) {
 	}
 	// USD: 500 + 12000 opening, rent 700 (reconciled) + 700 deposit + (70 - 70 + 700 corrected) + 1250 + 300 - 85.50 - 120; transfer
 	// nets 0. Plus the rent receipts (API 0.36.1): the cottage's first two (2 x 700, before the period: the opening balance), Flat 1's
-	// two (2 x 950) and the cottage's part payment (300).
-	if usd := cb.Currencies[0]; usd.OpeningBalance != "1400.00" || usd.ClosingBalance != "19544.50" {
+	// two (2 x 950) and the cottage's part payment (300). Less the sample maintenance cost (API 0.36.2): 85.00.
+	if usd := cb.Currencies[0]; usd.OpeningBalance != "1400.00" || usd.ClosingBalance != "19459.50" {
 		t.Fatalf("USD cashbook: opening %s closing %s", usd.OpeningBalance, usd.ClosingBalance)
 	}
 	if zar := cb.Currencies[1]; zar.ClosingBalance != "29500.00" {

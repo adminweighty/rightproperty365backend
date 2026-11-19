@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.36.1
+  version: 0.36.2
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,23 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Maintenance requests (new in 0.36.2)
+    - **What it is** (BR-019, FR-047, Phase 2 part c): maintenance requests in a book (the tenancies' books and roles: STAFF
+      read, OWNER / MANAGER / AGENT write, any other caller `404 BOOK_NOT_FOUND` before any validation), on a property and
+      optionally a unit and a non-DRAFT tenancy. Categories and priorities are the admin-editable reference sets
+      `maintenance_categories` and `maintenance_priorities`. References look like `RPM-2026-000001`.
+    - **Status**: NEW -> TRIAGED -> ASSIGNED -> IN_PROGRESS -> RESOLVED -> CLOSED, or CANCELLED (with a reason). ASSIGNED only
+      through `POST .../assign`, which sends the directory service provider **one** business enquiry (idempotent; the
+      reference, category, priority and property only, plus the manager's message: never the tenant's details).
+    - **Costs** write exactly one EXPENSE ledger entry (category `maintenance`, `property_id` set) in the same transaction.
+    - **Photos**: images only (JPEG, PNG, WebP, sniffed), at most 10 MB and 10 per request, re-encoded as JPEG without
+      metadata, kept privately and served by the API.
+    - **Tenant**: `/v1/me/tenancies/{id}/maintenance` lists, raises, comments on and adds photos to the requests of their own
+      tenancy only (another tenancy `404 TENANCY_NOT_FOUND`, another request `404 MAINTENANCE_NOT_FOUND`). No status,
+      assignment, cost or internal comment.
+    - **Notifications**: new requests and status changes notify the book's owners and managers and the tenancy's tenants
+      (in-app type `MAINTENANCE` and email), never the person who acted; safe text only.
 
     Rent schedule, receipts and arrears (new in 0.36.1)
     - **What it is** (BR-019, FR-047, Phase 2 part b): activating a tenancy generates its rent schedule (dues) from its
@@ -743,6 +760,10 @@ tags:
     description: |
       Rent (new in 0.36.1): the schedule of dues of an activated tenancy, receipts (each with one RENT_RECEIVED ledger
       entry), waivers, the tenant statement and the arrears ageing; the tenant's own read-only view.
+  - name: maintenance
+    description: |
+      Maintenance requests (new in 0.36.2): requests with a timeline, photos, assignment to a directory service provider
+      (a business enquiry) and costs (EXPENSE ledger entries); the tenant's own requests.
   - name: venues
     description: |
       Showroom and venue hourly rental (new in 0.33.0): hourly settings, public availability
@@ -13370,6 +13391,442 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "404": { $ref: "#/components/responses/TenancyNotFound" }
 
+  /v1/agent/organisations/{id}/maintenance:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+    get:
+      tags: [maintenance]
+      operationId: listMaintenance
+      summary: The book's maintenance requests, newest first, with the counts per status (new in 0.36.2)
+      parameters:
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/MaintenanceStatus" } }
+        - { name: property_id, in: query, schema: { type: string, format: uuid } }
+        - { name: tenancy_id, in: query, schema: { type: string, format: uuid } }
+        - { name: category, in: query, schema: { type: string } }
+        - { name: priority, in: query, schema: { type: string } }
+        - { name: q, in: query, schema: { type: string }, description: Reference or title contains (case-insensitive). }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
+      description: "`status_counts` ignore the `status` filter (the other filters apply). Read: any member (STAFF included)."
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { description: One page., content: { application/json: { schema: { $ref: "#/components/schemas/MaintenancePage" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/MaintenanceNotFound" }
+    post:
+      tags: [maintenance]
+      operationId: createMaintenance
+      summary: Raise a maintenance request as a manager (new in 0.36.2)
+      description: |
+        Status NEW. `unit_id` a live unit of the property (optional); `tenancy_id` a non-DRAFT tenancy of the book on that
+        property (and unit; when `unit_id` is omitted the tenancy's unit is used). Write: OWNER, MANAGER, AGENT (STAFF 403).
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/MaintenanceInput" } } }
+      responses:
+        "201": { description: The request., content: { application/json: { schema: { $ref: "#/components/schemas/MaintenanceOne" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/MaintenanceNotFound" }
+  /v1/agent/organisations/{id}/maintenance/options:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+    get:
+      tags: [maintenance]
+      operationId: maintenanceOptions
+      summary: Categories, priorities, statuses and transitions, currencies, methods, photo rules, write permission (new in 0.36.2)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { description: The options., content: { application/json: { schema: { $ref: "#/components/schemas/MaintenanceOptions" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/MaintenanceNotFound" }
+  /v1/agent/organisations/{id}/maintenance/providers:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - { name: q, in: query, schema: { type: string } }
+      - { name: trade, in: query, schema: { type: string }, description: A service_trades code. }
+    get:
+      tags: [maintenance]
+      operationId: maintenanceProviders
+      summary: Public, verified service providers of the directory to assign (at most 25; new in 0.36.2)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The providers, sponsored first then by name.
+          content:
+            application/json:
+              schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: "#/components/schemas/MaintenanceProviderOption" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/MaintenanceNotFound" }
+  /v1/agent/organisations/{id}/maintenance/{requestId}:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - $ref: "#/components/parameters/MaintenanceRequestID"
+    get:
+      tags: [maintenance]
+      operationId: getMaintenance
+      summary: One request with its tenancy, assignment, photos, costs and timeline (new in 0.36.2)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { description: The request., content: { application/json: { schema: { $ref: "#/components/schemas/MaintenanceOne" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/MaintenanceNotFound" }
+    patch:
+      tags: [maintenance]
+      operationId: updateMaintenance
+      summary: Change the category, priority, title or description of an open request (new in 0.36.2)
+      description: "Adds an UPDATED timeline item naming the changed fields. CLOSED / CANCELLED: `409 MAINTENANCE_CLOSED`."
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/MaintenancePatch" } } }
+      responses:
+        "200": { description: The request., content: { application/json: { schema: { $ref: "#/components/schemas/MaintenanceOne" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/MaintenanceNotFound" }
+        "409": { $ref: "#/components/responses/MaintenanceConflict" }
+  /v1/agent/organisations/{id}/maintenance/{requestId}/status:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - $ref: "#/components/parameters/MaintenanceRequestID"
+    post:
+      tags: [maintenance]
+      operationId: changeMaintenanceStatus
+      summary: Move a request through its status flow (new in 0.36.2)
+      description: |
+        NEW -> TRIAGED | CANCELLED; TRIAGED -> IN_PROGRESS | CANCELLED; ASSIGNED -> IN_PROGRESS | CANCELLED; IN_PROGRESS ->
+        RESOLVED | CANCELLED; RESOLVED -> CLOSED | IN_PROGRESS. Anything else is `409 MAINTENANCE_INVALID_TRANSITION`
+        (`details.status`, `details.allowed`). CANCELLED needs a `note` (audited `MAINTENANCE_CANCELLED`). Notifies.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              additionalProperties: false
+              properties:
+                status: { $ref: "#/components/schemas/MaintenanceStatus" }
+                note: { type: [string, "null"], maxLength: 500 }
+      responses:
+        "200": { description: The request., content: { application/json: { schema: { $ref: "#/components/schemas/MaintenanceOne" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/MaintenanceNotFound" }
+        "409": { $ref: "#/components/responses/MaintenanceConflict" }
+  /v1/agent/organisations/{id}/maintenance/{requestId}/comments:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - $ref: "#/components/parameters/MaintenanceRequestID"
+    post:
+      tags: [maintenance]
+      operationId: commentMaintenance
+      summary: Add a comment (internal ones are never shown to the tenant; new in 0.36.2)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              additionalProperties: false
+              properties: { text: { type: string, minLength: 1, maxLength: 2000 }, internal: { type: boolean, default: false } }
+      responses:
+        "201":
+          description: The timeline item.
+          content: { application/json: { schema: { type: object, required: [item], properties: { item: { $ref: "#/components/schemas/MaintenanceTimelineItem" } } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/MaintenanceNotFound" }
+  /v1/agent/organisations/{id}/maintenance/{requestId}/assign:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - $ref: "#/components/parameters/MaintenanceRequestID"
+    post:
+      tags: [maintenance]
+      operationId: assignMaintenance
+      summary: Assign to a directory service provider, sending it one business enquiry (new in 0.36.2)
+      description: |
+        From NEW, TRIAGED or ASSIGNED. Sends one business enquiry from the signed-in manager (preferred contact EMAIL;
+        service = the category label) quoting the reference, category, priority and property, plus `message`; never the
+        title, description or the tenant's details. Idempotent: a retry (also after a failure between the enquiry and the
+        link) sends nothing new (`enquiry.replayed`); assigning the provider already assigned changes nothing. The request
+        becomes ASSIGNED. Audited `MAINTENANCE_ASSIGNED`. A retry with a different message after a failed link is
+        `409 MAINTENANCE_CHANGED`.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [directory_profile_id]
+              additionalProperties: false
+              properties:
+                directory_profile_id: { type: string, format: uuid }
+                message: { type: [string, "null"], maxLength: 1500 }
+      responses:
+        "200":
+          description: The request and the enquiry.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [request, enquiry]
+                properties:
+                  request: { $ref: "#/components/schemas/MaintenanceRequest" }
+                  enquiry:
+                    type: object
+                    required: [id, reference, replayed]
+                    properties: { id: { type: string, format: uuid }, reference: { type: string }, replayed: { type: boolean } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/MaintenanceNotFound" }
+        "409": { $ref: "#/components/responses/MaintenanceConflict" }
+  /v1/agent/organisations/{id}/maintenance/{requestId}/costs:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - $ref: "#/components/parameters/MaintenanceRequestID"
+    post:
+      tags: [maintenance]
+      operationId: addMaintenanceCost
+      summary: Record a cost, posting exactly one EXPENSE ledger entry in the same transaction (new in 0.36.2)
+      description: |
+        Category `maintenance` (added to the book when it lacks it; a deactivated one is `400 ledger.category`),
+        `property_id` the request's property, `listing_id` the property's listing, reference the request reference, status
+        USER_RECORDED_UNVERIFIED. `method` default OTHER; `incurred_on` default today, never in the future. Any status.
+        Audited `LEDGER_ENTRY_CREATED` and `MAINTENANCE_COST_RECORDED`. Undo with a ledger reversal of the entry.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount, currency, description]
+              additionalProperties: false
+              properties:
+                amount: { type: string, pattern: "^[0-9]+(\\.[0-9]+)?$", example: "85.00" }
+                currency: { type: string, pattern: "^[A-Z]{3}$" }
+                description: { type: string, minLength: 1, maxLength: 500 }
+                method: { type: [string, "null"], enum: [CASH, BANK, MOBILE_MONEY, OTHER, null] }
+                incurred_on: { type: [string, "null"], format: date }
+      responses:
+        "201":
+          description: The cost and the request.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cost, request]
+                properties: { cost: { $ref: "#/components/schemas/MaintenanceCost" }, request: { $ref: "#/components/schemas/MaintenanceRequest" } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/MaintenanceNotFound" }
+  /v1/agent/organisations/{id}/maintenance/{requestId}/photos:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - $ref: "#/components/parameters/MaintenanceRequestID"
+    post:
+      tags: [maintenance]
+      operationId: addMaintenancePhoto
+      summary: Add a photo (multipart, one part `file`; new in 0.36.2)
+      description: |
+        JPEG, PNG or WebP decided by the bytes (`415 UNSUPPORTED_FILE_TYPE`), at most 10 MB (`413 FILE_TOO_LARGE`), 8000 px a
+        side and 40 megapixels (`400` field `file`), 10 per request (`409 MAINTENANCE_PHOTO_LIMIT`), while open
+        (`409 MAINTENANCE_CLOSED`). Stored as JPEG (longer side at most 2048 px), without metadata.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content: { multipart/form-data: { schema: { type: object, required: [file], properties: { file: { type: string, format: binary } } } } }
+      responses:
+        "201":
+          description: The photo.
+          content: { application/json: { schema: { type: object, required: [photo], properties: { photo: { $ref: "#/components/schemas/MaintenancePhoto" } } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/MaintenanceNotFound" }
+        "409": { $ref: "#/components/responses/MaintenanceConflict" }
+        "413": { $ref: "#/components/responses/MaintenancePhotoRefused" }
+        "415": { $ref: "#/components/responses/MaintenancePhotoRefused" }
+  /v1/agent/organisations/{id}/maintenance/{requestId}/photos/{photoId}:
+    parameters:
+      - $ref: "#/components/parameters/LedgerBookID"
+      - $ref: "#/components/parameters/MaintenanceRequestID"
+      - { name: photoId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [maintenance]
+      operationId: getMaintenancePhoto
+      summary: The photo (image/jpeg, private, no-store; new in 0.36.2)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { description: The JPEG., content: { image/jpeg: { schema: { type: string, format: binary } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/MaintenanceNotFound" }
+    delete:
+      tags: [maintenance]
+      operationId: deleteMaintenancePhoto
+      summary: Remove a photo of an open request (new in 0.36.2)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "204": { description: Removed. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/MaintenanceNotFound" }
+        "409": { $ref: "#/components/responses/MaintenanceConflict" }
+  /v1/me/tenancies/{id}/maintenance:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [maintenance]
+      operationId: myMaintenance
+      summary: The requests of one of the caller's tenancies, newest first (tenant view; new in 0.36.2)
+      description: "Anybody else's tenancy (and a DRAFT) is `404 TENANCY_NOT_FOUND`. Never paged."
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The requests.
+          content:
+            application/json:
+              schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: "#/components/schemas/MyMaintenance" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/MaintenanceNotFound" }
+    post:
+      tags: [maintenance]
+      operationId: raiseMyMaintenance
+      summary: Raise a request on the caller's ACTIVE tenancy (new in 0.36.2)
+      description: "Property and unit are the tenancy's. Not ACTIVE: `409 TENANCY_INVALID_STATE`. Notifies the managers."
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [category, priority, title]
+              additionalProperties: false
+              properties:
+                category: { type: string }
+                priority: { type: string }
+                title: { type: string, minLength: 1, maxLength: 200 }
+                description: { type: string, maxLength: 5000 }
+      responses:
+        "201":
+          description: The request.
+          content: { application/json: { schema: { type: object, required: [request], properties: { request: { $ref: "#/components/schemas/MyMaintenance" } } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/MaintenanceNotFound" }
+        "409": { $ref: "#/components/responses/MaintenanceConflict" }
+  /v1/me/tenancies/{id}/maintenance/options:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [maintenance]
+      operationId: myMaintenanceOptions
+      summary: Categories, priorities and photo rules for the tenant's form (new in 0.36.2)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The options.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [categories, priorities, photo_rules]
+                properties:
+                  categories: { type: array, items: { $ref: "#/components/schemas/CodeLabel" } }
+                  priorities: { type: array, items: { $ref: "#/components/schemas/CodeLabel" } }
+                  photo_rules: { $ref: "#/components/schemas/MaintenancePhotoRules" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/MaintenanceNotFound" }
+  /v1/me/tenancies/{id}/maintenance/{requestId}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - $ref: "#/components/parameters/MaintenanceRequestID"
+    get:
+      tags: [maintenance]
+      operationId: myMaintenanceRequest
+      summary: One request of the caller's tenancy (new in 0.36.2)
+      description: "A request of another tenancy is `404 MAINTENANCE_NOT_FOUND`."
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200":
+          description: The request.
+          content: { application/json: { schema: { type: object, required: [request], properties: { request: { $ref: "#/components/schemas/MyMaintenance" } } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/MaintenanceNotFound" }
+  /v1/me/tenancies/{id}/maintenance/{requestId}/comments:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - $ref: "#/components/parameters/MaintenanceRequestID"
+    post:
+      tags: [maintenance]
+      operationId: commentMyMaintenance
+      summary: The tenant comments on an open request of their tenancy (new in 0.36.2)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [text], additionalProperties: false, properties: { text: { type: string, minLength: 1, maxLength: 2000 } } }
+      responses:
+        "201":
+          description: The timeline item.
+          content: { application/json: { schema: { type: object, required: [item], properties: { item: { $ref: "#/components/schemas/MyMaintenanceTimelineItem" } } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/MaintenanceNotFound" }
+        "409": { $ref: "#/components/responses/MaintenanceConflict" }
+  /v1/me/tenancies/{id}/maintenance/{requestId}/photos:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - $ref: "#/components/parameters/MaintenanceRequestID"
+    post:
+      tags: [maintenance]
+      operationId: addMyMaintenancePhoto
+      summary: The tenant adds a photo (multipart, one part `file`; the same rules as the managers'; new in 0.36.2)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content: { multipart/form-data: { schema: { type: object, required: [file], properties: { file: { type: string, format: binary } } } } }
+      responses:
+        "201":
+          description: The photo.
+          content: { application/json: { schema: { type: object, required: [photo], properties: { photo: { $ref: "#/components/schemas/MyMaintenancePhoto" } } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/MaintenanceNotFound" }
+        "409": { $ref: "#/components/responses/MaintenanceConflict" }
+        "413": { $ref: "#/components/responses/MaintenancePhotoRefused" }
+        "415": { $ref: "#/components/responses/MaintenancePhotoRefused" }
+  /v1/me/tenancies/{id}/maintenance/{requestId}/photos/{photoId}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - $ref: "#/components/parameters/MaintenanceRequestID"
+      - { name: photoId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [maintenance]
+      operationId: getMyMaintenancePhoto
+      summary: A photo of a request of the caller's tenancy (image/jpeg; new in 0.36.2)
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { description: The JPEG., content: { image/jpeg: { schema: { type: string, format: binary } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/MaintenanceNotFound" }
+
 components:
   parameters:
     RentDueID:
@@ -13405,6 +13862,12 @@ components:
       in: path
       required: true
       description: The organisation, or an approved direct owner's own user ID (their personal book).
+      schema: { type: string, format: uuid }
+    MaintenanceRequestID:
+      name: requestId
+      in: path
+      required: true
+      description: A maintenance request (a malformed ID is `404 MAINTENANCE_NOT_FOUND`).
       schema: { type: string, format: uuid }
     LedgerEntryID:
       name: entryId
@@ -13715,6 +14178,26 @@ components:
       description: |
         `BOOK_NOT_FOUND` (not the caller's book: another organisation, a consumer, a tenant, an administrator; answered
         before any validation), `PROPERTY_NOT_FOUND`, `UNIT_NOT_FOUND` or `TENANCY_NOT_FOUND`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    MaintenanceNotFound:
+      description: |
+        `BOOK_NOT_FOUND` (not the caller's book, before any validation), `TENANCY_NOT_FOUND` (the tenant routes: not the
+        caller's tenancy), `MAINTENANCE_NOT_FOUND` or `MAINTENANCE_PHOTO_NOT_FOUND`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    MaintenanceConflict:
+      description: |
+        `MAINTENANCE_INVALID_TRANSITION` (`details.status`, `details.allowed`), `MAINTENANCE_CLOSED`,
+        `MAINTENANCE_PHOTO_LIMIT`, `MAINTENANCE_CHANGED` (changed meanwhile: reload) or `TENANCY_INVALID_STATE`
+        (`details.status`; a tenant raising a request on a tenancy that is not ACTIVE).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    MaintenancePhotoRefused:
+      description: "`FILE_TOO_LARGE` (413) or `UNSUPPORTED_FILE_TYPE` (415: not a JPEG, PNG or WebP by its bytes)."
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorEnvelope" }
@@ -20759,7 +21242,7 @@ components:
       type: object
       required: [id, type, type_label, direction, category, category_label, method, method_label, amount, signed_amount, currency,
         minor_unit, effective_date, recorded_at, author, status, status_label, reconciliation, description, reference, branch, contact,
-        listing, lease, tenancy_id, reversal_of, reversed_by, correction_of, corrected_by, transfer_pair, settles, reason, is_reversed,
+        listing, lease, tenancy_id, property_id, reversal_of, reversed_by, correction_of, corrected_by, transfer_pair, settles, reason, is_reversed,
         cash, note_count, attachment_count, can]
       properties:
         id: { type: string, format: uuid }
@@ -20796,6 +21279,7 @@ components:
           properties: { id: { type: string, format: uuid }, title: { type: string }, reference: { type: string } }
         lease: { type: [object, "null"], required: [id, reference], properties: { id: { type: string, format: uuid }, reference: { type: string } } }
         tenancy_id: { type: [string, "null"], format: uuid, description: The tenancy of a rent receipt's RENT_RECEIVED entry (and of its reversal; new in 0.36.1). }
+        property_id: { type: [string, "null"], format: uuid, description: The property of a maintenance cost's EXPENSE entry (and of its reversal; new in 0.36.2). }
         reversal_of: { type: [string, "null"], format: uuid }
         reversed_by: { type: [string, "null"], format: uuid }
         correction_of: { type: [string, "null"], format: uuid }
@@ -21335,6 +21819,274 @@ components:
     RentDueStatus:
       type: string
       enum: [DUE, PART_PAID, PAID, WAIVED]
+    MaintenanceStatus:
+      type: string
+      enum: [NEW, TRIAGED, ASSIGNED, IN_PROGRESS, RESOLVED, CLOSED, CANCELLED]
+    CodeLabel:
+      type: object
+      required: [code, label]
+      properties: { code: { type: string }, label: { type: string } }
+    MaintenanceActor:
+      type: object
+      required: [kind, user_id, name]
+      properties:
+        kind: { type: string, enum: [MANAGER, TENANT, SYSTEM] }
+        user_id: { type: [string, "null"], format: uuid }
+        name: { type: string }
+    MaintenanceProviderRef:
+      type: object
+      required: [id, kind, slug, name]
+      properties:
+        id: { type: [string, "null"], format: uuid, description: Null when the profile no longer exists. }
+        kind: { type: string }
+        slug: { type: string }
+        name: { type: string }
+    MaintenanceProviderOption:
+      type: object
+      required: [id, kind, slug, name, trade, city, verified]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string }
+        slug: { type: string }
+        name: { type: string }
+        trade: { oneOf: [{ $ref: "#/components/schemas/CodeLabel" }, { type: "null" }] }
+        city: { type: [string, "null"] }
+        verified: { type: boolean }
+    MaintenancePhotoRules:
+      type: object
+      required: [max_photos, max_bytes, types]
+      properties:
+        max_photos: { type: integer, example: 10 }
+        max_bytes: { type: integer, example: 10485760 }
+        types: { type: array, items: { type: string } }
+    MaintenanceOptions:
+      type: object
+      required: [categories, priorities, statuses, transitions, currencies, methods, photo_rules, permissions]
+      properties:
+        categories: { type: array, items: { $ref: "#/components/schemas/CodeLabel" } }
+        priorities: { type: array, items: { $ref: "#/components/schemas/CodeLabel" } }
+        statuses: { type: array, items: { $ref: "#/components/schemas/CodeLabel" } }
+        transitions: { type: object, additionalProperties: { type: array, items: { $ref: "#/components/schemas/MaintenanceStatus" } } }
+        currencies:
+          type: array
+          items: { type: object, required: [code, minor_unit], properties: { code: { type: string }, minor_unit: { type: integer } } }
+        methods: { type: array, items: { $ref: "#/components/schemas/CodeLabel" } }
+        photo_rules: { $ref: "#/components/schemas/MaintenancePhotoRules" }
+        permissions: { type: object, required: [write], properties: { write: { type: boolean } } }
+    MaintenanceInput:
+      type: object
+      required: [property_id, category, priority, title]
+      additionalProperties: false
+      properties:
+        property_id: { type: string, format: uuid }
+        unit_id: { type: [string, "null"], format: uuid }
+        tenancy_id: { type: [string, "null"], format: uuid }
+        category: { type: string, description: An active code of maintenance_categories. }
+        priority: { type: string, description: An active code of maintenance_priorities. }
+        title: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, maxLength: 5000 }
+    MaintenancePatch:
+      type: object
+      additionalProperties: false
+      properties:
+        category: { type: string }
+        priority: { type: string }
+        title: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, maxLength: 5000 }
+    MaintenanceCostTotal:
+      type: object
+      required: [currency, minor_unit, amount, count]
+      properties: { currency: { type: string }, minor_unit: { type: integer }, amount: { type: string }, count: { type: integer } }
+    MaintenanceCost:
+      type: object
+      required: [id, amount, currency, minor_unit, description, method, method_label, incurred_on, ledger_entry_id, ledger_status,
+        ledger_status_label, reversed, recorded_by, recorded_at]
+      properties:
+        id: { type: string, format: uuid }
+        amount: { type: string }
+        currency: { type: string }
+        minor_unit: { type: integer }
+        description: { type: string }
+        method: { type: string, enum: [CASH, BANK, MOBILE_MONEY, OTHER] }
+        method_label: { type: string }
+        incurred_on: { type: string, format: date }
+        ledger_entry_id: { type: string, format: uuid }
+        ledger_status: { type: string }
+        ledger_status_label: { type: string }
+        reversed: { type: boolean, description: The entry was reversed in the ledger (left out of the totals). }
+        recorded_by: { $ref: "#/components/schemas/LedgerPersonRef" }
+        recorded_at: { type: string, format: date-time }
+    MaintenancePhoto:
+      type: object
+      required: [id, url, content_type, width, height, size, uploaded_by, uploaded_at, can]
+      properties:
+        id: { type: string, format: uuid }
+        url: { type: string, description: The API path that serves the JPEG. }
+        content_type: { type: string, enum: [image/jpeg] }
+        width: { type: integer }
+        height: { type: integer }
+        size: { type: integer }
+        uploaded_by: { $ref: "#/components/schemas/MaintenanceActor" }
+        uploaded_at: { type: string, format: date-time }
+        can: { type: object, required: [delete], properties: { delete: { type: boolean } } }
+    MaintenanceTimelineItem:
+      type: object
+      required: [id, type, at, actor, from_status, to_status, text, internal, details]
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string, enum: [CREATED, STATUS_CHANGED, COMMENT, ASSIGNED, COST_ADDED, PHOTO_ADDED, UPDATED] }
+        at: { type: string, format: date-time }
+        actor: { $ref: "#/components/schemas/MaintenanceActor" }
+        from_status: { type: [string, "null"] }
+        to_status: { type: [string, "null"] }
+        text: { type: [string, "null"], description: The comment, or the note of a status change. }
+        internal: { type: boolean }
+        details:
+          type: [object, "null"]
+          description: |
+            ASSIGNED `{provider, enquiry_reference}`; COST_ADDED `{cost_id, amount, currency, description}`; UPDATED
+            `{fields}`; PHOTO_ADDED `{photo_id}`; otherwise null.
+    MaintenanceSummary:
+      type: object
+      required: [id, reference, status, status_label, category, priority, title, property, unit, tenancy_id, raised_by, provider,
+        photo_count, comment_count, cost_totals, created_at, updated_at, status_changed_at]
+      properties:
+        id: { type: string, format: uuid }
+        reference: { type: string, example: RPM-2026-000001 }
+        status: { $ref: "#/components/schemas/MaintenanceStatus" }
+        status_label: { type: string }
+        category: { $ref: "#/components/schemas/CodeLabel" }
+        priority: { $ref: "#/components/schemas/CodeLabel" }
+        title: { type: string }
+        property:
+          type: object
+          required: [id, name, archived]
+          properties: { id: { type: string, format: uuid }, name: { type: string }, archived: { type: boolean } }
+        unit:
+          type: [object, "null"]
+          required: [id, label, archived]
+          properties: { id: { type: string, format: uuid }, label: { type: string }, archived: { type: boolean } }
+        tenancy_id: { type: [string, "null"], format: uuid }
+        raised_by: { $ref: "#/components/schemas/MaintenanceActor" }
+        provider: { oneOf: [{ $ref: "#/components/schemas/MaintenanceProviderRef" }, { type: "null" }] }
+        photo_count: { type: integer }
+        comment_count: { type: integer }
+        cost_totals: { type: array, items: { $ref: "#/components/schemas/MaintenanceCostTotal" } }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        status_changed_at: { type: string, format: date-time }
+    MaintenanceRequest:
+      allOf:
+        - $ref: "#/components/schemas/MaintenanceSummary"
+        - type: object
+          required: [description, property, tenancy, assignment, photos, costs, timeline, resolved_at, closed_at, can]
+          properties:
+            description: { type: string }
+            property:
+              type: object
+              required: [id, name, address, market_code, archived]
+              properties:
+                id: { type: string, format: uuid }
+                name: { type: string }
+                address: { type: string }
+                market_code: { type: string }
+                archived: { type: boolean }
+            tenancy: { oneOf: [{ $ref: "#/components/schemas/TenancyBrief" }, { type: "null" }] }
+            assignment:
+              type: [object, "null"]
+              required: [provider, enquiry, assigned_at, assigned_by]
+              properties:
+                provider: { $ref: "#/components/schemas/MaintenanceProviderRef" }
+                enquiry:
+                  type: [object, "null"]
+                  required: [id, reference]
+                  properties: { id: { type: string, format: uuid }, reference: { type: string } }
+                assigned_at: { type: string, format: date-time }
+                assigned_by: { $ref: "#/components/schemas/LedgerPersonRef" }
+            photos: { type: array, items: { $ref: "#/components/schemas/MaintenancePhoto" } }
+            costs: { type: array, items: { $ref: "#/components/schemas/MaintenanceCost" } }
+            timeline: { type: array, items: { $ref: "#/components/schemas/MaintenanceTimelineItem" } }
+            resolved_at: { type: [string, "null"], format: date-time }
+            closed_at: { type: [string, "null"], format: date-time }
+            can:
+              type: object
+              required: [edit, transitions, assign, add_cost, comment, add_photo]
+              properties:
+                edit: { type: boolean }
+                transitions: { type: array, items: { $ref: "#/components/schemas/MaintenanceStatus" } }
+                assign: { type: boolean }
+                add_cost: { type: boolean }
+                comment: { type: boolean }
+                add_photo: { type: boolean }
+    MaintenanceOne:
+      type: object
+      required: [request]
+      properties: { request: { $ref: "#/components/schemas/MaintenanceRequest" } }
+    MaintenancePage:
+      type: object
+      required: [items, total, page, page_size, status_counts]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/MaintenanceSummary" } }
+        total: { type: integer }
+        page: { type: integer }
+        page_size: { type: integer }
+        status_counts: { type: object, additionalProperties: { type: integer } }
+    MyMaintenancePhoto:
+      type: object
+      required: [id, url, content_type, width, height, uploaded_at]
+      properties:
+        id: { type: string, format: uuid }
+        url: { type: string }
+        content_type: { type: string }
+        width: { type: integer }
+        height: { type: integer }
+        uploaded_at: { type: string, format: date-time }
+    MyMaintenanceTimelineItem:
+      type: object
+      required: [id, type, at, actor, from_status, to_status, text]
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string, enum: [CREATED, STATUS_CHANGED, COMMENT, ASSIGNED, PHOTO_ADDED] }
+        at: { type: string, format: date-time }
+        actor:
+          type: object
+          required: [kind, name, you]
+          properties:
+            kind: { type: string, enum: [MANAGER, TENANT, SYSTEM] }
+            name: { type: string, description: The book's name for a manager. }
+            you: { type: boolean }
+        from_status: { type: [string, "null"] }
+        to_status: { type: [string, "null"] }
+        text: { type: [string, "null"] }
+    MyMaintenance:
+      type: object
+      required: [id, reference, status, status_label, category, priority, title, description, property, unit, raised_by, provider,
+        photos, timeline, created_at, updated_at, status_changed_at, can]
+      properties:
+        id: { type: string, format: uuid }
+        reference: { type: string }
+        status: { $ref: "#/components/schemas/MaintenanceStatus" }
+        status_label: { type: string }
+        category: { $ref: "#/components/schemas/CodeLabel" }
+        priority: { $ref: "#/components/schemas/CodeLabel" }
+        title: { type: string }
+        description: { type: string }
+        property: { type: object, required: [name], properties: { name: { type: string } } }
+        unit: { type: [object, "null"], required: [label], properties: { label: { type: string } } }
+        raised_by:
+          type: object
+          required: [kind, you]
+          properties: { kind: { type: string, enum: [MANAGER, TENANT] }, you: { type: boolean } }
+        provider: { type: [object, "null"], required: [name], properties: { name: { type: string } } }
+        photos: { type: array, items: { $ref: "#/components/schemas/MyMaintenancePhoto" } }
+        timeline: { type: array, items: { $ref: "#/components/schemas/MyMaintenanceTimelineItem" } }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        status_changed_at: { type: string, format: date-time }
+        can:
+          type: object
+          required: [comment, add_photo]
+          properties: { comment: { type: boolean }, add_photo: { type: boolean } }
     TenancyBrief:
       type: object
       required: [id, status, status_label, property, unit, tenants]

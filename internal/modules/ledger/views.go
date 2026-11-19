@@ -76,6 +76,7 @@ type EntryView struct {
 	Listing         *ListingRef         `json:"listing"`
 	Lease           *LeaseRef           `json:"lease"`
 	TenancyID       *uuid.UUID          `json:"tenancy_id"`
+	PropertyID      *uuid.UUID          `json:"property_id"`
 	ReversalOf      *uuid.UUID          `json:"reversal_of"`
 	ReversedBy      *uuid.UUID          `json:"reversed_by"`
 	CorrectionOf    *uuid.UUID          `json:"correction_of"`

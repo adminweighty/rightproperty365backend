@@ -221,6 +221,16 @@ func (s *MemoryStore) Get(_ context.Context, kind, slug string) (Record, error) 
 	return Record{}, ErrProfileNotFound
 }
 
+// ByID implements Store.
+func (s *MemoryStore) ByID(_ context.Context, id uuid.UUID) (Record, error) {
+	for _, r := range s.active() {
+		if r.ID == id {
+			return r, nil
+		}
+	}
+	return Record{}, ErrProfileNotFound
+}
+
 // AgencyOf implements Store.
 func (s *MemoryStore) AgencyOf(_ context.Context, organisationID uuid.UUID) (*Record, error) {
 	for _, r := range s.active() {
@@ -438,6 +448,18 @@ func (s *PostgresStore) List(ctx context.Context, kind string, f Filter, limit, 
 // Get implements Store.
 func (s *PostgresStore) Get(ctx context.Context, kind, slug string) (Record, error) {
 	records, err := s.profiles(ctx, `p.kind = $1 AND p.slug = $2`, kind, slug)
+	if err != nil {
+		return Record{}, err
+	}
+	if len(records) == 0 {
+		return Record{}, ErrProfileNotFound
+	}
+	return records[0], nil
+}
+
+// ByID implements Store.
+func (s *PostgresStore) ByID(ctx context.Context, id uuid.UUID) (Record, error) {
+	records, err := s.profiles(ctx, `p.id = $1`, id)
 	if err != nil {
 		return Record{}, err
 	}

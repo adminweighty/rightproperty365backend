@@ -168,6 +168,11 @@ func SampleData(name string) Data {
 			d.StatusText = "New time requested"
 			d.ProposedTime = LocalSlot(start.Add(48*time.Hour), start.Add(52*time.Hour), "Africa/Harare")
 		}
+	case "maintenance-request-new", "maintenance-status-changed":
+		d.Name, d.Path, d.Reference, d.Service, d.StatusText = "Tendai Ncube", "/agent/maintenance", "RPM-2026-000042", "Plumbing", "New"
+		if name == "maintenance-status-changed" {
+			d.StatusText = "In progress"
+		}
 	case "subscription-invoice", "subscription-activated", "subscription-rejected", "subscription-cancelled", "subscription-expired":
 		d.Name, d.Path, d.InvoiceNumber, d.PlanName, d.Period, d.Amount = "Tendai Ncube", "/account/subscriptions", "RPS-2026-000042", "Agent Starter", "3 months", "USD 30.00"
 		switch name {

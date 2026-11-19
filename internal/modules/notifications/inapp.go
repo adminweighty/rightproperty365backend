@@ -129,6 +129,16 @@ var inAppTemplates = map[string]inAppTemplate{
 	"venue-booking-cancelled":             {typ: inapp.TypeVenueBookingCancelled, title: fixed("Your venue booking was cancelled"), path: pathMyVenueBookings},
 	"venue-booking-time-proposed":         {typ: inapp.TypeVenueBookingRescheduled, title: fixed("A new time was proposed for your venue booking"), path: pathMyVenueBookings},
 
+	// Maintenance (API 0.36.2): the link is the recipient's own page (the
+	// request for a manager, the tenancy for a tenant), so path is empty.
+	"maintenance-request-new": {typ: inapp.TypeMaintenance, title: fixed("New maintenance request"), body: maintenanceBody},
+	"maintenance-status-changed": {typ: inapp.TypeMaintenance, body: maintenanceBody, title: func(d mail.Data) string {
+		if d.StatusText == "" {
+			return "Maintenance request updated"
+		}
+		return "Maintenance request: " + d.StatusText
+	}},
+
 	"listing-approved": {typ: inapp.TypeListingReviewed, path: pathAgentListings, title: func(d mail.Data) string {
 		if d.Edit {
 			return "Listing changes approved"
@@ -155,6 +165,9 @@ var inAppTemplates = map[string]inAppTemplate{
 }
 
 func subscriptionBody(d mail.Data) string { return joinSafe(d.InvoiceNumber, d.PlanName) }
+
+// maintenanceBody is the reference and the category label (safe text).
+func maintenanceBody(d mail.Data) string { return joinSafe(d.Reference, d.Service) }
 
 func joinSafe(parts ...string) string {
 	var out []string
@@ -192,7 +205,13 @@ func InAppDraft(ev outbox.Event, template string, d mail.Data) (inapp.Draft, boo
 		body = t.body(d)
 	}
 	link := t.path
-	if strings.HasSuffix(link, "/") {
+	if link == "" {
+		// Per recipient: the page the email's button opens (maintenance).
+		link = d.Path
+		if !strings.HasPrefix(link, "/") || strings.HasPrefix(link, "//") {
+			link = pathAccountPage
+		}
+	} else if strings.HasSuffix(link, "/") {
 		link += ev.AggregateID.String()
 	}
 	return inapp.Draft{SourceEventID: ev.ID, Type: t.typ, Title: t.title(d), Body: body, Link: link, Reference: ref}, true

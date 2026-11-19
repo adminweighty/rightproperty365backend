@@ -32,6 +32,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/leases"
 	"rightproperty365.com/backend/internal/modules/ledger"
 	"rightproperty365.com/backend/internal/modules/listings"
+	"rightproperty365.com/backend/internal/modules/maintenance"
 	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/modules/notifications"
 	"rightproperty365.com/backend/internal/modules/onboarding"
@@ -154,8 +155,9 @@ func run() error {
 		// venueStore holds the hourly settings, quotes and hourly bookings.
 		venueStore venues.Store
 		// ledgerStore holds the agent books.
-		ledgerStore  ledger.Store
-		tenancyStore tenancies.Store
+		ledgerStore      ledger.Store
+		tenancyStore     tenancies.Store
+		maintenanceStore maintenance.Store
 		// memSubscriptions is set without a database (its expiry sweep runs here).
 		memSubscriptions *subscriptions.MemoryStore
 	)
@@ -287,6 +289,15 @@ func run() error {
 			return err
 		}
 		tenancyStore = memTenancies
+		// Maintenance requests: the samples (one assigned to Sample Plumbers,
+		// with its enquiry and a cost in the books); assignments, costs and
+		// cancellations are audited into the team audit trail.
+		memMaintenance := maintenance.NewMemoryStore()
+		memMaintenance.SetAuditSink(memTeams.AuditSink())
+		if err := devseed.SeedMemoryMaintenance(ctx, memMaintenance, memLedger, memEnquiries, time.Now()); err != nil {
+			return fmt.Errorf("seed sample maintenance requests: %w", err)
+		}
+		maintenanceStore = memMaintenance
 		crmItems = app.MemoryCRMItems{Requests: memRequests, Enquiries: memEnquiries, Appointments: memAppointments,
 			Identity: memIdentity, Listings: memListings, Applications: memApplications}
 		// The notification centre, and its push sender in this process.
@@ -314,7 +325,7 @@ func run() error {
 			DeleteSignature: memAgreements.DeleteSavedSignature, DeleteSavedListings: memSaved.DeleteUser,
 			EraseApplications:   func(userID uuid.UUID, at time.Time) { memApplications.EraseApplicant(userID, at) },
 			DeleteVenueBookings: memVenues.DeleteCustomer, DeleteNotifications: memInbox.DeleteUser,
-			ForgetTenancies: memTenancies.ForgetUser})
+			ForgetTenancies: memTenancies.ForgetUser, ForgetMaintenance: memMaintenance.ForgetUser})
 		reportStore = app.MemoryReports(app.MemoryReportStores{Identity: memIdentity, Onboarding: memOnboarding, Listings: memListings,
 			Requests: memRequests, Enquiries: memEnquiries, Leases: memLeases, Agreements: memAgreements, Subscriptions: memSubscriptions,
 			Markets: marketStore})
@@ -343,6 +354,7 @@ func run() error {
 		handlers.SetSubscriptionSource(memSubscriptions.Subscription)
 		handlers.SetApplicationSource(app.ApplicationNotices(memApplications, memListings, referenceStore, memIdentity, logger))
 		handlers.SetVenueSource(app.VenueNotices(memVenues, memListings, marketStore, referenceStore, logger))
+		handlers.SetMaintenanceSource(app.MaintenanceNotices(memMaintenance, memTenancies, memCRM, memIdentity))
 		// In-app notifications (and their pushes) for the same recipients,
 		// and the preferences the emails consult.
 		handlers.SetInbox(inboxSvc)
@@ -403,6 +415,7 @@ func run() error {
 		memSubscriptions.SetOutboxSink(sink)
 		memApplications.SetOutboxSink(sink)
 		memVenues.SetOutboxSink(sink)
+		memMaintenance.SetOutboxSink(sink)
 		// The application retention job (and the purge of deleted files).
 		go app.RunApplicationJobs(ctx, app.ApplicationsService(memApplications, files,
 			listings.NewService(memListings, memListings, reference.NewService(referenceStore, nil)), memListings, memIdentity, logger, nil))
@@ -472,6 +485,7 @@ func run() error {
 		venueStore = venues.NewPostgresStore(pool)
 		ledgerStore = ledger.NewPostgresStore(pool)
 		tenancyStore = tenancies.NewPostgresStore(pool)
+		maintenanceStore = maintenance.NewPostgresStore(pool)
 		adminAuditLog = adminaudit.PostgresLog{Q: pool}
 		inboxSvc = inapp.NewService(inapp.NewPostgresStore(pool), pushProvider, logger, nil)
 	}
@@ -542,6 +556,7 @@ func run() error {
 		Venues:        venueStore,
 		Ledger:        ledgerStore,
 		Tenancies:     tenancyStore,
+		Maintenance:   maintenanceStore,
 		Inbox:         inboxSvc,
 	})
 	if err != nil {

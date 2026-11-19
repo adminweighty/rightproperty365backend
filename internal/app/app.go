@@ -29,6 +29,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/leases"
 	"rightproperty365.com/backend/internal/modules/ledger"
 	"rightproperty365.com/backend/internal/modules/listings"
+	"rightproperty365.com/backend/internal/modules/maintenance"
 	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/modules/onboarding"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
@@ -210,6 +211,9 @@ var (
 	applicationFilePath = regexp.MustCompile(`^/v1/me/applications/[^/]+/files$`)
 	// ledgerAttachmentPath is POST /v1/agent/organisations/{id}/ledger/entries/{entryId}/attachments (10 MB).
 	ledgerAttachmentPath = regexp.MustCompile(`^/v1/agent/organisations/[^/]+/ledger/entries/[^/]+/attachments$`)
+	// maintenancePhotoPath is POST .../maintenance/{requestId}/photos, a
+	// manager's or a tenant's (10 MB, as onboarding documents).
+	maintenancePhotoPath = regexp.MustCompile(`^/v1/(agent/organisations|me/tenancies)/[^/]+/maintenance/[^/]+/photos$`)
 )
 
 func isContactImport(r *http.Request) bool {
@@ -231,7 +235,8 @@ func isLogoUpload(r *http.Request) bool {
 func isUpload(r *http.Request) bool {
 	return (r.Method == http.MethodPost && uploadPath.MatchString(r.URL.Path)) || isLogoUpload(r) || isPhotoUpload(r) || isPDFUpload(r) ||
 		isContactImport(r) || (r.Method == http.MethodPost && applicationFilePath.MatchString(r.URL.Path)) ||
-		(r.Method == http.MethodPost && ledgerAttachmentPath.MatchString(r.URL.Path))
+		(r.Method == http.MethodPost && ledgerAttachmentPath.MatchString(r.URL.Path)) ||
+		(r.Method == http.MethodPost && maintenancePhotoPath.MatchString(r.URL.Path))
 }
 
 // Deps is everything the router needs.
@@ -310,6 +315,10 @@ type Deps struct {
 
 	// Tenancies holds the properties, units and tenancies (API 0.36.0).
 	Tenancies tenancies.Store
+
+	// Maintenance holds the maintenance requests (API 0.36.2); their photos
+	// are kept in Files.
+	Maintenance maintenance.Store
 
 	// Inbox is the notification centre (API 0.35.0): devices, in-app
 	// notifications, preferences and the delivery health. Logging out
@@ -506,6 +515,18 @@ func NewRouter(d Deps) (http.Handler, error) {
 	requestsH.SetMarkets(marketIDs(d.Markets))
 	requestWorkLimiter := httpx.NewRateLimiter(requestWorkPerMinute, requestWorkBurst)
 	enquiriesH := businessenquiries.NewHandler(enquiriesSvc, logger)
+	// Maintenance requests (API 0.36.2): the tenancies' books, a cost posts
+	// its EXPENSE entry through the ledger in its own transaction, and an
+	// assignment sends the provider a business enquiry.
+	if d.Maintenance == nil {
+		return nil, errors.New("app: no maintenance store")
+	}
+	if err := maintenance.ConnectLedger(d.Maintenance, d.Ledger); err != nil {
+		return nil, err
+	}
+	maintenanceH := maintenance.NewHandler(MaintenanceService(MaintenanceDeps{Store: d.Maintenance, Tenancies: tenancySvc, Ledger: ledgerSvc,
+		LedgerStore: d.Ledger, Reference: referenceSvc, Markets: d.Markets, Directory: d.Directory, Enquiries: enquiriesSvc, Files: d.Files,
+		Logger: logger, Now: d.Now}), logger)
 	appointmentsH := appointments.NewHandler(appointmentsSvc, inboxCounts{requests: requestsSvc, enquiries: enquiriesSvc}, logger)
 	appointmentLimiter := httpx.NewRateLimiter(appointmentsPerMinute, appointmentsBurst)
 	authn := auth.NewMiddleware(identitySvc, cfg.CORSAllowedOrigins, logger)
@@ -827,6 +848,9 @@ func NewRouter(d Deps) (http.Handler, error) {
 			r.Get("/{id}/dues", tenanciesH.MyDues)
 			r.Get("/{id}/receipts", tenanciesH.MyReceipts)
 			r.Get("/{id}/statement", tenanciesH.MyStatement)
+			// Maintenance (API 0.36.2): the requests of the tenant's own
+			// tenancy; another tenancy's or another request is 404.
+			r.Route("/{id}/maintenance", func(r chi.Router) { maintenanceH.MyRoutes(r, tenancyLimiter.Middleware) })
 		})
 
 		// A customer's hourly bookings (FR-025): another customer's is 404.
@@ -1231,6 +1255,8 @@ func NewRouter(d Deps) (http.Handler, error) {
 			// Rent (API 0.36.1): waive a due; the book's arrears.
 			r.Route("/dues", func(r chi.Router) { tenanciesH.DueRoutes(r, tenancyLimiter.Middleware) })
 			r.Get("/arrears", tenanciesH.Arrears)
+			// Maintenance requests (API 0.36.2): the same books and roles.
+			r.Route("/maintenance", func(r chi.Router) { maintenanceH.Routes(r, tenancyLimiter.Middleware) })
 			r.Route("/venue-bookings", func(r chi.Router) {
 				r.Get("/", orgVenues.List)
 				r.Get("/{bookingId}", orgVenues.Get)

@@ -439,6 +439,13 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 		return err
 	}
 
+	// The sample maintenance requests, one assigned to Sample Plumbers with
+	// its enquiry and a cost in the books (needs migration 0037), after the
+	// tenancies and the books.
+	if err := seedPostgresMaintenance(ctx, tx, now); err != nil {
+		return err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}

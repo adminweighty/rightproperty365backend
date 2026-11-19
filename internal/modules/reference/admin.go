@@ -35,7 +35,8 @@ func AdminRoles() []string {
 
 // CreatableSets are the sets new rows may be added to.
 func CreatableSets() []string {
-	return []string{SetPropertyTypes, SetListingFeatures, SetServiceTrades, SetRegions, SetCities, SetSuburbs, SetContactSources}
+	return []string{SetPropertyTypes, SetListingFeatures, SetServiceTrades, SetRegions, SetCities, SetSuburbs, SetContactSources,
+		SetMaintenanceCategories, SetMaintenancePriorities}
 }
 
 // marketSets are the sets whose rows belong to one market.

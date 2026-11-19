@@ -35,6 +35,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/leases"
 	"rightproperty365.com/backend/internal/modules/ledger"
 	"rightproperty365.com/backend/internal/modules/listings"
+	"rightproperty365.com/backend/internal/modules/maintenance"
 	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/modules/onboarding"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
@@ -286,6 +287,8 @@ type env struct {
 	ledger *ledger.MemoryStore
 	// tenancies holds the properties, units and tenancies (the samples).
 	tenancies *tenancies.MemoryStore
+	// maintenance holds the maintenance requests (the samples).
+	maintenance *maintenance.MemoryStore
 	// inbox holds devices, in-app notifications and preferences (empty).
 	inbox    *inapp.MemoryStore
 	inboxSvc *inapp.Service
@@ -387,6 +390,11 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 	if err := devseed.SeedMemoryRent(e.tenancies, e.ledger, e.now); err != nil {
 		t.Fatal(err)
 	}
+	e.maintenance = maintenance.NewMemoryStore()
+	e.maintenance.SetAuditSink(e.team.AuditSink())
+	if err := devseed.SeedMemoryMaintenance(context.Background(), e.maintenance, e.ledger, nil, e.now); err != nil {
+		t.Fatal(err)
+	}
 	if err := devseed.SeedApplicationFiles(context.Background(), e.files); err != nil {
 		t.Fatal(err)
 	}
@@ -422,6 +430,7 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		DeleteVenueBookings: e.venues.DeleteCustomer,
 		DeleteNotifications: e.inbox.DeleteUser,
 		ForgetTenancies:     e.tenancies.ForgetUser,
+		ForgetMaintenance:   e.maintenance.ForgetUser,
 		Now:                 func() time.Time { return e.now }})
 	reportStore := MemoryReports(MemoryReportStores{Identity: e.identity, Onboarding: e.onboard, Listings: e.listings, Requests: e.requests,
 		Enquiries: e.enquiries, Leases: e.leases, Agreements: e.agree, Subscriptions: e.subs, Markets: e.marketStore,
@@ -450,6 +459,7 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 		Venues:       e.venues,
 		Ledger:       e.ledger,
 		Tenancies:    e.tenancies,
+		Maintenance:  e.maintenance,
 		Inbox:        e.inboxSvc,
 		Now:          func() time.Time { return e.now },
 		Hasher:       &hasher,
