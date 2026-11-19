@@ -58,6 +58,16 @@ const (
 	ActionPackageDeleted         = "PACKAGE_DELETED"
 	ActionPackageAssigned        = "PACKAGE_ASSIGNED"
 	ActionPackageAssignmentEnded = "PACKAGE_ASSIGNMENT_ENDED"
+	// Administrator MFA (API 0.40.0): the actor is the administrator
+	// themselves (target USER = own account) except for a reset, done by a
+	// SUPER_ADMIN with a reason. CHALLENGE_LOCKED aggregates the failed
+	// second-factor codes of one sign-in (written once, at the fifth).
+	ActionAdminMFAEnrolled            = "ADMIN_MFA_ENROLLED"
+	ActionAdminMFARecoveryCodeUsed    = "ADMIN_MFA_RECOVERY_CODE_USED"
+	ActionAdminMFARecoveryRegenerated = "ADMIN_MFA_RECOVERY_CODES_REGENERATED"
+	ActionAdminMFARemoved             = "ADMIN_MFA_REMOVED"
+	ActionAdminMFAReset               = "ADMIN_MFA_RESET"
+	ActionAdminMFAChallengeLocked     = "ADMIN_MFA_CHALLENGE_LOCKED"
 )
 
 // Target types.

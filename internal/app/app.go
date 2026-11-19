@@ -523,6 +523,12 @@ func NewRouter(d Deps) (http.Handler, error) {
 	if d.Hasher != nil {
 		identityOpts = append(identityOpts, identity.WithHasher(*d.Hasher))
 	}
+	// Administrator MFA (API 0.40.0): the sealing key and ADMIN_MFA_REQUIRED.
+	mfaBox, err := AdminMFABox(cfg, logger)
+	if err != nil {
+		return nil, err
+	}
+	identityOpts = append(identityOpts, identity.WithAdminMFA(mfaBox, cfg.AdminMFARequired))
 	identitySvc, err := identity.NewService(d.Identity, d.Mailer, logger, identityOpts...)
 	if err != nil {
 		return nil, err
@@ -1119,9 +1125,29 @@ func NewRouter(d Deps) (http.Handler, error) {
 		// Everything else under /admin requires an ADMIN-scope session whose
 		// user holds a platform role.
 		r.Route("/admin", func(r chi.Router) {
+			// An enrolment-only session (ADMIN_MFA_REQUIRED and no
+			// authenticator yet) reaches /v1/admin/auth/* only: everything
+			// else answers 403 MFA_ENROLMENT_REQUIRED (API 0.40.0).
+			r.Use(auth.RefuseMFAEnrolmentOnly)
 			r.With(adminAuthLimiter.Middleware).Post("/auth/login", identityH.AdminLogin)
 			r.With(adminCodeLimiter.Middleware).Post("/auth/login/verify", identityH.AdminLoginVerify)
 			r.With(adminCodeLimiter.Middleware).Post("/auth/login/resend", identityH.AdminLoginResend)
+			// The second factor of an administrator with an authenticator,
+			// in the same per-IP bucket as the emailed code.
+			r.With(adminCodeLimiter.Middleware).Post("/auth/login/mfa", identityH.AdminLoginMFA)
+			// The signed-in administrator's own MFA (an enrolment-only
+			// session included). Changes share the administrators' bucket.
+			r.Route("/auth/mfa", func(r chi.Router) {
+				r.Use(httpx.PrivateNoStore, auth.RequireAdminSession)
+				r.Get("/", identityH.MFAStatus)
+				r.Group(func(r chi.Router) {
+					r.Use(adminLimiter.Middleware)
+					r.Post("/totp/setup", identityH.SetupTOTP)
+					r.Post("/totp/confirm", identityH.ConfirmTOTP)
+					r.Delete("/totp", identityH.RemoveTOTP)
+					r.Post("/recovery-codes/regenerate", identityH.RegenerateRecoveryCodes)
+				})
+			})
 			r.With(auth.RequireAuth, auth.RequirePlatformRole(auth.AllPlatformRoles()...)).Get("/me", identityH.Me)
 
 			// Reviewing onboarding applications: an ADMIN-scope session with
@@ -1182,6 +1208,12 @@ func NewRouter(d Deps) (http.Handler, error) {
 						r.Post("/{id}/reactivate", accountsH.Reactivate)
 						r.Post("/{id}/delete", accountsH.Delete)
 					})
+				})
+				// An administrator's MFA: read and reset by a SUPER_ADMIN only.
+				r.Group(func(r chi.Router) {
+					r.Use(httpx.PrivateNoStore, auth.RequirePlatformRole(auth.PlatformSuperAdmin))
+					r.Get("/{id}/mfa", identityH.UserMFAStatus)
+					r.With(adminLimiter.Middleware).Post("/{id}/mfa/reset", identityH.ResetUserMFA)
 				})
 				// A direct owner's listing package (API 0.37.0): the package
 				// administrators (MARKET_ADMIN for its own markets).

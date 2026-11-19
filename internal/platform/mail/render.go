@@ -49,6 +49,8 @@ func Templates() []Template {
 		{"password-changed", "Password changed (security notice)", true},
 		{"welcome", "Welcome, after verification", true},
 		{"admin-sign-in", "Administrator sign-in notice", true},
+		{"admin-mfa-recovery-code-used", "Administrator recovery code used (security notice)", true},
+		{"admin-mfa-reset", "Administrator two-step sign-in reset (security notice)", true},
 		{"account-exists", "Sign-up attempted with an existing address", true},
 		{"sign-in-code", "Sign-in code (second step of signing in)", true},
 		{"property-request-received", "Property request received (to the customer)", true},

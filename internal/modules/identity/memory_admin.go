@@ -169,6 +169,8 @@ func (s *MemoryStore) AnonymiseAccount(id uuid.UUID, name, email string, at time
 	u.Name, u.Email, u.PasswordHash, u.MarketingOptIn = name, email, "", false
 	u.Status, u.DeletedAt, u.SuspendedAt, u.SuspensionReason, u.SuspendedBy = StatusDeleted, &t, nil, "", nil
 	s.byEmail[email] = id
+	// The administrator's authenticator and recovery codes go (API 0.40.0).
+	s.deleteMFALocked(id)
 	return s.endAccessLocked(id, at), nil
 }
 

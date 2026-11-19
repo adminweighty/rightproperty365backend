@@ -1,0 +1,11 @@
+{{define "preheader"}}A recovery code was used to sign in to your administrator account.{{end}}
+{{define "heading"}}Recovery code used{{end}}
+{{define "button"}}Open administrator sign-in{{end}}
+{{define "why"}}You are receiving this security notice because your account holds an administrator role.{{end}}
+{{define "body"}}
+<p class="ink" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;color:#131722;">{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}</p>
+<p class="ink" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;color:#131722;">One of your recovery codes was used instead of your authenticator app to sign in to RightProperty365. That code cannot be used again.</p>
+<table role="presentation" class="facts" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 20px;background-color:#f8f9fc;border:1px solid #e6e9f0;border-radius:10px;"><tr><td style="padding:14px 16px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td class="fact-label" valign="top" width="38%" style="padding:4px 12px 4px 0;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:14px;line-height:21px;color:#4f586a;">Used</td><td class="ink" valign="top" style="padding:4px 0;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:14px;line-height:21px;font-weight:600;color:#131722;">{{dateTime .When}}</td></tr></table></td></tr></table>
+<p class="ink" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;color:#131722;">If this was you, consider creating a new set of recovery codes, and set up your authenticator app again if you lost it.</p>
+<p class="ink" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;color:#131722;">If this was not you, tell a super administrator immediately: they can reset two-step sign-in for your account.</p>
+{{end}}

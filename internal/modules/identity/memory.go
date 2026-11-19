@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"rightproperty365.com/backend/internal/platform/adminaudit"
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/outbox"
 )
@@ -34,6 +35,13 @@ type MemoryStore struct {
 	marketing     []MarketingConsentEvent // in insertion order
 	outbox        []outbox.Event
 	sink          outbox.Sink
+
+	// Administrator MFA (mfa_memory.go), keyed by user.
+	mfaTOTP     map[uuid.UUID]*AdminMFA
+	mfaRecovery map[uuid.UUID][]RecoveryCode
+	// adminAudit receives the administrators' audit records this store
+	// writes (MFA); nil drops them.
+	adminAudit *adminaudit.MemoryLog
 
 	// Onboarding hooks (see SetOnboarding). Never called with mu held.
 	syncDrafts         func(userID uuid.UUID, roles []AccountRole, now time.Time)
@@ -267,6 +275,8 @@ func NewMemoryStore() *MemoryStore {
 		resets:        make(map[string]*memoryToken),
 		captchas:      make(map[string]*memoryCaptcha),
 		challenges:    make(map[string]*LoginChallenge),
+		mfaTOTP:       make(map[uuid.UUID]*AdminMFA),
+		mfaRecovery:   make(map[uuid.UUID][]RecoveryCode),
 	}
 }
 
@@ -357,7 +367,7 @@ func (s *MemoryStore) ResendLoginChallenge(_ context.Context, idHash, codeHash [
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c, ok := s.challenges[key(idHash)]
-	if !ok || !c.usable(now) || c.ResendCount >= SignInCodeMaxResends || c.LastSentAt.After(sentBefore) {
+	if !ok || !c.usable(now) || c.CodeVerifiedAt != nil || c.ResendCount >= SignInCodeMaxResends || c.LastSentAt.After(sentBefore) {
 		return ErrNotFound
 	}
 	c.CodeHash, c.ExpiresAt, c.LastSentAt = slices.Clone(codeHash), expiresAt, now

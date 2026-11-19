@@ -489,6 +489,19 @@ func TestAccountNotifications(t *testing.T) {
 		}
 	})
 
+	// The administrator MFA security notices (API 0.40.0): no code, no secret.
+	t.Run("administrator MFA notices", func(t *testing.T) {
+		for typ, kind := range map[string]string{identity.EventAdminMFARecoveryCodeUsed: "admin-mfa-recovery-code-used", identity.EventAdminMFAReset: "admin-mfa-reset"} {
+			if err := f.handle(event(typ, identity.SeedAdminUserID)); err != nil {
+				t.Fatal(err)
+			}
+			m := f.sender.byKind(kind)[0]
+			if m.To != identity.SeedAdminEmail || !strings.Contains(m.Text, "14 November 2026, 09:05 UTC") || m.DevLink != publicURL+"/admin/sign-in" {
+				t.Fatalf("unexpected %s notice:\n%s", kind, m.Text)
+			}
+		}
+	})
+
 	t.Run("an event whose subject is gone is dead-lettered, not retried", func(t *testing.T) {
 		for _, ev := range []outbox.Event{
 			event(identity.EventPasswordChanged, uuid.New()),
@@ -502,8 +515,8 @@ func TestAccountNotifications(t *testing.T) {
 		}
 	})
 
-	if got := len(EventTypes()); got != 44 {
-		t.Fatalf("%d event types handled, want 44 (6 with the request assignment, the 4 onboarding events, the 7 appointment events, the 3 listing review events, the 2 account events, the 5 subscription events, the 4 application events, the 8 venue booking events, the 2 maintenance events, the 2 inspection events and the review moderation event)", got)
+	if got := len(EventTypes()); got != 46 {
+		t.Fatalf("%d event types handled, want 46 (8 identity and request events with the request assignment and the 2 administrator MFA notices, the 4 onboarding events, the 7 appointment events, the 3 listing review events, the 2 account events, the 5 subscription events, the 4 application events, the 8 venue booking events, the 2 maintenance events, the 2 inspection events and the review moderation event)", got)
 	}
 }
 

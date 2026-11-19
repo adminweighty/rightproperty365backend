@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.39.0
+  version: 0.40.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,31 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Administrator MFA (new in 0.40.0, FR-001)
+    - Administrators can protect their account with an **authenticator app** (TOTP, RFC 6238:
+      SHA-1, 6 digits, 30 seconds, one step of tolerance) and ten one-time **recovery codes**.
+      Hardware keys (WebAuthn) are not implemented. Customers are unchanged.
+    - **Sign-in** of an administrator with an authenticator is three steps on one challenge:
+      `POST /v1/admin/auth/login` (password), `POST /v1/admin/auth/login/verify` (the emailed
+      code) now answers `200 MFA_REQUIRED` without a cookie, then
+      `POST /v1/admin/auth/login/mfa` with `code` or `recovery_code` starts the session.
+      `AUTH_DEMO_CODE` answers the emailed-code step only.
+    - **Required MFA** (`ADMIN_MFA_REQUIRED`, default true in production only): an administrator
+      without an authenticator gets an **enrolment-only** session
+      (`session.mfa_enrolment_required: true`); every `/v1/admin/**` route outside
+      `/v1/admin/auth/**` answers `403 MFA_ENROLMENT_REQUIRED` until the authenticator is
+      confirmed, which lifts the restriction on the same session.
+    - Own MFA: `GET /v1/admin/auth/mfa`, `POST /v1/admin/auth/mfa/totp/setup`,
+      `POST /v1/admin/auth/mfa/totp/confirm`, `POST /v1/admin/auth/mfa/recovery-codes/regenerate`,
+      `DELETE /v1/admin/auth/mfa/totp`. A SUPER_ADMIN reads and resets another administrator's
+      MFA: `GET /v1/admin/users/{id}/mfa`, `POST /v1/admin/users/{id}/mfa/reset`.
+    - New error codes: `MFA_ENROLMENT_REQUIRED`, `MFA_UNAVAILABLE` (503), `MFA_ALREADY_ENROLLED`,
+      `MFA_NOT_ENROLLED`, `MFA_SETUP_REQUIRED` (409), `MFA_REMOVAL_NOT_ALLOWED` (403).
+    - New audit actions (`GET /v1/admin/audit`, target USER): `ADMIN_MFA_ENROLLED`,
+      `ADMIN_MFA_RECOVERY_CODE_USED`, `ADMIN_MFA_RECOVERY_CODES_REGENERATED`, `ADMIN_MFA_REMOVED`,
+      `ADMIN_MFA_RESET`, `ADMIN_MFA_CHALLENGE_LOCKED`. New emails: `admin-mfa-recovery-code-used`,
+      `admin-mfa-reset`.
 
     Calendar invitations (new in 0.39.0, FR-021)
     - The appointment and venue booking emails that confirm a time carry an iCalendar invitation
@@ -4472,11 +4497,23 @@ paths:
     post:
       tags: [admin]
       operationId: adminLoginVerify
-      summary: Sign in, step 2 of 2 (the emailed code)
+      summary: Sign in, step 2 (the emailed code)
       description: |
         New in 0.21.0. Exchanges the code emailed by `/v1/admin/auth/login` for the session. On success
         the answer is exactly what `/v1/admin/auth/login` answered before 0.21.0.
         That is: an admin-scope session in the `rp_session` cookie; never `access_token`.
+
+        **Since 0.40.0** the 200 answer is one of:
+        - for an administrator **with an authenticator app**: `MFAChallenge`
+          (`status: MFA_REQUIRED`), **no cookie**; finish with `POST /v1/admin/auth/login/mfa`
+          on the same `challenge_id`. From then on this endpoint and `resend` answer
+          `CODE_EXPIRED` for that challenge.
+        - otherwise the session (`Me`); when `ADMIN_MFA_REQUIRED` is on it is **enrolment-only**
+          (`session.mfa_enrolment_required: true`): every `/v1/admin/**` route outside
+          `/v1/admin/auth/**` answers `403 MFA_ENROLMENT_REQUIRED` until an authenticator is
+          confirmed.
+
+        Branch on `status` first (absent in a session answer).
 
         - The code is valid for 10 minutes after it was sent and works **once**.
         - `code` is a string of digits (a JSON number is accepted too). Missing, blank or not
@@ -4498,18 +4535,22 @@ paths:
               $ref: "#/components/schemas/VerifySignInCodeRequest"
       responses:
         "200":
-          description: Signed in. Sets the `rp_session` cookie (admin scope). Never contains `access_token`.
+          description: |
+            Signed in (sets the `rp_session` cookie, admin scope; never `access_token`), or, for an
+            administrator with an authenticator app, `MFAChallenge` without a cookie (0.40.0).
           headers:
             X-Request-Id:
               $ref: "#/components/headers/X-Request-Id"
             Set-Cookie:
-              description: "`rp_session=<token>; Path=/; HttpOnly; SameSite=Lax` (plus `Secure` outside development), Max-Age = the admin session lifetime."
+              description: "`rp_session=<token>; Path=/; HttpOnly; SameSite=Lax` (plus `Secure` outside development), Max-Age = the admin session lifetime. Not set with `MFAChallenge`."
               schema:
                 type: string
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Me"
+                oneOf:
+                  - $ref: "#/components/schemas/Me"
+                  - $ref: "#/components/schemas/MFAChallenge"
               example:
                 user:
                   id: 0195c0de-0000-7000-8000-00000000d003
@@ -4609,6 +4650,250 @@ paths:
         "504":
           $ref: "#/components/responses/Timeout"
 
+  /v1/admin/auth/login/mfa:
+    post:
+      tags: [admin]
+      operationId: adminLoginMFA
+      summary: Sign in, step 3 (the authenticator app or a recovery code; new in 0.40.0)
+      description: |
+        Only for an administrator with a confirmed authenticator, after `/v1/admin/auth/login/verify`
+        answered `MFA_REQUIRED` for the same `challenge_id`. Send **exactly one** of `code` (6 digits
+        from the authenticator app; a JSON number is accepted) and `recovery_code` (case, spaces
+        and dashes ignored). On success the answer is the admin session, as `verify` gives an
+        administrator without an authenticator.
+
+        - A code of the current 30-second step, or the one before or after, is accepted once: a
+          code of a step already used (or older) is refused (`That code was already used. Wait
+          for the next code.`).
+        - A recovery code works once; using one is audited (`ADMIN_MFA_RECOVERY_CODE_USED`) and
+          emails the administrator a security notice.
+        - Five wrong answers lock the challenge (`400 CODE_EXPIRED`, audited once as
+          `ADMIN_MFA_CHALLENGE_LOCKED`): sign in again. Malformed input is not counted.
+        - **Rate limit.** The per-IP bucket of `verify` and `resend` (20 a minute).
+        - `AUTH_DEMO_CODE` is never accepted here.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminMFASignInRequest"
+      responses:
+        "200":
+          description: Signed in. Sets the `rp_session` cookie (admin scope).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            Set-Cookie:
+              description: "`rp_session=<token>; Path=/; HttpOnly; SameSite=Lax` (plus `Secure` outside development)."
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+        "400":
+          description: |
+            `VALIDATION_FAILED` with `error.fields.code` (`Enter the 6-digit code from your
+            authenticator app.`, `Enter either a code from your authenticator app or a recovery
+            code.`, `That code is not right.`, `That code was already used. Wait for the next
+            code.`) or `error.fields.recovery_code` (`That recovery code is not right or was
+            already used.`); or `CODE_EXPIRED` (unknown, expired, used or locked challenge, one
+            whose emailed code was not accepted yet, or an authenticator reset meanwhile).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/MFAUnavailable"
+        "504":
+          $ref: "#/components/responses/Timeout"
+
+  /v1/admin/auth/mfa:
+    get:
+      tags: [admin]
+      operationId: adminMFAStatus
+      summary: The signed-in administrator's MFA status (new in 0.40.0)
+      description: |
+        Any admin-scope session of a platform-role holder, an enrolment-only one included.
+        `Cache-Control: private, no-store`.
+      security:
+        - cookieSession: []
+      responses:
+        "200":
+          description: The status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MFAStatus"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /v1/admin/auth/mfa/totp/setup:
+    post:
+      tags: [admin]
+      operationId: adminMFASetup
+      summary: Start setting up an authenticator app (new in 0.40.0)
+      description: |
+        Creates (or replaces) a **pending** secret; sign-in is unchanged until `confirm`. No body.
+        The answer carries the secret: `Cache-Control: no-store`, show it once. There is no QR
+        image: draw it from `otpauth_uri`. The pending setup can be confirmed for 15 minutes.
+        Allowed in an enrolment-only session. Shares the administrators' bucket (30 a minute).
+      security:
+        - cookieSession: []
+      responses:
+        "200":
+          description: The new secret.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TOTPSetup"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: "`MFA_ALREADY_ENROLLED`: remove it (or have it reset) first."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/MFAUnavailable"
+
+  /v1/admin/auth/mfa/totp/confirm:
+    post:
+      tags: [admin]
+      operationId: adminMFAConfirm
+      summary: Activate the authenticator app with a code from it (new in 0.40.0)
+      description: |
+        Activates the pending setup and returns ten recovery codes, **shown once** (stored hashed).
+        In an enrolment-only session this lifts the restriction on the same session. Audited
+        (`ADMIN_MFA_ENROLLED`).
+      security:
+        - cookieSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TOTPCodeRequest" }
+      responses:
+        "200":
+          description: Enrolled.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecoveryCodes" }
+        "400":
+          description: "`VALIDATION_FAILED` with `error.fields.code`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: "`MFA_SETUP_REQUIRED` (no pending setup, or older than 15 minutes) or `MFA_ALREADY_ENROLLED`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/MFAUnavailable"
+
+  /v1/admin/auth/mfa/recovery-codes/regenerate:
+    post:
+      tags: [admin]
+      operationId: adminMFARegenerateRecoveryCodes
+      summary: Replace the recovery codes (new in 0.40.0)
+      description: |
+        Needs a current code from the authenticator. Every earlier recovery code stops working.
+        Audited (`ADMIN_MFA_RECOVERY_CODES_REGENERATED`). `403 MFA_ENROLMENT_REQUIRED` in an
+        enrolment-only session.
+      security:
+        - cookieSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TOTPCodeRequest" }
+      responses:
+        "200":
+          description: The new codes, shown once.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecoveryCodes" }
+        "400":
+          description: "`VALIDATION_FAILED` with `error.fields.code` (missing, wrong or already used)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: "`MFA_NOT_ENROLLED`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/MFAUnavailable"
+
+  /v1/admin/auth/mfa/totp:
+    delete:
+      tags: [admin]
+      operationId: adminMFARemove
+      summary: Remove the authenticator app (new in 0.40.0)
+      description: |
+        Needs a current code from the authenticator (JSON body). Deletes the authenticator and
+        every recovery code. Refused while `ADMIN_MFA_REQUIRED` is on
+        (`403 MFA_REMOVAL_NOT_ALLOWED`: a SUPER_ADMIN can reset it). Audited (`ADMIN_MFA_REMOVED`).
+      security:
+        - cookieSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TOTPCodeRequest" }
+      responses:
+        "204":
+          description: Removed.
+        "400":
+          description: "`VALIDATION_FAILED` with `error.fields.code`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: "`MFA_REMOVAL_NOT_ALLOWED`, `MFA_ENROLMENT_REQUIRED` or `FORBIDDEN`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: "`MFA_NOT_ENROLLED`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/MFAUnavailable"
+
   /v1/admin/me:
     get:
       tags: [admin]
@@ -4617,7 +4902,8 @@ paths:
       description: |
         Same body as `GET /v1/me`, but only for an **admin-scope** session whose user holds a
         platform role. A customer-scope session is `403 FORBIDDEN` even if its user holds a
-        platform role.
+        platform role. An enrolment-only session (0.40.0) is `403 MFA_ENROLMENT_REQUIRED`, like
+        every `/v1/admin/**` route outside `/v1/admin/auth/**`.
       security:
         - cookieSession: []
       responses:
@@ -11770,6 +12056,69 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
 
+  /v1/admin/users/{id}/mfa:
+    get:
+      tags: [admin]
+      operationId: adminUserMFAStatus
+      summary: Another administrator's MFA status (SUPER_ADMIN; new in 0.40.0)
+      security:
+        - cookieSession: []
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      responses:
+        "200":
+          description: The status.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MFAStatus" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/UserNotFound"
+
+  /v1/admin/users/{id}/mfa/reset:
+    post:
+      tags: [admin]
+      operationId: adminUserMFAReset
+      summary: Reset another administrator's MFA (SUPER_ADMIN; new in 0.40.0)
+      description: |
+        Deletes the authenticator (or pending setup) and recovery codes and **revokes every
+        session** of the account, in one transaction with the audit record `ADMIN_MFA_RESET`
+        (with the reason). The administrator is emailed (`admin-mfa-reset`). Never one's own
+        account (`403 FORBIDDEN`; use `DELETE /v1/admin/auth/mfa/totp`).
+      security:
+        - cookieSession: []
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminReason" }
+      responses:
+        "200":
+          description: The status after the reset.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MFAStatus" }
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/UserNotFound"
+        "409":
+          description: "`MFA_NOT_ENROLLED`: nothing to reset."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
   /v1/admin/audit:
     get:
       tags: [admin]
@@ -15888,6 +16237,15 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    MFAUnavailable:
+      description: "`MFA_UNAVAILABLE`: the server has no `MFA_ENCRYPTION_KEY` (or it changed); administrator MFA cannot be used. New in 0.40.0."
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
     RateLimited:
       description: Too many requests from this IP (`RATE_LIMITED`).
       headers:
@@ -18238,6 +18596,12 @@ components:
           description: |
             Absolute expiry: 30 days after sign-in for `customer` (which also ends after 14 days
             without use), 12 hours for `admin` (which also ends after 30 minutes without use).
+        mfa_enrolment_required:
+          type: boolean
+          description: |
+            New in 0.40.0. Present (true) only on an **enrolment-only** admin session
+            (`ADMIN_MFA_REQUIRED` and no authenticator yet): only `/v1/admin/auth/**` works; every
+            other `/v1/admin/**` route answers `403 MFA_ENROLMENT_REQUIRED`. Omitted otherwise.
 
     Me:
       type: object
@@ -18288,6 +18652,134 @@ components:
           type: integer
           description: Digits in the emailed code (6). The demo code of development and staging may be shorter.
           example: 6
+
+    MFAChallenge:
+      type: object
+      description: |
+        New in 0.40.0. The emailed code was right and the administrator has an authenticator:
+        no session yet. Send `challenge_id` with a code or a recovery code to
+        `POST /v1/admin/auth/login/mfa`.
+      required: [status, challenge_id, methods, expires_at, code_length]
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [MFA_REQUIRED]
+        challenge_id:
+          type: string
+          description: The same opaque id as the earlier steps.
+        methods:
+          type: array
+          items: { type: string, enum: [totp, recovery_code] }
+        expires_at:
+          type: string
+          format: date-time
+          description: 10 minutes after the emailed code was accepted.
+        code_length:
+          type: integer
+          example: 6
+
+    AdminMFASignInRequest:
+      type: object
+      additionalProperties: false
+      required: [challenge_id]
+      description: Exactly one of `code` and `recovery_code`.
+      properties:
+        challenge_id:
+          type: string
+        code:
+          description: 6 digits from the authenticator app, as a string (a JSON number is also accepted).
+          oneOf:
+            - type: string
+            - type: integer
+        recovery_code:
+          type: string
+          description: A recovery code such as `abcde-fghij`; case, spaces and dashes are ignored.
+
+    TOTPCodeRequest:
+      type: object
+      additionalProperties: false
+      required: [code]
+      properties:
+        code:
+          description: 6 digits from the authenticator app, as a string (a JSON number is also accepted).
+          oneOf:
+            - type: string
+            - type: integer
+
+    MFAStatus:
+      type: object
+      description: New in 0.40.0. An administrator's MFA.
+      required: [enrolled, method, created_at, recovery_codes_remaining, required, pending_setup, webauthn_available]
+      additionalProperties: false
+      properties:
+        enrolled:
+          type: boolean
+          description: A confirmed authenticator exists.
+        method:
+          type: [string, "null"]
+          enum: [totp, null]
+        created_at:
+          type: [string, "null"]
+          format: date-time
+          description: When the authenticator was confirmed.
+        recovery_codes_remaining:
+          type: integer
+        required:
+          type: boolean
+          description: "`ADMIN_MFA_REQUIRED` of this server."
+        pending_setup:
+          type: boolean
+          description: A setup was started less than 15 minutes ago and not confirmed.
+        webauthn_available:
+          type: boolean
+          description: Always false (hardware keys are not implemented).
+
+    TOTPSetup:
+      type: object
+      description: New in 0.40.0. Shown once; never cached, never logged.
+      required: [secret_base32, otpauth_uri, issuer, account_name, algorithm, digits, period, expires_at]
+      additionalProperties: false
+      properties:
+        secret_base32:
+          type: string
+          description: The secret, unpadded base32, for manual entry.
+        otpauth_uri:
+          type: string
+          description: "`otpauth://totp/RightProperty365:<email>?secret=...&issuer=RightProperty365&algorithm=SHA1&digits=6&period=30`; draw the QR code from it."
+        issuer:
+          type: string
+          enum: [RightProperty365]
+        account_name:
+          type: string
+          description: The administrator's email address.
+        algorithm:
+          type: string
+          enum: [SHA1]
+        digits:
+          type: integer
+          enum: [6]
+        period:
+          type: integer
+          enum: [30]
+        expires_at:
+          type: string
+          format: date-time
+          description: Confirm before this (15 minutes).
+
+    RecoveryCodes:
+      type: object
+      description: New in 0.40.0. The ten recovery codes, shown once, and the status.
+      required: [recovery_codes, mfa]
+      additionalProperties: false
+      properties:
+        recovery_codes:
+          type: array
+          minItems: 10
+          maxItems: 10
+          items: { type: string, pattern: "^[a-hjkmnp-z2-9]{5}-[a-hjkmnp-z2-9]{5}$" }
+        mfa:
+          $ref: "#/components/schemas/MFAStatus"
 
     VerifySignInCodeRequest:
       type: object

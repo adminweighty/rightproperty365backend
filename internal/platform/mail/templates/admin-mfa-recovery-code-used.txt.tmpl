@@ -1,0 +1,14 @@
+{{define "subject"}}A recovery code was used on your administrator account{{end}}
+{{define "heading"}}Recovery code used{{end}}
+{{define "button"}}Open administrator sign-in{{end}}
+{{define "why"}}You are receiving this security notice because your account holds an administrator role.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+One of your recovery codes was used instead of your authenticator app to sign in to RightProperty365. That code cannot be used again.
+
+Used: {{dateTime .When}}
+
+
+If this was you, consider creating a new set of recovery codes, and set up your authenticator app again if you lost it.
+
+If this was not you, tell a super administrator immediately: they can reset two-step sign-in for your account.{{end}}

@@ -79,6 +79,9 @@ type statusResponse struct {
 type sessionView struct {
 	Scope     string    `json:"scope"`
 	ExpiresAt time.Time `json:"expires_at"`
+	// MFAEnrolmentRequired marks an enrolment-only administrator session
+	// (API 0.40.0); omitted when false.
+	MFAEnrolmentRequired bool `json:"mfa_enrolment_required,omitempty"`
 }
 
 type authResponse struct {
@@ -97,6 +100,9 @@ type meResponse struct {
 
 // fail maps service errors to responses.
 func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
+	if writeMFAError(w, r, err) {
+		return
+	}
 	var verr *ValidationError
 	switch {
 	case errors.As(err, &verr):
@@ -289,21 +295,34 @@ func (h *Handler) LoginVerify(w http.ResponseWriter, r *http.Request) {
 }
 
 // AdminLoginVerify handles POST /v1/admin/auth/login/verify: on the right
-// code, an admin-scope cookie session.
+// code, an admin-scope cookie session (enrolment-only when MFA is required
+// and the administrator has no authenticator) — or, for an administrator
+// with an authenticator, 200 MFA_REQUIRED and no session yet (mfa.go).
 func (h *Handler) AdminLoginVerify(w http.ResponseWriter, r *http.Request) {
 	var in verifyInput
 	if !httpx.DecodeJSON(w, r, &in) {
 		return
 	}
-	res, err := h.svc.VerifyCode(r.Context(), auth.ScopeAdmin, in.ChallengeID, ParseCodeInput(in.Code), httpx.ClientIP(r))
+	res, mfa, err := h.svc.VerifyAdminCode(r.Context(), in.ChallengeID, ParseCodeInput(in.Code), httpx.ClientIP(r))
 	if err != nil {
 		h.fail(w, r, err)
 		return
 	}
+	if mfa != nil {
+		mfa.ExpiresAt = mfa.ExpiresAt.UTC()
+		w.Header().Set("Cache-Control", "no-store")
+		httpx.WriteJSON(w, http.StatusOK, mfa)
+		return
+	}
+	h.writeAdminSession(w, res)
+}
+
+// writeAdminSession answers a started administrator session (cookie only).
+func (h *Handler) writeAdminSession(w http.ResponseWriter, res AuthResult) {
 	h.setSessionCookie(w, res.Token, res.ExpiresAt, res.TTL)
 	httpx.WriteJSON(w, http.StatusOK, authResponse{
 		User:    res.User.View(),
-		Session: &sessionView{Scope: res.Scope, ExpiresAt: res.ExpiresAt.UTC()},
+		Session: &sessionView{Scope: res.Scope, ExpiresAt: res.ExpiresAt.UTC(), MFAEnrolmentRequired: res.MFAEnrolmentRequired},
 	})
 }
 

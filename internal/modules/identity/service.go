@@ -17,6 +17,7 @@ import (
 
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/logging"
+	"rightproperty365.com/backend/internal/platform/secretbox"
 )
 
 const (
@@ -146,6 +147,10 @@ type Service struct {
 	// demoCode is AUTH_DEMO_CODE: also accepted as the sign-in code of any
 	// live challenge. Empty (always in production) disables it.
 	demoCode string
+	// mfaBox seals the administrators' TOTP secrets (nil: MFA unavailable);
+	// mfaRequired is ADMIN_MFA_REQUIRED (mfa.go).
+	mfaBox      *secretbox.Box
+	mfaRequired bool
 }
 
 // Option customises a Service (used by tests).
@@ -677,9 +682,9 @@ func (s *Service) Logout(ctx context.Context, sessionID uuid.UUID) error {
 // RequestPasswordReset emails a reset link when email belongs to an active
 // account and silently does nothing otherwise.
 //
-// Accounts holding a platform role never get a reset email: there is no MFA
-// yet, so a compromised mailbox must not become an administrator takeover.
-// Their passwords are changed with cmd/adminctl.
+// Accounts holding a platform role never get a reset email: a compromised
+// mailbox must not become an administrator takeover (MFA is optional unless
+// ADMIN_MFA_REQUIRED is on). Their passwords are changed with cmd/adminctl.
 func (s *Service) RequestPasswordReset(ctx context.Context, email string) error {
 	email = NormalizeEmail(email)
 	if !validEmail(email) {
@@ -787,6 +792,17 @@ func (s *Service) ResolveSession(ctx context.Context, token string) (*auth.Princ
 	if sess.Scope == auth.ScopeAdmin && len(user.PlatformRoles) == 0 {
 		return nil, auth.ErrNoSession
 	}
+	// ADMIN_MFA_REQUIRED: an administrator without a confirmed authenticator
+	// gets an enrolment-only session, judged on every request so that
+	// confirming an authenticator lifts it at once (mfa.go).
+	enrolmentOnly := false
+	if sess.Scope == auth.ScopeAdmin && s.mfaRequired {
+		enrolled, err := s.adminEnrolled(ctx, user.ID)
+		if err != nil {
+			return nil, err
+		}
+		enrolmentOnly = !enrolled
+	}
 	if now.Sub(sess.LastSeenAt) >= touchInterval(idle) {
 		if err := s.store.TouchSession(ctx, sess.ID, now); err != nil {
 			// Not worth failing the request over; the idle timer just runs on.
@@ -798,6 +814,7 @@ func (s *Service) ResolveSession(ctx context.Context, token string) (*auth.Princ
 		PlatformRoles: user.PlatformRoles, Memberships: user.Memberships,
 		AccountRoles: principalAccountRoles(user.AccountRoles),
 		SessionID:    sess.ID, SessionScope: sess.Scope, SessionExpiresAt: sess.ExpiresAt,
+		MFAEnrolmentOnly: enrolmentOnly,
 	}, nil
 }
 

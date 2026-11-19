@@ -433,6 +433,7 @@ func newEnvWithConfig(t *testing.T, mutate func(*config.Config)) *env {
 	e.audit = &adminaudit.MemoryLog{}
 	e.reference.SetAuditLog(e.audit)
 	e.reviews.SetAuditLog(e.audit)
+	e.identity.SetAuditLog(e.audit)
 	e.packages = MemoryPackages(e.listings, e.identity, e.audit)
 	devseed.SeedMemoryPackages(e.packages, e.now)
 	e.subs = subscriptions.NewMemoryStore(e.audit)

@@ -85,6 +85,7 @@ seeded).
 | `agency.staff@example.test` | Kuda Staff | Sample Estates | `AGENCY` | `STAFF` (account role `AGENCY_STAFF`) | — |
 | `landlord@example.test` | Lloyd Landlord | — | — | account role `LANDLORD` (approved direct owner) | — |
 | `admin.platform@example.test`, `admin.market@example.test` (market ZW), `admin.moderator@example.test`, `admin.support@example.test`, `admin.finance@example.test`, `admin.content@example.test` | | — | — | platform `PLATFORM_ADMIN`, `MARKET_ADMIN`, `MODERATOR`, `SUPPORT`, `FINANCE_ADMIN`, `CONTENT_ADMIN` (admin login only) | — |
+| `admin.mfa@example.test` | Avery MFA | — | — | platform `PLATFORM_ADMIN`, **enrolled in MFA** with a fixed development-only authenticator secret (see docs/sample-accounts.md; API 0.40.0) | — |
 | `sample-developments@example.test` | Sample Developments Owner | Sample Developments | `DEVELOPER` | `OWNER` | `developers/sample-developments` |
 | `sample-urban-builders@example.test` | Sample Urban Builders Owner | Sample Urban Builders | `DEVELOPER` | `OWNER` | `developers/sample-urban-builders` |
 | `sample-heights@example.test` | Sample Heights Owner | Sample Heights | `DEVELOPER` | `OWNER` | `developers/sample-heights` |
@@ -237,6 +238,8 @@ All configuration comes from environment variables. For local development you ma
 | `AUTH_DEMO_CODE` | _(empty)_ | A demo sign-in code (4–6 digits) accepted for every sign-in besides the emailed one. **Development and staging only: set with `APP_ENV=production` the API and the worker refuse to start.** Never logged; the API logs a warning while it is active. See "Sign-in code" |
 | `ADMIN_SESSION_TTL` | `12h` | Absolute lifetime of an administrator session (Go duration, 1m–24h) |
 | `ADMIN_SESSION_IDLE_TTL` | `30m` | Administrator inactivity timeout (Go duration; must not exceed `ADMIN_SESSION_TTL`) |
+| `ADMIN_MFA_REQUIRED` | `true` in production, `false` in development and staging | `true`: administrators without an authenticator app sign in to an **enrolment-only** session and cannot remove theirs. See "Administrator MFA" |
+| `MFA_ENCRYPTION_KEY` | _(empty)_ | 32 random bytes, base64 (`openssl rand -base64 32`); a **secret** sealing the administrators' TOTP secrets (AES-256-GCM). **Required outside development when `ADMIN_MFA_REQUIRED` is true (startup fails).** Unset in staging/production with MFA not required: MFA answers `503 MFA_UNAVAILABLE`. Unset in development: a fixed, public development key (loud warning). Never logged |
 | `ANALYTICS_RAW_RETENTION_DAYS` | `90` | Days raw analytics events are kept before the worker deletes them (7..3650); rollups are kept. See "Listing analytics" |
 | `STORAGE_DRIVER`, `STORAGE_LOCAL_DIR`, `S3_*` | | Private file storage for onboarding documents: see "File storage". **Staging and production must use `STORAGE_DRIVER=s3`** |
 | `FCM_PROJECT_ID`, `FCM_SERVICE_ACCOUNT_JSON`, `FCM_SERVICE_ACCOUNT_FILE` | _(empty)_ | Push through FCM: see "Notifications and push". Without them push is **disabled** in staging/production (one log line, never a startup failure) and logged in development. The key is a secret, never logged |
@@ -267,6 +270,9 @@ All configuration comes from environment variables. For local development you ma
 | GET, PUT | `/v1/me/marketing-preferences` | The caller's marketing opt-in with its newest consent records; a change is recorded with its `X-Client` source (API 0.37.1) |
 | GET | `/v1/agent/organisations/{id}/reports/lead-funnel`, `/v1/me/reports/lead-funnel` | The request inbox's lead funnel, response-time KPIs and breakdowns, JSON or `?format=csv` (API 0.38.0) |
 | GET | `/v1/me/appointments/{id}/calendar.ics`, `/v1/inbox/appointments/{id}/calendar.ics`, `/v1/me/venue-bookings/{bookingId}/calendar.ics`, `/v1/me/hosted-venue-bookings/{bookingId}/calendar.ics`, `/v1/agent/organisations/{id}/venue-bookings/{bookingId}/calendar.ics` | "Add to calendar" iCalendar downloads for the parties who can see the appointment or booking, 404 otherwise (API 0.39.0) |
+| POST | `/v1/admin/auth/login/mfa` | Third step of the administrator sign-in for an administrator with an authenticator: a TOTP or recovery code (API 0.40.0) |
+| GET, POST, DELETE | `/v1/admin/auth/mfa`, `/v1/admin/auth/mfa/totp/setup`, `/v1/admin/auth/mfa/totp/confirm`, `/v1/admin/auth/mfa/recovery-codes/regenerate`, `/v1/admin/auth/mfa/totp` | The signed-in administrator's own MFA: status, set up, confirm, new recovery codes, remove (API 0.40.0) |
+| GET, POST | `/v1/admin/users/{id}/mfa`, `/v1/admin/users/{id}/mfa/reset` | A SUPER_ADMIN reads or resets another administrator's MFA (API 0.40.0) |
 | GET | `/v1/admin/notifications/health` | Delivery counts, dead-letter backlog, oldest unattempted push |
 | GET, POST, PATCH | `/v1/agent/organisations/{id}/ledger/*` (`/options`, `/entries[/{entryId}]` + `/reverse`, `/correct`, `/reconcile`, `/notes`, `/attachments`; `/reports/*`, `/categories`) | The agent ledger / books, per currency (API 0.34.0) |
 | GET, POST, PATCH, DELETE | `/v1/agent/organisations/{id}/properties[/{propertyId}]` (+ `/units[/{unitId}]`) | Properties and their units (API 0.36.0) |
@@ -489,6 +495,25 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 change; follow-up dates and reminders; editing or deleting a note; listing analytics; seeker
 favourites, saved searches and alerts. (Conversion funnels and response-time KPIs: API 0.38.0,
 below.)
+
+## Administrator MFA (API 0.40.0)
+
+Migration `0042_admin_mfa`, in the identity module (`identity/mfa*.go`; FR-001), with `platform/totp` (RFC 6238), `platform/secretbox` (AES-256-GCM), `app/mfa.go` (the key) and `devseed/admin_mfa.go`. OpenAPI tag `admin`. The exact JSON is the 0.40 admin MFA contract.
+
+- **Method**: an authenticator app (TOTP: HMAC-SHA1, 6 digits, 30-second step, ±1 step accepted) plus ten one-time **recovery codes** (`xxxxx-xxxxx`, case, spaces and dashes ignored). **WebAuthn / hardware keys are not implemented** (no lightweight dependency); the status always says `webauthn_available: false`. No QR image is returned: the web draws it from `otpauth_uri` (`otpauth://totp/RightProperty365:<email>?secret=...&issuer=RightProperty365&algorithm=SHA1&digits=6&period=30`).
+- **Sign-in** is a third step on the same challenge, after the password and the emailed code: for an administrator with a confirmed authenticator, `POST /v1/admin/auth/login/verify` answers `200 {"status":"MFA_REQUIRED","challenge_id","methods":["totp","recovery_code"],"expires_at","code_length":6}` and **no cookie**; `POST /v1/admin/auth/login/mfa {challenge_id, code | recovery_code}` starts the session. `AUTH_DEMO_CODE` answers only the emailed-code step, never the authenticator. Once the emailed code was accepted, `verify` and `resend` refuse the challenge (`CODE_EXPIRED`). Customers are unchanged.
+- **Required MFA** (`ADMIN_MFA_REQUIRED`, default true in production only): an administrator without an authenticator signs in to an **enrolment-only** session (`session.mfa_enrolment_required: true`). It reaches `/v1/admin/auth/*` only (the sign-in steps, `GET /v1/admin/auth/mfa`, setup and confirm); every other `/v1/admin` route answers `403 MFA_ENROLMENT_REQUIRED`, `GET /v1/admin/me` included, and platform-role checks elsewhere fail. Sign out with `POST /v1/auth/logout`. The restriction is judged on every request, so confirming lifts it on the same session, and switching the setting on restricts existing sessions of administrators without one.
+- **Enrolment**: `POST .../mfa/totp/setup` stores a **pending** secret (replaced by a new setup, confirmable for 15 minutes; `409 MFA_ALREADY_ENROLLED` once confirmed) and answers the secret and URI with `Cache-Control: no-store`; `POST .../totp/confirm {code}` activates it and returns the ten recovery codes **once**. `GET /v1/admin/auth/mfa` is the status. `POST .../recovery-codes/regenerate {code}` and `DELETE .../totp {code}` need a current code; removal is refused while MFA is required (`403 MFA_REMOVAL_NOT_ALLOWED`).
+- **Storage**: the secret is sealed with AES-256-GCM under `MFA_ENCRYPTION_KEY`, bound to the user ID (a sealed value copied to another account does not open); recovery codes are Argon2id hashes (the password hasher). Changing the key makes every authenticator unusable (`503 MFA_UNAVAILABLE` at sign-in): reset them.
+- **Replay protection**: the newest accepted step is stored per administrator; a code of that step or an earlier one is refused ("already used, wait for the next code"), under concurrency too (conditional UPDATE).
+- **Lockout**: each challenge allows 5 wrong second-factor answers (counted apart from the 5 wrong emailed codes), then it is dead (`CODE_EXPIRED`, sign in again); the 20-a-minute per-IP bucket of the code step covers `/login/mfa` too. In-session code checks (regenerate, remove) share the administrators' 30-a-minute bucket.
+- **Reset**: `POST /v1/admin/users/{id}/mfa/reset {reason}` (SUPER_ADMIN only, never their own account: they use `DELETE`) deletes the authenticator and codes, **revokes every session of the target**, writes `ADMIN_MFA_RESET` with the reason and emails the target. `GET /v1/admin/users/{id}/mfa` shows the status.
+- **Audit**: durable `admin_audit_events` (target USER): `ADMIN_MFA_ENROLLED`, `ADMIN_MFA_RECOVERY_CODE_USED`, `ADMIN_MFA_RECOVERY_CODES_REGENERATED`, `ADMIN_MFA_REMOVED`, `ADMIN_MFA_RESET` and `ADMIN_MFA_CHALLENGE_LOCKED` (failed codes aggregated: one record when a challenge reaches 5). Each failed code, the setup and the outcome of every step are log audit lines (`admin_mfa`, `admin_mfa_sign_in`, `admin_sign_in` with `mfa_method`). **No secret, code, recovery code or email address is ever logged** (a test captures the logs).
+- **Emails** (outbox, worker): `admin-mfa-recovery-code-used` when a recovery code signs someone in, `admin-mfa-reset` after a reset; in-app security notices too.
+- **Account deletion** deletes the authenticator and recovery codes explicitly (`identity.DeleteAdminMFATx`; the users row is anonymised, so the cascade never fires).
+- **Sample data**: `admin.mfa@example.test` (PLATFORM_ADMIN) is enrolled with a **fixed, public, development-only** secret and ten recovery codes (docs/sample-accounts.md); the other sample administrators are not. `cmd/seed` seals it with `MFA_ENCRYPTION_KEY` (or the development key in development) and skips it without a key elsewhere; the seed never runs in production.
+
+**Not verified:** `mfa_postgres.go` has only run where `RP365_TEST_DATABASE_URL` is set; not tried with real authenticator apps (the RFC 6238 vectors pass).
 
 ## Calendar invitations (API 0.39.0)
 
@@ -2680,7 +2705,8 @@ So that nobody assumes these exist. They are in the updated functional specifica
 - a per-city time zone for countries with several zones;
 - adaptive bot protection (registration has a simple built-in arithmetic captcha, see
   "Registration captcha"; nothing stronger), and duplicate or spam detection;
-- administrator MFA beyond the emailed sign-in code (an authenticator app or hardware key);
+- hardware security keys (WebAuthn) for administrators (an authenticator app with recovery codes
+  exists since 0.40.0, see "Administrator MFA"); MFA for customers;
 - a "Suspended" onboarding status (applications are `DRAFT`, `SUBMITTED`, `CHANGES_REQUESTED`,
   `APPROVED` or `REJECTED`; account suspension itself exists since 0.25.0, see "Administrators'
   area") and abuse reporting;
@@ -2975,7 +3001,9 @@ Every template that `mail.Templates()` marks as triggered (template names in bra
 | Your sign-in code (`sign-in-code`) | `POST /v1/auth/login` and `/v1/admin/auth/login` with the right password, and their `/login/resend` | request |
 | Your account is ready (`welcome`; lists the roles chosen and which are waiting for verification) | Email verified for the first time | outbox `USER_EMAIL_VERIFIED` |
 | Your password was changed (`password-changed`) | Password reset confirmed; `adminctl set-password` | outbox `PASSWORD_CHANGED` |
-| Administrator sign-in (`admin-sign-in`) | An administrator session started (`POST /v1/admin/auth/login/verify` with the right code) | outbox `ADMIN_SIGNED_IN` |
+| Administrator sign-in (`admin-sign-in`) | An administrator session started (`POST /v1/admin/auth/login/verify` with the right code, or `/login/mfa` for an administrator with an authenticator) | outbox `ADMIN_SIGNED_IN` |
+| Recovery code used (`admin-mfa-recovery-code-used`) | An administrator signed in with a recovery code (API 0.40.0) | outbox `ADMIN_MFA_RECOVERY_CODE_USED` |
+| Two-step sign-in reset (`admin-mfa-reset`) | A SUPER_ADMIN reset the administrator's MFA (API 0.40.0) | outbox `ADMIN_MFA_RESET` |
 | Request received (`property-request-received`; to the customer, with the reference) | Property request created | outbox `PROPERTY_REQUEST_CREATED` |
 | New property request (`property-request-new`; to the assigned agent or direct seller, otherwise the organisation's owners and managers); names the listing by title and reference | Property request created | same event |
 | Enquiry received (`business-enquiry-received`; to the customer) | Business enquiry created | outbox `BUSINESS_ENQUIRY_CREATED` |
@@ -3119,8 +3147,8 @@ fake of the API only.
 
 Signing in is two steps for everyone, customers and administrators. The product owner asked for
 a one-time code at sign-in; the specification requires MFA for administrators and allows it as an
-option for users, and this emailed code is the first step towards that (it proves control of the
-mailbox; there is no authenticator app).
+option for users. The emailed code proves control of the mailbox; since API 0.40.0 an
+administrator with an authenticator app also answers a third step (see "Administrator MFA").
 
 ```
 POST /v1/auth/login            {"email": "...", "password": "...", "token_delivery": "cookie"}
@@ -3249,8 +3277,9 @@ Platform administrators have their own login, and every session has a **scope**:
 - `GET /v1/me` and the login responses include `session.scope` so the frontend can tell which kind
   of session it has. Sign out of either with `POST /v1/auth/logout`.
 - **No email password reset for administrators.** `POST /v1/auth/password-reset/request` still
-  answers `202` for a platform-role account but sends nothing: without MFA, a compromised mailbox
-  must not become an administrator takeover. Use `adminctl set-password`.
+  answers `202` for a platform-role account but sends nothing: a compromised mailbox must not
+  become an administrator takeover (MFA is only enforced where `ADMIN_MFA_REQUIRED` is on). Use
+  `adminctl set-password`.
 - **Platform roles cannot be obtained through any public endpoint.** Registration only accepts the
   account-role allowlist; the only writers of platform roles are `cmd/adminctl` and the
   development seed.
@@ -3265,10 +3294,15 @@ Platform administrators have their own login, and every session has a **scope**:
   only wherever the process logs are shipped and retained. Requests rejected earlier (rate limit
   `429`, malformed body `400`) are in the access log but have no audit line.
 
-> **The administrator login is not production-ready.** The specification requires MFA for
-> administrator roles. An administrator account is protected by a password, the emailed sign-in
-> code (which proves control of the mailbox, not of a separate device), a per-IP rate limit and a
-> short session. There is no authenticator app or hardware key yet.
+> **Administrator MFA (API 0.40.0).** The specification requires MFA for administrator roles. An
+> administrator account is protected by a password, the emailed sign-in code (which proves control
+> of the mailbox), a per-IP rate limit, a short session and, once enrolled, an **authenticator app
+> (TOTP) or a one-time recovery code** on a separate device (see "Administrator MFA"). Production
+> requires it by default (`ADMIN_MFA_REQUIRED=true`, which also needs `MFA_ENCRYPTION_KEY`):
+> administrators without an authenticator can only enrol. With `ADMIN_MFA_REQUIRED=false`
+> (development and staging by default) MFA is optional, and an administrator who has not enrolled
+> is protected only by the password and the emailed code: do not run a real platform that way.
+> There are no hardware keys (WebAuthn).
 
 #### Creating administrators: `adminctl`
 
@@ -3382,11 +3416,13 @@ their data with `Principal.OrganisationIDs(...)` (and `PlatformRole.MarketCode` 
 
 ### Not built yet
 
-- **MFA for administrators** – the specification requires it for admin roles. Only the emailed
-  sign-in code exists (see "Sign-in code"); there is no second factor on a separate device, so the
-  administrator login must not be treated as production-ready.
+- **Hardware keys (WebAuthn) for administrators** – administrator MFA exists since 0.40.0 with an
+  authenticator app and recovery codes (see "Administrator MFA"); hardware keys were left out
+  (no lightweight dependency). The administrator login is production-ready only with
+  `ADMIN_MFA_REQUIRED=true` (the production default) and `MFA_ENCRYPTION_KEY` set.
 - **Administrator sign-ins in the durable audit trail** – `admin_audit_events` (migration `0024`)
-  records what administrators do (see "Administrators' area"), but administrator sign-ins are
+  records what administrators do (see "Administrators' area") and, since 0.40.0, their MFA
+  changes, recovery code use and locked second-factor challenges; the sign-ins themselves are
   still only written to the process log.
 - **WhatsApp and in-app notifications.** Recipients and customers are notified by email only.
 - **Bounce and complaint handling** – there is no Resend webhook endpoint, so a message that
@@ -3487,8 +3523,8 @@ handler, service and store interface.
 
 Deliberately no empty stubs. These will be added under `internal/modules/` as they are built:
 
-- `identity` (exists) still lacks MFA beyond the emailed code — see "Not built yet" (membership
-  management and invitations are in `teams`)
+- `identity` (exists) has administrator MFA (authenticator app) but no hardware keys — see "Not
+  built yet" (membership management and invitations are in `teams`)
 - `listings` (exists, with management since 0.22.0) still lacks pausing and an expiry job
 - uploads have no module of their own: each module stores its files through
   `internal/platform/storage` (local folder or S3/MinIO)
@@ -3566,6 +3602,7 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0042_admin_mfa` (API 0.40.0): `admin_mfa_totp` (one per user, primary key and cascade on `users`; `secret_sealed` AES-256-GCM sealed secret 29-512 bytes `admin_mfa_totp_sealed_size`; `confirmed_at` NULL while the setup is pending; `last_used_step` for replay protection, never negative `admin_mfa_totp_step_not_negative`; `created_at`, `updated_at`) and `admin_mfa_recovery_codes` (id, user, Argon2id `code_hash` 20-400 characters `admin_mfa_recovery_codes_hash_size`, `used_at`, `created_at`; index `admin_mfa_recovery_codes_user_idx`). `sign_in_challenges` gains `code_verified_at` (the emailed code was accepted; administrators only, `sign_in_challenges_mfa_admin_only`) and `mfa_attempts` (`sign_in_challenges_mfa_attempts_min`). Account deletion deletes the MFA rows explicitly. New tables and new columns with defaults.
 - API 0.39.0 (calendar invitations) adds no migration: SEQUENCE is derived from the existing timelines.
 
 - `0041_marketing_consent` (API 0.37.1): `marketing_consent_events` (user, `opt_in`, `changed_at`, `source` web / app / api `marketing_consent_events_source_allowed`, `context` REGISTRATION / PREFERENCES / MIGRATION / ADMIN / UNSUBSCRIBE `marketing_consent_events_context_allowed`, `consent_text_version` 1-40 characters `marketing_consent_events_version_length` and only on opt-in `marketing_consent_events_version_on_opt_in`; index `marketing_consent_events_by_user`), append-only through the trigger `marketing_consent_events_no_update`. Backfills one MIGRATION record (at the account's `created_at`, source api) for every account already opted in. `marketing_consent_texts` (`version` primary key, `text`, `status` DRAFT / APPROVED, `created_at`; immutable through the trigger `marketing_consent_texts_immutable`), with `marketing-2026-01` inserted as DRAFT. New tables, triggers and inserts.

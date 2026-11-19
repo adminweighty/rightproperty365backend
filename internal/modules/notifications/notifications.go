@@ -562,6 +562,8 @@ func EventTypes() []string {
 		identity.EventUserEmailVerified,
 		identity.EventPasswordChanged,
 		identity.EventAdminSignedIn,
+		identity.EventAdminMFARecoveryCodeUsed,
+		identity.EventAdminMFAReset,
 	}, onboarding.EventTypes()...), append(append(append(appointments.EventTypes(), listings.ReviewEventTypes()...),
 		accounts.EventTypes()...), append(append(subscriptions.EventTypes(), applications.OutboxEventTypes()...), append(append(append(venues.EventTypes(), maintenance.OutboxEventTypes()...), inspections.OutboxEventTypes()...), reviews.OutboxEventTypes()...)...)...)...)
 }
@@ -784,7 +786,8 @@ func (h *Handlers) build(ctx context.Context, ev outbox.Event) ([]plan, error) {
 			}
 		}
 
-	case identity.EventUserEmailVerified, identity.EventPasswordChanged, identity.EventAdminSignedIn:
+	case identity.EventUserEmailVerified, identity.EventPasswordChanged, identity.EventAdminSignedIn,
+		identity.EventAdminMFARecoveryCodeUsed, identity.EventAdminMFAReset:
 		user, err := h.source.User(ctx, ev.AggregateID)
 		if err != nil {
 			return nil, err
@@ -802,6 +805,10 @@ func (h *Handlers) build(ctx context.Context, ev outbox.Event) ([]plan, error) {
 			template, d.Path = "password-changed", signIn
 		case identity.EventAdminSignedIn:
 			template, d.Path = "admin-sign-in", PathAdminSignIn
+		case identity.EventAdminMFARecoveryCodeUsed:
+			template, d.Path = "admin-mfa-recovery-code-used", PathAdminSignIn
+		case identity.EventAdminMFAReset:
+			template, d.Path = "admin-mfa-reset", PathAdminSignIn
 		}
 		if err := add(template, "account", user.Person, d); err != nil {
 			return nil, err

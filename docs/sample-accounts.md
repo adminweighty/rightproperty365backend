@@ -152,6 +152,33 @@ Professional (60) in ZW and GB, with **sample** prices, and gives **Sample Estat
 | `admin.support@example.test` | `SUPPORT` | Routing exceptions; every lease, read-only (`/v1/admin/leases`); the overview sections support covers |
 | `admin.finance@example.test` | `FINANCE_ADMIN` | The overview sections finance covers (no finance screens are built yet) |
 | `admin.content@example.test` | `CONTENT_ADMIN` | The lease template library (`/v1/admin/lease-templates`); the overview sections content covers |
+| `admin.mfa@example.test` | `PLATFORM_ADMIN` | **Enrolled in MFA** (API 0.40.0): the three-step administrator sign-in (password, emailed or demo code, then the authenticator or a recovery code). See below |
 
 Administrators cannot reset their password by email; on a database use
 `go run ./cmd/adminctl set-password --email ...`.
+
+### Administrator MFA (development and staging only)
+
+`ADMIN_MFA_REQUIRED` is `false` in development and staging by default, so every sample
+administrator above signs in with the password and the code, and may set up an authenticator app
+at `/v1/admin/auth/mfa/totp/setup`. Only `admin.mfa@example.test` is **already enrolled**, so the
+web's third step can be tried:
+
+- **Authenticator secret** (add it to Google Authenticator, Microsoft Authenticator, 1Password,
+  `oathtool --totp -b ...` and so on by hand: issuer `RightProperty365`, account
+  `admin.mfa@example.test`, SHA-1, 6 digits, 30 seconds):
+
+  `JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP`
+
+- **Recovery codes** (each works once, until the account is seeded again):
+  `devrc-aaaa2`, `devrc-bbbb3`, `devrc-cccc4`, `devrc-dddd5`, `devrc-eeee6`, `devrc-ffff7`,
+  `devrc-gggg8`, `devrc-hhhh9`, `devrc-jjjj2`, `devrc-kkkk3`.
+
+**These values are FIXED, PUBLIC and DEVELOPMENT-ONLY.** They exist only in the API's in-memory
+development stores and in databases written by `cmd/seed`, which refuses to run in production
+(`devseed.CheckEnvironment`). On a database the seed seals the secret with `MFA_ENCRYPTION_KEY`, so
+it must be the same key the API uses (in development without a key both use the fixed development
+key); outside development without a key the account is simply not enrolled. The demo code
+(`AUTH_DEMO_CODE`) only answers the emailed-code step, never the authenticator step. If the account
+gets locked out (five wrong codes on one sign-in), just sign in again; a SUPER_ADMIN
+(`admin@example.test`) can also reset it with `POST /v1/admin/users/{id}/mfa/reset`.

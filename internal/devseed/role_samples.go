@@ -80,5 +80,8 @@ func roleAccounts() []Account {
 		{ID: SupportID, Name: "Sam Support", Email: SupportEmail, PlatformRole: auth.PlatformSupport},
 		{ID: FinanceAdminID, Name: "Fiona Finance", Email: FinanceAdminEmail, PlatformRole: auth.PlatformFinanceAdmin},
 		{ID: ContentAdminID, Name: "Connor Content", Email: ContentAdminEmail, PlatformRole: auth.PlatformContentAdmin},
+		// The one administrator enrolled in MFA, with a FIXED development-only
+		// authenticator secret (admin_mfa.go).
+		{ID: MFAAdminID, Name: "Avery MFA", Email: MFAAdminEmail, PlatformRole: auth.PlatformAdmin},
 	}
 }

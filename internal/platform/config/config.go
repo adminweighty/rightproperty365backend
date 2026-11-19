@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"rightproperty365.com/backend/internal/platform/secretbox"
 )
 
 const (
@@ -111,6 +113,14 @@ type Config struct {
 	// (absolute lifetime and inactivity timeout).
 	AdminSessionTTL     time.Duration
 	AdminSessionIdleTTL time.Duration
+	// AdminMFARequired is ADMIN_MFA_REQUIRED: administrators without an
+	// authenticator app get enrolment-only sessions. Default true in
+	// production, false in development and staging.
+	AdminMFARequired bool
+	// MFAEncryptionKey is MFA_ENCRYPTION_KEY: 32 bytes, base64, sealing the
+	// administrators' TOTP secrets (AES-256-GCM). Required outside
+	// development when AdminMFARequired. It formats as "[redacted]".
+	MFAEncryptionKey Secret
 	// AnalyticsRawRetentionDays is ANALYTICS_RAW_RETENTION_DAYS: how long raw
 	// analytics events are kept before the worker deletes them (rollups are
 	// kept). Default 90, 7..3650.
@@ -444,6 +454,25 @@ func FromLookup(get func(string) string) (Config, error) {
 	}
 	if cfg.AdminSessionIdleTTL > cfg.AdminSessionTTL {
 		errs = append(errs, errors.New("ADMIN_SESSION_IDLE_TTL must not be longer than ADMIN_SESSION_TTL"))
+	}
+
+	// Administrator MFA (API 0.40.0). The key is validated without being echoed.
+	cfg.AdminMFARequired = cfg.Env == EnvProduction
+	if raw := val("ADMIN_MFA_REQUIRED", ""); raw != "" {
+		v, err := strconv.ParseBool(raw)
+		if err != nil {
+			errs = append(errs, errors.New("ADMIN_MFA_REQUIRED must be true or false"))
+		} else {
+			cfg.AdminMFARequired = v
+		}
+	}
+	cfg.MFAEncryptionKey = Secret(val("MFA_ENCRYPTION_KEY", ""))
+	if cfg.MFAEncryptionKey.IsSet() {
+		if _, err := secretbox.ParseKey(cfg.MFAEncryptionKey.Reveal()); err != nil {
+			errs = append(errs, errors.New("MFA_ENCRYPTION_KEY must be 32 random bytes in base64, for example the output of: openssl rand -base64 32"))
+		}
+	} else if cfg.AdminMFARequired && cfg.Env != EnvDevelopment {
+		errs = append(errs, fmt.Errorf("MFA_ENCRYPTION_KEY is required when ADMIN_MFA_REQUIRED is true and APP_ENV=%s (generate one with: openssl rand -base64 32)", cfg.Env))
 	}
 
 	cfg.AnalyticsRawRetentionDays = defaultAnalyticsRawRetentionDays

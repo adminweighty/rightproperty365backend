@@ -11,6 +11,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/platform/auth"
+	"rightproperty365.com/backend/internal/platform/secretbox"
 )
 
 // The mapping below is the contract shared with the web app's sample data.
@@ -47,6 +48,7 @@ func TestSampleDataMapping(t *testing.T) {
 		"admin.support@example.test":   {"Sam Support", "", "", "", nil},
 		"admin.finance@example.test":   {"Fiona Finance", "", "", "", nil},
 		"admin.content@example.test":   {"Connor Content", "", "", "", nil},
+		"admin.mfa@example.test":       {"Avery MFA", "", "", "", nil},
 	}
 
 	accounts := Accounts()
@@ -544,5 +546,34 @@ func TestEveryRoleHasASampleAccount(t *testing.T) {
 			t.Fatalf("duplicate sample email %s", email)
 		}
 		seen[email] = true
+	}
+}
+
+// The sample MFA administrator: enrolled with the fixed development secret,
+// which opens with the same box, and ten recovery codes.
+func TestSeedMemoryAdminMFA(t *testing.T) {
+	ctx := context.Background()
+	store := identity.NewMemoryStore()
+	hasher := identity.Hasher{MemoryKiB: 64, Time: 1, Threads: 1}
+	now := time.Date(2026, 11, 19, 8, 0, 0, 0, time.UTC)
+	if err := SeedMemoryUsers(ctx, store, hasher, "a-test-seed-password", now); err != nil {
+		t.Fatal(err)
+	}
+	box, err := secretbox.New(secretbox.DevelopmentKey())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SeedMemoryAdminMFA(store, box, hasher, now); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := store.AdminMFA(ctx, MFAAdminID)
+	if err != nil || rec.ConfirmedAt == nil {
+		t.Fatalf("not enrolled: %v", err)
+	}
+	if codes, _ := store.UnusedRecoveryCodes(ctx, MFAAdminID); len(codes) != len(DevMFARecoveryCodes()) {
+		t.Fatalf("%d recovery codes", len(codes))
+	}
+	if _, err := store.AdminMFA(ctx, identity.SeedAdminUserID); err == nil {
+		t.Fatal("only the MFA sample administrator is enrolled")
 	}
 }

@@ -155,3 +155,43 @@ func RequirePlatformRole(roles ...string) func(http.Handler) http.Handler {
 		})
 	}
 }
+
+// CodeMFAEnrolmentRequired is the error of an enrolment-only administrator
+// session on any route other than signing in and setting up MFA.
+const CodeMFAEnrolmentRequired = "MFA_ENROLMENT_REQUIRED"
+
+// MFAEnrolmentPathPrefix is what an enrolment-only session may still use
+// under /v1/admin: the sign-in steps and the MFA routes. Signing out is
+// POST /v1/auth/logout, outside /v1/admin.
+const MFAEnrolmentPathPrefix = "/v1/admin/auth/"
+
+// RefuseMFAEnrolmentOnly answers 403 MFA_ENROLMENT_REQUIRED to an
+// enrolment-only session (Principal.MFAEnrolmentOnly) on every path that does
+// not start with MFAEnrolmentPathPrefix. It is mounted on /v1/admin.
+func RefuseMFAEnrolmentOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if p := FromContext(r.Context()); p != nil && p.MFAEnrolmentOnly && !strings.HasPrefix(r.URL.Path, MFAEnrolmentPathPrefix) {
+			httpx.WriteError(w, r, http.StatusForbidden, CodeMFAEnrolmentRequired,
+				"Set up two-step sign-in with an authenticator app to continue.", nil)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// RequireAdminSession requires an admin-scope session of a platform-role
+// holder, INCLUDING an enrolment-only one: it guards the MFA routes, which
+// such a session must reach. 401 when anonymous, 403 FORBIDDEN otherwise.
+func RequireAdminSession(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := FromContext(r.Context())
+		switch {
+		case p == nil:
+			unauthenticated(w, r)
+		case p.SessionScope != ScopeAdmin || len(p.PlatformRoles) == 0:
+			forbidden(w, r)
+		default:
+			next.ServeHTTP(w, r)
+		}
+	})
+}

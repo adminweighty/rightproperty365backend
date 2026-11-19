@@ -184,6 +184,10 @@ var inAppTemplates = map[string]inAppTemplate{
 		body: fixed("If this was not you, reset your password now.")},
 	"admin-sign-in": {typ: inapp.TypeSecurity, title: fixed("New administrator sign-in"), path: pathAccountPage, noRef: true,
 		body: fixed("If this was not you, contact a super administrator.")},
+	"admin-mfa-recovery-code-used": {typ: inapp.TypeSecurity, title: fixed("A recovery code was used to sign in"), path: pathAccountPage, noRef: true,
+		body: fixed("If this was not you, contact a super administrator.")},
+	"admin-mfa-reset": {typ: inapp.TypeSecurity, title: fixed("Two-step sign-in was reset"), path: pathAccountPage, noRef: true,
+		body: fixed("Set up your authenticator app again when you next sign in.")},
 }
 
 func subscriptionBody(d mail.Data) string { return joinSafe(d.InvoiceNumber, d.PlanName) }

@@ -346,6 +346,8 @@ func run() error {
 		adminAuditLog = memAudit
 		memReference.SetAuditLog(memAudit)
 		memReviews.SetAuditLog(memAudit)
+		// Administrator MFA records (API 0.40.0).
+		memIdentity.SetAuditLog(memAudit)
 		// Listing packages (API 0.37.0): Starter (the default), Business and
 		// Professional in ZW and GB with SAMPLE prices; Sample Estates holds
 		// Business in ZW. The listing store checks the quota on approval.
@@ -481,6 +483,16 @@ func run() error {
 		} else {
 			if err := devseed.SeedMemoryUsers(ctx, memIdentity, identity.DefaultHasher(), cfg.DevSeedPassword, time.Now()); err != nil {
 				return fmt.Errorf("seed development users: %w", err)
+			}
+			// admin.mfa@example.test is enrolled in MFA with the fixed
+			// development secret (API 0.40.0), sealed with the same key
+			// the router uses (the router logs about the key).
+			mfaBox, err := app.AdminMFABox(cfg, slog.New(slog.DiscardHandler))
+			if err != nil {
+				return err
+			}
+			if err := devseed.SeedMemoryAdminMFA(memIdentity, mfaBox, identity.DefaultHasher(), time.Now()); err != nil {
+				return err
 			}
 			if err := devseed.SeedMemoryOnboarding(ctx, memIdentity, memOnboarding, files, identity.DefaultHasher(), cfg.DevSeedPassword, time.Now()); err != nil {
 				return fmt.Errorf("seed onboarding demo accounts: %w", err)

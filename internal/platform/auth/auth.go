@@ -155,6 +155,12 @@ type Principal struct {
 	// session's absolute expiry.
 	SessionScope     string
 	SessionExpiresAt time.Time
+	// MFAEnrolmentOnly marks an admin-scope session that may only set up an
+	// authenticator (ADMIN_MFA_REQUIRED is on and the administrator has none).
+	// It grants no platform role: HasPlatformRole is false, and every
+	// /v1/admin route outside /v1/admin/auth answers 403
+	// MFA_ENROLMENT_REQUIRED (RefuseMFAEnrolmentOnly).
+	MFAEnrolmentOnly bool
 }
 
 // HasMembership reports whether the principal holds at least one membership
@@ -195,10 +201,11 @@ func (p *Principal) OrganisationIDs(roles ...string) []uuid.UUID {
 // HasPlatformRole reports whether the principal may ACT with one of roles: it
 // must hold the role (in any market; SUPER_ADMIN satisfies every check) AND be
 // signed in through the administrator login (admin-scope session). A platform
-// role on a customer-scope session grants nothing. Handlers acting on market
+// role on a customer-scope session grants nothing. Neither does an
+// enrolment-only session (MFAEnrolmentOnly). Handlers acting on market
 // data must additionally check MarketCode for MARKET_ADMIN.
 func (p *Principal) HasPlatformRole(roles ...string) bool {
-	if p.SessionScope != ScopeAdmin {
+	if p.SessionScope != ScopeAdmin || p.MFAEnrolmentOnly {
 		return false
 	}
 	for _, r := range p.PlatformRoles {

@@ -484,6 +484,11 @@ func (s *PostgresStore) Delete(ctx context.Context, d Deletion) (Deleted, error)
 		if err := identity.DeleteMarketingConsentTx(ctx, tx, d.UserID); err != nil {
 			return err
 		}
+		// An administrator's authenticator and recovery codes (migration
+		// 0042): deleted explicitly, the cascade never fires here.
+		if _, err := identity.DeleteAdminMFATx(ctx, tx, d.UserID); err != nil {
+			return err
+		}
 		return adminaudit.Insert(ctx, tx, d.Audit)
 	})
 	return out, err

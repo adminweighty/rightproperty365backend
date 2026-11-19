@@ -1,0 +1,11 @@
+{{define "preheader"}}Two-step sign-in was reset for your administrator account.{{end}}
+{{define "heading"}}Two-step sign-in reset{{end}}
+{{define "button"}}Open administrator sign-in{{end}}
+{{define "why"}}You are receiving this security notice because your account holds an administrator role.{{end}}
+{{define "body"}}
+<p class="ink" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;color:#131722;">{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}</p>
+<p class="ink" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;color:#131722;">A super administrator removed the authenticator app and the recovery codes of your RightProperty365 administrator account. You have been signed out everywhere.</p>
+<table role="presentation" class="facts" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 20px;background-color:#f8f9fc;border:1px solid #e6e9f0;border-radius:10px;"><tr><td style="padding:14px 16px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td class="fact-label" valign="top" width="38%" style="padding:4px 12px 4px 0;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:14px;line-height:21px;color:#4f586a;">Reset</td><td class="ink" valign="top" style="padding:4px 0;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:14px;line-height:21px;font-weight:600;color:#131722;">{{dateTime .When}}</td></tr></table></td></tr></table>
+<p class="ink" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;color:#131722;">The next time you sign in, set up your authenticator app again.</p>
+<p class="ink" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;color:#131722;">If you did not ask for this, tell the platform owner immediately.</p>
+{{end}}

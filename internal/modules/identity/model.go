@@ -379,4 +379,8 @@ type AuthResult struct {
 	// NoSession is true when the operation succeeded but deliberately did not
 	// sign the caller in (email verification of a platform-role account).
 	NoSession bool
+	// MFAEnrolmentRequired is true for an administrator session started while
+	// ADMIN_MFA_REQUIRED is on and the administrator has no authenticator: the
+	// session can only enrol (see mfa.go).
+	MFAEnrolmentRequired bool
 }

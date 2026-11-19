@@ -26,7 +26,7 @@ func SampleData(name string) Data {
 		d.Roles = []Role{{Name: "Prospective Buyer"}, {Name: "Landlord", Pending: true}, {Name: "Estate Agent", Pending: true}}
 	case "sign-in-code":
 		d.Path, d.Code = "/sign-in", "000000"
-	case "admin-sign-in":
+	case "admin-sign-in", "admin-mfa-recovery-code-used", "admin-mfa-reset":
 		d.Name, d.Path = "Sam Admin", "/admin/sign-in"
 	case "property-request-received":
 		d.Path, d.Reference, d.RequestType = "/", "RP-7K2M9Q4D", RequestTypeName("STAY_REQUEST")

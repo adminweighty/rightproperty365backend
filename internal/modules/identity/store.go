@@ -96,4 +96,8 @@ type Store interface {
 	// PeopleStore lists the members of an organisation and counts accounts
 	// (see people.go).
 	PeopleStore
+
+	// MFAStore holds the administrators' authenticators and recovery codes
+	// (see mfa.go).
+	MFAStore
 }

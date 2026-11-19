@@ -307,9 +307,11 @@ func (s *PostgresStore) CreateLoginChallenge(ctx context.Context, c LoginChallen
 func (s *PostgresStore) LoginChallenge(ctx context.Context, idHash []byte) (LoginChallenge, error) {
 	c := LoginChallenge{IDHash: idHash}
 	err := s.pool.QueryRow(ctx, `
-		SELECT user_id, scope, delivery, code_hash, expires_at, attempts, resend_count, last_sent_at, consumed_at, created_at
+		SELECT user_id, scope, delivery, code_hash, expires_at, attempts, resend_count, last_sent_at, consumed_at, created_at,
+		       code_verified_at, mfa_attempts
 		FROM sign_in_challenges WHERE id = $1`, idHash).Scan(
-		&c.UserID, &c.Scope, &c.Delivery, &c.CodeHash, &c.ExpiresAt, &c.Attempts, &c.ResendCount, &c.LastSentAt, &c.ConsumedAt, &c.CreatedAt)
+		&c.UserID, &c.Scope, &c.Delivery, &c.CodeHash, &c.ExpiresAt, &c.Attempts, &c.ResendCount, &c.LastSentAt, &c.ConsumedAt, &c.CreatedAt,
+		&c.CodeVerifiedAt, &c.MFAAttempts)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return LoginChallenge{}, ErrNotFound
 	}
@@ -337,7 +339,7 @@ func (s *PostgresStore) FailLoginChallenge(ctx context.Context, idHash []byte, _
 func (s *PostgresStore) ConsumeLoginChallenge(ctx context.Context, idHash []byte, now time.Time) error {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE sign_in_challenges SET consumed_at = $2
-		WHERE id = $1 AND consumed_at IS NULL AND expires_at > $2 AND attempts < $3`,
+		WHERE id = $1 AND consumed_at IS NULL AND expires_at > $2 AND attempts < $3 AND mfa_attempts < $3`,
 		idHash, now, SignInCodeMaxAttempts)
 	if err != nil {
 		return err
@@ -354,7 +356,7 @@ func (s *PostgresStore) ResendLoginChallenge(ctx context.Context, idHash, codeHa
 		UPDATE sign_in_challenges
 		SET code_hash = $2, expires_at = $3, last_sent_at = $4, resend_count = resend_count + 1
 		WHERE id = $1 AND consumed_at IS NULL AND expires_at > $4 AND attempts < $6
-		  AND resend_count < $7 AND last_sent_at <= $5`,
+		  AND resend_count < $7 AND last_sent_at <= $5 AND code_verified_at IS NULL`,
 		idHash, codeHash, expiresAt, now, sentBefore, SignInCodeMaxAttempts, SignInCodeMaxResends)
 	if err != nil {
 		return err

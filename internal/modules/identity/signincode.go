@@ -101,11 +101,16 @@ type LoginChallenge struct {
 	LastSentAt  time.Time
 	ConsumedAt  *time.Time
 	CreatedAt   time.Time
+	// CodeVerifiedAt is set when the emailed code of an administrator with
+	// MFA was right: the challenge then waits for the second factor (mfa.go).
+	CodeVerifiedAt *time.Time
+	// MFAAttempts counts wrong second-factor codes; SignInCodeMaxAttempts kill it.
+	MFAAttempts int
 }
 
 // usable reports whether the challenge can still be answered at now.
 func (c LoginChallenge) usable(now time.Time) bool {
-	return c.ConsumedAt == nil && now.Before(c.ExpiresAt) && c.Attempts < SignInCodeMaxAttempts
+	return c.ConsumedAt == nil && now.Before(c.ExpiresAt) && c.Attempts < SignInCodeMaxAttempts && c.MFAAttempts < SignInCodeMaxAttempts
 }
 
 // CodeChallenge is the answer of the login (and resend) endpoints when the
@@ -227,23 +232,42 @@ func (s *Service) liveChallenge(ctx context.Context, challengeID, scope string, 
 		return LoginChallenge{}, ErrCodeExpired
 	case err != nil:
 		return LoginChallenge{}, fmt.Errorf("load sign-in challenge: %w", err)
-	case c.Scope != scope || !c.usable(now):
+	case c.Scope != scope || !c.usable(now) || c.CodeVerifiedAt != nil:
+		// A challenge whose emailed code was already accepted waits for the
+		// second factor (POST /v1/admin/auth/login/mfa) and nothing else.
 		return LoginChallenge{}, ErrCodeExpired
 	}
 	return c, nil
 }
 
 // VerifyCode is the second step: POST /v1/auth/login/verify (scope customer)
-// and POST /v1/admin/auth/login/verify (scope admin). On success the result is
-// exactly what the login endpoint used to return.
+// and POST /v1/admin/auth/login/verify (scope admin, see VerifyAdminCode). On
+// success the result is exactly what the login endpoint used to return.
 func (s *Service) VerifyCode(ctx context.Context, scope, challengeID, code, clientIP string) (AuthResult, error) {
+	res, mfa, err := s.verifyCode(ctx, scope, challengeID, code, clientIP)
+	if err == nil && mfa != nil {
+		// Only VerifyAdminCode can answer the second-factor step.
+		return AuthResult{}, errors.New("sign-in needs a second factor: use VerifyAdminCode")
+	}
+	return res, err
+}
+
+// VerifyAdminCode is POST /v1/admin/auth/login/verify. For an administrator
+// with a confirmed authenticator the answer is an MFAChallenge on the same
+// challenge (no session yet, mfa.go); otherwise the session, enrolment-only
+// when ADMIN_MFA_REQUIRED is on (AuthResult.MFAEnrolmentRequired).
+func (s *Service) VerifyAdminCode(ctx context.Context, challengeID, code, clientIP string) (AuthResult, *MFAChallenge, error) {
+	return s.verifyCode(ctx, auth.ScopeAdmin, challengeID, code, clientIP)
+}
+
+func (s *Service) verifyCode(ctx context.Context, scope, challengeID, code, clientIP string) (AuthResult, *MFAChallenge, error) {
 	if !allDigits(code) {
-		return AuthResult{}, &ValidationError{Fields: map[string]string{"code": msgCodeRequired}}
+		return AuthResult{}, nil, &ValidationError{Fields: map[string]string{"code": msgCodeRequired}}
 	}
 	now := s.clock()
 	c, err := s.liveChallenge(ctx, challengeID, scope, now)
 	if err != nil {
-		return AuthResult{}, err
+		return AuthResult{}, nil, err
 	}
 	challengeID = strings.TrimSpace(challengeID)
 
@@ -251,55 +275,77 @@ func (s *Service) VerifyCode(ctx context.Context, scope, challengeID, code, clie
 	if !demo {
 		if len(code) != SignInCodeLength {
 			// Not something we could have sent: not counted as an attempt.
-			return AuthResult{}, &ValidationError{Fields: map[string]string{"code": msgCodeRequired}}
+			return AuthResult{}, nil, &ValidationError{Fields: map[string]string{"code": msgCodeRequired}}
 		}
 		if !hmac.Equal(c.CodeHash, signInCodeHash(challengeID, code)) {
 			attempts, err := s.store.FailLoginChallenge(ctx, c.IDHash, now)
 			if errors.Is(err, ErrNotFound) {
-				return AuthResult{}, ErrCodeExpired
+				return AuthResult{}, nil, ErrCodeExpired
 			}
 			if err != nil {
-				return AuthResult{}, fmt.Errorf("record wrong sign-in code: %w", err)
+				return AuthResult{}, nil, fmt.Errorf("record wrong sign-in code: %w", err)
 			}
 			s.audit(ctx, slog.LevelWarn, "sign_in_code", "failure", slog.String("scope", scope),
 				slog.String("user_id", c.UserID.String()), slog.Int("attempts", attempts), slog.String("ip", clientIP))
 			if attempts >= SignInCodeMaxAttempts {
-				return AuthResult{}, ErrCodeExpired
+				return AuthResult{}, nil, ErrCodeExpired
 			}
-			return AuthResult{}, &ValidationError{Fields: map[string]string{"code": msgCodeWrong}}
+			return AuthResult{}, nil, &ValidationError{Fields: map[string]string{"code": msgCodeWrong}}
 		}
-	}
-	// Single use, even under concurrency: only one caller consumes it.
-	if err := s.store.ConsumeLoginChallenge(ctx, c.IDHash, now); err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return AuthResult{}, ErrCodeExpired
-		}
-		return AuthResult{}, fmt.Errorf("consume sign-in challenge: %w", err)
 	}
 
 	// The account is judged again: it may have changed since the password step.
 	user, err := s.store.UserByID(ctx, c.UserID)
 	if errors.Is(err, ErrNotFound) {
-		return AuthResult{}, ErrCodeExpired
+		return AuthResult{}, nil, ErrCodeExpired
 	}
 	if err != nil {
-		return AuthResult{}, fmt.Errorf("load user: %w", err)
+		return AuthResult{}, nil, fmt.Errorf("load user: %w", err)
 	}
 	isAdmin := len(user.PlatformRoles) > 0
 	if user.Status != StatusActive || !user.Verified() || isAdmin != (scope == auth.ScopeAdmin) {
-		return AuthResult{}, ErrCodeExpired
+		return AuthResult{}, nil, ErrCodeExpired
+	}
+	enrolmentOnly := false
+	if scope == auth.ScopeAdmin {
+		enrolled, err := s.adminEnrolled(ctx, user.ID)
+		if err != nil {
+			return AuthResult{}, nil, err
+		}
+		if enrolled {
+			// The same challenge now waits for the authenticator or a
+			// recovery code; the session starts at POST .../login/mfa.
+			mc, err := s.mfaChallengeFor(ctx, c, challengeID, now)
+			if err != nil {
+				return AuthResult{}, nil, err
+			}
+			s.audit(ctx, slog.LevelInfo, "admin_sign_in", "mfa_required", slog.String("user_id", user.ID.String()),
+				slog.String("ip", clientIP), slog.Bool("demo_code", demo))
+			return AuthResult{}, &mc, nil
+		}
+		enrolmentOnly = s.mfaRequired
+	}
+
+	// Single use, even under concurrency: only one caller consumes it.
+	if err := s.store.ConsumeLoginChallenge(ctx, c.IDHash, now); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return AuthResult{}, nil, ErrCodeExpired
+		}
+		return AuthResult{}, nil, fmt.Errorf("consume sign-in challenge: %w", err)
 	}
 	res, err := s.startSession(ctx, user, c.Delivery, scope, now)
 	if err != nil {
-		return AuthResult{}, err
+		return AuthResult{}, nil, err
 	}
+	res.MFAEnrolmentRequired = enrolmentOnly
 	attrs := []slog.Attr{slog.String("user_id", user.ID.String()), slog.String("ip", clientIP), slog.Bool("demo_code", demo)}
 	if scope == auth.ScopeAdmin {
-		s.audit(ctx, slog.LevelInfo, "admin_sign_in", "success", append(attrs, slog.String("email_sha256", emailFingerprint(user.Email)))...)
+		s.audit(ctx, slog.LevelInfo, "admin_sign_in", "success", append(attrs, slog.String("email_sha256", emailFingerprint(user.Email)),
+			slog.Bool("mfa_enrolment_only", enrolmentOnly))...)
 	} else {
 		s.audit(ctx, slog.LevelInfo, "sign_in_code", "success", attrs...)
 	}
-	return res, nil
+	return res, nil, nil
 }
 
 // ResendCode emails a fresh code for a live challenge: POST .../login/resend.

@@ -1,0 +1,21 @@
+Subject: Two-step sign-in was reset for your administrator account
+
+Two-step sign-in reset
+
+Hello Sam Admin,
+
+A super administrator removed the authenticator app and the recovery codes of your RightProperty365 administrator account. You have been signed out everywhere.
+
+Reset: 14 November 2026, 09:05 UTC
+
+The next time you sign in, set up your authenticator app again.
+
+If you did not ask for this, tell the platform owner immediately.
+
+Open administrator sign-in:
+https://rightproperty365.com/admin/sign-in
+
+--
+You are receiving this security notice because your account holds an administrator role.
+Sent by RightProperty365.
+https://rightproperty365.com

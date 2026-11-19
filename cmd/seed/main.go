@@ -26,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	"rightproperty365.com/backend/internal/app"
 	"rightproperty365.com/backend/internal/devseed"
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/platform/config"
@@ -93,6 +94,19 @@ func run() error {
 	// The sample subscription plans and agent@example.test's pending
 	// subscription (needs migration 0024), after the accounts.
 	if err := devseed.SeedPostgresSubscriptions(ctx, pool, time.Now()); err != nil {
+		return err
+	}
+	// admin.mfa@example.test enrolled in MFA with the fixed development
+	// secret (needs migration 0042), sealed with MFA_ENCRYPTION_KEY or, in
+	// development without one, the development key. Without a key outside
+	// development it is not enrolled.
+	mfaBox, err := app.AdminMFABox(cfg, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	if err != nil {
+		return err
+	}
+	if mfaBox == nil {
+		fmt.Println("MFA_ENCRYPTION_KEY is not set: admin.mfa@example.test was NOT enrolled in MFA")
+	} else if err := devseed.SeedPostgresAdminMFA(ctx, pool, mfaBox, identity.DefaultHasher(), time.Now()); err != nil {
 		return err
 	}
 	fmt.Printf("seeded %d organisations, %d accounts, %d listings and %d directory profiles (password: DEV_SEED_PASSWORD)\n",

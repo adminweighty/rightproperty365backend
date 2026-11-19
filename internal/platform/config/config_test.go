@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -19,21 +20,31 @@ import (
 // by the storage tests themselves.
 func lookup(m map[string]string) func(string) string {
 	env := strings.ToLower(m["APP_ENV"])
-	_, storageSet := m["STORAGE_DRIVER"]
-	if (env != "staging" && env != "production") || storageSet {
-		return rawLookup(m)
+	defaults := map[string]string{}
+	// Production requires administrator MFA by default, and so its key.
+	_, mfaSet := m["ADMIN_MFA_REQUIRED"]
+	if env == "production" && !mfaSet {
+		defaults["MFA_ENCRYPTION_KEY"] = fakeMFAKey()
 	}
-	s3 := map[string]string{
-		"STORAGE_DRIVER": "s3", "S3_ENDPOINT": "https://objects.private.example:9000", "S3_BUCKET": "rp365-private",
-		"S3_ACCESS_KEY": "test-access", "S3_SECRET_KEY": fakeS3Secret(),
+	_, storageSet := m["STORAGE_DRIVER"]
+	if (env == "staging" || env == "production") && !storageSet {
+		for k, v := range map[string]string{
+			"STORAGE_DRIVER": "s3", "S3_ENDPOINT": "https://objects.private.example:9000", "S3_BUCKET": "rp365-private",
+			"S3_ACCESS_KEY": "test-access", "S3_SECRET_KEY": fakeS3Secret(),
+		} {
+			defaults[k] = v
+		}
 	}
 	return func(k string) string {
 		if v, ok := m[k]; ok {
 			return v
 		}
-		return s3[k]
+		return defaults[k]
 	}
 }
+
+// fakeMFAKey is a well-formed MFA_ENCRYPTION_KEY built at run time.
+func fakeMFAKey() string { return base64.StdEncoding.EncodeToString([]byte(strings.Repeat("k", 32))) }
 
 func rawLookup(m map[string]string) func(string) string {
 	return func(k string) string { return m[k] }
@@ -45,7 +56,7 @@ func fakeS3Secret() string { return "s3-secret-" + strings.Repeat("x", 12) }
 func TestStorageDriverSelection(t *testing.T) {
 	const db = "postgres://user@db.private.example:5432/app?sslmode=verify-full"
 	prod := func(extra map[string]string) map[string]string {
-		env := map[string]string{"APP_ENV": "production", "DATABASE_URL": db, "RESEND_API_KEY": "test-key-not-real"}
+		env := map[string]string{"APP_ENV": "production", "DATABASE_URL": db, "RESEND_API_KEY": "test-key-not-real", "MFA_ENCRYPTION_KEY": fakeMFAKey()}
 		for k, v := range extra {
 			env[k] = v
 		}
@@ -630,5 +641,56 @@ func TestFCMSettings(t *testing.T) {
 	}
 	if _, err := FromLookup(func(string) string { return "" }); err != nil {
 		t.Fatalf("push settings must never be required: %v", err)
+	}
+}
+
+// ADMIN_MFA_REQUIRED defaults to true in production only; a production that
+// requires MFA refuses to start without MFA_ENCRYPTION_KEY; a malformed key
+// is refused everywhere without being echoed.
+func TestAdminMFASettings(t *testing.T) {
+	const db = "postgres://user@db.private.example:5432/app"
+	base := func(env string, extra map[string]string) map[string]string {
+		m := map[string]string{"APP_ENV": env, "RESEND_API_KEY": "test-key-not-real"}
+		if env != EnvDevelopment {
+			m["DATABASE_URL"] = db
+		}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return m
+	}
+	for env, want := range map[string]bool{EnvDevelopment: false, EnvStaging: false} {
+		cfg, err := FromLookup(lookup(base(env, nil)))
+		if err != nil || cfg.AdminMFARequired != want || cfg.MFAEncryptionKey.IsSet() {
+			t.Fatalf("%s: required=%v key=%v err=%v", env, cfg.AdminMFARequired, cfg.MFAEncryptionKey.IsSet(), err)
+		}
+	}
+	prod, err := FromLookup(lookup(base(EnvProduction, nil)))
+	if err != nil || !prod.AdminMFARequired || !prod.MFAEncryptionKey.IsSet() {
+		t.Fatalf("production: required=%v err=%v", prod.AdminMFARequired, err)
+	}
+	if _, err := FromLookup(lookup(base(EnvProduction, map[string]string{"ADMIN_MFA_REQUIRED": "true"}))); err == nil ||
+		!strings.Contains(err.Error(), "MFA_ENCRYPTION_KEY is required") {
+		t.Fatalf("production without a key must refuse to start, got %v", err)
+	}
+	if _, err := FromLookup(lookup(base(EnvStaging, map[string]string{"ADMIN_MFA_REQUIRED": "true"}))); err == nil {
+		t.Fatal("staging requiring MFA without a key must refuse to start")
+	}
+	if cfg, err := FromLookup(lookup(base(EnvProduction, map[string]string{"ADMIN_MFA_REQUIRED": "false"}))); err != nil || cfg.AdminMFARequired {
+		t.Fatalf("production opting out: %v", err)
+	}
+	if cfg, err := FromLookup(lookup(base(EnvDevelopment, map[string]string{"ADMIN_MFA_REQUIRED": "true"}))); err != nil || !cfg.AdminMFARequired {
+		t.Fatalf("development may require MFA with the development key: %v", err)
+	}
+	bad := "not-a-key-" + strings.Repeat("z", 6)
+	if _, err := FromLookup(lookup(base(EnvDevelopment, map[string]string{"MFA_ENCRYPTION_KEY": bad}))); err == nil ||
+		!strings.Contains(err.Error(), "MFA_ENCRYPTION_KEY must be") || strings.Contains(err.Error(), bad) {
+		t.Fatalf("malformed key: %v", err)
+	}
+	if _, err := FromLookup(lookup(base(EnvDevelopment, map[string]string{"ADMIN_MFA_REQUIRED": "sometimes"}))); err == nil {
+		t.Fatal("ADMIN_MFA_REQUIRED must be a boolean")
+	}
+	if fmt.Sprint(prod.MFAEncryptionKey) != "[redacted]" {
+		t.Fatal("the key must not format")
 	}
 }
