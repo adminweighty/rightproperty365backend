@@ -39,6 +39,16 @@ type Handler struct {
 	// onLogout runs before a session is revoked: it removes the push
 	// devices the session registered and the given device token (FR-045).
 	onLogout func(ctx context.Context, userID, sessionID uuid.UUID, deviceToken string) error
+	// pendingLegal lists the legal documents awaiting the person's
+	// re-acceptance for /v1/me (API 0.43.0); nil: none.
+	pendingLegal func(r *http.Request, userID uuid.UUID) (any, error)
+}
+
+// SetPendingLegalHook sets what /v1/me reports as pending_legal_acceptances
+// (a JSON array). It never blocks anything: a failure is logged and the
+// field is an empty array.
+func (h *Handler) SetPendingLegalHook(hook func(r *http.Request, userID uuid.UUID) (any, error)) {
+	h.pendingLegal = hook
 }
 
 // SetLogoutHook sets what runs before a signed-in session is revoked.
@@ -96,6 +106,8 @@ type authResponse struct {
 type meResponse struct {
 	User    UserView    `json:"user"`
 	Session sessionView `json:"session"`
+	// PendingLegalAcceptances (API 0.43.0) is always an array.
+	PendingLegalAcceptances any `json:"pending_legal_acceptances"`
 }
 
 // fail maps service errors to responses.
@@ -420,8 +432,17 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteInternalError(w, r, h.logger, err)
 		return
 	}
+	var pending any = []struct{}{}
+	if h.pendingLegal != nil {
+		if list, err := h.pendingLegal(r, p.UserID); err != nil {
+			h.logger.ErrorContext(r.Context(), "pending legal acceptances failed", slog.String("error", err.Error()))
+		} else if list != nil {
+			pending = list
+		}
+	}
 	httpx.WriteJSON(w, http.StatusOK, meResponse{
-		User:    user.View(),
-		Session: sessionView{Scope: p.SessionScope, ExpiresAt: p.SessionExpiresAt.UTC()},
+		User:                    user.View(),
+		Session:                 sessionView{Scope: p.SessionScope, ExpiresAt: p.SessionExpiresAt.UTC()},
+		PendingLegalAcceptances: pending,
 	})
 }

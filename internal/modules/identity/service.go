@@ -27,8 +27,9 @@ const (
 )
 
 var (
-	emailRe   = regexp.MustCompile(`^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>".]+$`)
-	htmlTagRe = regexp.MustCompile(`<[/!?]?[A-Za-z][^>]*>|<!--`)
+	emailRe       = regexp.MustCompile(`^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>".]+$`)
+	legalMarketRe = regexp.MustCompile(`^[A-Z]{2}$`)
+	htmlTagRe     = regexp.MustCompile(`<[/!?]?[A-Za-z][^>]*>|<!--`)
 )
 
 // RegisterInput is the JSON body of POST /v1/auth/register.
@@ -126,6 +127,12 @@ func parseAccountRoles(raw json.RawMessage, selectable []SelectableRole) ([]Acco
 type ConsentInput struct {
 	PrivacyVersion string `json:"privacy_version"`
 	Accepted       bool   `json:"accepted"`
+	// TermsVersion (optional, 0.43.0) is recorded as a TERMS acceptance.
+	// MarketCode (optional, 0.43.0) is the market whose documents were
+	// shown: GLOBAL or a country code. Neither version is checked against
+	// the published legal versions (the web still serves its own pages).
+	TermsVersion string `json:"terms_version"`
+	MarketCode   string `json:"market_code"`
 }
 
 // Service holds the identity business rules.
@@ -303,7 +310,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) error {
 		fields["password"] = msg
 	}
 
-	privacyVersion := ""
+	privacyVersion, termsVersion, legalMarket := "", "", ""
 	if in.Consent == nil || !in.Consent.Accepted {
 		fields["consent.accepted"] = "must be true"
 	}
@@ -314,6 +321,14 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) error {
 			fields["consent.privacy_version"] = "is required"
 		case len(privacyVersion) > maxPrivacyVersion || !isPrintableASCII(privacyVersion):
 			fields["consent.privacy_version"] = "is not a valid privacy notice version"
+		}
+		termsVersion = strings.TrimSpace(in.Consent.TermsVersion)
+		if len(termsVersion) > maxPrivacyVersion || !isPrintableASCII(termsVersion) {
+			fields["consent.terms_version"] = "is not a valid terms version"
+		}
+		legalMarket = strings.ToUpper(strings.TrimSpace(in.Consent.MarketCode))
+		if legalMarket != "" && legalMarket != "GLOBAL" && !legalMarketRe.MatchString(legalMarket) {
+			fields["consent.market_code"] = "must be GLOBAL or a country code"
 		}
 	}
 	selectable, err := s.selectableRoles(ctx)
@@ -352,7 +367,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) error {
 	nu := NewUser{
 		Name: name, Email: email, PasswordHash: passwordHash,
 		MarketingOptIn: in.MarketingOptIn, MarketingSource: in.Source, MarketingConsentVersion: CurrentMarketingConsentVersion,
-		PrivacyVersion: privacyVersion, AccountRoles: accountRoles, CreatedAt: now,
+		PrivacyVersion: privacyVersion, TermsVersion: termsVersion, LegalMarket: legalMarket, AccountRoles: accountRoles, CreatedAt: now,
 	}
 
 	existing, err := s.store.UserByEmail(ctx, email)

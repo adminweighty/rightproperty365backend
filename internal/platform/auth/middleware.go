@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"rightproperty365.com/backend/internal/platform/httpx"
+	"rightproperty365.com/backend/internal/platform/i18n"
 	"rightproperty365.com/backend/internal/platform/logging"
 )
 
@@ -96,11 +97,11 @@ func safeMethod(method string) bool {
 }
 
 func unauthenticated(w http.ResponseWriter, r *http.Request) {
-	httpx.WriteError(w, r, http.StatusUnauthorized, httpx.CodeUnauthenticated, "You need to sign in to do this.", nil)
+	httpx.WriteError(w, r, http.StatusUnauthorized, httpx.CodeUnauthenticated, i18n.T(r.Context(), "error.unauthenticated", nil), nil)
 }
 
 func forbidden(w http.ResponseWriter, r *http.Request) {
-	httpx.WriteError(w, r, http.StatusForbidden, httpx.CodeForbidden, "You do not have permission to do this.", nil)
+	httpx.WriteError(w, r, http.StatusForbidden, httpx.CodeForbidden, i18n.T(r.Context(), "error.forbidden", nil), nil)
 }
 
 // RequireAuth rejects anonymous requests with 401 UNAUTHENTICATED.

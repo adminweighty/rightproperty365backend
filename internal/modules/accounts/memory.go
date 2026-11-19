@@ -67,6 +67,9 @@ type MemoryDeps struct {
 	// ForgetPayments unlinks the user from their online payments (kept for
 	// finance) and expires their open checkouts (nil: nothing to do).
 	ForgetPayments func(userID uuid.UUID, deletedName string, at time.Time)
+	// ForgetLegal unlinks the user as creator and publisher of legal
+	// document versions (API 0.43.0). Their acceptances are kept.
+	ForgetLegal func(userID uuid.UUID, deletedName string)
 	// Now is the clock used for listing expiry in the detail (nil: time.Now).
 	Now func() time.Time
 }
@@ -334,6 +337,9 @@ func (s *MemoryStore) Delete(ctx context.Context, d Deletion) (Deleted, error) {
 	}
 	if s.deps.ForgetPayments != nil {
 		s.deps.ForgetPayments(d.UserID, DeletedName, d.At)
+	}
+	if s.deps.ForgetLegal != nil {
+		s.deps.ForgetLegal(d.UserID, DeletedName)
 	}
 	// Marketing consent records (API 0.37.1): deleted with the account.
 	s.deps.Identity.DeleteMarketingConsents(d.UserID)

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.42.0
+  version: 0.43.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,22 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Per-market legal documents, tax rules and translations (new in 0.43.0, BR-001)
+    - **Structure only. No legal text here is final or legal advice.** Production starts with no
+      document (404 / empty lists); development and staging bodies say `DRAFT — awaiting legal
+      review` and have `draft_notice: true`; show a DRAFT banner
+      whenever `draft_notice` is true. The web's own `/legal/*` pages remain the text people read.
+    - `GET /v1/legal/{kind}?market=&lang=` resolves the current PUBLISHED version for the market,
+      falling back to GLOBAL (`fallback_market`) and to English (`fallback_lang`). DRAFTs are never
+      public; `?preview=true` is for administrators of that market only.
+    - Registration's `consent` gains optional `terms_version` and `market_code`. `GET /v1/me` gains
+      `pending_legal_acceptances` (never blocks anything); `POST /v1/me/legal-acceptances` records one.
+    - Tax rules per market (`/v1/admin/tax-rules`, FINANCE_ADMIN) are stored and looked up but
+      **applied nowhere**: no price changes. None exist in production; development and staging have SAMPLE ZW VAT 15% / GB VAT 20%.
+    - Languages: `?lang=` or `Accept-Language`, falling back to `en` (the only language;
+      `GET /v1/i18n/languages`). Error envelope messages now come from the message catalogue
+      (same English text as before).
 
     Online payment of subscription invoices (new in 0.42.0, BR-015, FR-037-040)
     - **Off unless the server is configured** (`PAYMENT_GATEWAY`): with `none` (the default) no
@@ -1027,6 +1043,14 @@ tags:
     description: |
       Online payment of subscription invoices through a provider-neutral gateway (new in 0.42.0).
       Off unless PAYMENT_GATEWAY is set; no real provider is built yet (only `fake`).
+  - name: legal
+    description: |
+      Per-market legal documents with versions, and acceptances (new in 0.43.0, BR-001). Structure
+      only: nothing is seeded in production; development and staging placeholders are marked DRAFT, not legal advice.
+  - name: tax
+    description: Tax rules per market (new in 0.43.0). Stored and looked up; applied nowhere yet.
+  - name: i18n
+    description: Languages and the message catalogue (new in 0.43.0; English only).
   - name: reports
     description: Administrators' counts and CSV exports (new in 0.25.0), and the request inbox's lead funnel and response-time KPIs (new in 0.38.0).
 
@@ -1258,6 +1282,72 @@ paths:
         "504":
           $ref: "#/components/responses/Timeout"
 
+  /v1/i18n/languages:
+    get:
+      tags: [i18n]
+      operationId: listLanguages
+      summary: The languages the API answers in (new in 0.43.0)
+      description: Public and cacheable. Only `en` today.
+      responses:
+        "200": { description: The languages., content: { application/json: { schema: { $ref: "#/components/schemas/Languages" } } } }
+  /v1/legal:
+    get:
+      tags: [legal]
+      operationId: listLegalDocuments
+      summary: The current version of every legal document for a market (new in 0.43.0)
+      description: |
+        One entry per kind that has a current version (resolution: the market's PUBLISHED version with
+        the latest `effective_from` not in the future, else GLOBAL's; the language, else English).
+        No bodies. Public, cacheable (`max-age=300`), `Vary: Accept-Language`, `Content-Language`.
+      parameters:
+        - { name: market, in: query, schema: { type: string, default: GLOBAL }, description: "`GLOBAL` or a country code. Unknown: `400 VALIDATION_FAILED` (`fields.market`)." }
+        - { name: lang, in: query, schema: { type: string }, description: "Wins over `Accept-Language`. Unsupported values fall back to `en` (never an error)." }
+        - { name: Accept-Language, in: header, schema: { type: string } }
+      responses:
+        "200": { description: The current documents., content: { application/json: { schema: { $ref: "#/components/schemas/LegalDocumentList" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+  /v1/legal/{kind}:
+    get:
+      tags: [legal]
+      operationId: getLegalDocument
+      summary: The current (or a given) version of a legal document (new in 0.43.0)
+      description: |
+        Without `version`: the current version (see `GET /v1/legal`). With `version`: that PUBLISHED or
+        RETIRED version (the market's, else GLOBAL's); a DRAFT never. `preview=true` returns the newest
+        DRAFT of the market (else the current version) to an administrator who manages that market
+        (SUPER_ADMIN, CONTENT_ADMIN, MARKET_ADMIN of the market; admin session), `private, no-store`;
+        to anybody else it is `403 LEGAL_PREVIEW_FORBIDDEN`. Otherwise public and cacheable.
+        **`draft_notice: true` means the text is a placeholder or unreviewed: show a DRAFT banner.**
+      parameters:
+        - { name: kind, in: path, required: true, schema: { type: string, enum: [TERMS, PRIVACY, COOKIES, REFUND, EULA, AGENT_TERMS] }, description: "Case-insensitive (`terms` = `TERMS`)." }
+        - { name: market, in: query, schema: { type: string, default: GLOBAL }, description: "`GLOBAL` or a country code. Unknown: `400 VALIDATION_FAILED` (`fields.market`)." }
+        - { name: lang, in: query, schema: { type: string }, description: "Wins over `Accept-Language`. Unsupported values fall back to `en` (never an error)." }
+        - { name: Accept-Language, in: header, schema: { type: string } }
+        - { name: version, in: query, schema: { type: string, maxLength: 32 } }
+        - { name: preview, in: query, schema: { type: string, enum: ["true", "1"] } }
+      responses:
+        "200": { description: The document., content: { application/json: { schema: { $ref: "#/components/schemas/LegalDocumentResponse" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "403": { description: "`LEGAL_PREVIEW_FORBIDDEN`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "404": { description: "`LEGAL_DOCUMENT_NOT_FOUND`: unknown kind, nothing published, or no such version.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+  /v1/legal/{kind}/versions:
+    get:
+      tags: [legal]
+      operationId: listLegalDocumentVersions
+      summary: The published history of a legal document for a market (new in 0.43.0)
+      description: |
+        The PUBLISHED and RETIRED versions of the market and of GLOBAL (in the language and English),
+        newest `effective_from` first, without bodies; `current: true` marks the one
+        `GET /v1/legal/{kind}` returns. DRAFTs never appear. Public, cacheable.
+      parameters:
+        - { name: kind, in: path, required: true, schema: { type: string, enum: [TERMS, PRIVACY, COOKIES, REFUND, EULA, AGENT_TERMS] }, description: "Case-insensitive (`terms` = `TERMS`)." }
+        - { name: market, in: query, schema: { type: string, default: GLOBAL }, description: "`GLOBAL` or a country code. Unknown: `400 VALIDATION_FAILED` (`fields.market`)." }
+        - { name: lang, in: query, schema: { type: string }, description: "Wins over `Accept-Language`. Unsupported values fall back to `en` (never an error)." }
+        - { name: Accept-Language, in: header, schema: { type: string } }
+      responses:
+        "200": { description: The history., content: { application/json: { schema: { $ref: "#/components/schemas/LegalVersionHistory" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "404": { description: "`LEGAL_DOCUMENT_NOT_FOUND`: unknown kind.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
   /v1/reference:
     get:
       tags: [reference]
@@ -4426,9 +4516,15 @@ paths:
       tags: [account]
       operationId: getMe
       summary: The signed-in user
+      description: |
+        New in 0.43.0: `pending_legal_acceptances` lists the current legal documents (for `?market=`,
+        default GLOBAL; an unknown market is read as GLOBAL) that require re-acceptance and that the
+        person has not accepted. Nothing is blocked: prompt, then `POST /v1/me/legal-acceptances`.
       security:
         - cookieSession: []
         - bearerToken: []
+      parameters:
+        - { name: market, in: query, schema: { type: string, default: GLOBAL } }
       responses:
         "200":
           description: The current user with their roles, and the session that authenticated the request.
@@ -12807,6 +12903,211 @@ paths:
         "409":
           $ref: "#/components/responses/SubscriptionStateConflict"
 
+  /v1/admin/legal:
+    get:
+      tags: [legal]
+      operationId: adminListLegalVersions
+      summary: Legal document versions, any status (SUPER_ADMIN, CONTENT_ADMIN, MARKET_ADMIN; new in 0.43.0)
+      description: Newest first, without bodies. `private, no-store`.
+      security: [{ cookieSession: [] }]
+      parameters:
+        - { name: kind, in: query, schema: { type: string } }
+        - { name: market, in: query, schema: { type: string } }
+        - { name: lang, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string, enum: [DRAFT, PUBLISHED, RETIRED] } }
+      responses:
+        "200": { description: The versions., content: { application/json: { schema: { $ref: "#/components/schemas/LegalAdminVersionList" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [legal]
+      operationId: adminCreateLegalVersion
+      summary: Create a DRAFT version (new in 0.43.0)
+      description: |
+        A MARKET_ADMIN may create only for its own market, never GLOBAL (`403 LEGAL_MARKET_FORBIDDEN`).
+        `version` is unique per kind + market + lang (`409 LEGAL_VERSION_EXISTS`). `draft_notice`
+        defaults to true. Audited (`LEGAL_VERSION_CREATED`).
+      security: [{ cookieSession: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/LegalVersionInput" } } }
+      responses:
+        "201": { description: Created., content: { application/json: { schema: { $ref: "#/components/schemas/LegalAdminVersionResponse" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { description: "`FORBIDDEN` or `LEGAL_MARKET_FORBIDDEN`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "`LEGAL_VERSION_EXISTS`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /v1/admin/legal/{id}:
+    parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [legal]
+      operationId: adminGetLegalVersion
+      summary: One version with its body (new in 0.43.0)
+      security: [{ cookieSession: [] }]
+      responses:
+        "200": { description: The version., content: { application/json: { schema: { $ref: "#/components/schemas/LegalAdminVersionResponse" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "`LEGAL_DOCUMENT_NOT_FOUND` / `LEGAL_VERSION_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+    patch:
+      tags: [legal]
+      operationId: adminUpdateLegalVersion
+      summary: Change a DRAFT (new in 0.43.0)
+      description: |
+        Any field of `LegalVersionInput` except `kind`, `market_code` and `lang` (`400`). A PUBLISHED
+        or RETIRED version is `409 LEGAL_VERSION_IMMUTABLE`: create a new version. Audited.
+      security: [{ cookieSession: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/LegalVersionInput" } } }
+      responses:
+        "200": { description: Changed., content: { application/json: { schema: { $ref: "#/components/schemas/LegalAdminVersionResponse" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { description: "`FORBIDDEN` or `LEGAL_MARKET_FORBIDDEN`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "404": { description: "`LEGAL_DOCUMENT_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "`LEGAL_VERSION_IMMUTABLE` or `LEGAL_VERSION_EXISTS`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+    delete:
+      tags: [legal]
+      operationId: adminDeleteLegalVersion
+      summary: Delete a DRAFT (new in 0.43.0)
+      description: Only a DRAFT (`409 LEGAL_VERSION_IMMUTABLE` otherwise). Audited (`LEGAL_VERSION_DELETED`).
+      security: [{ cookieSession: [] }]
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { description: "`FORBIDDEN` or `LEGAL_MARKET_FORBIDDEN`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "404": { description: "`LEGAL_DOCUMENT_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "`LEGAL_VERSION_IMMUTABLE`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+  /v1/admin/legal/{id}/publish:
+    parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [legal]
+      operationId: adminPublishLegalVersion
+      summary: Publish a DRAFT (new in 0.43.0)
+      description: |
+        DRAFT → PUBLISHED (`published_by`, `published_at`). It becomes current at `effective_from`.
+        From then on it never changes. Audited (`LEGAL_VERSION_PUBLISHED`). Body `{}`.
+      security: [{ cookieSession: [] }]
+      responses:
+        "200": { description: Published., content: { application/json: { schema: { $ref: "#/components/schemas/LegalAdminVersionResponse" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { description: "`FORBIDDEN` or `LEGAL_MARKET_FORBIDDEN`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "404": { description: "`LEGAL_DOCUMENT_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "`LEGAL_VERSION_IMMUTABLE`: not a DRAFT.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+  /v1/admin/legal/{id}/retire:
+    parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [legal]
+      operationId: adminRetireLegalVersion
+      summary: Retire a PUBLISHED version (new in 0.43.0)
+      description: PUBLISHED → RETIRED; it stays in the history. Audited (`LEGAL_VERSION_RETIRED`). Body `{}`.
+      security: [{ cookieSession: [] }]
+      responses:
+        "200": { description: Retired., content: { application/json: { schema: { $ref: "#/components/schemas/LegalAdminVersionResponse" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { description: "`FORBIDDEN` or `LEGAL_MARKET_FORBIDDEN`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "404": { description: "`LEGAL_DOCUMENT_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "`LEGAL_VERSION_IMMUTABLE`: not PUBLISHED.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+  /v1/admin/tax-rules:
+    get:
+      tags: [tax]
+      operationId: adminListTaxRules
+      summary: Tax rules (SUPER_ADMIN, FINANCE_ADMIN; new in 0.43.0)
+      description: "Applied nowhere yet. None in production; development and staging have SAMPLE ZW VAT 15% and GB VAT 20% (`is_sample`)."
+      security: [{ cookieSession: [] }]
+      parameters:
+        - { name: market, in: query, schema: { type: string } }
+        - { name: applies_to, in: query, schema: { type: string, enum: [SUBSCRIPTIONS, VENUE_BOOKINGS, LISTING_FEES] } }
+        - { name: status, in: query, schema: { type: string, enum: [ACTIVE, RETIRED] } }
+      responses:
+        "200": { description: The rules., content: { application/json: { schema: { $ref: "#/components/schemas/TaxRuleList" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [tax]
+      operationId: adminCreateTaxRule
+      summary: Create an ACTIVE tax rule (new in 0.43.0)
+      description: Two ACTIVE rules of one market and use may not overlap in time (`409 TAX_RULE_OVERLAP`). Audited (`TAX_RULE_CREATED`).
+      security: [{ cookieSession: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/TaxRuleInput" } } }
+      responses:
+        "201": { description: Created., content: { application/json: { schema: { $ref: "#/components/schemas/TaxRuleResponse" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: "`TAX_RULE_OVERLAP`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /v1/admin/tax-rules/lookup:
+    get:
+      tags: [tax]
+      operationId: adminLookupTaxRule
+      summary: The rule in force for a market and use at a moment (new in 0.43.0)
+      description: "`TaxFor`: ACTIVE, `effective_from <= at < effective_to`. `tax_rule` is null when none."
+      security: [{ cookieSession: [] }]
+      parameters:
+        - { name: market, in: query, required: true, schema: { type: string } }
+        - { name: applies_to, in: query, required: true, schema: { type: string, enum: [SUBSCRIPTIONS, VENUE_BOOKINGS, LISTING_FEES] } }
+        - { name: at, in: query, schema: { type: string, format: date-time }, description: Default now. }
+      responses:
+        "200": { description: The rule or null., content: { application/json: { schema: { $ref: "#/components/schemas/TaxRuleLookup" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /v1/admin/tax-rules/{id}:
+    parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [tax]
+      operationId: adminGetTaxRule
+      summary: One tax rule (new in 0.43.0)
+      security: [{ cookieSession: [] }]
+      responses:
+        "200": { description: The rule., content: { application/json: { schema: { $ref: "#/components/schemas/TaxRuleResponse" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "`TAX_RULE_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+    patch:
+      tags: [tax]
+      operationId: adminUpdateTaxRule
+      summary: Change a tax rule (new in 0.43.0)
+      description: |
+        Any field but `market_code` and `applies_to` (`400`). `effective_to` /
+        `registration_number_label` null clears them; `is_sample: false` confirms a sample. A RETIRED
+        rule is `409 TAX_RULE_RETIRED`. Audited (`TAX_RULE_UPDATED`, before and after).
+      security: [{ cookieSession: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/TaxRuleInput" } } }
+      responses:
+        "200": { description: Changed., content: { application/json: { schema: { $ref: "#/components/schemas/TaxRuleResponse" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "`TAX_RULE_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "`TAX_RULE_OVERLAP` or `TAX_RULE_RETIRED`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+  /v1/admin/tax-rules/{id}/retire:
+    parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [tax]
+      operationId: adminRetireTaxRule
+      summary: Retire a tax rule (new in 0.43.0)
+      description: ACTIVE → RETIRED; it never applies again. Audited (`TAX_RULE_RETIRED`). Body `{}`.
+      security: [{ cookieSession: [] }]
+      responses:
+        "200": { description: Retired., content: { application/json: { schema: { $ref: "#/components/schemas/TaxRuleResponse" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "`TAX_RULE_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "`TAX_RULE_RETIRED`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
   /v1/admin/reference:
     get:
       tags: [admin, reference]
@@ -13762,6 +14063,39 @@ paths:
         "404":
           description: "`MARKETING_CONSENT_TEXT_NOT_FOUND`."
           content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } }
+  /v1/me/legal-acceptances:
+    get:
+      tags: [legal]
+      operationId: listMyLegalAcceptances
+      summary: The caller's legal acceptances, newest first (new in 0.43.0)
+      description: |
+        Includes the privacy notice and terms recorded at registration (`context` REGISTRATION; null
+        `market_code` / `context` for records written before 0.43.0). `private, no-store`.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { description: The acceptances., content: { application/json: { schema: { $ref: "#/components/schemas/LegalAcceptanceList" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+    post:
+      tags: [legal]
+      operationId: acceptLegalDocument
+      summary: Accept a published legal document version (new in 0.43.0)
+      description: |
+        The version must be PUBLISHED and in effect for that kind and market (`market_code` default
+        GLOBAL), in English. `201` with the new record; `200` with the existing one when it was
+        already accepted. Shares the settings rate-limit bucket. Nothing in the API is ever blocked
+        while an acceptance is pending: this only records the person's answer.
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/LegalAcceptRequest" } } }
+      responses:
+        "200": { description: Already accepted., content: { application/json: { schema: { $ref: "#/components/schemas/LegalAcceptanceResponse" } } } }
+        "201": { description: Recorded., content: { application/json: { schema: { $ref: "#/components/schemas/LegalAcceptanceResponse" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "`LEGAL_DOCUMENT_NOT_FOUND`: no such published version (a DRAFT counts as none).", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "`LEGAL_VERSION_NOT_ACCEPTABLE`: retired or not yet in effect.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "429": { $ref: "#/components/responses/RateLimited" }
   /v1/me/marketing-preferences:
     get:
       tags: [marketing]
@@ -16895,6 +17229,217 @@ components:
         converted: { type: integer, description: Ever CONVERTED. }
         conversion_rate: { type: [string, "null"], pattern: "^[0-9]+\\.[0-9]{4}$", description: "4 decimal places, rounded half up; null when the denominator is 0." }
         median_first_response_minutes: { type: [number, "null"] }
+    Languages:
+      type: object
+      required: [default, languages]
+      properties:
+        default: { type: string, example: en }
+        languages:
+          type: array
+          items:
+            type: object
+            required: [code, name, native_name]
+            properties:
+              code: { type: string, example: en }
+              name: { type: string, example: English }
+              native_name: { type: string, example: English }
+    LegalKind:
+      type: string
+      enum: [TERMS, PRIVACY, COOKIES, REFUND, EULA, AGENT_TERMS]
+    LegalDocument:
+      type: object
+      description: |
+        A legal document version (new in 0.43.0). **`draft_notice: true`: a placeholder or unreviewed
+        text; show a DRAFT banner.** `body_markdown` is Markdown without HTML; sanitise anyway.
+      required: [id, kind, title, market_code, lang, version, effective_from, status, summary_of_changes, requires_reacceptance, draft_notice, published_at, retired_at]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { $ref: "#/components/schemas/LegalKind" }
+        title: { type: string, description: From the message catalogue., example: Terms and Conditions }
+        market_code: { type: string, description: "`GLOBAL` or a country code.", example: GLOBAL }
+        lang: { type: string, example: en }
+        version: { type: string, maxLength: 32, example: "2026-11-14" }
+        effective_from: { type: string, format: date-time }
+        status: { type: string, enum: [DRAFT, PUBLISHED, RETIRED] }
+        body_markdown: { type: string, description: Absent in lists. }
+        summary_of_changes: { type: string }
+        requires_reacceptance: { type: boolean }
+        draft_notice: { type: boolean }
+        published_at: { type: [string, "null"], format: date-time }
+        retired_at: { type: [string, "null"], format: date-time }
+    LegalDocumentResponse:
+      type: object
+      required: [document, requested_market, requested_lang, fallback_market, fallback_lang, preview]
+      properties:
+        document: { $ref: "#/components/schemas/LegalDocument" }
+        requested_market: { type: string }
+        requested_lang: { type: string, description: The negotiated language. }
+        fallback_market: { type: boolean, description: The market has no current version; GLOBAL's is returned. }
+        fallback_lang: { type: boolean }
+        preview: { type: boolean }
+    LegalDocumentList:
+      type: object
+      required: [market, lang, documents]
+      properties:
+        market: { type: string }
+        lang: { type: string }
+        documents:
+          type: array
+          items:
+            allOf:
+              - $ref: "#/components/schemas/LegalDocument"
+              - type: object
+                required: [fallback_market, fallback_lang]
+                properties:
+                  fallback_market: { type: boolean }
+                  fallback_lang: { type: boolean }
+    LegalVersionHistory:
+      type: object
+      required: [kind, market, lang, versions]
+      properties:
+        kind: { $ref: "#/components/schemas/LegalKind" }
+        market: { type: string }
+        lang: { type: string }
+        versions:
+          type: array
+          items:
+            allOf:
+              - $ref: "#/components/schemas/LegalDocument"
+              - type: object
+                required: [current]
+                properties:
+                  current: { type: boolean }
+    LegalPersonRef:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: [string, "null"], format: uuid, description: Null once the account is deleted. }
+        name: { type: string }
+    LegalAdminVersion:
+      allOf:
+        - $ref: "#/components/schemas/LegalDocument"
+        - type: object
+          required: [created_by, published_by, created_at, updated_at]
+          properties:
+            created_by: { $ref: "#/components/schemas/LegalPersonRef" }
+            published_by:
+              oneOf:
+                - $ref: "#/components/schemas/LegalPersonRef"
+                - type: "null"
+            created_at: { type: string, format: date-time }
+            updated_at: { type: string, format: date-time }
+    LegalAdminVersionResponse:
+      type: object
+      required: [version]
+      properties:
+        version: { $ref: "#/components/schemas/LegalAdminVersion" }
+    LegalAdminVersionList:
+      type: object
+      required: [versions]
+      properties:
+        versions: { type: array, items: { $ref: "#/components/schemas/LegalAdminVersion" } }
+    LegalVersionInput:
+      type: object
+      additionalProperties: false
+      description: "POST: `kind`, `market_code`, `version`, `effective_from`, `body_markdown` required. PATCH: any, except kind / market_code / lang."
+      properties:
+        kind: { $ref: "#/components/schemas/LegalKind" }
+        market_code: { type: string, description: "`GLOBAL` or a known country code." }
+        lang: { type: string, default: en }
+        version: { type: string, minLength: 1, maxLength: 32, description: Printable ASCII. }
+        effective_from: { type: string, format: date-time }
+        body_markdown: { type: string, minLength: 1, maxLength: 200000, description: Markdown; HTML tags are refused (autolinks allowed). }
+        summary_of_changes: { type: string, maxLength: 2000 }
+        requires_reacceptance: { type: boolean, default: false }
+        draft_notice: { type: boolean, default: true }
+    LegalAcceptance:
+      type: object
+      required: [kind, version, market_code, accepted_at, context]
+      properties:
+        kind: { $ref: "#/components/schemas/LegalKind" }
+        version: { type: string }
+        market_code: { type: [string, "null"] }
+        accepted_at: { type: string, format: date-time }
+        context: { type: [string, "null"], enum: [REGISTRATION, REACCEPTANCE, null] }
+    LegalAcceptanceResponse:
+      type: object
+      required: [acceptance]
+      properties:
+        acceptance: { $ref: "#/components/schemas/LegalAcceptance" }
+    LegalAcceptanceList:
+      type: object
+      required: [acceptances]
+      properties:
+        acceptances: { type: array, items: { $ref: "#/components/schemas/LegalAcceptance" } }
+    LegalAcceptRequest:
+      type: object
+      additionalProperties: false
+      required: [kind, version]
+      properties:
+        kind: { $ref: "#/components/schemas/LegalKind" }
+        version: { type: string, maxLength: 32 }
+        market_code: { type: [string, "null"], description: Default GLOBAL. }
+    PendingLegalAcceptance:
+      type: object
+      required: [kind, title, version, market_code, effective_from, summary_of_changes]
+      properties:
+        kind: { $ref: "#/components/schemas/LegalKind" }
+        title: { type: string }
+        version: { type: string }
+        market_code: { type: string }
+        effective_from: { type: string, format: date-time }
+        summary_of_changes: { type: string }
+    TaxRule:
+      type: object
+      required: [id, market_code, tax_name, rate, applies_to, inclusive, effective_from, effective_to, registration_number_label, status, is_sample, notes, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        market_code: { type: string, example: ZW }
+        tax_name: { type: string, example: VAT }
+        rate: { type: string, pattern: "^\\d{1,3}(\\.\\d{1,4})?$", description: A percent as a decimal string., example: "15" }
+        applies_to: { type: string, enum: [SUBSCRIPTIONS, VENUE_BOOKINGS, LISTING_FEES] }
+        inclusive: { type: boolean }
+        effective_from: { type: string, format: date-time }
+        effective_to: { type: [string, "null"], format: date-time, description: Exclusive. }
+        registration_number_label: { type: [string, "null"] }
+        status: { type: string, enum: [ACTIVE, RETIRED] }
+        is_sample: { type: boolean, description: A sample value to confirm. }
+        notes: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    TaxRuleInput:
+      type: object
+      additionalProperties: false
+      description: "POST: `market_code`, `tax_name`, `rate`, `applies_to`, `effective_from` required. PATCH: any but market_code / applies_to."
+      properties:
+        market_code: { type: string }
+        tax_name: { type: string, maxLength: 40 }
+        rate: { type: string, description: 0-100, at most 4 decimals. }
+        applies_to: { type: string, enum: [SUBSCRIPTIONS, VENUE_BOOKINGS, LISTING_FEES] }
+        inclusive: { type: boolean, default: false }
+        effective_from: { type: string, format: date-time }
+        effective_to: { type: [string, "null"], format: date-time }
+        registration_number_label: { type: [string, "null"], maxLength: 80 }
+        is_sample: { type: boolean }
+        notes: { type: string, maxLength: 1000 }
+    TaxRuleResponse:
+      type: object
+      required: [tax_rule]
+      properties:
+        tax_rule: { $ref: "#/components/schemas/TaxRule" }
+    TaxRuleList:
+      type: object
+      required: [tax_rules]
+      properties:
+        tax_rules: { type: array, items: { $ref: "#/components/schemas/TaxRule" } }
+    TaxRuleLookup:
+      type: object
+      required: [tax_rule]
+      properties:
+        tax_rule:
+          oneOf:
+            - $ref: "#/components/schemas/TaxRule"
+            - type: "null"
     ErrorEnvelope:
       type: object
       required: [error, trace_id]
@@ -19063,13 +19608,17 @@ components:
 
     Me:
       type: object
-      required: [user, session]
+      required: [user, session, pending_legal_acceptances]
       additionalProperties: false
       properties:
         user:
           $ref: "#/components/schemas/User"
         session:
           $ref: "#/components/schemas/Session"
+        pending_legal_acceptances:
+          type: array
+          description: New in 0.43.0. Always an array (empty when nothing is pending).
+          items: { $ref: "#/components/schemas/PendingLegalAcceptance" }
 
     AuthResult:
       type: object
@@ -19341,6 +19890,15 @@ components:
             accepted:
               type: boolean
               const: true
+            terms_version:
+              type: string
+              maxLength: 32
+              description: |
+                New in 0.43.0, optional. Recorded as a TERMS acceptance (context REGISTRATION). Not checked
+                against the published versions, like `privacy_version`. Send the web's terms version.
+            market_code:
+              type: string
+              description: New in 0.43.0, optional. `GLOBAL` or a country code; stored with both records.
         marketing_opt_in:
           type: boolean
           default: false

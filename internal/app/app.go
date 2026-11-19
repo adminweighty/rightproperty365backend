@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"rightproperty365.com/backend/internal/modules/accounts"
 	"rightproperty365.com/backend/internal/modules/agreements"
@@ -29,6 +30,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/inspections"
 	"rightproperty365.com/backend/internal/modules/leases"
 	"rightproperty365.com/backend/internal/modules/ledger"
+	"rightproperty365.com/backend/internal/modules/legal"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/maintenance"
 	"rightproperty365.com/backend/internal/modules/markets"
@@ -41,6 +43,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/reviews"
 	"rightproperty365.com/backend/internal/modules/saved"
 	"rightproperty365.com/backend/internal/modules/subscriptions"
+	"rightproperty365.com/backend/internal/modules/tax"
 	"rightproperty365.com/backend/internal/modules/teams"
 	"rightproperty365.com/backend/internal/modules/tenancies"
 	"rightproperty365.com/backend/internal/modules/trust"
@@ -49,6 +52,7 @@ import (
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/httpx"
+	"rightproperty365.com/backend/internal/platform/i18n"
 	"rightproperty365.com/backend/internal/platform/ics"
 	"rightproperty365.com/backend/internal/platform/malware"
 	"rightproperty365.com/backend/internal/platform/paygateway"
@@ -353,6 +357,15 @@ type Deps struct {
 	// not offered).
 	Payments       payments.Store
 	PaymentGateway paygateway.Gateway
+
+	// Legal holds the per-market legal document versions, LegalAcceptances
+	// the acceptances (user_consents) and Tax the tax rules (API 0.43.0).
+	// nil Legal / Tax: seeded memory stores; nil LegalAcceptances: the
+	// memory identity store's consents, or Legal when it implements
+	// legal.AcceptanceStore (the Postgres store does).
+	Legal            legal.Store
+	LegalAcceptances legal.AcceptanceStore
+	Tax              tax.Store
 
 	// Inbox is the notification centre (API 0.35.0): devices, in-app
 	// notifications, preferences and the delivery health. Logging out
@@ -722,6 +735,12 @@ func NewRouter(d Deps) (http.Handler, error) {
 	subscriptionsH := subscriptions.NewHandler(subscriptionsSvc, logger)
 	accountsH := accounts.NewHandler(accounts.NewService(accounts.Deps{Store: d.Accounts, Audit: d.AdminAudit, Mailer: accountMailer,
 		Subscriptions: AccountSubscriptions(d.Subscriptions, d.Now), Logger: logger, Now: d.Now}), logger, secure)
+	// Legal documents, tax rules and translations (API 0.43.0).
+	legalStore, legalAcceptances, taxStore := legalStores(d)
+	legalH := legal.NewHandler(legal.NewService(legal.Deps{Store: legalStore, Acceptances: legalAcceptances,
+		KnownMarket: knownMarket(d.Markets), Now: d.Now}), logger)
+	identityH.SetPendingLegalHook(func(r *http.Request, userID uuid.UUID) (any, error) { return legalH.PendingViews(r, userID) })
+	taxH := tax.NewHandler(tax.NewService(taxStore, knownMarket(d.Markets), d.Now), logger)
 	referenceAdminH := reference.NewAdminHandler(reference.NewAdmin(referenceSvc, referenceAdminStore, d.Now), logger)
 	reportsH := reports.NewHandler(d.Reports, marketCodes(d.Markets), d.Now, logger)
 	adminLimiter := httpx.NewRateLimiter(adminChangesPerMinute, adminChangesBurst)
@@ -738,6 +757,8 @@ func NewRouter(d Deps) (http.Handler, error) {
 	r := chi.NewRouter()
 	r.Use(
 		httpx.RequestID,
+		// The language of messages (API 0.43.0): ?lang, else Accept-Language, else en.
+		i18n.Middleware,
 		httpx.AccessLog(logger),
 		httpx.Recover(logger),
 		httpx.SecurityHeaders(secure),
@@ -799,6 +820,14 @@ func NewRouter(d Deps) (http.Handler, error) {
 		// A country's active listing packages with their prices, for the
 		// pricing page (public, cacheable; API 0.37.0).
 		r.Get("/markets/{code}/packages", packagesH.Public)
+
+		// Languages, and the per-market legal documents with their history
+		// (API 0.43.0). Public and cacheable; ?preview=true is for
+		// administrators (private).
+		r.Get("/i18n/languages", languagesHandler)
+		r.Get("/legal", legalH.List)
+		r.Get("/legal/{kind}", legalH.Get)
+		r.Get("/legal/{kind}/versions", legalH.Versions)
 
 		// Reference data behind every drop-down, filter and list. Public and cacheable.
 		r.Get("/reference", referenceH.All)
@@ -908,6 +937,13 @@ func NewRouter(d Deps) (http.Handler, error) {
 			r.Use(httpx.PrivateNoStore, auth.RequireAuth)
 			r.Get("/", identityH.MarketingPreferences)
 			r.With(settingsLimiter.Middleware).Put("/", identityH.SetMarketingPreferences)
+		})
+		// Legal acceptances (API 0.43.0): the person's own, and accepting a
+		// published version (re-acceptance). Writes share the settings bucket.
+		r.Route("/me/legal-acceptances", func(r chi.Router) {
+			r.Use(httpx.PrivateNoStore, auth.RequireAuth)
+			r.Get("/", legalH.MyAcceptances)
+			r.With(settingsLimiter.Middleware).Post("/", legalH.Accept)
 		})
 		// Deleting one's own account, confirmed with the password. It shares
 		// the sign-in bucket (a password is checked).
@@ -1322,6 +1358,17 @@ func NewRouter(d Deps) (http.Handler, error) {
 
 			// Reference data: SUPER_ADMIN, PLATFORM_ADMIN, CONTENT_ADMIN, and
 			// MARKET_ADMIN for the rows of its own market. Nothing is deleted.
+			// Legal documents (API 0.43.0): SUPER_ADMIN, CONTENT_ADMIN, and
+			// MARKET_ADMIN for its own market (checked per version).
+			r.Route("/legal", func(r chi.Router) {
+				r.Use(httpx.PrivateNoStore, auth.RequirePlatformRole(legal.AdminRoles()...))
+				legalH.AdminRoutes(r, adminLimiter.Middleware)
+			})
+			// Tax rules (API 0.43.0): SUPER_ADMIN, FINANCE_ADMIN. Applied nowhere yet.
+			r.Route("/tax-rules", func(r chi.Router) {
+				r.Use(httpx.PrivateNoStore, auth.RequirePlatformRole(tax.AdminRoles()...))
+				taxH.Routes(r, adminLimiter.Middleware)
+			})
 			r.Route("/reference", func(r chi.Router) {
 				r.Use(auth.RequirePlatformRole(reference.AdminRoles()...))
 				r.Get("/", referenceAdminH.Sets)

@@ -147,11 +147,11 @@ Professional (60) in ZW and GB, with **sample** prices, and gives **Sample Estat
 | --- | --- | --- |
 | `admin@example.test` | `SUPER_ADMIN` | Every section of the admin overview; onboarding review; routing exceptions |
 | `admin.platform@example.test` | `PLATFORM_ADMIN` | Admin overview; onboarding review; routing exceptions |
-| `admin.market@example.test` | `MARKET_ADMIN` for market **ZW** | The same, limited to Zimbabwe |
+| `admin.market@example.test` | `MARKET_ADMIN` for market **ZW** | The same, limited to Zimbabwe; the ZW legal document DRAFTs (`/v1/admin/legal?market=ZW`, preview with `/v1/legal/{kind}?market=ZW&preview=true`; never GLOBAL) |
 | `admin.moderator@example.test` | `MODERATOR` | Onboarding review (approve, reject, request changes) |
 | `admin.support@example.test` | `SUPPORT` | Routing exceptions; every lease, read-only (`/v1/admin/leases`); the overview sections support covers |
-| `admin.finance@example.test` | `FINANCE_ADMIN` | The overview sections finance covers (no finance screens are built yet) |
-| `admin.content@example.test` | `CONTENT_ADMIN` | The lease template library (`/v1/admin/lease-templates`); the overview sections content covers |
+| `admin.finance@example.test` | `FINANCE_ADMIN` | The overview sections finance covers; the tax rules (`/v1/admin/tax-rules`: the SAMPLE ZW VAT 15% and GB VAT 20%, applied nowhere; API 0.43.0) |
+| `admin.content@example.test` | `CONTENT_ADMIN` | The lease template library (`/v1/admin/lease-templates`); the legal documents of every market (`/v1/admin/legal`: GLOBAL placeholders marked DRAFT, ZW and GB DRAFT copies; API 0.43.0); the overview sections content covers |
 | `admin.mfa@example.test` | `PLATFORM_ADMIN` | **Enrolled in MFA** (API 0.40.0): the three-step administrator sign-in (password, emailed or demo code, then the authenticator or a recovery code). See below |
 
 Administrators cannot reset their password by email; on a database use

@@ -32,6 +32,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/inspections"
 	"rightproperty365.com/backend/internal/modules/leases"
 	"rightproperty365.com/backend/internal/modules/ledger"
+	"rightproperty365.com/backend/internal/modules/legal"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/maintenance"
 	"rightproperty365.com/backend/internal/modules/markets"
@@ -45,6 +46,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/reviews"
 	"rightproperty365.com/backend/internal/modules/saved"
 	"rightproperty365.com/backend/internal/modules/subscriptions"
+	"rightproperty365.com/backend/internal/modules/tax"
 	"rightproperty365.com/backend/internal/modules/teams"
 	"rightproperty365.com/backend/internal/modules/tenancies"
 	"rightproperty365.com/backend/internal/modules/venues"
@@ -181,6 +183,10 @@ func run() error {
 		memSubscriptions *subscriptions.MemoryStore
 		// paymentStore holds the online payments (API 0.42.0).
 		paymentStore payments.Store
+		// Legal documents, acceptances and tax rules (API 0.43.0).
+		legalStore       legal.Store
+		legalAcceptances legal.AcceptanceStore
+		taxStore         tax.Store
 	)
 	if cfg.UseMemoryStore() {
 		// config.Load guarantees this branch is only reachable in development.
@@ -374,6 +380,11 @@ func run() error {
 		subscriptionStore = memSubscriptions
 		memPayments := payments.NewMemoryStore(memAudit)
 		paymentStore = memPayments
+		// Legal documents (the migration 0045 placeholders) and SAMPLE tax rules.
+		memLegal := legal.NewMemoryStore(legal.SeedVersions(time.Now()), memAudit)
+		legalStore = memLegal
+		legalAcceptances = app.MemoryLegalAcceptances{Identity: memIdentity}
+		taxStore = tax.NewMemoryStore(tax.SeedRules(time.Now()), memAudit)
 		accountStore = accounts.NewMemoryStore(accounts.MemoryDeps{Identity: memIdentity, Listings: memListings, Teams: memTeams,
 			Directory: memDirectory, Audit: memAudit, CancelSubscriptions: memSubscriptions.CancelForDeletedUser,
 			DeleteSignature: memAgreements.DeleteSavedSignature, DeleteSavedListings: memSaved.DeleteUser,
@@ -385,7 +396,8 @@ func run() error {
 				memReviews.ForgetUser(userID, deletedName)
 				memEnquiries.ForgetUser(userID)
 			},
-			ForgetPackages: memPackages.ForgetUser, ForgetPayments: memPayments.ForgetUser})
+			ForgetPackages: memPackages.ForgetUser, ForgetPayments: memPayments.ForgetUser,
+			ForgetLegal: memLegal.ForgetUser})
 		reportStore = app.MemoryReports(app.MemoryReportStores{Identity: memIdentity, Onboarding: memOnboarding, Listings: memListings,
 			Requests: memRequests, Enquiries: memEnquiries, Leases: memLeases, Agreements: memAgreements, Subscriptions: memSubscriptions,
 			Markets: marketStore})
@@ -566,6 +578,9 @@ func run() error {
 		reviewStore = reviews.NewPostgresStore(pool)
 		packageStore = packages.NewPostgresStore(pool)
 		paymentStore = payments.NewPostgresStore(pool)
+		pgLegal := legal.NewPostgresStore(pool)
+		legalStore, legalAcceptances = pgLegal, pgLegal
+		taxStore = tax.NewPostgresStore(pool)
 		adminAuditLog = adminaudit.PostgresLog{Q: pool}
 		inboxSvc = inapp.NewService(inapp.NewPostgresStore(pool), pushProvider, logger, nil)
 		// Scan records; the worker scans the quarantined documents.
@@ -619,44 +634,47 @@ func run() error {
 	}
 
 	handler, err := app.NewRouter(app.Deps{
-		Config:         cfg,
-		Logger:         logger,
-		Health:         healthH,
-		Markets:        marketStore,
-		Requests:       requestStore,
-		Enquiries:      enquiryStore,
-		Reference:      referenceStore,
-		Listings:       listingStore,
-		ListingSearch:  listingSearch,
-		Directory:      directoryStore,
-		Identity:       identityStore,
-		Mailer:         mailer,
-		Onboarding:     onboardingStore,
-		Appointments:   appointmentStore,
-		Availability:   availabilityStore,
-		Teams:          teamStore,
-		Leases:         leaseStore,
-		Agreements:     agreementStore,
-		Files:          files,
-		Accounts:       accountStore,
-		Subscriptions:  subscriptionStore,
-		Reports:        reportStore,
-		AdminAudit:     adminAuditLog,
-		Saved:          savedStore,
-		Analytics:      analyticsStore,
-		CRM:            crmStore,
-		CRMItems:       crmItems,
-		Applications:   applicationStore,
-		Venues:         venueStore,
-		Ledger:         ledgerStore,
-		Tenancies:      tenancyStore,
-		Maintenance:    maintenanceStore,
-		Inspections:    inspectionStore,
-		Reviews:        reviewStore,
-		Packages:       packageStore,
-		Payments:       paymentStore,
-		PaymentGateway: gateway,
-		Inbox:          inboxSvc,
+		Config:           cfg,
+		Logger:           logger,
+		Health:           healthH,
+		Markets:          marketStore,
+		Requests:         requestStore,
+		Enquiries:        enquiryStore,
+		Reference:        referenceStore,
+		Listings:         listingStore,
+		ListingSearch:    listingSearch,
+		Directory:        directoryStore,
+		Identity:         identityStore,
+		Mailer:           mailer,
+		Onboarding:       onboardingStore,
+		Appointments:     appointmentStore,
+		Availability:     availabilityStore,
+		Teams:            teamStore,
+		Leases:           leaseStore,
+		Agreements:       agreementStore,
+		Files:            files,
+		Accounts:         accountStore,
+		Subscriptions:    subscriptionStore,
+		Reports:          reportStore,
+		AdminAudit:       adminAuditLog,
+		Saved:            savedStore,
+		Analytics:        analyticsStore,
+		CRM:              crmStore,
+		CRMItems:         crmItems,
+		Applications:     applicationStore,
+		Venues:           venueStore,
+		Ledger:           ledgerStore,
+		Tenancies:        tenancyStore,
+		Maintenance:      maintenanceStore,
+		Inspections:      inspectionStore,
+		Reviews:          reviewStore,
+		Packages:         packageStore,
+		Payments:         paymentStore,
+		PaymentGateway:   gateway,
+		Legal:            legalStore,
+		LegalAcceptances: legalAcceptances,
+		Tax:              taxStore,
+		Inbox:            inboxSvc,
 	})
 	if err != nil {
 		return err

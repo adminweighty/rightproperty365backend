@@ -499,6 +499,115 @@ change; follow-up dates and reminders; editing or deleting a note; listing analy
 favourites, saved searches and alerts. (Conversion funnels and response-time KPIs: API 0.38.0,
 below.)
 
+## Per-market legal documents, tax rules and translations (API 0.43.0)
+
+BR-001. Migration `0045_markets_legal_tax`; `modules/legal` (document versions, resolution,
+acceptances), `modules/tax` (tax rules, `TaxFor`), `platform/i18n` (message catalogue and
+language negotiation), `app/legal.go` (wiring). The exact JSON is the 0.43 markets / legal / tax /
+i18n contract. OpenAPI tags `legal` and `tax`.
+
+**This is structure only. None of the legal text in the API is final, and none of it is legal
+advice.** The content must come from the business's lawyers. **Migration 0045 inserts no document and no tax rule: production starts
+with nothing published and nothing live.** The development and staging seed's bodies open with
+`DRAFT — awaiting legal review` and carry `draft_notice: true`.
+
+### What existed before 0.43.0 (reused, not duplicated)
+
+| Area | What was there | What 0.43.0 does with it |
+| --- | --- | --- |
+| Privacy notice versions | `user_consents` (0002) with `consent_type` PRIVACY_NOTICE and a free `version`; registration requires `consent.privacy_version` (≤ 32 printable ASCII), never checked against anything; kept on account deletion | The acceptance store for every legal kind: the type check is widened, `market_code` and `context` added. PRIVACY stays PRIVACY_NOTICE. Registration gains optional `terms_version` and `market_code` |
+| Marketing consent texts | `marketing_consent_texts` (0041), versioned and immutable by trigger, DRAFT / APPROVED, current version a Go constant | Same pattern (immutability trigger, new version per change) for legal versions; marketing texts are untouched |
+| Markets | `markets` (every ISO country, currency, IANA time zone; `modules/markets`); MARKET_ADMIN carries a market code | Legal and tax validate market codes against it; MARKET_ADMIN scoping as in the reference data |
+| Tax | Only the venue quote's `TAX` fee (0032), a percent each venue **owner** sets (the sample showroom: VAT 15%). Subscription invoices carry no tax | Not changed and not wired: it is the owner's tax, not a platform rate. A test proves the quote is identical whatever the tax rules say |
+| Legal pages | The web serves `/legal/privacy-policy`, `/legal/terms-and-conditions`, `/legal/refund-policy`, `/legal/eula` from React components (`src/content/legal/*.tsx`, facts in `src/lib/legal.ts`, version `2026-11-14`, marked "not legal advice" in `docs/legal.md`). No cookies or agent-terms page | Kinds TERMS, PRIVACY, REFUND, EULA seeded; COOKIES and AGENT_TERMS valid but unseeded. Bodies are placeholders pointing at the web pages (copying the TSX would create a second diverging copy of unreviewed text) |
+| i18n | None: every message a literal English string; the web has no i18n either | `platform/i18n`, English only |
+
+### Legal documents
+
+A version belongs to a kind, a market (`GLOBAL` or a country code) and a language (`en`): status
+DRAFT → PUBLISHED → RETIRED. **A published version never changes**: the service refuses it
+(`409 LEGAL_VERSION_IMMUTABLE`), the memory store refuses it (`legal.FrozenChange`) and the database
+refuses it (trigger `legal_document_versions_frozen`). A change is a new version.
+
+**Resolution** (`legal.Resolve`, pure): the PUBLISHED version with the latest `effective_from` that is
+not in the future, for the market, else for GLOBAL; the language, else English. Public routes:
+`GET /v1/legal`, `GET /v1/legal/{kind}?market=&lang=&version=`, `GET /v1/legal/{kind}/versions`
+(cacheable, `Vary: Accept-Language`). **DRAFTs are never public**; `?preview=true` returns the newest
+DRAFT to an administrator of that market (otherwise `403 LEGAL_PREVIEW_FORBIDDEN`, never silently
+ignored).
+
+**Administration** `/v1/admin/legal`: SUPER_ADMIN and CONTENT_ADMIN everywhere, MARKET_ADMIN for its
+own market (never GLOBAL). Create, edit and delete DRAFTs; publish; retire. Every write is an
+`admin_audit_events` record (target `LEGAL_DOCUMENT_VERSION`).
+
+**Acceptances.** Registration records PRIVACY (as before) and, when `consent.terms_version` is sent,
+TERMS, with the market. When the current version of a kind has `requires_reacceptance`, `GET /v1/me`
+lists it in `pending_legal_acceptances` (`?market=`, default GLOBAL) until the person
+`POST /v1/me/legal-acceptances`. **Nothing is blocked**: the web decides how to prompt.
+
+**Account deletion:** acceptances are **kept** (as the privacy-notice records always were; the users
+row is anonymised, so they name nobody). Versions keep existing; the deleted person is unlinked as
+creator / publisher and named "Deleted user" (`legal.ForgetUserTx`, allowed by the trigger).
+
+**Seed decision.** The migration inserts **nothing** (production: no document, `GET /v1/legal` is an
+empty list, `GET /v1/legal/{kind}` is `404 LEGAL_DOCUMENT_NOT_FOUND`, nothing is ever pending, until a
+content administrator publishes the lawyers' text). **Development and staging only** (the in-memory
+stores, and `cmd/seed` → `devseed.SeedPostgresLegalTax`, guarded by `devseed.CheckEnvironment` as
+every sample; re-runnable): GLOBAL TERMS, PRIVACY, REFUND and EULA **PUBLISHED** with the web's
+version `2026-11-14` and a short placeholder body that says DRAFT and links to the web page
+(`draft_notice: true`), and DRAFT copies for ZW and GB. **The web keeps serving its own pages**;
+nothing on the site reads these routes yet.
+
+### Tax rules
+
+`tax_rules` per market and use (SUBSCRIPTIONS, VENUE_BOOKINGS, LISTING_FEES), rate as a decimal string
+percent, inclusive or exclusive, `[effective_from, effective_to)`, registration-number label, ACTIVE /
+RETIRED, `is_sample`. `tax.TaxFor(rules, market, appliesTo, at)` is the pure lookup; overlapping ACTIVE
+rules are refused. Administration `/v1/admin/tax-rules` (SUPER_ADMIN, FINANCE_ADMIN; audited,
+target `TAX_RULE`), with `/lookup`. **No rule exists in production** (the migration inserts none). The
+development and staging seed adds ZW VAT 15% and GB VAT 20% (ACTIVE, `is_sample: true`), **SAMPLE values
+to confirm with a tax adviser** (15% matches the sample showroom's VAT). **Nothing applies them**: no tax is
+charged anywhere new. When the platform starts charging tax on its own fees, call `TaxFor` where the
+invoice is issued and keep `is_sample` rules out (confirm them first with `PATCH {"is_sample": false}`).
+
+### Translations
+
+`i18n.T(ctx, key, args)`; `i18n.Middleware` (in the router) picks `?lang=` if supported, else the best
+`Accept-Language` match (q-values, `en-GB` → `en`), else `en`; an unknown language is never an
+error. Missing keys fall back to English, then to the key. Converted so far: the error envelope's
+shared messages (not found, method not allowed, invalid JSON / media type / size, internal, timeout,
+sign in, forbidden; `httpx.WriteValidation`) and the legal and tax routes. Everything else is still
+literal English: convert place by place. `GET /v1/i18n/languages` lists the languages.
+
+**Adding a language:** add it to `i18n.Languages()`; add `internal/platform/i18n/catalogue_<code>.go`
+with a map like `catalogueEN` and register it in `catalogues` (missing keys fall back to English, so a
+partial translation is safe); run the tests (`TestCataloguesUseKnownKeys` refuses unknown keys and
+mismatched `{placeholders}`); translate legal documents as new versions with that `lang` (the admin
+API accepts any listed language).
+
+### Payment gateways per market: next step (not built)
+
+0.42.0 has one gateway for the whole platform (`PAYMENT_GATEWAY`, `paygateway.Open`). Per-market
+gateways would be:
+
+1. A mapping `payment_gateway_markets (market_code PK REFERENCES markets(code), provider text, enabled
+   boolean, updated_at)`, or for a handful of markets config `PAYMENT_GATEWAY_<MARKET>=<driver>`
+   (e.g. `PAYMENT_GATEWAY_ZW=paynow`, `PAYMENT_GATEWAY_GB=stripe`), **defaulting to the global
+   `PAYMENT_GATEWAY`** for every market without an entry.
+2. `paygateway.Open` returns a registry `map[provider]Gateway`; `payments.Service` resolves the gateway
+   from the subscription's `market_code` (already stored on every payment) at checkout; webhooks are
+   already routed by `/v1/payments/webhooks/{provider}` and `payments.provider`, so no change there.
+3. `online_payment.enabled/provider` in `GET /v1/me/subscription-plans` becomes per market.
+
+It was not built in 0.43.0: only the `fake` driver exists, so a mapping would have nothing to choose
+between, and a wrong default could offer the fake page in a market. Build it with the first real
+provider.
+
+**Not verified / follow-ups:** migration `0045` and the Postgres stores have only run where
+`RP365_TEST_DATABASE_URL` is set (`TestStoreContractPostgres` in `modules/legal` and `modules/tax`).
+The legal text itself, the tax rates and the choice of re-acceptance wording are the business's and
+its lawyers' to supply.
+
 ## Online payment of subscription invoices (API 0.42.0)
 
 BR-015, FR-037-040. Migration `0044_online_payment`; `platform/paygateway` (the provider-neutral
@@ -3825,7 +3934,9 @@ Until these have owners, a disk failure or a bad migration on the server means d
 
 ### Schema
 
+- `0045_markets_legal_tax` (API 0.43.0): `legal_document_versions` (kind TERMS / PRIVACY / COOKIES / REFUND / EULA / AGENT_TERMS `legal_document_versions_kind_allowed`, `market_code` GLOBAL or ISO 3166-1 alpha-2 `legal_document_versions_market_format`, `lang` `legal_document_versions_lang_format`, `version_label` 1-32 printable ASCII `legal_document_versions_label_format`, unique per kind + market + lang `legal_document_versions_label_unique`, `effective_from`, status DRAFT / PUBLISHED / RETIRED `legal_document_versions_status_allowed`, `body_md` 1-200000 `legal_document_versions_body_length`, `summary_of_changes` `legal_document_versions_summary_length`, `requires_reacceptance`, `draft_notice`, `created_by` / `published_by` SET NULL with names, `published_at` `legal_document_versions_published_when_done`, `retired_at` `legal_document_versions_retired_when_done`; trigger `legal_document_versions_frozen`: a PUBLISHED / RETIRED row only retires or is unlinked, only a DRAFT is deleted; partial index `legal_document_versions_resolve_idx`). `user_consents`: `user_consents_type_check` replaced by `user_consents_type_allowed` (+ TERMS, COOKIES, REFUND, EULA, AGENT_TERMS), new nullable `market_code` (`user_consents_market_format`) and `context` REGISTRATION / REACCEPTANCE (`user_consents_context_allowed`), index `user_consents_user_type_idx`. `tax_rules` (market FK `markets.code`, `tax_name` `tax_rules_name_length`, `rate numeric(7,4)` 0-100 `tax_rules_rate_range`, `applies_to` SUBSCRIPTIONS / VENUE_BOOKINGS / LISTING_FEES `tax_rules_applies_to_allowed`, `inclusive`, `effective_from` / `effective_to` exclusive `tax_rules_period_order`, `registration_number_label` `tax_rules_registration_label_length`, status ACTIVE / RETIRED `tax_rules_status_allowed`, `is_sample`, `notes` `tax_rules_notes_length`; overlap refused by the service under an advisory lock). `admin_audit_events_target_type_allowed` + LEGAL_DOCUMENT_VERSION, TAX_RULE. **Inserts no rows** (production has no legal document and no tax rule); the development and staging seed (`devseed.SeedPostgresLegalTax`) adds the GLOBAL placeholders (PUBLISHED, body "DRAFT — awaiting legal review"), ZW / GB DRAFT copies and the SAMPLE tax rules. Account deletion keeps the acceptances and unlinks creators / publishers (`legal.ForgetUserTx`). New tables, new nullable columns, a wider check; re-runnable.
 - `0044_online_payment` (API 0.42.0): `payments` (subscription RESTRICT, invoice number and subscriber snapshot, market, `provider` `payments_provider_format`, `provider_ref` / `payment_ref` (unique per provider `payments_provider_ref_unique`), `idempotency_key` `payments_idempotency_key_unique`, invoice `amount` / `currency_code`, `paid_amount` / `paid_currency_code`, `refunded_amount` `payments_refunded_in_range`, `status` OPEN / SUCCEEDED / FAILED / EXPIRED / REVIEW / PARTIALLY_REFUNDED / REFUNDED `payments_status_allowed`, hosted URL, `expires_at`, return and cancel URLs, review and failure reasons, `opened_by` SET NULL and name, timestamps; at most one OPEN per subscription `payments_one_open_per_subscription`), `payment_refunds` (payment RESTRICT, amount, currency, reason, PENDING / SUCCEEDED / FAILED `payment_refunds_status_allowed`, `provider_refund_ref` unique per payment, `idempotency_key` unique, requester SET NULL and name, completed) and `payment_events` (provider, `event_id` unique per provider `payment_events_one_per_provider_event`, type, references, amount, `processing_started_at` lease, `processed_at`, outcome, payment SET NULL). `subscription_plans.package_code` (`subscription_plans_package_code_format`); `subscriptions.payment_recorded_by_kind` ADMIN / GATEWAY (`subscriptions_payment_recorder_allowed`) and `payment_provider`; `subscription_events` CHECKs re-created as `subscription_events_action_allowed` (+ REFUNDED) and `subscription_events_actor_allowed` (+ GATEWAY); `listing_package_assignments.subscription_id` (SET NULL, INVOICE only `listing_package_assignments_subscription_is_invoice`, one per subscription `listing_package_assignments_one_per_subscription`). Account deletion keeps the payments and unlinks the person explicitly. New tables, new nullable or defaulted columns and wider checks.
+- `0043_malware_scanning` (API 0.41.0): `file_scans` (one per uploaded document by `object_key` `file_scans_object_key_unique` / `file_scans_object_key_format`, `kind` ONBOARDING_DOCUMENT / APPLICATION_FILE / LEDGER_ATTACHMENT / AGREEMENT_DOCUMENT `file_scans_kind_known`, `uploaded_by` SET NULL, status PENDING / CLEAN / INFECTED / LEGACY_UNSCANNED `file_scans_status_known`, `signature` only when INFECTED `file_scans_signature_when_infected` / `file_scans_signature_size`, `size_bytes`, `attempts`, `last_error`, `next_attempt_at` (required while PENDING `file_scans_pending_scheduled`), `scanned_at` (`file_scans_scanned_when_done`); indexes `file_scans_due_idx`, `file_scans_status_idx`, `file_scans_uploaded_by_idx`). Every document stored before it is backfilled as LEGACY_UNSCANNED. Account deletion unlinks the uploader (`malware.ForgetUploaderTx`). New table; re-runnable.
 - `0042_admin_mfa` (API 0.40.0): `admin_mfa_totp` (one per user, primary key and cascade on `users`; `secret_sealed` AES-256-GCM sealed secret 29-512 bytes `admin_mfa_totp_sealed_size`; `confirmed_at` NULL while the setup is pending; `last_used_step` for replay protection, never negative `admin_mfa_totp_step_not_negative`; `created_at`, `updated_at`) and `admin_mfa_recovery_codes` (id, user, Argon2id `code_hash` 20-400 characters `admin_mfa_recovery_codes_hash_size`, `used_at`, `created_at`; index `admin_mfa_recovery_codes_user_idx`). `sign_in_challenges` gains `code_verified_at` (the emailed code was accepted; administrators only, `sign_in_challenges_mfa_admin_only`) and `mfa_attempts` (`sign_in_challenges_mfa_attempts_min`). Account deletion deletes the MFA rows explicitly. New tables and new columns with defaults.
 - API 0.39.0 (calendar invitations) adds no migration: SEQUENCE is derived from the existing timelines.
 

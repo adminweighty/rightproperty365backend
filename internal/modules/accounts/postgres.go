@@ -16,6 +16,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/inapp"
 	"rightproperty365.com/backend/internal/modules/inspections"
+	"rightproperty365.com/backend/internal/modules/legal"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/maintenance"
 	"rightproperty365.com/backend/internal/modules/packages"
@@ -485,6 +486,13 @@ func (s *PostgresStore) Delete(ctx context.Context, d Deletion) (Deleted, error)
 		// unlinked as who opened a checkout or asked for a refund, and their
 		// open checkouts expire.
 		if err := payments.ForgetUserTx(ctx, tx, d.UserID, DeletedName, d.At); err != nil {
+			return err
+		}
+		// Legal document versions (migration 0045): the person is unlinked as
+		// creator and publisher (names replaced); the versions are kept.
+		// Legal acceptances (user_consents) are KEPT, as the privacy-notice
+		// records always were: the anonymised users row names nobody.
+		if err := legal.ForgetUserTx(ctx, tx, d.UserID, DeletedName); err != nil {
 			return err
 		}
 		// Marketing consent records (migration 0041): deleted (the users row

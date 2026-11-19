@@ -96,6 +96,11 @@ func run() error {
 	if err := devseed.SeedPostgresSubscriptions(ctx, pool, time.Now()); err != nil {
 		return err
 	}
+	// Legal placeholders (GLOBAL published, ZW/GB drafts) and the SAMPLE tax
+	// rules (needs migration 0045, which inserts none: production has nothing).
+	if err := devseed.SeedPostgresLegalTax(ctx, pool, time.Now()); err != nil {
+		return err
+	}
 	// admin.mfa@example.test enrolled in MFA with the fixed development
 	// secret (needs migration 0042), sealed with MFA_ENCRYPTION_KEY or, in
 	// development without one, the development key. Without a key outside

@@ -201,6 +201,13 @@ func SortedAccountRoles(roles []AccountRole) []AccountRole {
 // Consent types recorded in user_consents.
 const ConsentPrivacyNotice = "PRIVACY_NOTICE"
 
+// ConsentTerms records acceptance of the terms and conditions (API 0.43.0;
+// the legal module records the other legal kinds the same way).
+const ConsentTerms = "TERMS"
+
+// ConsentContextRegistration marks consents given at registration (0.43.0).
+const ConsentContextRegistration = "REGISTRATION"
+
 // Domain errors mapped to HTTP statuses by the handler.
 var (
 	ErrInvalidCredentials = errors.New("invalid credentials")
@@ -258,6 +265,12 @@ type NewUser struct {
 	MarketingSource         string
 	MarketingConsentVersion string
 	PrivacyVersion          string
+	// TermsVersion is the terms and conditions version accepted ("" when the
+	// client did not send one: no TERMS record). LegalMarket is the market
+	// whose documents were shown (GLOBAL or a country code; "" unknown).
+	// Both API 0.43.0.
+	TermsVersion string
+	LegalMarket  string
 	// AccountRoles is the validated role selection with initial statuses.
 	AccountRoles []AccountRole
 	// EmailVerifiedAt is nil for normal registration (set by seeds only).

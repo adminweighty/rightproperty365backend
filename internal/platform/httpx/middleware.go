@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"rightproperty365.com/backend/internal/platform/i18n"
 	"rightproperty365.com/backend/internal/platform/logging"
 )
 
@@ -148,7 +149,7 @@ func Recover(logger *slog.Logger) func(http.Handler) http.Handler {
 				if rec, ok := w.(*statusRecorder); ok && rec.status != 0 {
 					return // response already started; nothing safe to add
 				}
-				WriteError(w, r, http.StatusInternalServerError, CodeInternal, "Something went wrong on our side. Please try again.", nil)
+				WriteError(w, r, http.StatusInternalServerError, CodeInternal, i18n.T(r.Context(), "error.internal", nil), nil)
 			}()
 			next.ServeHTTP(w, r)
 		})

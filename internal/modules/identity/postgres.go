@@ -56,13 +56,16 @@ func (s *PostgresStore) inTx(ctx context.Context, fn func(tx pgx.Tx) error) erro
 	return nil
 }
 
+// insertConsent records the registration consents: the privacy notice, and
+// the terms when a version was sent (market_code and context: 0045).
 func insertConsent(ctx context.Context, q querier, u NewUser) error {
-	_, err := q.Exec(ctx, `
-		INSERT INTO user_consents (id, user_id, consent_type, version, accepted_at, created_at)
-		VALUES ($1, $2, $3, $4, $5, $5)`,
-		uuid.New(), u.ID, ConsentPrivacyNotice, u.PrivacyVersion, u.CreatedAt)
-	if err != nil {
-		return fmt.Errorf("insert consent: %w", err)
+	for _, c := range registrationConsents(u) {
+		if _, err := q.Exec(ctx, `
+			INSERT INTO user_consents (id, user_id, consent_type, version, accepted_at, created_at, market_code, context)
+			VALUES ($1, $2, $3, $4, $5, $5, $6, $7)`,
+			uuid.New(), c.UserID, c.ConsentType, c.Version, c.AcceptedAt, c.MarketCode, c.Context); err != nil {
+			return fmt.Errorf("insert consent: %w", err)
+		}
 	}
 	return nil
 }

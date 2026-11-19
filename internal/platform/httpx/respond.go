@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"rightproperty365.com/backend/internal/platform/i18n"
 	"rightproperty365.com/backend/internal/platform/logging"
 )
 
@@ -91,21 +92,26 @@ func WriteInternalError(w http.ResponseWriter, r *http.Request, logger *slog.Log
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		logger.ErrorContext(r.Context(), "request timed out", slog.String("error", err.Error()))
-		WriteError(w, r, http.StatusGatewayTimeout, CodeTimeout, "The request took too long. Please try again.", nil)
+		WriteError(w, r, http.StatusGatewayTimeout, CodeTimeout, i18n.T(r.Context(), "error.timeout", nil), nil)
 		return
 	}
 	logger.ErrorContext(r.Context(), "internal error", slog.String("error", err.Error()))
-	WriteError(w, r, http.StatusInternalServerError, CodeInternal, "Something went wrong on our side. Please try again.", nil)
+	WriteError(w, r, http.StatusInternalServerError, CodeInternal, i18n.T(r.Context(), "error.internal", nil), nil)
+}
+
+// WriteValidation writes 400 VALIDATION_FAILED with the shared message.
+func WriteValidation(w http.ResponseWriter, r *http.Request, fields map[string]string) {
+	WriteError(w, r, http.StatusBadRequest, CodeValidationFailed, i18n.T(r.Context(), "error.validation_failed", nil), fields)
 }
 
 // NotFound is the router's 404 handler.
 func NotFound(w http.ResponseWriter, r *http.Request) {
-	WriteError(w, r, http.StatusNotFound, CodeNotFound, "The requested resource was not found.", nil)
+	WriteError(w, r, http.StatusNotFound, CodeNotFound, i18n.T(r.Context(), "error.not_found", nil), nil)
 }
 
 // MethodNotAllowed is the router's 405 handler.
 func MethodNotAllowed(w http.ResponseWriter, r *http.Request) {
-	WriteError(w, r, http.StatusMethodNotAllowed, CodeMethodNotAllowed, "This method is not allowed for the requested resource.", nil)
+	WriteError(w, r, http.StatusMethodNotAllowed, CodeMethodNotAllowed, i18n.T(r.Context(), "error.method_not_allowed", nil), nil)
 }
 
 // DecodeJSON strictly decodes a JSON request body into dst. On failure it
@@ -113,7 +119,7 @@ func MethodNotAllowed(w http.ResponseWriter, r *http.Request) {
 func DecodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || mediaType != "application/json" {
-		WriteError(w, r, http.StatusUnsupportedMediaType, CodeUnsupportedMediaType, "Content-Type must be application/json.", nil)
+		WriteError(w, r, http.StatusUnsupportedMediaType, CodeUnsupportedMediaType, i18n.T(r.Context(), "error.unsupported_media_type", nil), nil)
 		return false
 	}
 
@@ -122,14 +128,14 @@ func DecodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	if err := dec.Decode(dst); err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
-			WriteError(w, r, http.StatusRequestEntityTooLarge, CodePayloadTooLarge, "The request body is too large.", nil)
+			WriteError(w, r, http.StatusRequestEntityTooLarge, CodePayloadTooLarge, i18n.T(r.Context(), "error.payload_too_large", nil), nil)
 			return false
 		}
-		WriteError(w, r, http.StatusBadRequest, CodeInvalidJSON, "The request body is not valid JSON for this endpoint.", nil)
+		WriteError(w, r, http.StatusBadRequest, CodeInvalidJSON, i18n.T(r.Context(), "error.invalid_json", nil), nil)
 		return false
 	}
 	if dec.More() {
-		WriteError(w, r, http.StatusBadRequest, CodeInvalidJSON, "The request body must contain a single JSON object.", nil)
+		WriteError(w, r, http.StatusBadRequest, CodeInvalidJSON, i18n.T(r.Context(), "error.single_json_object", nil), nil)
 		return false
 	}
 	return true
@@ -146,7 +152,7 @@ func DecodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 func WriteCacheableJSON(w http.ResponseWriter, r *http.Request, v any, maxAge, staleWhileRevalidate time.Duration) {
 	var body bytes.Buffer
 	if err := json.NewEncoder(&body).Encode(v); err != nil {
-		WriteError(w, r, http.StatusInternalServerError, CodeInternal, "Something went wrong on our side. Please try again.", nil)
+		WriteError(w, r, http.StatusInternalServerError, CodeInternal, i18n.T(r.Context(), "error.internal", nil), nil)
 		return
 	}
 	sum := sha256.Sum256(body.Bytes())

@@ -260,6 +260,33 @@ type MemoryConsent struct {
 	ConsentType string
 	Version     string
 	AcceptedAt  time.Time
+	// MarketCode and Context are new in 0.43.0 (nil for older records).
+	MarketCode *string
+	Context    *string
+}
+
+// registrationConsents are the consent records a registration writes: the
+// privacy notice, and the terms when a version was sent (0.43.0).
+func registrationConsents(u NewUser) []MemoryConsent {
+	var market *string
+	if u.LegalMarket != "" {
+		m := u.LegalMarket
+		market = &m
+	}
+	ctx := ConsentContextRegistration
+	out := []MemoryConsent{{UserID: u.ID, ConsentType: ConsentPrivacyNotice, Version: u.PrivacyVersion, AcceptedAt: u.CreatedAt, MarketCode: market, Context: &ctx}}
+	if u.TermsVersion != "" {
+		out = append(out, MemoryConsent{UserID: u.ID, ConsentType: ConsentTerms, Version: u.TermsVersion, AcceptedAt: u.CreatedAt, MarketCode: market, Context: &ctx})
+	}
+	return out
+}
+
+// AddConsent appends a consent record (the legal module's acceptances in
+// development and tests).
+func (s *MemoryStore) AddConsent(c MemoryConsent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.consents = append(s.consents, c)
 }
 
 // NewMemoryStore returns an empty store.
@@ -445,7 +472,7 @@ func (s *MemoryStore) createUser(u NewUser) error {
 	}
 	s.byEmail[u.Email] = u.ID
 	s.accountRoles[u.ID] = append([]AccountRole(nil), u.AccountRoles...)
-	s.consents = append(s.consents, MemoryConsent{UserID: u.ID, ConsentType: ConsentPrivacyNotice, Version: u.PrivacyVersion, AcceptedAt: u.CreatedAt})
+	s.consents = append(s.consents, registrationConsents(u)...)
 	if u.MarketingOptIn {
 		e, err := registrationMarketingEvent(u)
 		if err != nil {
@@ -481,7 +508,7 @@ func (s *MemoryStore) updatePendingRegistration(u NewUser) error {
 	}
 	user.Name, user.PasswordHash, user.MarketingOptIn = u.Name, u.PasswordHash, u.MarketingOptIn
 	s.accountRoles[u.ID] = append([]AccountRole(nil), u.AccountRoles...)
-	s.consents = append(s.consents, MemoryConsent{UserID: u.ID, ConsentType: ConsentPrivacyNotice, Version: u.PrivacyVersion, AcceptedAt: u.CreatedAt})
+	s.consents = append(s.consents, registrationConsents(u)...)
 	for _, t := range s.verifications {
 		if t.UserID == u.ID && t.UsedAt == nil {
 			used := u.CreatedAt
