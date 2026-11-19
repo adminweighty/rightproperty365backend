@@ -183,6 +183,11 @@ func TestOnlinePaymentFakeEndToEnd(t *testing.T) {
 		!strings.Contains(rec.Header().Get("Content-Type"), "text/html") {
 		t.Fatalf("page: %s", body)
 	}
+	// Browsers apply form-action to the 303 after a form post: the web app's
+	// origin (the return page) must be allowed, or the browser stays here.
+	if csp := rec.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "form-action 'self' http") {
+		t.Fatalf("form-action does not allow the return page's origin: %q", csp)
+	}
 	rec = e.get("/v1/me/subscriptions/"+id+"/payments", agent)
 	wantStatus(t, rec, http.StatusOK)
 	if !strings.Contains(rec.Body.String(), `"status":"OPEN"`) {

@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -479,8 +480,18 @@ func (h *Handler) fake() *paygateway.Fake {
 	return f
 }
 
-func fakeHeaders(w http.ResponseWriter) {
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'")
+// fakeHeaders locks the fake hosted page down. Its forms post to this API,
+// which answers with a 303 to the web app's return page; browsers apply
+// form-action to that redirect too, so the return and cancel URLs' origins are
+// allowed besides 'self'.
+func fakeHeaders(w http.ResponseWriter, returnURLs ...string) {
+	formAction := "'self'"
+	for _, raw := range returnURLs {
+		if u, err := url.Parse(raw); err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" {
+			formAction += " " + u.Scheme + "://" + u.Host
+		}
+	}
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action "+formAction+"; frame-ancestors 'none'")
 	w.Header().Set("Cache-Control", "no-store")
 }
 
@@ -498,7 +509,7 @@ func (h *Handler) FakeCheckout(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
-	fakeHeaders(w)
+	fakeHeaders(w, p.ReturnURL, p.CancelURL)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = fakePage.Execute(w, map[string]any{"Invoice": p.InvoiceNumber, "Currency": p.Currency, "Amount": p.Amount, "Status": p.Status,
 		"Open": p.Status == StatusOpen, "Base": "/v1/payments/fake/checkout/" + p.ProviderRef, "Cancel": template.URL(p.CancelURL)})
@@ -540,6 +551,6 @@ func (h *Handler) FakeComplete(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// Back to the return page (it shows SUCCEEDED, OPEN or FAILED from the API).
-	fakeHeaders(w)
+	fakeHeaders(w, p.ReturnURL, p.CancelURL)
 	http.Redirect(w, r, p.ReturnURL, http.StatusSeeOther)
 }
