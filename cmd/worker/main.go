@@ -24,6 +24,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/crm"
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/inapp"
+	"rightproperty365.com/backend/internal/modules/inspections"
 	"rightproperty365.com/backend/internal/modules/leases"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/maintenance"
@@ -149,6 +150,12 @@ func run() error {
 	// book and its tenancy's tenants with a verified account at send time.
 	handlers.SetMaintenanceSource(app.MaintenanceNotices(maintenance.NewPostgresStore(pool), tenancies.NewPostgresStore(pool),
 		crm.NewPostgresStore(pool), identity.NewPostgresStore(pool)))
+
+	// Inspections (API 0.36.3): the emails to the tenants read the
+	// inspection, its market's time zone and the tenancy's tenants with a
+	// verified account at send time.
+	handlers.SetInspectionSource(app.InspectionNotices(inspections.NewPostgresStore(pool), tenancies.NewPostgresStore(pool),
+		crm.NewPostgresStore(pool), identity.NewPostgresStore(pool), markets.NewPostgresStore(pool)))
 
 	// The notification centre (API 0.35.0): every notification email's
 	// recipient who has an account also gets one in-app notification per

@@ -36,6 +36,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/inapp"
+	"rightproperty365.com/backend/internal/modules/inspections"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/maintenance"
 	"rightproperty365.com/backend/internal/modules/onboarding"
@@ -299,6 +300,8 @@ type Handlers struct {
 	venue func(ctx context.Context, id uuid.UUID) (venues.BookingNotice, error)
 	// maintenance loads the request behind a maintenance event.
 	maintenance func(ctx context.Context, id uuid.UUID) (maintenance.NotificationInfo, error)
+	// inspection loads the inspection behind an inspection event.
+	inspection func(ctx context.Context, id uuid.UUID) (inspections.NotificationInfo, error)
 	// inbox is the notification centre (API 0.35.0): the in-app notification
 	// of each (event, recipient), its push deliveries, and the preferences
 	// the emails consult. Nil: email only, no preference check.
@@ -501,7 +504,7 @@ func EventTypes() []string {
 		identity.EventPasswordChanged,
 		identity.EventAdminSignedIn,
 	}, onboarding.EventTypes()...), append(append(append(appointments.EventTypes(), listings.ReviewEventTypes()...),
-		accounts.EventTypes()...), append(append(subscriptions.EventTypes(), applications.OutboxEventTypes()...), append(venues.EventTypes(), maintenance.OutboxEventTypes()...)...)...)...)
+		accounts.EventTypes()...), append(append(subscriptions.EventTypes(), applications.OutboxEventTypes()...), append(append(venues.EventTypes(), maintenance.OutboxEventTypes()...), inspections.OutboxEventTypes()...)...)...)...)
 }
 
 // PathOnboarding is the web page where an applicant fills in an application.
@@ -807,6 +810,11 @@ func (h *Handlers) build(ctx context.Context, ev outbox.Event) ([]plan, error) {
 
 	case maintenance.OutboxRequestCreated, maintenance.OutboxStatusChanged:
 		if err := h.maintenanceNotes(ctx, ev, add); err != nil {
+			return nil, err
+		}
+
+	case inspections.OutboxScheduled, inspections.OutboxCompleted:
+		if err := h.inspectionNotes(ctx, ev, add); err != nil {
 			return nil, err
 		}
 

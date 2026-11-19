@@ -168,6 +168,11 @@ func SampleData(name string) Data {
 			d.StatusText = "New time requested"
 			d.ProposedTime = LocalSlot(start.Add(48*time.Hour), start.Add(52*time.Hour), "Africa/Harare")
 		}
+	case "inspection-scheduled", "inspection-completed":
+		d.Name, d.Path, d.Reference, d.RequestType = "Tendai Ncube", "/account/tenancies", "RPI-2026-000042", "Routine"
+		if name == "inspection-scheduled" {
+			d.AppointmentTime = LocalDateTime(time.Date(2026, 11, 26, 7, 0, 0, 0, time.UTC), "Africa/Harare")
+		}
 	case "maintenance-request-new", "maintenance-status-changed":
 		d.Name, d.Path, d.Reference, d.Service, d.StatusText = "Tendai Ncube", "/agent/maintenance", "RPM-2026-000042", "Plumbing", "New"
 		if name == "maintenance-status-changed" {

@@ -82,6 +82,10 @@ const (
 	ActionMaintenanceAssigned     = "MAINTENANCE_ASSIGNED"
 	ActionMaintenanceCostRecorded = "MAINTENANCE_COST_RECORDED"
 	ActionMaintenanceCancelled    = "MAINTENANCE_CANCELLED"
+	// Inspections (API 0.36.3, FR-047): an inspection completed (frozen)
+	// or cancelled.
+	ActionInspectionCompleted = "INSPECTION_COMPLETED"
+	ActionInspectionCancelled = "INSPECTION_CANCELLED"
 )
 
 var actionLabels = map[string]string{
@@ -127,6 +131,8 @@ var actionLabels = map[string]string{
 	ActionMaintenanceAssigned:        "Maintenance request assigned to a provider",
 	ActionMaintenanceCostRecorded:    "Maintenance cost recorded",
 	ActionMaintenanceCancelled:       "Maintenance request cancelled",
+	ActionInspectionCompleted:        "Inspection completed",
+	ActionInspectionCancelled:        "Inspection cancelled",
 }
 
 // Actions returns every action, in a stable order.
@@ -170,6 +176,8 @@ const (
 	TargetTenancy = "TENANCY"
 	// TargetMaintenanceRequest is one maintenance request (labelled with its reference).
 	TargetMaintenanceRequest = "MAINTENANCE_REQUEST"
+	// TargetInspection is one inspection (labelled with its reference).
+	TargetInspection = "INSPECTION"
 )
 
 // Event is one audit record.

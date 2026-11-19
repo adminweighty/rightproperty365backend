@@ -36,14 +36,20 @@ func AdminRoles() []string {
 // CreatableSets are the sets new rows may be added to.
 func CreatableSets() []string {
 	return []string{SetPropertyTypes, SetListingFeatures, SetServiceTrades, SetRegions, SetCities, SetSuburbs, SetContactSources,
-		SetMaintenanceCategories, SetMaintenancePriorities}
+		SetMaintenanceCategories, SetMaintenancePriorities, SetInspectionChecklistTemplates}
 }
 
 // marketSets are the sets whose rows belong to one market.
 var marketSets = []string{SetRegions, SetCities, SetSuburbs}
 
-// parentSets says which set a row's parent_code points into.
-var parentSets = map[string]string{SetPropertyTypes: SetPropertyCategories, SetCities: SetRegions, SetSuburbs: SetCities}
+// parentSets says which set a row's parent_code points into. The checklist
+// templates point into their own set (template, area, item).
+var parentSets = map[string]string{SetPropertyTypes: SetPropertyCategories, SetCities: SetRegions, SetSuburbs: SetCities,
+	SetInspectionChecklistTemplates: SetInspectionChecklistTemplates}
+
+// optionalParent are the sets whose rows may have no parent: a property
+// type without a category, a checklist template (its areas and items have one).
+var optionalParent = []string{SetPropertyTypes, SetInspectionChecklistTemplates}
 
 // Errors of the administration.
 var (
@@ -191,7 +197,7 @@ func targetID(set, code string) string { return set + "/" + code }
 func (a *Admin) checkParent(ctx context.Context, set string, parent *string, fields map[string]string) error {
 	parentSet, ok := parentSets[set]
 	if parent == nil {
-		if ok && set != SetPropertyTypes {
+		if ok && !slices.Contains(optionalParent, set) {
 			fields["parent_code"] = "is required (a code from " + parentSet + ")"
 		}
 		return nil

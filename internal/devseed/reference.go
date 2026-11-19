@@ -202,6 +202,8 @@ func ReferenceItems() map[string][]reference.Item {
 	addBackendReference(sets)
 	// The agent CRM's contact types and sources (migration 0030).
 	addCRMReference(sets)
+	// The inspection checklist templates (migration 0038).
+	sets[reference.SetInspectionChecklistTemplates] = InspectionTemplateRows()
 	return sets
 }
 

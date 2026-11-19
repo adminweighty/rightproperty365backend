@@ -1,0 +1,12 @@
+{{define "subject"}}Inspection report ready: {{.Reference}}{{end}}
+{{define "heading"}}Inspection report ready{{end}}
+{{define "button"}}Open your tenancy{{end}}
+{{define "why"}}You are receiving this because you rent this property on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+An inspection of your home was completed. You can read the report and download it as a PDF.
+
+Reference: {{.Reference}}
+Inspection: {{.RequestType}}
+
+The findings, notes and photos are on RightProperty365. They are not included in this email.{{end}}

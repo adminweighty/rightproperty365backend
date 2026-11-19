@@ -139,6 +139,15 @@ var inAppTemplates = map[string]inAppTemplate{
 		return "Maintenance request: " + d.StatusText
 	}},
 
+	// Inspections (API 0.36.3): to the tenants; the link is their tenancy's page.
+	"inspection-scheduled": {typ: inapp.TypeInspection, body: inspectionBody, title: func(d mail.Data) string {
+		if d.StatusText == "Rescheduled" {
+			return "Inspection rescheduled"
+		}
+		return "Inspection scheduled"
+	}},
+	"inspection-completed": {typ: inapp.TypeInspection, title: fixed("Inspection report ready"), body: inspectionBody},
+
 	"listing-approved": {typ: inapp.TypeListingReviewed, path: pathAgentListings, title: func(d mail.Data) string {
 		if d.Edit {
 			return "Listing changes approved"
@@ -168,6 +177,11 @@ func subscriptionBody(d mail.Data) string { return joinSafe(d.InvoiceNumber, d.P
 
 // maintenanceBody is the reference and the category label (safe text).
 func maintenanceBody(d mail.Data) string { return joinSafe(d.Reference, d.Service) }
+
+// inspectionBody is the reference, the type and the scheduled time (safe text).
+func inspectionBody(d mail.Data) string {
+	return joinSafe(d.Reference, d.RequestType, d.AppointmentTime)
+}
 
 func joinSafe(parts ...string) string {
 	var out []string

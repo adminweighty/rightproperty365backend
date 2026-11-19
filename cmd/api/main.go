@@ -29,6 +29,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/health"
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/inapp"
+	"rightproperty365.com/backend/internal/modules/inspections"
 	"rightproperty365.com/backend/internal/modules/leases"
 	"rightproperty365.com/backend/internal/modules/ledger"
 	"rightproperty365.com/backend/internal/modules/listings"
@@ -158,6 +159,7 @@ func run() error {
 		ledgerStore      ledger.Store
 		tenancyStore     tenancies.Store
 		maintenanceStore maintenance.Store
+		inspectionStore  inspections.Store
 		// memSubscriptions is set without a database (its expiry sweep runs here).
 		memSubscriptions *subscriptions.MemoryStore
 	)
@@ -298,6 +300,14 @@ func run() error {
 			return fmt.Errorf("seed sample maintenance requests: %w", err)
 		}
 		maintenanceStore = memMaintenance
+		// Inspections: Flat 1's completed move-in and upcoming routine
+		// inspection; completions and cancellations are audited.
+		memInspections := inspections.NewMemoryStore()
+		memInspections.SetAuditSink(memTeams.AuditSink())
+		if err := devseed.SeedMemoryInspections(memInspections, time.Now()); err != nil {
+			return fmt.Errorf("seed sample inspections: %w", err)
+		}
+		inspectionStore = memInspections
 		crmItems = app.MemoryCRMItems{Requests: memRequests, Enquiries: memEnquiries, Appointments: memAppointments,
 			Identity: memIdentity, Listings: memListings, Applications: memApplications}
 		// The notification centre, and its push sender in this process.
@@ -325,7 +335,8 @@ func run() error {
 			DeleteSignature: memAgreements.DeleteSavedSignature, DeleteSavedListings: memSaved.DeleteUser,
 			EraseApplications:   func(userID uuid.UUID, at time.Time) { memApplications.EraseApplicant(userID, at) },
 			DeleteVenueBookings: memVenues.DeleteCustomer, DeleteNotifications: memInbox.DeleteUser,
-			ForgetTenancies: memTenancies.ForgetUser, ForgetMaintenance: memMaintenance.ForgetUser})
+			ForgetTenancies: memTenancies.ForgetUser, ForgetMaintenance: memMaintenance.ForgetUser,
+			ForgetInspections: memInspections.ForgetUser})
 		reportStore = app.MemoryReports(app.MemoryReportStores{Identity: memIdentity, Onboarding: memOnboarding, Listings: memListings,
 			Requests: memRequests, Enquiries: memEnquiries, Leases: memLeases, Agreements: memAgreements, Subscriptions: memSubscriptions,
 			Markets: marketStore})
@@ -355,6 +366,7 @@ func run() error {
 		handlers.SetApplicationSource(app.ApplicationNotices(memApplications, memListings, referenceStore, memIdentity, logger))
 		handlers.SetVenueSource(app.VenueNotices(memVenues, memListings, marketStore, referenceStore, logger))
 		handlers.SetMaintenanceSource(app.MaintenanceNotices(memMaintenance, memTenancies, memCRM, memIdentity))
+		handlers.SetInspectionSource(app.InspectionNotices(memInspections, memTenancies, memCRM, memIdentity, marketStore))
 		// In-app notifications (and their pushes) for the same recipients,
 		// and the preferences the emails consult.
 		handlers.SetInbox(inboxSvc)
@@ -416,6 +428,7 @@ func run() error {
 		memApplications.SetOutboxSink(sink)
 		memVenues.SetOutboxSink(sink)
 		memMaintenance.SetOutboxSink(sink)
+		memInspections.SetOutboxSink(sink)
 		// The application retention job (and the purge of deleted files).
 		go app.RunApplicationJobs(ctx, app.ApplicationsService(memApplications, files,
 			listings.NewService(memListings, memListings, reference.NewService(referenceStore, nil)), memListings, memIdentity, logger, nil))
@@ -486,6 +499,7 @@ func run() error {
 		ledgerStore = ledger.NewPostgresStore(pool)
 		tenancyStore = tenancies.NewPostgresStore(pool)
 		maintenanceStore = maintenance.NewPostgresStore(pool)
+		inspectionStore = inspections.NewPostgresStore(pool)
 		adminAuditLog = adminaudit.PostgresLog{Q: pool}
 		inboxSvc = inapp.NewService(inapp.NewPostgresStore(pool), pushProvider, logger, nil)
 	}
@@ -557,6 +571,7 @@ func run() error {
 		Ledger:        ledgerStore,
 		Tenancies:     tenancyStore,
 		Maintenance:   maintenanceStore,
+		Inspections:   inspectionStore,
 		Inbox:         inboxSvc,
 	})
 	if err != nil {

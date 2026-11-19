@@ -45,6 +45,7 @@ const (
 	TypeSubscriptionUpdated     = "SUBSCRIPTION_UPDATED"
 	TypeTeamInvitation          = "TEAM_INVITATION"
 	TypeMaintenance             = "MAINTENANCE"
+	TypeInspection              = "INSPECTION"
 	TypeAccount                 = "ACCOUNT"
 	TypeSecurity                = "SECURITY"
 
@@ -84,6 +85,7 @@ var catalogue = []TypeInfo{
 	{TypeSubscriptionUpdated, "Other subscription updates", false, ""},
 	{TypeTeamInvitation, "Team invitations", false, ""},
 	{TypeMaintenance, "Maintenance requests", false, ""},
+	{TypeInspection, "Inspections", false, ""},
 	{TypeAccount, "Account suspension and reactivation", true, "We must tell you when access to your account changes."},
 	{TypeSecurity, "Security (password changes, administrator sign-ins)", true, "Security notices protect your account and cannot be turned off."},
 }

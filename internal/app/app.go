@@ -26,6 +26,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/health"
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/inapp"
+	"rightproperty365.com/backend/internal/modules/inspections"
 	"rightproperty365.com/backend/internal/modules/leases"
 	"rightproperty365.com/backend/internal/modules/ledger"
 	"rightproperty365.com/backend/internal/modules/listings"
@@ -214,6 +215,8 @@ var (
 	// maintenancePhotoPath is POST .../maintenance/{requestId}/photos, a
 	// manager's or a tenant's (10 MB, as onboarding documents).
 	maintenancePhotoPath = regexp.MustCompile(`^/v1/(agent/organisations|me/tenancies)/[^/]+/maintenance/[^/]+/photos$`)
+	// inspectionPhotoPath is POST .../inspections/{inspectionId}/items/{itemId}/photos (10 MB).
+	inspectionPhotoPath = regexp.MustCompile(`^/v1/agent/organisations/[^/]+/inspections/[^/]+/items/[^/]+/photos$`)
 )
 
 func isContactImport(r *http.Request) bool {
@@ -236,7 +239,8 @@ func isUpload(r *http.Request) bool {
 	return (r.Method == http.MethodPost && uploadPath.MatchString(r.URL.Path)) || isLogoUpload(r) || isPhotoUpload(r) || isPDFUpload(r) ||
 		isContactImport(r) || (r.Method == http.MethodPost && applicationFilePath.MatchString(r.URL.Path)) ||
 		(r.Method == http.MethodPost && ledgerAttachmentPath.MatchString(r.URL.Path)) ||
-		(r.Method == http.MethodPost && maintenancePhotoPath.MatchString(r.URL.Path))
+		(r.Method == http.MethodPost && maintenancePhotoPath.MatchString(r.URL.Path)) ||
+		(r.Method == http.MethodPost && inspectionPhotoPath.MatchString(r.URL.Path))
 }
 
 // Deps is everything the router needs.
@@ -319,6 +323,10 @@ type Deps struct {
 	// Maintenance holds the maintenance requests (API 0.36.2); their photos
 	// are kept in Files.
 	Maintenance maintenance.Store
+
+	// Inspections holds the property inspections (API 0.36.3); their photos
+	// are kept in Files.
+	Inspections inspections.Store
 
 	// Inbox is the notification centre (API 0.35.0): devices, in-app
 	// notifications, preferences and the delivery health. Logging out
@@ -527,6 +535,13 @@ func NewRouter(d Deps) (http.Handler, error) {
 	maintenanceH := maintenance.NewHandler(MaintenanceService(MaintenanceDeps{Store: d.Maintenance, Tenancies: tenancySvc, Ledger: ledgerSvc,
 		LedgerStore: d.Ledger, Reference: referenceSvc, Markets: d.Markets, Directory: d.Directory, Enquiries: enquiriesSvc, Files: d.Files,
 		Logger: logger, Now: d.Now}), logger)
+	// Inspections (API 0.36.3): the same books and roles; checklists from
+	// reference data, inspectors among the members, photos in Files.
+	if d.Inspections == nil {
+		return nil, errors.New("app: no inspections store")
+	}
+	inspectionsH := inspections.NewHandler(InspectionsService(InspectionsDeps{Store: d.Inspections, Tenancies: tenancySvc,
+		Reference: referenceSvc, Teams: d.Teams, Files: d.Files, Logger: logger, Now: d.Now}), logger)
 	appointmentsH := appointments.NewHandler(appointmentsSvc, inboxCounts{requests: requestsSvc, enquiries: enquiriesSvc}, logger)
 	appointmentLimiter := httpx.NewRateLimiter(appointmentsPerMinute, appointmentsBurst)
 	authn := auth.NewMiddleware(identitySvc, cfg.CORSAllowedOrigins, logger)
@@ -851,6 +866,9 @@ func NewRouter(d Deps) (http.Handler, error) {
 			// Maintenance (API 0.36.2): the requests of the tenant's own
 			// tenancy; another tenancy's or another request is 404.
 			r.Route("/{id}/maintenance", func(r chi.Router) { maintenanceH.MyRoutes(r, tenancyLimiter.Middleware) })
+			// Inspections (API 0.36.3): the completed inspections of the
+			// tenant's own tenancy, read-only; anything else is 404.
+			r.Route("/{id}/inspections", inspectionsH.MyRoutes)
 		})
 
 		// A customer's hourly bookings (FR-025): another customer's is 404.
@@ -1257,6 +1275,8 @@ func NewRouter(d Deps) (http.Handler, error) {
 			r.Get("/arrears", tenanciesH.Arrears)
 			// Maintenance requests (API 0.36.2): the same books and roles.
 			r.Route("/maintenance", func(r chi.Router) { maintenanceH.Routes(r, tenancyLimiter.Middleware) })
+			// Inspections (API 0.36.3): the same books and roles.
+			r.Route("/inspections", func(r chi.Router) { inspectionsH.Routes(r, tenancyLimiter.Middleware) })
 			r.Route("/venue-bookings", func(r chi.Router) {
 				r.Get("/", orgVenues.List)
 				r.Get("/{bookingId}", orgVenues.Get)

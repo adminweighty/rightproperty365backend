@@ -52,6 +52,10 @@ const (
 	// maintenance request is about and how urgent it is (API 0.36.2).
 	SetMaintenanceCategories = "maintenance_categories"
 	SetMaintenancePriorities = "maintenance_priorities"
+	// SetInspectionChecklistTemplates: the checklists an inspection starts
+	// from (API 0.36.3), a tree in one set by parent_code: a row without a
+	// parent is a template, its children are areas, theirs are items.
+	SetInspectionChecklistTemplates = "inspection_checklist_templates"
 )
 
 // Sets returns every set code in the order the API lists them.
@@ -60,7 +64,7 @@ func Sets() []string {
 		SetDealTypes, SetPropertyCategories, SetPropertyTypes, SetRequestTypes, SetContactMethods,
 		SetAccountRoles, SetDirectoryKinds, SetServiceTrades, SetRegions, SetCities, SetSuburbs, SetListingFeatures,
 		SetOnboardingDocuments, SetOrganisationKinds, SetPricePeriods, SetContactTypes, SetContactSources,
-		SetMaintenanceCategories, SetMaintenancePriorities,
+		SetMaintenanceCategories, SetMaintenancePriorities, SetInspectionChecklistTemplates,
 	}
 }
 

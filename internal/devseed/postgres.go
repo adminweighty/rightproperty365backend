@@ -446,6 +446,13 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 		return err
 	}
 
+	// The sample inspections of Flat 1: a completed move-in with findings
+	// and an upcoming routine one (needs migration 0038), after the
+	// tenancies.
+	if err := seedPostgresInspections(ctx, tx, now); err != nil {
+		return err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}

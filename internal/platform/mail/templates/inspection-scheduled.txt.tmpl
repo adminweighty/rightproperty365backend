@@ -1,0 +1,13 @@
+{{define "subject"}}{{if .StatusText}}Inspection rescheduled{{else}}Inspection scheduled{{end}}: {{.Reference}}{{end}}
+{{define "heading"}}{{if .StatusText}}Inspection rescheduled{{else}}Inspection scheduled{{end}}{{end}}
+{{define "button"}}Open your tenancy{{end}}
+{{define "why"}}You are receiving this because you rent this property on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+{{if .StatusText}}An inspection of your home was moved to a new time.{{else}}Your property manager scheduled an inspection of your home.{{end}}
+
+Reference: {{.Reference}}
+Inspection: {{.RequestType}}
+When: {{.AppointmentTime}}
+
+If the time does not suit you, contact your property manager.{{end}}

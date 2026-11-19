@@ -98,6 +98,8 @@ func Templates() []Template {
 		{"venue-booking-accepted", "Customer accepted the proposed time (to the host)", true},
 		{"maintenance-request-new", "New maintenance request (to the book's owners and managers, or the direct owner, and the tenants)", true},
 		{"maintenance-status-changed", "Maintenance request status changed (to the managers and the tenants)", true},
+		{"inspection-scheduled", "Inspection scheduled or rescheduled (to the tenants)", true},
+		{"inspection-completed", "Inspection report ready (to the tenants)", true},
 
 		{"request-update", "Reply or status update to the customer", false},
 		{"listing-expiring", "Listing expiring in 14, 7 or 1 days", false},
