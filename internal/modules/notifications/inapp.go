@@ -3,6 +3,7 @@ package notifications
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 
@@ -169,6 +170,15 @@ var inAppTemplates = map[string]inAppTemplate{
 	}},
 	"listing-changes-requested": {typ: inapp.TypeListingReviewed, title: fixed("Changes requested on your listing"), path: pathAgentListings},
 	"listing-rejected":          {typ: inapp.TypeListingReviewed, title: fixed("Listing not approved"), path: pathAgentListings},
+	// The approval of a relist, and the expiry sweep (API 0.45.0).
+	"listing-relisted": {typ: inapp.TypeListingReviewed, title: fixed("Your listing is live again"), path: pathAgentListings},
+	"listing-expiring": {typ: inapp.TypeListingExpiry, path: pathAgentListings, title: func(d mail.Data) string {
+		if d.Days <= 1 {
+			return "Your listing expires tomorrow"
+		}
+		return fmt.Sprintf("Your listing expires in %d days", d.Days)
+	}},
+	"listing-expired": {typ: inapp.TypeListingExpiry, title: fixed("Your listing has expired"), path: pathAgentListings},
 
 	"subscription-invoice":   {typ: inapp.TypeSubscriptionInvoice, title: fixed("Subscription invoice issued"), path: pathMySubscriptions, body: subscriptionBody},
 	"subscription-activated": {typ: inapp.TypeSubscriptionActivated, title: fixed("Subscription active"), path: pathMySubscriptions, body: subscriptionBody},

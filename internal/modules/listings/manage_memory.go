@@ -208,6 +208,9 @@ func (s *MemoryStore) SaveListing(_ context.Context, m ManagedListing, expect ti
 	}
 	m.AllPhotos = stored
 	s.putLocked(m)
+	if ch.NewCycle {
+		s.cycles[m.ID] = max(s.cycles[m.ID], ch.MinRelistNo) + 1
+	}
 	s.record(m.ID, ch, m.UpdatedAt)
 	return removed, nil
 }
@@ -227,6 +230,12 @@ func (s *MemoryStore) DeleteListing(_ context.Context, id uuid.UUID, expect time
 	s.records = slices.Delete(s.records, i, i+1)
 	delete(s.photos, id)
 	delete(s.meta, id)
+	delete(s.cycles, id)
+	for k := range s.notices {
+		if k.listing == id {
+			delete(s.notices, k)
+		}
+	}
 	s.timeline = slices.DeleteFunc(s.timeline, func(e TimelineEntry) bool { return e.ListingID == id })
 	return removed, nil
 }

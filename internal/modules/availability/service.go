@@ -174,6 +174,9 @@ type ListingSummary struct {
 	MinNights             *int             `json:"min_nights"`
 	AvailabilityUpdatedAt *time.Time       `json:"availability_updated_at"`
 	Photo                 *listings.Photo  `json:"photo"`
+	// Expiry is the publication period (API 0.45.0); null for a listing that
+	// was never published. Status is the effective status.
+	Expiry *listings.Expiry `json:"expiry"`
 	// CanEdit: the caller may edit the listing (auth.MayEditListing), and so
 	// draft a lease for it. An AGENT sees colleagues' listings read-only.
 	CanEdit bool `json:"can_edit"`
@@ -221,12 +224,13 @@ func (s *Service) summaries(ctx context.Context, records []listings.Record) ([]L
 		return nil, err
 	}
 	out := make([]ListingSummary, 0, len(records))
+	now := s.clock()
 	for i, r := range records {
 		l := presented[i]
 		item := ListingSummary{
 			ID: r.ID, Slug: r.Slug, Reference: r.Reference, Title: r.Title, Category: l.Category, PropertyType: l.PropertyType,
-			Status: r.Status, Price: r.Price, PricePeriod: l.PricePeriod, City: l.City, Country: l.Country,
-			MaxGuests: l.MaxGuests, MinNights: l.MinNights,
+			Status: r.EffectiveStatus(now), Price: r.Price, PricePeriod: l.PricePeriod, City: l.City, Country: l.Country,
+			MaxGuests: l.MaxGuests, MinNights: l.MinNights, Expiry: listings.ExpiryOf(r, now),
 		}
 		if r.Category == listings.CategoryShortStay {
 			item.AvailabilityUpdatedAt = states[r.ID].UpdatedAt
@@ -243,7 +247,10 @@ func (s *Service) summaries(ctx context.Context, records []listings.Record) ([]L
 // MyListings returns the listings the caller may manage: those of the
 // organisations they may manage listings for, and their own as an approved
 // direct owner. ErrForbidden when the caller manages no listings at all.
-func (s *Service) MyListings(ctx context.Context, p *auth.Principal, category, status string, page, size int) (ListingsPage, error) {
+// status matches the effective status (a PUBLISHED listing past its period
+// is EXPIRED) and expiry the state of the publication period (API 0.45.0);
+// "" matches everything.
+func (s *Service) MyListings(ctx context.Context, p *auth.Principal, category, status, expiry string, page, size int) (ListingsPage, error) {
 	if !p.ManagesListings() {
 		return ListingsPage{}, ErrForbidden
 	}
@@ -256,9 +263,15 @@ func (s *Service) MyListings(ctx context.Context, p *auth.Principal, category, s
 	if err != nil {
 		return ListingsPage{}, fmt.Errorf("load listings: %w", err)
 	}
+	now := s.clock()
 	var kept []listings.Record
 	for _, r := range records {
-		if (category == "" || r.Category == category) && (status == "" || r.Status == status) &&
+		if expiry != "" {
+			if e := listings.ExpiryOf(r, now); e == nil || e.State != expiry {
+				continue
+			}
+		}
+		if (category == "" || r.Category == category) && (status == "" || r.EffectiveStatus(now) == status) &&
 			p.MayManageListing(r.OrganisationID, r.SellerUserID) {
 			kept = append(kept, r)
 		}

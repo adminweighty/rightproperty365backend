@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.44.0
+  version: 0.45.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,19 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Listing expiry and reminders (new in 0.45.0, FR-006, FR-044, FR-053)
+    - The worker's hourly sweep stores `EXPIRED` for a `PUBLISHED` listing past its `expires_at`
+      (timeline entry: actor `SYSTEM`, action `EXPIRED`) and sends the advertiser
+      `listing-expiring` 14, 7 and 1 days before (once each per publication cycle; a worker that
+      was down sends only the most recent) and `listing-expired`. The read rule is unchanged: a
+      `PUBLISHED` listing past its `expires_at` reads `EXPIRED` everywhere at once.
+    - The approval of a relist sends `listing-relisted` instead of `listing-approved`.
+    - New in-app / preference type `LISTING_EXPIRY` ("Listing expiry reminders", not essential).
+    - The managed listing, the admin listing, the review queue rows and the rows of
+      `GET /v1/me/listings` gain `expiry` (`ListingExpiry`, null when never published).
+      `GET /v1/me/listings` returns and filters by the effective status, and takes
+      `expiry=EXPIRING_SOON|EXPIRED`.
 
     Development and investment showcase (new in 0.44.0, BR-019, FR-048)
     - Developers (organisations with a `developers` directory profile) show new-development
@@ -2099,8 +2112,12 @@ paths:
           schema: { type: string }
         - name: status
           in: query
-          description: "A listing status as stored: `DRAFT`, `PENDING_REVIEW`, `CHANGES_REQUESTED`, `REJECTED`, `PUBLISHED`, `EXPIRED`, `ARCHIVED`, `PAUSED`, `SOLD`, `LET`, `CLOSED`."
+          description: "A listing status: `DRAFT`, `PENDING_REVIEW`, `CHANGES_REQUESTED`, `REJECTED`, `PUBLISHED`, `EXPIRED`, `ARCHIVED`, `PAUSED`, `SOLD`, `LET`, `CLOSED`. Since 0.45.0 it matches the effective status: a `PUBLISHED` listing past its `expires_at` is `EXPIRED`."
           schema: { type: string }
+        - name: expiry
+          in: query
+          description: "New in 0.45.0. `EXPIRING_SOON` or `EXPIRED`: matches `expiry.state` (a listing never published has none and never matches). Anything else is `400` with `error.fields.expiry`."
+          schema: { type: string, enum: [EXPIRING_SOON, EXPIRED] }
         - name: page
           in: query
           schema: { type: integer, minimum: 1, default: 1 }
@@ -2362,7 +2379,9 @@ paths:
         New in 0.22.0. No body. `ARCHIVED` or `EXPIRED` -> `PENDING_REVIEW` when the listing was
         published before (it must be complete, else `422 LISTING_INCOMPLETE`; approval starts a
         new 90-day period), or `DRAFT` when it never was. `409 LISTING_STATE_CONFLICT` for any
-        other status.
+        other status. Nothing is emailed for the relist itself; the approval sends
+        `listing-relisted` (0.45.0). While the relist waits, `expiry` shows the last cycle with
+        `state: EXPIRED`.
       security:
         - cookieSession: []
         - bearerToken: []
@@ -9380,6 +9399,9 @@ paths:
         `verification.listing_reviewed`), a timeline entry and the outbox events
         `LISTING_PUBLISHED` / `LISTING_UPDATED` (search index) and `LISTING_APPROVED` (email to
         the advertiser). `409 LISTING_STATE_CONFLICT` when nothing waits for review.
+        New in 0.45.0: approving a relist (a NEW review of a listing that was published before)
+        starts its next publication cycle (`expiry.relist_no` + 1) and emails `listing-relisted`
+        ("Your listing is live again") instead of `listing-approved`.
         New in 0.37.0: approving a NEW review is refused with `409 LISTING_QUOTA_REACHED` (`ListingQuotaError`) when the
         advertiser's active listings in the country already reach their package's limit; nothing changes. An EDIT is
         never refused.
@@ -18384,12 +18406,12 @@ components:
       type: object
       required: [action, from_status, to_status, review_kind, reason, actor, at]
       properties:
-        action: { type: string, enum: [CREATED, SUBMITTED, APPROVED, CHANGES_REQUESTED, REJECTED, ARCHIVED, RELISTED] }
+        action: { type: string, enum: [CREATED, SUBMITTED, APPROVED, CHANGES_REQUESTED, REJECTED, ARCHIVED, RELISTED, EXPIRED], description: "`EXPIRED` (new in 0.45.0): the expiry sweep stored the status, actor `SYSTEM`." }
         from_status: { type: [string, "null"] }
         to_status: { type: [string, "null"] }
         review_kind: { type: [string, "null"], enum: [NEW, EDIT, null] }
         reason: { type: [string, "null"] }
-        actor: { type: string, enum: [ADVERTISER, REVIEWER] }
+        actor: { type: string, enum: [ADVERTISER, REVIEWER, SYSTEM] }
         at: { type: string, format: date-time }
         actor_user_id: { type: string, format: uuid, description: Reviewers' view only. }
 
@@ -18397,7 +18419,7 @@ components:
       type: object
       description: New in 0.22.0. A listing as its managers see it (`GET /v1/me/listings/{id}`).
       required: [id, slug, reference, status, status_label, public, review, pending_changes, content, photos, photo_limit,
-                 completeness, owner, advertiser, can_edit, actions, published_at, expires_at, created_at, updated_at, timeline,
+                 completeness, owner, advertiser, can_edit, actions, published_at, expires_at, expiry, created_at, updated_at, timeline,
                  package_usage, quota_warning]
       properties:
         id: { type: string, format: uuid }
@@ -18455,6 +18477,9 @@ components:
           items: { type: string, enum: [edit, submit, archive, relist, delete] }
         published_at: { type: [string, "null"], format: date-time }
         expires_at: { type: [string, "null"], format: date-time }
+        expiry:
+          description: New in 0.45.0. The publication period; null for a listing that was never published.
+          oneOf: [{ $ref: "#/components/schemas/ListingExpiry" }, { type: "null" }]
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         timeline: { type: array, items: { $ref: "#/components/schemas/ListingTimelineEntry" } }
@@ -18464,6 +18489,25 @@ components:
         quota_warning:
           type: [string, "null"]
           description: "New in 0.37.0. Set when the account is at its limit and the listing is not live (DRAFT, PENDING_REVIEW, CHANGES_REQUESTED, ARCHIVED, EXPIRED): it can be submitted, but approval is refused until a slot is free."
+
+    ListingExpiry:
+      type: object
+      description: |
+        New in 0.45.0. The publication period of a listing that has been published, as its managers
+        (and reviewers) see it. Use `status` for the status badge; `state` says whether the
+        publication is running.
+      required: [expires_at, days_left, state, relist_no]
+      additionalProperties: false
+      properties:
+        expires_at: { type: string, format: date-time, description: The end of the current (or last) publication period. }
+        days_left: { type: integer, minimum: 0, description: "`ceil((expires_at - now) / 24h)` while live (1: within 24 hours, \"tomorrow\"); 0 when `state` is `EXPIRED`." }
+        state:
+          type: string
+          enum: [ACTIVE, EXPIRING_SOON, EXPIRED]
+          description: "`ACTIVE`: live, more than 14 days left. `EXPIRING_SOON`: live, 14 days or fewer. `EXPIRED`: not live (the period is over, or the listing is archived or a relist waits for review; while a relist waits it shows the last cycle)."
+        relist_no: { type: integer, minimum: 1, description: "The publication cycle: 1 for the first publication, 2 after the first relist is approved, ..." }
+      examples:
+        - { expires_at: "2026-12-04T09:00:00Z", days_left: 6, state: EXPIRING_SOON, relist_no: 1 }
 
     ManagedListingEnvelope:
       type: object
@@ -18523,7 +18567,7 @@ components:
           type: array
           items:
             type: object
-            required: [id, reference, title, status, revision_status, review_kind, country, submitted_at, updated_at, advertiser, photo_count, pending_photo_count]
+            required: [id, reference, title, status, revision_status, review_kind, country, submitted_at, updated_at, advertiser, photo_count, pending_photo_count, expiry]
             properties:
               id: { type: string, format: uuid }
               reference: { type: string }
@@ -18548,6 +18592,9 @@ components:
                   verified: { type: boolean }
               photo_count: { type: integer }
               pending_photo_count: { type: integer }
+              expiry:
+                description: New in 0.45.0. Null for a listing that was never published.
+                oneOf: [{ $ref: "#/components/schemas/ListingExpiry" }, { type: "null" }]
         page: { type: integer }
         page_size: { type: integer }
         total: { type: integer }
@@ -19065,7 +19112,7 @@ components:
     MyListing:
       type: object
       description: One of the caller's listings, as a summary.
-      required: [id, slug, reference, title, category, property_type, status, price, price_period, city, country, max_guests, min_nights, availability_updated_at, photo, can_edit]
+      required: [id, slug, reference, title, category, property_type, status, price, price_period, city, country, max_guests, min_nights, availability_updated_at, photo, can_edit, expiry]
       additionalProperties: false
       properties:
         id: { type: string, format: uuid }
@@ -19074,7 +19121,10 @@ components:
         title: { type: string }
         category: { $ref: "#/components/schemas/Coded" }
         property_type: { $ref: "#/components/schemas/Coded" }
-        status: { type: string, description: "The listing's status, whatever it is: `PUBLISHED`, `EXPIRED`, `DRAFT`, `PAUSED`, `SOLD`, `LET`, `CLOSED`." }
+        status: { type: string, description: "The listing's status, whatever it is: `PUBLISHED`, `EXPIRED`, `DRAFT`, `PAUSED`, `SOLD`, `LET`, `CLOSED`. Since 0.45.0 the effective status: a `PUBLISHED` listing past its `expires_at` is `EXPIRED`." }
+        expiry:
+          description: New in 0.45.0. The publication period; null for a listing that was never published.
+          oneOf: [{ $ref: "#/components/schemas/ListingExpiry" }, { type: "null" }]
         price: { $ref: "#/components/schemas/Money" }
         price_period: { type: [string, "null"], enum: [month, night, null] }
         city: { $ref: "#/components/schemas/Place" }

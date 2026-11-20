@@ -34,6 +34,11 @@ type MemoryStore struct {
 	timeline []TimelineEntry
 	outbox   []outbox.Event
 	sink     outbox.Sink
+	// cycles counts the publication cycles of a listing (publication_cycles)
+	// and notices are the expiry notices recorded (listing_expiry_notices,
+	// expiry.go).
+	cycles  map[uuid.UUID]int
+	notices map[expiryNoticeKey]bool
 
 	// quota resolves the listing package of an account in a market (the
 	// memory twin of packages.EnforceTx; nil: no limit). See quota.go.
@@ -57,13 +62,15 @@ func (s *MemoryStore) resolved(r Record) Record {
 	// The public photos are the approved ones, always derived from all of them.
 	r.Photos = PublicPhotos(s.photos[r.ID])
 	r.Features = append([]string(nil), r.Features...)
+	r.Cycles = s.cycles[r.ID]
 	return r
 }
 
 // NewMemoryStore returns an empty store. labels supplies the suburb, city and
 // property-type labels that free-text search matches against.
 func NewMemoryStore(labels Labels) *MemoryStore {
-	return &MemoryStore{labels: labels, photos: map[uuid.UUID][]StoredPhoto{}, meta: map[uuid.UUID]*memoryMeta{}}
+	return &MemoryStore{labels: labels, photos: map[uuid.UUID][]StoredPhoto{}, meta: map[uuid.UUID]*memoryMeta{},
+		cycles: map[uuid.UUID]int{}, notices: map[expiryNoticeKey]bool{}}
 }
 
 // Put adds or replaces a listing (seed and test helper). Its photos become

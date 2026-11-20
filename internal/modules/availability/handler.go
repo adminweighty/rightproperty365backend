@@ -90,11 +90,16 @@ func (h *Handler) MyListings(w http.ResponseWriter, r *http.Request) {
 	if status != "" && !statusRe.MatchString(status) {
 		fields["status"] = "must be a listing status such as PUBLISHED"
 	}
+	// The state of the publication period (API 0.45.0).
+	expiry := v.Get("expiry")
+	if expiry != "" && expiry != listings.ExpiryExpiringSoon && expiry != listings.ExpiryExpired {
+		fields["expiry"] = "must be EXPIRING_SOON or EXPIRED"
+	}
 	if len(fields) > 0 {
 		h.fail(w, r, &ValidationError{Fields: fields})
 		return
 	}
-	out, err := h.svc.MyListings(r.Context(), p, category, status, page, size)
+	out, err := h.svc.MyListings(r.Context(), p, category, status, expiry, page, size)
 	if err != nil {
 		h.fail(w, r, err)
 		return

@@ -363,20 +363,7 @@ func (h *Handlers) listingReviewNotes(ctx context.Context, ev outbox.Event, add 
 	if err := json.Unmarshal(ev.Payload, &payload); err != nil {
 		return outbox.Permanent(fmt.Errorf("notifications: unreadable %s payload: %w", ev.Type, err))
 	}
-	r, err := h.listingRecord(ctx, ev.AggregateID)
-	if errors.Is(err, listings.ErrNotFound) {
-		return ErrNotFound
-	}
-	if err != nil {
-		return err
-	}
-	var people []Person
-	switch {
-	case r.OrganisationID != nil:
-		people, err = h.source.Recipients(ctx, r.AgentUserID, r.OrganisationID)
-	case r.SellerUserID != nil:
-		people, err = h.source.Recipients(ctx, r.SellerUserID, nil)
-	}
+	r, people, err := h.listingAdvertisers(ctx, ev.AggregateID)
 	if err != nil {
 		return err
 	}
@@ -386,11 +373,79 @@ func (h *Handlers) listingReviewNotes(ctx context.Context, ev outbox.Event, add 
 		Place: h.placeOf(ctx, &r.ID)}
 	if ev.Type == listings.EventListingApproved && !d.Edit {
 		d.ExpiresOn = r.ExpiresAt
+		// The approval of a relist: the listing is live again for a new
+		// period (API 0.45.0).
+		if payload.Relist {
+			t.template = "listing-relisted"
+		}
 	}
 	for _, p := range people {
 		d := d
 		d.Name = p.Name
 		if err := add(t.template, recipientKey(p), p, d); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// listingAdvertisers loads a listing and its advertiser: the listing's
+// assigned agent, else the organisation's owners and managers, or the
+// direct owner.
+func (h *Handlers) listingAdvertisers(ctx context.Context, id uuid.UUID) (listings.Record, []Person, error) {
+	r, err := h.listingRecord(ctx, id)
+	if errors.Is(err, listings.ErrNotFound) {
+		return listings.Record{}, nil, ErrNotFound
+	}
+	if err != nil {
+		return listings.Record{}, nil, err
+	}
+	var people []Person
+	switch {
+	case r.OrganisationID != nil:
+		people, err = h.source.Recipients(ctx, r.AgentUserID, r.OrganisationID)
+	case r.SellerUserID != nil:
+		people, err = h.source.Recipients(ctx, r.SellerUserID, nil)
+	}
+	if err != nil {
+		return listings.Record{}, nil, err
+	}
+	return r, people, nil
+}
+
+// listingExpiryNotes builds the emails of the expiry sweep (API 0.45.0):
+// the reminder 14, 7 or 1 days before the end of the publication period
+// (listing-expiring) and the expiry (listing-expired), to the advertiser
+// as the review emails. The date is the one of the event (the period the
+// reminder was about), else the listing's.
+func (h *Handlers) listingExpiryNotes(ctx context.Context, ev outbox.Event, add func(template, recipient string, to Person, d mail.Data) error) error {
+	if h.listingRecord == nil {
+		return outbox.Permanent(fmt.Errorf("notifications: no listing source for event type %q", ev.Type))
+	}
+	var payload listings.ExpiryEventPayload
+	if err := json.Unmarshal(ev.Payload, &payload); err != nil {
+		return outbox.Permanent(fmt.Errorf("notifications: unreadable %s payload: %w", ev.Type, err))
+	}
+	template := "listing-expired"
+	if ev.Type == listings.EventListingExpiring {
+		if payload.Days <= 0 {
+			return outbox.Permanent(fmt.Errorf("notifications: %s without days", ev.Type))
+		}
+		template = "listing-expiring"
+	}
+	r, people, err := h.listingAdvertisers(ctx, ev.AggregateID)
+	if err != nil {
+		return err
+	}
+	d := mail.Data{Path: PathMyListings, ListingTitle: r.Title, ListingRef: r.Reference, Days: payload.Days, ExpiresOn: payload.ExpiresAt,
+		When: occurredAt(ev), Place: h.placeOf(ctx, &r.ID)}
+	if d.ExpiresOn.IsZero() {
+		d.ExpiresOn = r.ExpiresAt
+	}
+	for _, p := range people {
+		d := d
+		d.Name = p.Name
+		if err := add(template, recipientKey(p), p, d); err != nil {
 			return err
 		}
 	}
@@ -564,7 +619,7 @@ func EventTypes() []string {
 		identity.EventAdminSignedIn,
 		identity.EventAdminMFARecoveryCodeUsed,
 		identity.EventAdminMFAReset,
-	}, onboarding.EventTypes()...), append(append(append(appointments.EventTypes(), listings.ReviewEventTypes()...),
+	}, onboarding.EventTypes()...), append(append(append(append(appointments.EventTypes(), listings.ReviewEventTypes()...), listings.ExpiryEventTypes()...),
 		accounts.EventTypes()...), append(append(subscriptions.EventTypes(), applications.OutboxEventTypes()...), append(append(append(venues.EventTypes(), maintenance.OutboxEventTypes()...), inspections.OutboxEventTypes()...), reviews.OutboxEventTypes()...)...)...)...)
 }
 
@@ -850,6 +905,11 @@ func (h *Handlers) build(ctx context.Context, ev outbox.Event) ([]plan, error) {
 
 	case listings.EventListingApproved, listings.EventListingChangesRequested, listings.EventListingRejected:
 		if err := h.listingReviewNotes(ctx, ev, add); err != nil {
+			return nil, err
+		}
+
+	case listings.EventListingExpiring, listings.EventListingExpired:
+		if err := h.listingExpiryNotes(ctx, ev, add); err != nil {
 			return nil, err
 		}
 

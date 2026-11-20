@@ -7,9 +7,42 @@ import (
 
 	"rightproperty365.com/backend/internal/modules/agreements"
 	"rightproperty365.com/backend/internal/modules/leases"
+	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/subscriptions"
 	"rightproperty365.com/backend/internal/modules/tenancies"
 )
+
+// ListingExpirySweepInterval is how often listings are expired and their
+// reminders sent (API 0.45.0). Hourly rather than daily, so an expiry and
+// the 1-day reminder are never up to a day late; every run is idempotent.
+const ListingExpirySweepInterval = time.Hour
+
+// RunListingExpirySweeps runs the listing expiry sweep (listings.SweepExpiry)
+// at start and then every ListingExpirySweepInterval until ctx ends: PUBLISHED
+// listings past their period are stored EXPIRED (LISTING_EXPIRED) and those
+// ending within 14, 7 or 1 days get their reminder (LISTING_EXPIRING), once
+// per publication cycle. now is the clock (nil: time.Now).
+func RunListingExpirySweeps(ctx context.Context, store listings.ExpiryStore, logger *slog.Logger, now func() time.Time) {
+	if now == nil {
+		now = time.Now
+	}
+	ticker := time.NewTicker(ListingExpirySweepInterval)
+	defer ticker.Stop()
+	for {
+		r, err := listings.SweepExpiry(ctx, store, now())
+		if err != nil {
+			logger.ErrorContext(ctx, "listing expiry sweep failed", slog.String("error", err.Error()))
+		} else if r.Claimed > 0 {
+			logger.InfoContext(ctx, "listing expiry sweep", slog.Int("expired", r.Expired), slog.Int("reminded", r.Reminded),
+				slog.Int("reminders_skipped", r.Skipped))
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
 
 // AgreementSweepInterval is how often expiries and reminders are checked.
 const AgreementSweepInterval = 5 * time.Minute

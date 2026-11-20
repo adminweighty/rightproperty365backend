@@ -505,13 +505,15 @@ func run() error {
 		go app.RunApplicationJobs(ctx, app.ApplicationsService(memApplications, files,
 			listings.NewService(memListings, memListings, reference.NewService(referenceStore, nil)), memListings, memIdentity, logger, nil))
 		// The listing store also writes search-index events; without a worker
-		// only the review emails are handled.
+		// only the review and expiry emails are handled.
 		memListings.SetOutboxSink(func(ev outbox.Event) {
-			if slices.Contains(listings.ReviewEventTypes(), ev.Type) {
+			if slices.Contains(listings.ReviewEventTypes(), ev.Type) || slices.Contains(listings.ExpiryEventTypes(), ev.Type) {
 				sink(ev)
 			}
 			record(ev)
 		})
+		// The listing expiry sweep (API 0.45.0; the worker runs it with a database).
+		go app.RunListingExpirySweeps(ctx, memListings, logger, nil)
 		// Saves only matter to analytics.
 		memSaved.SetOutboxSink(record)
 		if cfg.DevSeedPassword == "" {

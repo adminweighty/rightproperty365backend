@@ -561,6 +561,10 @@ type Record struct {
 	PublishedAt time.Time
 	ExpiresAt   time.Time
 	UpdatedAt   time.Time
+	// Cycles is the number of publication cycles recorded for the listing
+	// (publication_cycles: max(relist_no) + 1; 0 without any, such as the
+	// sample data). See CycleNo.
+	Cycles int
 
 	// Ownership, used to list an agency's or an agent's listings.
 	OrganisationID *uuid.UUID

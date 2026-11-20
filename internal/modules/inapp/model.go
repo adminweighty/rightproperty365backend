@@ -41,6 +41,7 @@ const (
 	TypeVenueBookingCancelled   = "VENUE_BOOKING_CANCELLED"
 	TypeVenueBookingRescheduled = "VENUE_BOOKING_RESCHEDULED"
 	TypeListingReviewed         = "LISTING_REVIEWED"
+	TypeListingExpiry           = "LISTING_EXPIRY"
 	TypeSubscriptionInvoice     = "SUBSCRIPTION_INVOICE"
 	TypeSubscriptionActivated   = "SUBSCRIPTION_ACTIVATED"
 	TypeSubscriptionExpired     = "SUBSCRIPTION_EXPIRED"
@@ -82,6 +83,7 @@ var catalogue = []TypeInfo{
 	{TypeVenueBookingCancelled, "Venue booking cancellations", false, ""},
 	{TypeVenueBookingRescheduled, "Venue booking time changes", false, ""},
 	{TypeListingReviewed, "Listing review decisions", false, ""},
+	{TypeListingExpiry, "Listing expiry reminders", false, ""},
 	{TypeSubscriptionInvoice, "Subscription invoices", true, "Invoices are needed to pay for and keep your subscription."},
 	{TypeSubscriptionActivated, "Subscription activated", false, ""},
 	{TypeSubscriptionExpired, "Subscription ended", false, ""},

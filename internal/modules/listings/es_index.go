@@ -349,10 +349,12 @@ func (ix *Indexer) Handle(ctx context.Context, ev outbox.Event) error {
 	return nil
 }
 
-// Register attaches the handler to a dispatcher for every listing event.
+// Register attaches the handler to a dispatcher for every listing event,
+// after any handler already registered for it (LISTING_EXPIRED also sends
+// the advertiser's listing-expired email, API 0.45.0).
 func (ix *Indexer) Register(d *outbox.Dispatcher) {
 	for _, t := range IndexEventTypes() {
-		d.Register(t, outbox.HandlerFunc(ix.Handle))
+		d.Also(t, outbox.HandlerFunc(ix.Handle))
 	}
 }
 

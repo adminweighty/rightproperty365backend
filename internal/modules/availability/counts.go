@@ -43,15 +43,19 @@ func (s *Service) ListingCounts(ctx context.Context, p *auth.Principal) (Listing
 		return ListingCounts{}, fmt.Errorf("load listings: %w", err)
 	}
 	var published []uuid.UUID
+	now := s.clock()
 	for _, r := range records {
 		if !p.MayManageListing(r.OrganisationID, r.SellerUserID) {
 			continue
 		}
+		// The effective status: a PUBLISHED listing past its period is
+		// EXPIRED, whether or not the expiry sweep has stored it yet.
+		status := r.EffectiveStatus(now)
 		out.Total++
-		out.ByStatus[r.Status]++
+		out.ByStatus[status]++
 		if r.Category == listings.CategoryShortStay {
 			out.ShortStays++
-			if r.Status == listings.StatusPublished {
+			if status == listings.StatusPublished {
 				published = append(published, r.ID)
 			}
 		}

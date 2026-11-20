@@ -401,8 +401,8 @@ func (s *PostgresStore) SaveListing(ctx context.Context, m ManagedListing, expec
 	if ch.NewCycle {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO publication_cycles (listing_id, relist_no, published_at, expires_at)
-			VALUES ($1, (SELECT COALESCE(max(relist_no) + 1, 0) FROM publication_cycles WHERE listing_id = $1), $2, $3)`,
-			m.ID, m.PublishedAt, m.ExpiresAt); err != nil {
+			VALUES ($1, GREATEST($4::int, (SELECT COALESCE(max(relist_no) + 1, 0) FROM publication_cycles WHERE listing_id = $1)), $2, $3)`,
+			m.ID, m.PublishedAt, m.ExpiresAt, ch.MinRelistNo); err != nil {
 			return nil, fmt.Errorf("publication cycle: %w", err)
 		}
 	}

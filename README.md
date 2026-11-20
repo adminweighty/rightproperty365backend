@@ -503,6 +503,47 @@ change; follow-up dates and reminders; editing or deleting a note; listing analy
 favourites, saved searches and alerts. (Conversion funnels and response-time KPIs: API 0.38.0,
 below.)
 
+## Listing expiry and reminders (API 0.45.0)
+
+FR-006, FR-044, FR-053. An approval publishes a listing for 90 days (`expires_at`), one publication
+cycle (`publication_cycles`, `relist_no` 0 for the first). The **read rule is unchanged**: a
+`PUBLISHED` listing whose `expires_at` has passed reads `EXPIRED` everywhere at once (public
+filter, counts, quotas, `EffectiveStatus`), so a late worker never keeps an expired listing public.
+
+- **The sweep** (`listings.SweepExpiry`, `internal/modules/listings/expiry.go`) runs in
+  `cmd/worker` at start and then **every hour** (`app.ListingExpirySweepInterval`; hourly rather
+  than daily so the expiry and the 1-day reminder are never up to a day late). In batches of 200,
+  each in one transaction, it claims (`FOR UPDATE SKIP LOCKED`) the `PUBLISHED` listings with
+  `expires_at <= now + 14 days` that have a notice due:
+  - past the end: status **stored** `EXPIRED`, a timeline entry (actor `SYSTEM`, action
+    `EXPIRED`), the notice `EXPIRED`, and the outbox event `LISTING_EXPIRED` (the search-index
+    event, now also emailed). A pending revision is left as it is (a relist merges it).
+  - otherwise the smallest threshold N of 14, 7 and 1 days with `expires_at - now <= N days`: the
+    notice for N, the larger ones not yet recorded as `skipped`, and `LISTING_EXPIRING`
+    `{days: N, expires_at, relist_no}` when the notice for N was recorded now. A worker that was
+    down sends only the most recent reminder, never a stale "14 days".
+  - `listing_expiry_notices (listing_id, relist_no, kind)` is the primary key: every reminder and
+    every expiry happens **once per publication cycle**, across reruns and several workers. A
+    relist's approval starts the next cycle, with reminders of its own.
+- **Emails and in-app** (to the advertiser, as the review emails: the listing's agent, else the
+  organisation's owners and managers, or the direct owner): `listing-expiring` (14 / 7 / 1 days),
+  `listing-expired`, and `listing-relisted` instead of `listing-approved` when the approved NEW
+  review is a relist (`LISTING_APPROVED` payload `relist: true`). In-app type `LISTING_EXPIRY`
+  ("Listing expiry reminders", not essential: its email and push follow the preference centre;
+  the relisted notice is `LISTING_REVIEWED`). Links go to `/agent/listings/{id}`.
+- **API**: the managed listing (`GET /v1/me/listings/{id}` and the other management responses),
+  the admin listing view, the review queue rows and the rows of `GET /v1/me/listings` gain
+  `expiry` `{expires_at, days_left, state: ACTIVE|EXPIRING_SOON|EXPIRED, relist_no}` (`null` when
+  never published; `relist_no` is 1 for the first publication). `GET /v1/me/listings` returns the
+  effective status, its `status` filter matches it, and it takes `expiry=EXPIRING_SOON|EXPIRED`.
+  The lister's dashboard counts use the effective status.
+- **Development without a database**: the API process runs the same sweep on the memory store and
+  sends the emails in-process.
+- **Seed**: the sample listings that are not published write `LISTING_UNPUBLISHED` for the index
+  (no longer `LISTING_EXPIRED`, which would now email their advertisers), and a re-run clears the
+  sample listings' expiry notices. The sample advertisers are `@example.test` accounts: the Resend
+  mailer never sends to reserved test domains (`mail.IsReservedTestAddress`).
+
 ## Development and investment showcase (API 0.44.0)
 
 BR-019 / FR-048. Migration `0046_developments`; `modules/developments` (model, memory and Postgres
@@ -1062,7 +1103,8 @@ FR-044, FR-045, FR-062, FR-064, FR-065 and FR-003. The code is in `internal/modu
     - APPOINTMENT_REQUESTED, APPOINTMENT_CONFIRMED, APPOINTMENT_CANCELLED, APPOINTMENT_RESCHEDULED
     - APPLICATION_RECEIVED, APPLICATION_UPDATED
     - VENUE_BOOKING_REQUESTED, VENUE_BOOKING_CONFIRMED, VENUE_BOOKING_DECLINED, VENUE_BOOKING_CANCELLED, VENUE_BOOKING_RESCHEDULED
-    - LISTING_REVIEWED
+    - LISTING_REVIEWED (including "Your listing is live again" for an approved relist)
+    - LISTING_EXPIRY: the 14 / 7 / 1-day reminders and the expiry (API 0.45.0)
     - SUBSCRIPTION_INVOICE, SUBSCRIPTION_ACTIVATED, SUBSCRIPTION_EXPIRED, SUBSCRIPTION_UPDATED (rejected or cancelled)
     - ACCOUNT: suspended or reactivated
     - SECURITY: password changed, administrator sign-in
@@ -2781,9 +2823,7 @@ reasons of the sample listings):
 
 **Not built** (listing management): assigning or changing the agent of a listing (an owner's or
 manager's listing has none; there is no member picker yet); duplicating a listing; pausing,
-marking sold or let, and closing (the statuses exist, nothing sets them); package limits on the
-number of active listings; a scheduled expiry job and the expiry reminder emails (expiry is still
-decided at query time); presigned direct-to-S3 uploads (photos go through the API, 15 MB each);
+marking sold or let, and closing (the statuses exist, nothing sets them); presigned direct-to-S3 uploads (photos go through the API, 15 MB each);
 cropping, a chosen cover photo other than the first, captions other than `alt`; AVIF / WebP
 output; malware scanning of uploads; floor plans (YouTube video tours: 0.28.0); moderation of a reviewer's own
 organisation's listings (nothing stops a reviewer from approving a listing of an organisation
@@ -2913,11 +2953,10 @@ failure to retry). Other failures are retried with the outbox backoff and
 dead-lettered like any other event. With the database driver the worker acknowledges these events
 and does nothing.
 
-> **Listing lifecycle endpoints do not exist yet**, and there is no job that marks listings
-> expired. The only code that changes listings today is `cmd/seed`, which now writes these events.
-> When publish / edit / pause / relist are built, they must write the matching event in the same
-> transaction as the change. Expiry needs no event to be *correct* (the query and the re-check both
-> use `expires_at`), only to remove the stale document.
+> Listing management (0.22.0) writes these events in the same transaction as each change, and
+> the hourly expiry sweep (0.45.0) writes `LISTING_EXPIRED` when it stores a listing `EXPIRED`.
+> Expiry needs no event to be *correct* (the query and the re-check both use `expires_at`), only
+> to remove the stale document. Pausing does not exist yet.
 
 **Rebuilding.** `go run ./cmd/reindex` (or `make reindex`) creates a new index from the database,
 bulk-indexes every public listing, refreshes it, moves the alias to it in **one atomic action**,
@@ -3084,9 +3123,9 @@ So that nobody assumes these exist. They are in the updated functional specifica
 - short-stay **bookings**: payments, instant booking, holds, iCal sync, seasonal and per-night
   pricing (the availability calendar itself is built: see "Availability calendar for short
   stays");
-- assigning an agent to a listing, duplicating, pausing and marking a listing sold or let,
-  package limits and expiry reminders (creating, editing, photos and the review workflow are
-  built: see "Listing management");
+- assigning an agent to a listing, duplicating, pausing and marking a listing sold or let
+  (creating, editing, photos, the review workflow, package limits and the expiry job with its
+  reminders are built: see "Listing management" and "Listing expiry and reminders");
 - administrator endpoints to unverify / re-verify an organisation and to suspend / reinstate a
   direct owner's role (requested, not started);
 - a display name a direct owner can choose (their account name is shown on their listings);
@@ -3413,9 +3452,12 @@ Every template that `mail.Templates()` marks as triggered (template names in bra
 | Appointment confirmed (`appointment-confirmed`; to the customer) | Confirmed by the professional, or a proposed time accepted | outbox `APPOINTMENT_CONFIRMED` |
 | New time proposed (`appointment-new-time-proposed`; to the customer) / The customer proposed a new time (`appointment-reschedule-proposed`; to the professional) | A new time proposed by the other party | outbox `APPOINTMENT_RESCHEDULE_REQUESTED` |
 | Appointment cancelled (`appointment-cancelled`; to the customer) / cancelled by the customer (`appointment-cancelled-by-customer`; to the professional) | Cancelled by the other party | outbox `APPOINTMENT_CANCELLED` |
-| Listing approved (`listing-approved`; to the advertiser: the listing's agent, else the organisation's owners and managers, or the direct owner) | `POST /v1/admin/listings/{id}/approve`, for a new listing, a relisted one or changes to a published one | outbox `LISTING_APPROVED` |
+| Listing approved (`listing-approved`; to the advertiser: the listing's agent, else the organisation's owners and managers, or the direct owner) | `POST /v1/admin/listings/{id}/approve`, for a new listing or changes to a published one (a relist: `listing-relisted`, below) | outbox `LISTING_APPROVED` |
 | Listing needs changes (`listing-changes-requested`; with the reason) | `POST /v1/admin/listings/{id}/request-changes` | outbox `LISTING_CHANGES_REQUESTED` |
 | Listing not approved (`listing-rejected`; with the reason) | `POST /v1/admin/listings/{id}/reject` | outbox `LISTING_REJECTED` |
+| Your listing expires in 14 / 7 / 1 days (`listing-expiring`; to the advertiser as above; API 0.45.0) | The hourly listing expiry sweep: once per threshold and publication cycle (only the most recent one when a worker was down) | outbox `LISTING_EXPIRING` |
+| Your listing has expired (`listing-expired`; to the advertiser) | The listing expiry sweep stores the listing `EXPIRED` | outbox `LISTING_EXPIRED` |
+| Your listing is live again (`listing-relisted`; to the advertiser, with the new end date; instead of `listing-approved`) | `POST /v1/admin/listings/{id}/approve` of a relist (a NEW review of a listing published before) | outbox `LISTING_APPROVED` (`relist: true`) |
 | Invitation to join a team (`team-invitation`; to the invited address; the link is single-use, 7 days) | `POST /v1/agent/organisations/{id}/invitations` | request |
 | A request was assigned to you (`property-request-assigned`; to the assignee; reference, listing, preview) | `POST /v1/agent/property-requests/{id}/assign` | outbox `PROPERTY_REQUEST_ASSIGNED` |
 | A document to sign or approve (`agreement-signing-request`; to a recipient, with their link) | An agreement sent (`POST /v1/me/agreements/{id}/send`, `POST /v1/me/leases/{id}/send`), the next signing order reached, a recipient replaced | request |
@@ -3438,12 +3480,7 @@ Every template that `mail.Templates()` marks as triggered (template names in bra
 
 **Designed, written and tested, but NOT sent** (`Triggered: false` in `mail.Templates()`):
 
-- `request-update` (a reply or status update to the customer), `listing-expiring` (14 / 7 / 1
-  days) and `listing-expired`: the features behind them, replies to customers and a listing
-  expiry reminder job, are not built.
-- `listing-relisted`: relisting sends a listing that was published before back through review
-  (`Manager.Relist` in `internal/modules/listings/manage_service.go`), and the approval email
-  (`listing-approved`) tells the advertiser it is shown to customers again.
+- `request-update` (a reply or status update to the customer): replies to customers are not built.
 - `renewal-invoice` and `payment-received`: superseded by `subscription-invoice` and
   `subscription-activated`.
 - `account-deletion-requested`: deletion (`DELETE /v1/me` and the administrators' delete) is
@@ -3824,7 +3861,7 @@ their data with `Principal.OrganisationIDs(...)` (and `PlatformRole.MarketCode` 
 - **WhatsApp and in-app notifications.** Recipients and customers are notified by email only.
 - **Bounce and complaint handling** – there is no Resend webhook endpoint, so a message that
   Resend accepted and later failed to deliver is never noticed; no suppression list.
-- **The emails nothing sends** (status updates to the customer, listing expiry, relisting, the
+- **The emails nothing sends** (status updates to the customer, the
   older renewal-invoice and payment-received templates, account deletion requested) are written
   and tested but not triggered; see "What is sent today".
 - **Unsubscribe / notification preferences** – every email today is transactional.
@@ -3835,9 +3872,8 @@ their data with `Principal.OrganisationIDs(...)` (and `PlatformRole.MarketCode` 
 - **A running search cluster** – the Elasticsearch adapter, indexing handler and `cmd/reindex` are
   written and tested against a fake, but no cluster exists and hosting/licence is an open
   decision; search runs in Postgres until then.
-- **Pausing a listing, and an expiry job** – a published listing past its `expires_at` reads as
-  `EXPIRED` at once, but no job emits `LISTING_EXPIRED` or sends expiry reminders (only the seed
-  emits that event).
+- **Pausing a listing** – the status exists, nothing sets it. (The expiry job and its reminders
+  are built since 0.45.0: see "Listing expiry and reminders".)
 - **Metrics** – the search-fallback count is only a log field.
 - **Revoking an account role or a platform role** – platform roles are created only by
   `cmd/adminctl`, and nothing takes an approved account role away. (Memberships are managed since
@@ -3922,7 +3958,7 @@ Deliberately no empty stubs. These will be added under `internal/modules/` as th
 
 - `identity` (exists) has administrator MFA (authenticator app) but no hardware keys — see "Not
   built yet" (membership management and invitations are in `teams`)
-- `listings` (exists, with management since 0.22.0) still lacks pausing and an expiry job
+- `listings` (exists, with management since 0.22.0 and the expiry job since 0.45.0) still lacks pausing
 - uploads have no module of their own: each module stores its files through
   `internal/platform/storage` (local folder or S3/MinIO)
 - `subscriptions` (exists since 0.25.0) covers plans, invoices and admin-recorded payments
@@ -4255,6 +4291,9 @@ sends real email when `RESEND_API_KEY` is set.** Without `DATABASE_URL` in devel
 logs that it is idle and waits for shutdown (the API then handles the events in-process).
 Every 5 minutes the worker also runs the payment reconciliation (see "Online payment of
 subscription invoices"): expired checkouts, provider look-ups and interrupted follow-ups.
+At start and then every hour it runs the listing expiry sweep (see "Listing expiry and
+reminders"): `LISTING_EXPIRING` and `LISTING_EXPIRED` send the advertiser's emails, and
+`LISTING_EXPIRED` also updates the search index (both handlers chained with `Dispatcher.Also`).
 
 ## Operational notes and known limitations
 

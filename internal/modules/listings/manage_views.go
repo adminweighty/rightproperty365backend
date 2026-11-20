@@ -226,13 +226,16 @@ type ManagedView struct {
 	// CanEdit is false for a member who may see the listing but not change
 	// it (an agent and another agent's listing). Actions are what the caller
 	// may do now.
-	CanEdit     bool           `json:"can_edit"`
-	Actions     []string       `json:"actions"`
-	PublishedAt *time.Time     `json:"published_at"`
-	ExpiresAt   *time.Time     `json:"expires_at"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
-	Timeline    []TimelineView `json:"timeline"`
+	CanEdit     bool       `json:"can_edit"`
+	Actions     []string   `json:"actions"`
+	PublishedAt *time.Time `json:"published_at"`
+	ExpiresAt   *time.Time `json:"expires_at"`
+	// Expiry is the publication period (API 0.45.0); null for a listing
+	// that was never published.
+	Expiry    *Expiry        `json:"expiry"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	Timeline  []TimelineView `json:"timeline"`
 	// PackageUsage is the listing package and active listings of the
 	// listing's account in its country (null without a country, API 0.37.0);
 	// QuotaWarning is set when that account is at its limit and the listing
@@ -319,6 +322,8 @@ type QueueItem struct {
 	} `json:"advertiser"`
 	PhotoCount        int `json:"photo_count"`
 	PendingPhotoCount int `json:"pending_photo_count"`
+	// Expiry is the publication period (null: never published).
+	Expiry *Expiry `json:"expiry"`
 }
 
 // QueuePage is one page of the review queue.

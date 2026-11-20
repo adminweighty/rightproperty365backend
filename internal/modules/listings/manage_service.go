@@ -173,6 +173,15 @@ const (
 // editMode says how the listing's content may change now: on the listing
 // itself (not public), through a revision (published), or not at all.
 func editMode(m ManagedListing) (string, error) {
+	switch {
+	case m.Status == StatusExpired && m.Revision != nil:
+		// Stored EXPIRED by the sweep with changes pending: they stay a
+		// revision (as while it read EXPIRED as PUBLISHED); a relist merges them.
+		if m.Revision.Status == RevisionPendingReview {
+			return "", errInReview
+		}
+		return editRevision, nil
+	}
 	switch m.Status {
 	case StatusDraft, StatusChangesRequested, StatusArchived, StatusExpired:
 		return editDirect, nil
@@ -308,8 +317,8 @@ func (mg *Manager) view(ctx context.Context, m ManagedListing, canEdit bool, rev
 		Completeness: completeness(m.WorkingContent(), m.AllPhotos, alts, g),
 		Owner:        OwnerView{Type: "direct_owner", AgentUserID: m.AgentUserID},
 		Advertiser:   presentAdvertiser(m.Record, labels), CanEdit: canEdit, Actions: mg.actions(m, canEdit, now),
-		PublishedAt: timePtr(m.PublishedAt), ExpiresAt: timePtr(m.ExpiresAt), CreatedAt: m.CreatedAt.UTC(), UpdatedAt: m.UpdatedAt.UTC(),
-		Timeline: timelineViews(timeline, reviewer),
+		PublishedAt: timePtr(m.PublishedAt), ExpiresAt: timePtr(m.ExpiresAt), Expiry: ExpiryOf(m.Record, now),
+		CreatedAt: m.CreatedAt.UTC(), UpdatedAt: m.UpdatedAt.UTC(), Timeline: timelineViews(timeline, reviewer),
 	}
 	if m.OrganisationID != nil {
 		v.Owner.Type, v.Owner.OrganisationID = "organisation", m.OrganisationID
@@ -926,10 +935,11 @@ func (mg *Manager) Queue(ctx context.Context, p *auth.Principal, f ReviewFilter)
 		return QueuePage{}, err
 	}
 	page := QueuePage{Items: []QueueItem{}, Page: f.Page, PageSize: f.PageSize, Total: total, TotalPages: (total + f.PageSize - 1) / f.PageSize}
+	now := mg.clock()
 	for _, m := range items {
 		it := QueueItem{ID: m.ID, Reference: m.Reference, Title: m.WorkingContent().Title, Status: m.Status, ReviewKind: opt(m.ReviewKind()),
 			Country: Country{Code: m.MarketCode, Name: m.MarketCode}, SubmittedAt: utcTime(m.SubmittedAt), UpdatedAt: m.UpdatedAt.UTC(),
-			PhotoCount: len(m.AllPhotos)}
+			PhotoCount: len(m.AllPhotos), Expiry: ExpiryOf(m.Record, now)}
 		if name := labels[keyCountryNames][m.MarketCode]; name != "" {
 			it.Country.Name = name
 		}
@@ -959,7 +969,7 @@ func (mg *Manager) adminView(ctx context.Context, m ManagedListing) (AdminView, 
 	if kind != "" {
 		out.Decisions = []string{DecisionApprove, DecisionRequestChanges, DecisionReject}
 	}
-	if m.Status == StatusPublished && m.Revision != nil {
+	if (m.Status == StatusPublished || m.Status == StatusExpired) && m.Revision != nil {
 		live := contentView(ContentOf(m.Record))
 		out.Live = &live
 		if m.Revision.Content != nil {
@@ -1009,6 +1019,12 @@ func reviewEvent(eventType string, m ManagedListing, kind, reason string, now ti
 	return ChangeEvent{Type: eventType, Payload: raw}
 }
 
+// relistApproval is the LISTING_APPROVED event of a relist's approval.
+func relistApproval(m ManagedListing, now time.Time) ChangeEvent {
+	raw, _ := json.Marshal(ReviewEventPayload{ListingID: m.ID, ReviewKind: ReviewKindNew, Relist: true, OccurredAt: now})
+	return ChangeEvent{Type: EventListingApproved, Payload: raw}
+}
+
 // Decide records a reviewer's decision on a listing waiting for review. A
 // reason is required to request changes or to reject.
 func (mg *Manager) Decide(ctx context.Context, p *auth.Principal, id uuid.UUID, decision, reason string) (AdminView, error) {
@@ -1038,12 +1054,23 @@ func (mg *Manager) Decide(ctx context.Context, p *auth.Principal, id uuid.UUID, 
 	ch := Change{}
 	switch {
 	case decision == DecisionApprove && kind == ReviewKindNew:
+		// A listing that was published before is being relisted: the
+		// approval starts its next cycle and the advertiser is told it is
+		// live again (listing-relisted, API 0.45.0).
+		relist := !m.PublishedAt.IsZero()
+		approved := reviewEvent(EventListingApproved, m, kind, "", now)
+		if relist {
+			approved = relistApproval(m, now)
+			// A listing published without a cycle row (the sample data)
+			// still had a first cycle: this one is the second.
+			ch.MinRelistNo = 1
+		}
 		m.Status, m.PublishedAt, m.ExpiresAt = StatusPublished, now, now.Add(PublicationPeriod)
 		m.ReviewedAt, m.ReviewedBy, m.ReviewReason, m.Revision = &now, &reviewer, "", nil
 		ch.NewCycle = true
 		// The go-live: refused when the advertiser's package is full (FR-008).
 		ch.Quota = quotaCheck(m, now)
-		ch.Events = []ChangeEvent{indexEvent(EventListingPublished, m.ID), reviewEvent(EventListingApproved, m, kind, "", now)}
+		ch.Events = []ChangeEvent{indexEvent(EventListingPublished, m.ID), approved}
 	case decision == DecisionApprove:
 		mergeRevision(&m)
 		m.ReviewedAt, m.ReviewedBy = &now, &reviewer

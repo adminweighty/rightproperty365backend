@@ -457,10 +457,18 @@ func seedListingTx(ctx context.Context, tx pgx.Tx, l listings.Record, now time.T
 	if _, err := tx.Exec(ctx, `UPDATE listings SET submitted_at = updated_at WHERE id = $1 AND status = 'PENDING_REVIEW'`, l.ID); err != nil {
 		return fmt.Errorf("seed listing %s submission: %w", l.Slug, err)
 	}
-	// Tell the search index: the worker turns this into an upsert or a delete.
+	// A re-run starts the sample listing's publication period afresh: the
+	// expiry sweep's notices of the old one go (API 0.45.0).
+	if _, err := tx.Exec(ctx, `DELETE FROM listing_expiry_notices WHERE listing_id = $1`, l.ID); err != nil {
+		return fmt.Errorf("seed listing %s expiry notices: %w", l.Slug, err)
+	}
+	// Tell the search index: the worker turns this into an upsert or a
+	// delete. A listing that is not published is LISTING_UNPUBLISHED, never
+	// LISTING_EXPIRED: since API 0.45.0 that event also emails the
+	// advertiser that their listing has expired.
 	event := listings.EventListingPublished
 	if l.Status != listings.StatusPublished {
-		event = listings.EventListingExpired
+		event = listings.EventListingUnpublished
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO outbox_events (id, event_type, aggregate_type, aggregate_id, payload, created_at, available_at)

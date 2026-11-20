@@ -18,7 +18,9 @@ import (
 //
 // The lifecycle (listings.status):
 //
-//	DRAFT ──submit──> PENDING_REVIEW ──approve──> PUBLISHED ──(publication period over)──> EXPIRED (at query time)
+//	DRAFT ──submit──> PENDING_REVIEW ──approve──> PUBLISHED ──(publication period over)──> EXPIRED
+//	(EXPIRED is read at query time the moment the period ends, and stored by
+//	the hourly expiry sweep, which also sends the reminders: expiry.go)
 //	                       │  └──request changes──> CHANGES_REQUESTED ──edit, submit──> PENDING_REVIEW
 //	                       └──reject──> REJECTED (final: the listing can only be deleted)
 //	DRAFT | PENDING_REVIEW | CHANGES_REQUESTED | PUBLISHED | EXPIRED | PAUSED ──archive──> ARCHIVED
@@ -315,10 +317,11 @@ func (m ManagedListing) ReviewKind() string {
 	return ""
 }
 
-// Actors of a timeline entry.
+// Actors of a timeline entry. SYSTEM is the expiry sweep (API 0.45.0).
 const (
 	ActorAdvertiser = "ADVERTISER"
 	ActorReviewer   = "REVIEWER"
+	ActorSystem     = "SYSTEM"
 )
 
 // Timeline actions.
@@ -330,6 +333,8 @@ const (
 	ActionRejected         = "REJECTED"
 	ActionArchived         = "ARCHIVED"
 	ActionRelisted         = "RELISTED"
+	// ActionExpired is the expiry sweep storing EXPIRED (actor SYSTEM).
+	ActionExpired = "EXPIRED"
 )
 
 // TimelineEntry is one recorded step of a listing's lifecycle.
@@ -362,10 +367,14 @@ func ReviewEventTypes() []string {
 
 // ReviewEventPayload is the payload of a review event. It names the listing
 // and carries the reviewer's reason (moderation text, not personal data).
+// Relist is true on the approval of a NEW review of a listing that was
+// published before (it starts cycle 2 or later): the advertiser is sent
+// listing-relisted instead of listing-approved (API 0.45.0).
 type ReviewEventPayload struct {
 	ListingID  uuid.UUID `json:"listing_id"`
 	ReviewKind string    `json:"review_kind"`
 	Reason     string    `json:"reason,omitempty"`
+	Relist     bool      `json:"relist"`
 	OccurredAt time.Time `json:"occurred_at"`
 }
 
@@ -381,8 +390,12 @@ type Change struct {
 	Entry  *TimelineEntry
 	Events []ChangeEvent
 	// NewCycle records a new publication cycle (an approval that publishes
-	// the listing): its published_at and expires_at are the listing's.
-	NewCycle bool
+	// the listing): its published_at and expires_at are the listing's. Its
+	// relist_no is the next one, and at least MinRelistNo (1 for the relist
+	// of a listing that was published without a cycle row, such as the
+	// sample data, so its new period gets reminders of its own).
+	NewCycle    bool
+	MinRelistNo int
 	// Quota, when set, is the listing-package check of a go-live: the store
 	// checks it in the same transaction as the write, under the account and
 	// market's lock, and refuses the write with a *packages.QuotaError when

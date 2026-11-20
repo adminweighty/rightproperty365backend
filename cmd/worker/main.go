@@ -271,8 +271,10 @@ func run() error {
 		logger.Info("search driver selected: elasticsearch (listing events update the search index)",
 			slog.String("search_driver", config.SearchDriverElasticsearch), slog.String("search_alias", listings.IndexAlias(cfg.SearchIndexPrefix)))
 	} else {
+		// Also, not Register: LISTING_EXPIRED is a notification event too
+		// (API 0.45.0), registered above by the notification handlers.
 		for _, t := range listings.IndexEventTypes() {
-			dispatcher.Register(t, outbox.HandlerFunc(func(context.Context, outbox.Event) error { return nil }))
+			dispatcher.Also(t, outbox.HandlerFunc(func(context.Context, outbox.Event) error { return nil }))
 		}
 		logger.Info("search driver selected: database (listing events are acknowledged; there is no search index)",
 			slog.String("search_driver", config.SearchDriverDatabase))
@@ -287,6 +289,14 @@ func run() error {
 		Logger: logger, PublicWebURL: cfg.PublicWebURL})
 	leaseSvc := leases.NewService(leases.Deps{Store: leases.NewPostgresStore(pool), Logger: logger})
 	go app.RunAgreementSweeps(ctx, agreementSvc, leaseSvc, logger)
+
+	// Listing expiry (API 0.45.0): at start and then hourly, PUBLISHED
+	// listings past their period are stored EXPIRED (LISTING_EXPIRED: the
+	// search index and the advertiser's listing-expired email) and those
+	// ending within 14, 7 or 1 days get their reminder (LISTING_EXPIRING),
+	// once per publication cycle (SKIP LOCKED: safe with several workers).
+	go app.RunListingExpirySweeps(ctx, listingStore, logger, nil)
+	logger.Info("listing expiry job scheduled", slog.Duration("interval", app.ListingExpirySweepInterval))
 
 	// Subscriptions: an ACTIVE subscription whose end has passed is recorded
 	// EXPIRED (and its holder emailed) every few minutes.
