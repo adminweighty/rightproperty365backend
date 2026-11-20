@@ -40,8 +40,11 @@ type Deps struct {
 	// ReconcileAfter is how old an open checkout is before reconciliation
 	// asks the provider about it (default 15 minutes).
 	ReconcileAfter time.Duration
-	Logger         *slog.Logger
-	Now            func() time.Time
+	// CheckoutGuard may refuse a checkout (API 0.47.0: an invoice partly
+	// paid offline is paid off offline too, ErrPaidOffline). Nil allows all.
+	CheckoutGuard func(ctx context.Context, subscriptionID uuid.UUID) error
+	Logger        *slog.Logger
+	Now           func() time.Time
 }
 
 // Service is the online payment use cases.
@@ -113,6 +116,11 @@ func (s *Service) Checkout(ctx context.Context, p *auth.Principal, subscriptionI
 	}
 	if x.Status != subscriptions.StatusPendingPayment {
 		return CheckoutResult{}, subscriptions.ErrState
+	}
+	if s.d.CheckoutGuard != nil {
+		if err := s.d.CheckoutGuard(ctx, x.ID); err != nil {
+			return CheckoutResult{}, err
+		}
 	}
 	now := s.now()
 	id, err := uuid.NewV7()

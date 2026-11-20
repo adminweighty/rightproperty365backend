@@ -1,12 +1,16 @@
-{{define "subject"}}Payment received: {{.Amount}}{{end}}
+{{define "subject"}}Payment received: {{.Amount}} for invoice {{.InvoiceNumber}}{{end}}
 {{define "heading"}}Payment received{{end}}
 {{define "button"}}View receipt{{end}}
 {{define "why"}}You are receiving this because a payment was made for your RightProperty365 account.{{end}}
 {{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
 
-We have received your payment.
+We have received your payment. Thank you.
 
+Receipt: {{.ReceiptNumber}}
+Invoice: {{.InvoiceNumber}}
+Paid by: {{.Payer}}
 Amount: {{.Amount}}
-{{if .InvoiceNumber}}Invoice: {{.InvoiceNumber}}
-{{end}}Received: {{date .When}}
+Received: {{date .When}}
+{{if .Balance}}Still due: {{.Balance}}
 {{end}}
+{{if .PaidUntil.IsZero}}Part of the invoice is still due: your subscription renews once it is paid in full.{{else}}The invoice is paid. Your subscription is renewed until {{date .PaidUntil}}.{{end}}{{end}}

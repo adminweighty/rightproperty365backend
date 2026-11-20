@@ -29,6 +29,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/inapp"
 	"rightproperty365.com/backend/internal/modules/inspections"
+	"rightproperty365.com/backend/internal/modules/invoices"
 	"rightproperty365.com/backend/internal/modules/leases"
 	"rightproperty365.com/backend/internal/modules/ledger"
 	"rightproperty365.com/backend/internal/modules/legal"
@@ -374,6 +375,10 @@ type Deps struct {
 	// Developments holds the development showcase (API 0.44.0); nil means
 	// an empty memory store.
 	Developments developments.Store
+
+	// Invoices holds the finance administrators' renewal invoices (API
+	// 0.47.0); nil means a memory store.
+	Invoices invoices.Store
 
 	// Inbox is the notification centre (API 0.35.0): devices, in-app
 	// notifications, preferences and the delivery health. Logging out
@@ -747,8 +752,12 @@ func NewRouter(d Deps) (http.Handler, error) {
 	if gateway != nil {
 		subscriptionsSvc.SetOnlinePayment(gateway.Name())
 	}
+	// Renewal invoices (API 0.47.0): an invoice partly paid offline is paid
+	// off offline (the guard refuses its online checkout).
+	var invoicesSvc *invoices.Service
 	paymentsSvc := payments.NewService(payments.Deps{Store: paymentStore, Subscriptions: subscriptionsSvc, Gateway: gateway,
-		PublicWebURL: cfg.PublicWebURL, ReconcileAfter: cfg.PaymentReconcileAfter, Logger: logger, Now: d.Now})
+		PublicWebURL: cfg.PublicWebURL, ReconcileAfter: cfg.PaymentReconcileAfter, Logger: logger, Now: d.Now,
+		CheckoutGuard: func(ctx context.Context, id uuid.UUID) error { return invoicesSvc.CheckoutGuard(ctx, id) }})
 	paymentsH := payments.NewHandler(paymentsSvc, logger)
 	subscriptionsH := subscriptions.NewHandler(subscriptionsSvc, logger)
 	accountsH := accounts.NewHandler(accounts.NewService(accounts.Deps{Store: d.Accounts, Audit: d.AdminAudit, Mailer: accountMailer,
@@ -758,7 +767,10 @@ func NewRouter(d Deps) (http.Handler, error) {
 	legalH := legal.NewHandler(legal.NewService(legal.Deps{Store: legalStore, Acceptances: legalAcceptances,
 		KnownMarket: knownMarket(d.Markets), Now: d.Now}), logger)
 	identityH.SetPendingLegalHook(func(r *http.Request, userID uuid.UUID) (any, error) { return legalH.PendingViews(r, userID) })
-	taxH := tax.NewHandler(tax.NewService(taxStore, knownMarket(d.Markets), d.Now), logger)
+	taxSvc := tax.NewService(taxStore, knownMarket(d.Markets), d.Now)
+	taxH := tax.NewHandler(taxSvc, logger)
+	invoicesSvc = InvoicesService(d.Invoices, subscriptionsSvc, taxSvc, d.Markets, gateway, logger, d.Now)
+	invoicesH := invoices.NewHandler(invoicesSvc, logger, cfg.PublicWebURL)
 	referenceAdminH := reference.NewAdminHandler(reference.NewAdmin(referenceSvc, referenceAdminStore, d.Now), logger)
 	reportsH := reports.NewHandler(d.Reports, marketCodes(d.Markets), d.Now, logger)
 	adminLimiter := httpx.NewRateLimiter(adminChangesPerMinute, adminChangesBurst)
@@ -976,6 +988,13 @@ func NewRouter(d Deps) (http.Handler, error) {
 		// subscriptions and those of the organisations they own (404 for
 		// anybody else's). There is no online payment: a request is invoiced.
 		r.With(auth.RequireAuth).Get("/me/subscription-plans", subscriptionsH.AvailablePlans)
+		// Renewal invoices (API 0.47.0): the issued invoices of the caller
+		// and of the organisations they own or manage (404 for anybody else's).
+		r.Route("/me/invoices", func(r chi.Router) {
+			r.Use(auth.RequireAuth, httpx.PrivateNoStore)
+			r.Get("/", invoicesH.Mine)
+			r.Get("/{id}", invoicesH.MineOne)
+		})
 		r.Route("/me/subscriptions", func(r chi.Router) {
 			r.Use(auth.RequireAuth)
 			r.Get("/", subscriptionsH.Mine)
@@ -1384,6 +1403,16 @@ func NewRouter(d Deps) (http.Handler, error) {
 					r.Post("/{id}/refund", paymentsH.Refund)
 					r.Post("/{id}/reject", subscriptionsH.Reject)
 					r.Post("/{id}/cancel", subscriptionsH.Cancel)
+				})
+			})
+
+			// Renewal invoices (API 0.47.0): read like subscriptions; drafted,
+			// issued, paid, credited, voided and disputed by SUPER_ADMIN and
+			// FINANCE_ADMIN.
+			r.Route("/invoices", func(r chi.Router) {
+				r.Use(httpx.PrivateNoStore, auth.RequirePlatformRole(invoices.AdminRoles()...))
+				invoicesH.AdminRoutes(r, func(next http.Handler) http.Handler {
+					return auth.RequirePlatformRole(invoices.DecisionRoles()...)(adminLimiter.Middleware(next))
 				})
 			})
 

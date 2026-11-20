@@ -49,6 +49,7 @@ var answers = []struct {
 	{ErrNoGatewayPayment, http.StatusConflict, CodeNoGatewayPayment, "This subscription has no online payment that can be refunded."},
 	{ErrRefundExceeds, http.StatusUnprocessableEntity, CodeRefundExceeds, "The refund is more than what remains of the payment."},
 	{ErrPaymentNotFound, http.StatusNotFound, CodePaymentNotFound, "This payment does not exist."},
+	{ErrPaidOffline, http.StatusConflict, CodePaidOffline, "Part of this invoice was paid offline. Please pay the rest the same way, quoting the invoice number."},
 	{subscriptions.ErrNotFound, http.StatusNotFound, subscriptions.CodeSubscriptionNotFound, "This subscription does not exist."},
 	{subscriptions.ErrState, http.StatusConflict, subscriptions.CodeSubscriptionState, "The subscription's status does not allow this. Reload it and try again."},
 }

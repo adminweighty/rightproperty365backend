@@ -115,6 +115,10 @@ const (
 	ActionExpired          = "EXPIRED"
 	// ActionRefunded is money returned through the payment gateway.
 	ActionRefunded = "REFUNDED"
+	// ActionInvoiced is a renewal created by a finance administrator's
+	// invoice (API 0.47.0, modules/invoices). No subscription-invoice email
+	// is sent for it: the invoice sends its own renewal-invoice email.
+	ActionInvoiced = "INVOICED"
 )
 
 // Outbox events (aggregate "subscription"; payload subscription_id and

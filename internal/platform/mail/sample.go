@@ -129,9 +129,12 @@ func SampleData(name string) Data {
 		d.Name, d.Path = "Tendai Ncube", "/account"
 		d.ListingTitle, d.ListingRef, d.ExpiresOn = "3-bedroom house in Borrowdale", "0195c0de-0000-7000-8000-000000000001", sampleTime.AddDate(0, 0, 30)
 	case "renewal-invoice":
-		d.Name, d.Path, d.InvoiceNumber, d.Amount, d.DueOn = "Rudo Moyo", "/account", "INV-2026-00042", "USD 25.00", sampleTime.AddDate(0, 0, 14)
+		d.Name, d.Path, d.InvoiceNumber, d.Amount, d.DueOn = "Rudo Moyo", "/account/invoices/0195c0de-0000-7000-8000-00000000b001", "INV-ZW-2026-000042", "USD 34.50", sampleTime.AddDate(0, 0, 14)
+		d.Payer, d.PlanName, d.ServicePeriod = "Sample Estates", "Agency Pro", "1 December 2026 to 28 February 2027"
+		d.TaxLine, d.PayOnline = "VAT 15% (USD 4.50)", true
 	case "payment-received":
-		d.Name, d.Path, d.InvoiceNumber, d.Amount = "Rudo Moyo", "/account", "INV-2026-00042", "USD 25.00"
+		d.Name, d.Path, d.InvoiceNumber, d.Amount = "Rudo Moyo", "/account/invoices/0195c0de-0000-7000-8000-00000000b001", "INV-ZW-2026-000042", "USD 34.50"
+		d.Payer, d.ReceiptNumber, d.PaidUntil = "Sample Estates", "RCT-ZW-2026-000017", sampleTime.AddDate(0, 3, 0)
 	case "account-deletion-requested":
 		d.Path, d.DeletionOn = "/sign-in", sampleTime.AddDate(0, 0, 30)
 	case "account-deletion-completed":

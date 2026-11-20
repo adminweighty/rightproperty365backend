@@ -214,7 +214,9 @@ func (s *MemoryStore) CreateSubscription(_ context.Context, x Subscription, ev E
 	}
 	s.subs[x.ID] = cloneSub(x)
 	s.events = append(s.events, ev)
-	s.emit(EventRequested, x.ID, x.CreatedAt)
+	if ev.Action != ActionInvoiced {
+		s.emit(EventRequested, x.ID, x.CreatedAt)
+	}
 	return nil
 }
 

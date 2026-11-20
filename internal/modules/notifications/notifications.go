@@ -37,6 +37,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/inapp"
 	"rightproperty365.com/backend/internal/modules/inspections"
+	"rightproperty365.com/backend/internal/modules/invoices"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/maintenance"
 	"rightproperty365.com/backend/internal/modules/onboarding"
@@ -286,6 +287,8 @@ type Handlers struct {
 	// requestMessages returns a property request's conversation, for the
 	// reply emails' preview (API 0.46.0). Nil leaves the preview out.
 	requestMessages func(ctx context.Context, requestID uuid.UUID) ([]propertyrequests.Message, error)
+	// invoice loads the renewal invoice behind an invoice event (API 0.47.0).
+	invoice func(ctx context.Context, invoiceID, paymentID uuid.UUID) (invoices.Notice, error)
 	// roleLabels returns the current reference-data labels of the account
 	// roles (code -> label). Nil means the built-in labels.
 	roleLabels func(ctx context.Context) (map[string]string, error)
@@ -613,7 +616,7 @@ func NewHandlers(svc *mail.Service, renderer *mail.Renderer, source Source, logg
 
 // EventTypes lists the outbox events this module handles.
 func EventTypes() []string {
-	return append(append([]string{
+	return append(append(append([]string{
 		propertyrequests.EventPropertyRequestCreated,
 		propertyrequests.EventRequestAssigned,
 		propertyrequests.EventStageChanged,
@@ -626,7 +629,7 @@ func EventTypes() []string {
 		identity.EventAdminMFARecoveryCodeUsed,
 		identity.EventAdminMFAReset,
 	}, onboarding.EventTypes()...), append(append(append(append(appointments.EventTypes(), listings.ReviewEventTypes()...), listings.ExpiryEventTypes()...),
-		accounts.EventTypes()...), append(append(subscriptions.EventTypes(), applications.OutboxEventTypes()...), append(append(append(venues.EventTypes(), maintenance.OutboxEventTypes()...), inspections.OutboxEventTypes()...), reviews.OutboxEventTypes()...)...)...)...)
+		accounts.EventTypes()...), append(append(subscriptions.EventTypes(), applications.OutboxEventTypes()...), append(append(append(venues.EventTypes(), maintenance.OutboxEventTypes()...), inspections.OutboxEventTypes()...), reviews.OutboxEventTypes()...)...)...)...), invoices.EventTypes()...)
 }
 
 // PathOnboarding is the web page where an applicant fills in an application.
@@ -825,6 +828,11 @@ func (h *Handlers) build(ctx context.Context, ev outbox.Event) ([]plan, error) {
 			}); err != nil {
 				return nil, err
 			}
+		}
+
+	case invoices.EventSent, invoices.EventOverdue, invoices.EventPaymentRecorded:
+		if err := h.invoiceNotes(ctx, ev, add); err != nil {
+			return nil, err
 		}
 
 	case propertyrequests.EventStageChanged, propertyrequests.EventReplied, propertyrequests.EventCustomerReplied:

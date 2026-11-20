@@ -31,6 +31,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/inapp"
 	"rightproperty365.com/backend/internal/modules/inspections"
+	"rightproperty365.com/backend/internal/modules/invoices"
 	"rightproperty365.com/backend/internal/modules/leases"
 	"rightproperty365.com/backend/internal/modules/ledger"
 	"rightproperty365.com/backend/internal/modules/legal"
@@ -190,6 +191,8 @@ func run() error {
 		taxStore         tax.Store
 		// developmentStore holds the development showcase (API 0.44.0).
 		developmentStore developments.Store
+		// invoiceStore holds the renewal invoices (API 0.47.0); nil: memory.
+		invoiceStore invoices.Store
 	)
 	if cfg.UseMemoryStore() {
 		// config.Load guarantees this branch is only reachable in development.
@@ -592,6 +595,7 @@ func run() error {
 		legalStore, legalAcceptances = pgLegal, pgLegal
 		taxStore = tax.NewPostgresStore(pool)
 		developmentStore = developments.NewPostgresStore(pool)
+		invoiceStore = invoices.NewPostgresStore(pool)
 		adminAuditLog = adminaudit.PostgresLog{Q: pool}
 		inboxSvc = inapp.NewService(inapp.NewPostgresStore(pool), pushProvider, logger, nil)
 		// Scan records; the worker scans the quarantined documents.
@@ -687,6 +691,7 @@ func run() error {
 		Tax:              taxStore,
 		Inbox:            inboxSvc,
 		Developments:     developmentStore,
+		Invoices:         invoiceStore,
 	})
 	if err != nil {
 		return err

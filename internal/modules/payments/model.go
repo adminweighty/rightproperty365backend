@@ -101,7 +101,12 @@ const (
 	CodeNoGatewayPayment   = "NO_GATEWAY_PAYMENT"
 	CodeRefundExceeds      = "REFUND_EXCEEDS_PAYMENT"
 	CodePaymentNotFound    = "PAYMENT_NOT_FOUND"
+	CodePaidOffline        = "INVOICE_PART_PAID_OFFLINE"
 )
+
+// ErrPaidOffline: part of the invoice behind the subscription was paid
+// offline, so the rest is paid the same way (no online checkout).
+var ErrPaidOffline = errors.New("invoice partly paid offline")
 
 // Errors, mapped to HTTP by the handler.
 var (

@@ -109,9 +109,9 @@ func Templates() []Template {
 		{"listing-relisted", "Relisted listing approved and live again (to the advertiser, as above)", true},
 		{"request-update", "Reply on a property request, or its status changed for the customer (to the customer)", true},
 		{"request-customer-replied", "The customer answered on a property request (to the assigned member or direct seller, else the organisation's owners and managers)", true},
+		{"renewal-invoice", "Renewal invoice issued, sent again, or overdue (to the payer: the subscriber, or the organisation's owners and managers)", true},
+		{"payment-received", "Payment of a renewal invoice recorded, with the receipt (to the payer, as above)", true},
 
-		{"renewal-invoice", "Renewal invoice issued", false},
-		{"payment-received", "Payment received", false},
 		{"account-deletion-requested", "Account deletion requested", false},
 	}
 }
@@ -177,6 +177,19 @@ type Data struct {
 	// Guest is true for request-update to a customer who sent the request
 	// without an account (no request page to link to).
 	Guest bool
+
+	// Renewal invoices (API 0.47.0): the payer, the service period, the tax
+	// line ("" for none), whether the invoice is overdue, whether it can be
+	// paid online, and for a payment its receipt, what remains due and, once
+	// paid, the end of the renewed period.
+	Payer         string
+	ServicePeriod string
+	TaxLine       string
+	Overdue       bool
+	PayOnline     bool
+	ReceiptNumber string
+	Balance       string
+	PaidUntil     time.Time
 
 	// Team emails: the organisation, the person who acted (the inviter, the
 	// manager who assigned a request) and the invited job title.
@@ -468,3 +481,6 @@ func TemplateNames() []string {
 	sort.Strings(names)
 	return names
 }
+
+// DateText is a date as the emails write it ("14 November 2026").
+func DateText(t time.Time) string { return formatDate(t) }

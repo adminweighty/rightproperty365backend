@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.46.0
+  version: 0.47.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,21 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Renewal invoices (new in 0.47.0, BR-015, FR-037 to FR-040)
+    - Finance administrators (`SUPER_ADMIN`, `FINANCE_ADMIN`; read: also `PLATFORM_ADMIN`, `SUPPORT`) draft
+      an invoice for the renewal of a subscription (`POST /v1/admin/invoices`), edit or discard the draft,
+      and issue it: it gets a gap-free number per market and year (`INV-ZW-2026-000001`), becomes
+      immutable, creates the renewal subscription it pays (`PENDING_PAYMENT`) and is emailed to the payer.
+    - States: `DRAFT`, `ISSUED`, `PART_PAID`, `PAID`, `OVERDUE` (the hourly sweep, after the due date in
+      the market's time zone, with one reminder email), `VOID`, `DISPUTED`.
+    - Payments: offline full or part payments recorded by finance (`RCT-...` receipts); the payment that
+      settles the invoice activates the renewal. Online, the payer pays on the subscription page (the
+      existing checkout) and the activation settles the invoice; an invoice partly paid offline is not
+      offered online (`409 INVOICE_PART_PAID_OFFLINE`). Corrections: credit notes (`CRN-...`), void (no
+      payments) and reissue as a new draft. A full gateway refund marks a paid invoice `DISPUTED`.
+    - Tax: the market's rule for `SUBSCRIPTIONS` in force at issue, if any; otherwise no tax line.
+    - The payer (the person, or an organisation's `OWNER` and `MANAGER`) reads `GET /v1/me/invoices`.
 
     Replies on property requests (new in 0.46.0, FR-063, BR-022, FR-064)
     - `GET`/`POST /v1/agent/property-requests/{id}/messages`: whoever may work the request writes to
@@ -8090,6 +8105,545 @@ paths:
         "429":
           $ref: "#/components/responses/RateLimited"
 
+  /v1/admin/invoices:
+    get:
+      tags: [admin]
+      operationId: listInvoices
+      summary: "Invoices, newest first (`status`, `market`, `q`, `subscription`, `page`, `page_size`) (new in 0.47.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: "`{\"invoice\": ...}` (detail) or `{\"items\": [...], page, page_size, total, total_pages}` (lists)."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: "`INVOICE_NOT_FOUND`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: "`INVOICE_STATE_CONFLICT`, `RENEWAL_EXISTS`, `SUBSCRIPTION_NOT_INVOICEABLE`, `INVOICE_HAS_PAYMENTS`, `PRICE_NOT_AVAILABLE`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+    post:
+      tags: [admin]
+      operationId: createInvoice
+      summary: "Draft a renewal invoice `{renews_subscription_id, period?, due_on?, terms?, lines?}` (new in 0.47.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                renews_subscription_id: {type: string, format: uuid}
+                period: {type: string, enum: [QUARTERLY, YEARLY]}
+                due_on: {type: string, format: date}
+                terms: {type: string, maxLength: 2000}
+                lines:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      description: {type: string, maxLength: 300}
+                      quantity: {type: integer, minimum: 1}
+                      unit_amount: {type: string}
+      responses:
+        "201":
+          description: "`{\"invoice\": ...}` (detail) or `{\"items\": [...], page, page_size, total, total_pages}` (lists)."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: "`INVOICE_NOT_FOUND`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: "`INVOICE_STATE_CONFLICT`, `RENEWAL_EXISTS`, `SUBSCRIPTION_NOT_INVOICEABLE`, `INVOICE_HAS_PAYMENTS`, `PRICE_NOT_AVAILABLE`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /v1/admin/invoices/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    get:
+      tags: [admin]
+      operationId: getInvoice
+      summary: "One invoice with payments, credit notes, history and `actions` (new in 0.47.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: "`{\"invoice\": ...}` (detail) or `{\"items\": [...], page, page_size, total, total_pages}` (lists)."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: "`INVOICE_NOT_FOUND`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: "`INVOICE_STATE_CONFLICT`, `RENEWAL_EXISTS`, `SUBSCRIPTION_NOT_INVOICEABLE`, `INVOICE_HAS_PAYMENTS`, `PRICE_NOT_AVAILABLE`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+    patch:
+      tags: [admin]
+      operationId: updateInvoice
+      summary: "Change a DRAFT (period, due_on, terms, lines) (new in 0.47.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                renews_subscription_id: {type: string, format: uuid}
+                period: {type: string, enum: [QUARTERLY, YEARLY]}
+                due_on: {type: string, format: date}
+                terms: {type: string, maxLength: 2000}
+                lines:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      description: {type: string, maxLength: 300}
+                      quantity: {type: integer, minimum: 1}
+                      unit_amount: {type: string}
+      responses:
+        "200":
+          description: "`{\"invoice\": ...}` (detail) or `{\"items\": [...], page, page_size, total, total_pages}` (lists)."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: "`INVOICE_NOT_FOUND`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: "`INVOICE_STATE_CONFLICT`, `RENEWAL_EXISTS`, `SUBSCRIPTION_NOT_INVOICEABLE`, `INVOICE_HAS_PAYMENTS`, `PRICE_NOT_AVAILABLE`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+    delete:
+      tags: [admin]
+      operationId: discardInvoice
+      summary: "Discard a DRAFT (new in 0.47.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "204":
+          description: "No content."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: "`INVOICE_NOT_FOUND`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: "`INVOICE_STATE_CONFLICT`, `RENEWAL_EXISTS`, `SUBSCRIPTION_NOT_INVOICEABLE`, `INVOICE_HAS_PAYMENTS`, `PRICE_NOT_AVAILABLE`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /v1/admin/invoices/{id}/issue:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      tags: [admin]
+      operationId: issueInvoice
+      summary: "Number, email and create the renewal it pays (new in 0.47.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: "`{\"invoice\": ...}` (detail) or `{\"items\": [...], page, page_size, total, total_pages}` (lists)."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: "`INVOICE_NOT_FOUND`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: "`INVOICE_STATE_CONFLICT`, `RENEWAL_EXISTS`, `SUBSCRIPTION_NOT_INVOICEABLE`, `INVOICE_HAS_PAYMENTS`, `PRICE_NOT_AVAILABLE`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /v1/admin/invoices/{id}/resend:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      tags: [admin]
+      operationId: resendInvoice
+      summary: "Email an unpaid invoice again (at most every 10 minutes) (new in 0.47.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: "`{\"invoice\": ...}` (detail) or `{\"items\": [...], page, page_size, total, total_pages}` (lists)."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: "`INVOICE_NOT_FOUND`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: "`INVOICE_STATE_CONFLICT`, `RENEWAL_EXISTS`, `SUBSCRIPTION_NOT_INVOICEABLE`, `INVOICE_HAS_PAYMENTS`, `PRICE_NOT_AVAILABLE`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /v1/admin/invoices/{id}/payments:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      tags: [admin]
+      operationId: recordInvoicePayment
+      summary: "Record an offline payment `{amount, method, reference, received_on}` (new in 0.47.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount, method, received_on]
+              properties:
+                amount: {type: string}
+                method: {type: string, enum: [BANK_TRANSFER, CASH, CARD_OFFLINE, OTHER]}
+                reference: {type: string, maxLength: 100}
+                received_on: {type: string, format: date}
+      responses:
+        "201":
+          description: "`{\"invoice\": ...}` (detail) or `{\"items\": [...], page, page_size, total, total_pages}` (lists)."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: "`INVOICE_NOT_FOUND`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: "`INVOICE_STATE_CONFLICT`, `RENEWAL_EXISTS`, `SUBSCRIPTION_NOT_INVOICEABLE`, `INVOICE_HAS_PAYMENTS`, `PRICE_NOT_AVAILABLE`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /v1/admin/invoices/{id}/credit-notes:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      tags: [admin]
+      operationId: creditInvoice
+      summary: "Credit part of what is due `{amount, reason}` (new in 0.47.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount, reason]
+              properties:
+                amount: {type: string}
+                reason: {type: string, minLength: 3, maxLength: 1000}
+      responses:
+        "201":
+          description: "`{\"invoice\": ...}` (detail) or `{\"items\": [...], page, page_size, total, total_pages}` (lists)."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: "`INVOICE_NOT_FOUND`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: "`INVOICE_STATE_CONFLICT`, `RENEWAL_EXISTS`, `SUBSCRIPTION_NOT_INVOICEABLE`, `INVOICE_HAS_PAYMENTS`, `PRICE_NOT_AVAILABLE`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /v1/admin/invoices/{id}/void:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      tags: [admin]
+      operationId: voidInvoice
+      summary: "Void an invoice without payments `{reason}` (new in 0.47.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: {type: string, minLength: 3, maxLength: 1000}
+      responses:
+        "200":
+          description: "`{\"invoice\": ...}` (detail) or `{\"items\": [...], page, page_size, total, total_pages}` (lists)."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: "`INVOICE_NOT_FOUND`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: "`INVOICE_STATE_CONFLICT`, `RENEWAL_EXISTS`, `SUBSCRIPTION_NOT_INVOICEABLE`, `INVOICE_HAS_PAYMENTS`, `PRICE_NOT_AVAILABLE`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /v1/admin/invoices/{id}/reissue:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      tags: [admin]
+      operationId: reissueInvoice
+      summary: "Copy a VOID invoice into a new DRAFT (new in 0.47.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "201":
+          description: "`{\"invoice\": ...}` (detail) or `{\"items\": [...], page, page_size, total, total_pages}` (lists)."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: "`INVOICE_NOT_FOUND`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: "`INVOICE_STATE_CONFLICT`, `RENEWAL_EXISTS`, `SUBSCRIPTION_NOT_INVOICEABLE`, `INVOICE_HAS_PAYMENTS`, `PRICE_NOT_AVAILABLE`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /v1/admin/invoices/{id}/dispute:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      tags: [admin]
+      operationId: disputeInvoice
+      summary: "Mark an invoice disputed `{reason}` (new in 0.47.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: {type: string, minLength: 3, maxLength: 1000}
+      responses:
+        "200":
+          description: "`{\"invoice\": ...}` (detail) or `{\"items\": [...], page, page_size, total, total_pages}` (lists)."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: "`INVOICE_NOT_FOUND`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: "`INVOICE_STATE_CONFLICT`, `RENEWAL_EXISTS`, `SUBSCRIPTION_NOT_INVOICEABLE`, `INVOICE_HAS_PAYMENTS`, `PRICE_NOT_AVAILABLE`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /v1/admin/invoices/{id}/resolve-dispute:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      tags: [admin]
+      operationId: resolveInvoiceDispute
+      summary: "Put a DISPUTED invoice back `{reason}` (new in 0.47.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: {type: string, minLength: 3, maxLength: 1000}
+      responses:
+        "200":
+          description: "`{\"invoice\": ...}` (detail) or `{\"items\": [...], page, page_size, total, total_pages}` (lists)."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: "`INVOICE_NOT_FOUND`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: "`INVOICE_STATE_CONFLICT`, `RENEWAL_EXISTS`, `SUBSCRIPTION_NOT_INVOICEABLE`, `INVOICE_HAS_PAYMENTS`, `PRICE_NOT_AVAILABLE`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /v1/me/invoices:
+    get:
+      tags: [account]
+      operationId: listMyInvoices
+      summary: "The caller's issued invoices (never drafts) (new in 0.47.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: "`{\"invoice\": ...}` (detail) or `{\"items\": [...], page, page_size, total, total_pages}` (lists)."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: "`INVOICE_NOT_FOUND`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: "`INVOICE_STATE_CONFLICT`, `RENEWAL_EXISTS`, `SUBSCRIPTION_NOT_INVOICEABLE`, `INVOICE_HAS_PAYMENTS`, `PRICE_NOT_AVAILABLE`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /v1/me/invoices/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    get:
+      tags: [account]
+      operationId: getMyInvoice
+      summary: "One issued invoice with receipts, `pay_url` and how to pay offline (new in 0.47.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: "`{\"invoice\": ...}` (detail) or `{\"items\": [...], page, page_size, total, total_pages}` (lists)."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: "`INVOICE_NOT_FOUND`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: "`INVOICE_STATE_CONFLICT`, `RENEWAL_EXISTS`, `SUBSCRIPTION_NOT_INVOICEABLE`, `INVOICE_HAS_PAYMENTS`, `PRICE_NOT_AVAILABLE`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
   /v1/listings/{slug}/application-form:
     parameters:
       - { name: slug, in: path, required: true, schema: { type: string } }

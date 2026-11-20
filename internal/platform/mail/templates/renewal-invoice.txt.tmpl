@@ -1,14 +1,17 @@
-{{define "subject"}}Invoice {{.InvoiceNumber}} issued{{end}}
-{{define "heading"}}Invoice issued{{end}}
-{{define "button"}}View invoice{{end}}
+{{define "subject"}}{{if .Overdue}}Overdue: invoice {{.InvoiceNumber}}{{else}}Invoice {{.InvoiceNumber}} for {{.Amount}}{{end}}{{end}}
+{{define "heading"}}{{if .Overdue}}Invoice overdue{{else}}Renewal invoice{{end}}{{end}}
+{{define "button"}}View and pay{{end}}
 {{define "why"}}You are receiving this because your RightProperty365 account has a paid plan.{{end}}
 {{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
 
-A renewal invoice has been issued for your account.
+{{if .Overdue}}This renewal invoice is past its due date and has not been paid in full.{{else}}Here is the invoice for the renewal of your subscription.{{end}}
 
 Invoice: {{.InvoiceNumber}}
-Amount: {{.Amount}}
+Billed to: {{.Payer}}
+{{if .PlanName}}Plan: {{.PlanName}}
+{{end}}{{if .ServicePeriod}}Service period: {{.ServicePeriod}}
+{{end}}{{if .TaxLine}}Tax: {{.TaxLine}}
+{{end}}Amount due: {{.Amount}}
 Due: {{date .DueOn}}
 
-
-This invoice has not been paid yet.{{end}}
+{{if .PayOnline}}Open the invoice to pay online, or pay by bank transfer quoting the invoice number.{{else}}Pay by bank transfer, or by another method stated on the invoice, quoting the invoice number.{{end}} Your subscription renews once the payment is confirmed. Listings that have expired are not republished automatically.{{end}}

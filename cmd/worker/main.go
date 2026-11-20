@@ -25,6 +25,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/inapp"
 	"rightproperty365.com/backend/internal/modules/inspections"
+	"rightproperty365.com/backend/internal/modules/invoices"
 	"rightproperty365.com/backend/internal/modules/leases"
 	"rightproperty365.com/backend/internal/modules/listings"
 	"rightproperty365.com/backend/internal/modules/maintenance"
@@ -38,6 +39,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/reviews"
 	"rightproperty365.com/backend/internal/modules/saved"
 	"rightproperty365.com/backend/internal/modules/subscriptions"
+	"rightproperty365.com/backend/internal/modules/tax"
 	"rightproperty365.com/backend/internal/modules/tenancies"
 	"rightproperty365.com/backend/internal/modules/venues"
 	"rightproperty365.com/backend/internal/platform/config"
@@ -320,6 +322,19 @@ func run() error {
 		Subscriptions: subscriptions.NewService(subscriptions.Deps{Store: subscriptionStore, Logger: logger}), PublicWebURL: cfg.PublicWebURL,
 		ReconcileAfter: cfg.PaymentReconcileAfter, Logger: logger}), logger)
 	logger.Info("payment reconciliation job scheduled", slog.Duration("interval", app.PaymentReconcileInterval))
+
+	// Renewal invoices (API 0.47.0): every hour an ISSUED or PART_PAID
+	// invoice past its due date (in its market's time zone) becomes OVERDUE
+	// with one reminder email; an activated renewal settles its open invoice
+	// (paid online, or approved on the subscription page) and a renewal
+	// refunded in full puts its paid invoice under review. The invoice
+	// emails read the invoice at send time.
+	invoicesSvc := app.InvoicesService(invoices.NewPostgresStore(pool), subscriptions.NewService(subscriptions.Deps{Store: subscriptionStore, Logger: logger}),
+		tax.NewService(tax.NewPostgresStore(pool), nil, nil), markets.NewPostgresStore(pool), gateway, logger, nil)
+	handlers.SetInvoiceSource(invoicesSvc.Notice)
+	app.RegisterInvoiceSettlement(dispatcher, invoicesSvc)
+	go app.RunInvoiceSweeps(ctx, invoicesSvc, logger)
+	logger.Info("invoice overdue job scheduled", slog.Duration("interval", invoices.SweepInterval))
 
 	// Rent schedules (API 0.36.1): every ACTIVE tenancy's rule is re-run daily,
 	// so a rolling schedule gains the next month's due when the month turns.

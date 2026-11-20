@@ -1,17 +1,21 @@
-Subject: Payment received: USD 25.00
+Subject: Payment received: USD 34.50 for invoice INV-ZW-2026-000042
 
 Payment received
 
 Hello Rudo Moyo,
 
-We have received your payment.
+We have received your payment. Thank you.
 
-Amount: USD 25.00
-Invoice: INV-2026-00042
+Receipt: RCT-ZW-2026-000017
+Invoice: INV-ZW-2026-000042
+Paid by: Sample Estates
+Amount: USD 34.50
 Received: 14 November 2026
 
+The invoice is paid. Your subscription is renewed until 14 February 2027.
+
 View receipt:
-https://rightproperty365.com/account
+https://rightproperty365.com/account/invoices/0195c0de-0000-7000-8000-00000000b001
 
 --
 You are receiving this because a payment was made for your RightProperty365 account.

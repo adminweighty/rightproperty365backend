@@ -1,19 +1,23 @@
-Subject: Invoice INV-2026-00042 issued
+Subject: Invoice INV-ZW-2026-000042 for USD 34.50
 
-Invoice issued
+Renewal invoice
 
 Hello Rudo Moyo,
 
-A renewal invoice has been issued for your account.
+Here is the invoice for the renewal of your subscription.
 
-Invoice: INV-2026-00042
-Amount: USD 25.00
+Invoice: INV-ZW-2026-000042
+Billed to: Sample Estates
+Plan: Agency Pro
+Service period: 1 December 2026 to 28 February 2027
+Tax: VAT 15% (USD 4.50)
+Amount due: USD 34.50
 Due: 28 November 2026
 
-This invoice has not been paid yet.
+Open the invoice to pay online, or pay by bank transfer quoting the invoice number. Your subscription renews once the payment is confirmed. Listings that have expired are not republished automatically.
 
-View invoice:
-https://rightproperty365.com/account
+View and pay:
+https://rightproperty365.com/account/invoices/0195c0de-0000-7000-8000-00000000b001
 
 --
 You are receiving this because your RightProperty365 account has a paid plan.

@@ -502,6 +502,50 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 seeker saved searches and alerts. (Conversion funnels and response-time KPIs: API 0.38.0; replies
 to the customer: API 0.46.0, below.)
 
+## Renewal invoices (API 0.47.0)
+
+BR-015, FR-037 to FR-040, Handover section 10. Finance administrators (`SUPER_ADMIN`,
+`FINANCE_ADMIN`; `PLATFORM_ADMIN` and `SUPPORT` read) invoice the renewal of a subscription
+(`/v1/admin/invoices`; module `internal/modules/invoices`, migration 0049):
+
+- **Draft**: for a subscription that is active or ended in the last 90 days. Defaults: the same
+  plan and period, the plan's price in the subscription's currency, the service period from the
+  end of the current one, due in 14 days, standard terms. A draft can be edited or discarded; it
+  has no number.
+- **Issue**: the number (`INV-{MARKET}-{YYYY}-{NNNNNN}`, gap-free per market and year, taken under
+  a row lock), the tax worked out again, and the renewal subscription created (`PENDING_PAYMENT`,
+  history `INVOICED`, no `subscription-invoice` email). Refused while the subscriber already has a
+  renewal waiting or paid (`409 RENEWAL_EXISTS`). The invoice is then immutable.
+- **States**: `DRAFT`, `ISSUED`, `PART_PAID`, `PAID`, `OVERDUE`, `VOID`, `DISPUTED`. The FSD's
+  `SENT` and `PENDING_PAYMENT` are `ISSUED` plus `sent_at`, `last_sent_at` and `send_count`.
+- **Payments**: finance records offline payments, full or part (`RCT-...` receipts; more than
+  what is due is refused). The payment that settles the invoice activates the renewal first, the
+  same path as an approval (the plan's package is granted; expired listings are never
+  republished). Online: the payer opens the subscription page (`pay_url`) and uses the existing
+  checkout; the activation event settles the invoice (`GATEWAY` payment, once per subscription).
+  An invoice partly paid or credited offline is not offered online
+  (`409 INVOICE_PART_PAID_OFFLINE`); the rest is paid offline. With `PAYMENT_GATEWAY=none` the
+  payer is told how to pay offline.
+- **Corrections**: credit notes (`CRN-...`, at most what is due; one that clears an unpaid invoice
+  voids it and cancels the renewal, one that clears a partly paid invoice settles it), void (only
+  without payments; cancels the renewal) and reissue (a VOID invoice copied into a new draft that
+  replaces it). Dispute and resolve; a full refund through the gateway marks a paid invoice
+  `DISPUTED` for review (partial refunds do not).
+- **Overdue**: the worker's hourly sweep marks an `ISSUED` or `PART_PAID` invoice `OVERDUE` once
+  its due date has passed in its market's time zone, with one reminder email.
+- **Tax**: the market's tax rule for `SUBSCRIPTIONS` in force at issue (modules/tax), inclusive or
+  exclusive, rounded half-up once; no rule, no tax line. A sample rule is marked
+  `tax.is_sample` (staging's seeded rates are samples; production has none).
+- **Audit**: every change in the invoice's history (`invoice_events`) and the administrators' audit
+  (target `INVOICE`).
+- **The payer** (`/v1/me/invoices`): the person, or an organisation's `OWNER` and `MANAGER`;
+  drafts are never shown. `pay_url` is given to whoever may open the subscription page (the
+  person, the organisation's owner).
+- Documents: the web app renders the invoice and receipts as printable pages from the JSON; the
+  API serves no PDF.
+- Development without a database: invoices work in memory; the settlement by an online payment
+  and the emails need the worker.
+
 ## Replies on property requests (API 0.46.0)
 
 FR-063, BR-022, FR-064. A request now has a conversation between the receiving side and the
@@ -3493,6 +3537,9 @@ Every template that `mail.Templates()` marks as triggered (template names in bra
 | A reply to your request (`request-update`; to the customer, with a preview; a guest is told the conversation continues from an account) | `POST /v1/agent/property-requests/{id}/messages` | outbox `PROPERTY_REQUEST_REPLIED` |
 | Update on your request (`request-update`; to the customer, the new status) | A stage change that changes the customer's status (`PATCH /v1/agent/property-requests/{id}`; not the move a reply makes, not an assignment) | outbox `PROPERTY_REQUEST_STAGE_CHANGED` |
 | The customer replied (`request-customer-replied`; to the assigned member or direct seller, else the organisation's owners and managers; with a preview) | `POST /v1/me/property-requests/{id}/messages` | outbox `PROPERTY_REQUEST_CUSTOMER_REPLIED` |
+| Renewal invoice (`renewal-invoice`; to the payer: the subscriber, or the organisation's owners and managers; amount due, tax line, due date, service period, how to pay) | `POST /v1/admin/invoices/{id}/issue`, `.../resend` | outbox `INVOICE_SENT` |
+| Invoice overdue (`renewal-invoice` with "overdue"; once) | The hourly invoice sweep, after the due date in the market's time zone | outbox `INVOICE_OVERDUE` |
+| Payment received (`payment-received`; to the payer, with the receipt number, what is still due or the end of the renewed period) | `POST /v1/admin/invoices/{id}/payments`; an online payment settling an invoice | outbox `INVOICE_PAYMENT_RECORDED` |
 | A document to sign or approve (`agreement-signing-request`; to a recipient, with their link) | An agreement sent (`POST /v1/me/agreements/{id}/send`, `POST /v1/me/leases/{id}/send`), the next signing order reached, a recipient replaced | request |
 | Reminder (`agreement-reminder`; with a new link) | `POST /v1/me/agreements/{id}/recipients/{rid}/remind`; the reminder interval, by the agreements sweep | request / sweep |
 | Code to confirm your email address (`agreement-signing-code`) | `POST /v1/signing/{token}/code` | request |
@@ -3513,8 +3560,6 @@ Every template that `mail.Templates()` marks as triggered (template names in bra
 
 **Designed, written and tested, but NOT sent** (`Triggered: false` in `mail.Templates()`):
 
-- `renewal-invoice` and `payment-received`: superseded by `subscription-invoice` and
-  `subscription-activated`.
 - `account-deletion-requested`: deletion (`DELETE /v1/me` and the administrators' delete) is
   immediate, so there is no request to confirm; `account-deletion-completed` is sent instead.
 
@@ -3893,9 +3938,8 @@ their data with `Principal.OrganisationIDs(...)` (and `PlatformRole.MarketCode` 
 - **WhatsApp and in-app notifications.** Recipients and customers are notified by email only.
 - **Bounce and complaint handling** – there is no Resend webhook endpoint, so a message that
   Resend accepted and later failed to deliver is never noticed; no suppression list.
-- **The emails nothing sends** (status updates to the customer, the
-  older renewal-invoice and payment-received templates, account deletion requested) are written
-  and tested but not triggered; see "What is sent today".
+- **The email nothing sends** (account deletion requested) is written and tested but not
+  triggered; see "What is sent today".
 - **Unsubscribe / notification preferences** – every email today is transactional.
 - **Profile management** – directory profiles are created only by an approved onboarding
   application or the seed; apart from their logos (`/v1/me/profiles/{kind}/{slug}/logo`) there is

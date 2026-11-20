@@ -354,7 +354,7 @@ func (s *PostgresStore) CreateSubscription(ctx context.Context, x Subscription, 
 		if err := insertEvent(ctx, tx, ev); err != nil {
 			return err
 		}
-		if x.Status == StatusPendingPayment {
+		if x.Status == StatusPendingPayment && ev.Action != ActionInvoiced {
 			return insertOutbox(ctx, tx, EventRequested, x.ID, x.CreatedAt)
 		}
 		return nil

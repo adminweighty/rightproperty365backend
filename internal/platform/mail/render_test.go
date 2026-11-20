@@ -258,7 +258,7 @@ func TestDatesAndAmountsFollowTheHouseStyle(t *testing.T) {
 		t.Fatalf("a time shown to a reader must name its time zone:\n%s", msg.Text)
 	}
 	msg, _ = r.Render("renewal-invoice", "a@example.com", SampleData("renewal-invoice"))
-	if !strings.Contains(msg.Text, "Amount: USD 25.00") || !strings.Contains(msg.Text, "Due: 28 November 2026") {
+	if !strings.Contains(msg.Text, "Amount due: USD 34.50") || !strings.Contains(msg.Text, "Due: 28 November 2026") {
 		t.Fatalf("amounts carry the currency code and dates are written out:\n%s", msg.Text)
 	}
 	msg, _ = r.Render("listing-expiring", "a@example.com", SampleData("listing-expiring"))

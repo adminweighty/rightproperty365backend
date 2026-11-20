@@ -83,6 +83,7 @@ const (
 	pathAgentApplications = "/agent/applications/"
 	pathMyApplications    = "/account/applications/"
 	pathMyRequests        = "/account/requests/"
+	pathMyInvoices        = "/account/invoices/"
 	pathHostVenueBookings = "/agent/venue-bookings"
 	pathMyVenueBookings   = "/account/venue-bookings"
 	pathAgentListings     = "/agent/listings/"
@@ -191,6 +192,16 @@ var inAppTemplates = map[string]inAppTemplate{
 
 	"subscription-invoice":   {typ: inapp.TypeSubscriptionInvoice, title: fixed("Subscription invoice issued"), path: pathMySubscriptions, body: subscriptionBody},
 	"subscription-activated": {typ: inapp.TypeSubscriptionActivated, title: fixed("Subscription active"), path: pathMySubscriptions, body: subscriptionBody},
+	// Renewal invoices (API 0.47.0): the number and amount are safe labels.
+	"renewal-invoice": {typ: inapp.TypeSubscriptionInvoice, path: pathMyInvoices, noRef: true, title: func(d mail.Data) string {
+		if d.Overdue {
+			return "Invoice " + d.InvoiceNumber + " is overdue"
+		}
+		return "Invoice " + d.InvoiceNumber + " for " + d.Amount
+	}},
+	"payment-received": {typ: inapp.TypeSubscriptionUpdated, path: pathMyInvoices, noRef: true, title: func(d mail.Data) string {
+		return "Payment received for invoice " + d.InvoiceNumber
+	}},
 	"subscription-expired":   {typ: inapp.TypeSubscriptionExpired, title: fixed("Subscription ended"), path: pathMySubscriptions, body: subscriptionBody},
 	"subscription-rejected":  {typ: inapp.TypeSubscriptionUpdated, title: fixed("Subscription request not approved"), path: pathMySubscriptions, body: subscriptionBody},
 	"subscription-cancelled": {typ: inapp.TypeSubscriptionUpdated, title: fixed("Subscription cancelled"), path: pathMySubscriptions, body: subscriptionBody},
