@@ -1,17 +1,24 @@
-Subject: Update on your request RP-7K2M9Q4D
+Subject: Reply to your request RP-7K2M9Q4D
 
-Update on your request
+A reply to your request
 
-Hello Tariro Moyo,
+Hello Rudo Moyo,
 
-There is an update on your request.
+The agent or seller has replied to your request.
 
 Reference: RP-7K2M9Q4D
-Status: The agent has replied
+Property: Four-bedroom family home with garden
+Listing reference: RP-ZW-10001
+Status: You have a new reply
 Updated: 14 November 2026
 
-View your requests:
-https://rightproperty365.com/account
+Their reply:
+  Thank you for your interest. The house is still available and we can show it to you on Saturday morning.
+
+Open your request to read the whole conversation and answer.
+
+View your request:
+https://rightproperty365.com/account/requests/0195c0de-0000-7000-8000-00000000a001
 
 --
 You are receiving this because you sent this request on RightProperty365.

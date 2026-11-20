@@ -48,8 +48,9 @@ type MemoryStore struct {
 	outbox   []MemoryOutboxEvent
 	sink     outbox.Sink
 	// work is the working state of each request (see memory_work.go).
-	work  map[uuid.UUID]*memoryWork
-	notes []Note
+	work     map[uuid.UUID]*memoryWork
+	notes    []Note
+	messages []Message
 	// appointments writes the appointment that belongs to a request; it is
 	// called under the store lock so both are stored or neither is.
 	appointments func(NewRequest) error

@@ -1,12 +1,20 @@
-{{define "subject"}}Update on your request {{.Reference}}{{end}}
-{{define "heading"}}Update on your request{{end}}
-{{define "button"}}View your requests{{end}}
+{{define "subject"}}{{if .Preview}}Reply to your request {{.Reference}}{{else}}Update on your request {{.Reference}}{{end}}{{end}}
+{{define "heading"}}{{if .Preview}}A reply to your request{{else}}Update on your request{{end}}{{end}}
+{{define "button"}}{{if .Guest}}Visit RightProperty365{{else}}View your request{{end}}{{end}}
 {{define "why"}}You are receiving this because you sent this request on RightProperty365.{{end}}
 {{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
 
-There is an update on your request.
+{{if .Preview}}The agent or seller has replied to your request.{{else}}There is an update on your request.{{end}}
 
 Reference: {{.Reference}}
-Status: {{.StatusText}}
+{{if .ListingTitle}}Property: {{.ListingTitle}}
+{{end}}{{if .ListingRef}}Listing reference: {{.ListingRef}}
+{{end}}Status: {{.StatusText}}
 Updated: {{date .When}}
+{{if .Preview}}
+Their reply:
+  {{.Preview}}
+{{end}}{{if .Guest}}
+You sent this request without an account, so you cannot answer this reply on RightProperty365. Requests you send while signed in keep the whole conversation in your account.{{else}}{{if .Preview}}
+Open your request to read the whole conversation and answer.{{end}}{{end}}
 {{end}}

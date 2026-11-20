@@ -347,6 +347,10 @@ type detailView struct {
 	CanAssign bool           `json:"can_assign"`
 	Timeline  []timelineView `json:"timeline"`
 	Notes     []noteView     `json:"notes"`
+	// Messages is the conversation with the customer, oldest first (API
+	// 0.46.0). CanReply is false once the request is CLOSED.
+	Messages []MessageView `json:"messages"`
+	CanReply bool          `json:"can_reply"`
 }
 
 func optional(s string) *string {
@@ -379,6 +383,10 @@ func professionalTimeline(entries []TimelineEntry) []timelineView {
 			v.AssigneeName = optional(e.AssigneeName)
 		case TimelineUnassigned:
 			v.Label = "Returned to the organisation inbox"
+		case TimelineReplied:
+			v.Label = "Replied to the customer"
+		case TimelineCustomerReplied:
+			v.Label = "The customer replied"
 		default:
 			continue // nothing else belongs to the receiving side
 		}
@@ -402,10 +410,15 @@ func (h *Handler) writeDetailFor(w http.ResponseWriter, r *http.Request, p *auth
 		h.fail(w, r, err)
 		return
 	}
+	msgs, err := h.svc.Messages(r.Context(), req.ID)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
 	v := detailView{
 		InboxItem: items[0], PreferredSlotUTC: req.PreferredSlot, UpdatedAt: req.UpdatedAt,
 		AllowedStages: []StageView{}, Timeline: professionalTimeline(entries), Notes: make([]noteView, 0, len(notes)),
-		CanAssign: scope.CanAssign(req),
+		CanAssign: scope.CanAssign(req), Messages: professionalMessages(msgs, p.UserID), CanReply: req.Stage != StageClosed,
 	}
 	for _, stage := range NextStages(req.Stage) {
 		v.AllowedStages = append(v.AllowedStages, StageView{Stage: stage, Label: StageLabel(stage)})
@@ -432,6 +445,12 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.fail(w, r, err)
 		return
+	}
+	// Opening the request reads the customer's messages ("awaiting your
+	// reply" stays until somebody answers; this only records the visit).
+	if err := h.svc.MarkRead(r.Context(), id, AuthorProfessional); err != nil {
+		h.logger.WarnContext(r.Context(), "property request read marker not saved",
+			slog.String("property_request_id", id.String()), slog.String("error", err.Error()))
 	}
 	h.writeDetail(w, r, p, http.StatusOK, req)
 }
@@ -590,6 +609,15 @@ type CustomerView struct {
 	Stay                   *StayDetails            `json:"stay"`
 	CreatedAt              time.Time               `json:"created_at"`
 	Timeline               *[]customerTimelineView `json:"timeline,omitempty"`
+	// The conversation (API 0.46.0). UnreadReply: the other side wrote last
+	// and the customer has not opened the request since. CanReply: the
+	// customer may answer now (the other side has written and the request
+	// is not closed). Messages is on the single request only.
+	MessageCount  int            `json:"message_count"`
+	LastMessageAt *time.Time     `json:"last_message_at"`
+	UnreadReply   bool           `json:"unread_reply"`
+	CanReply      bool           `json:"can_reply"`
+	Messages      *[]MessageView `json:"messages,omitempty"`
 }
 
 func customerView(r StoredRequest, names map[uuid.UUID]InboxListing) CustomerView {
@@ -599,6 +627,7 @@ func customerView(r StoredRequest, names map[uuid.UUID]InboxListing) CustomerVie
 		RequestType: r.RequestType, Status: status, StatusLabel: CustomerStatusLabel(status),
 		Message: r.Message, PreferredContactMethod: r.PreferredContactMethod, PreferredSlotUTC: r.PreferredSlot,
 		Stay: r.Stay, CreatedAt: r.CreatedAt,
+		MessageCount: r.MessageCount, LastMessageAt: r.LastMessageAt, UnreadReply: r.UnreadReply(), CanReply: r.CanCustomerReply(),
 	}
 }
 
@@ -677,7 +706,22 @@ func (h *Handler) MineOne(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, ErrNotFound)
 		return
 	}
-	req, entries, err := h.svc.MineOne(r.Context(), p.UserID, id)
+	if _, _, err := h.svc.MineOne(r.Context(), p.UserID, id); err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	// Opening the request reads the replies in it.
+	if err := h.svc.MarkRead(r.Context(), id, AuthorCustomer); err != nil {
+		h.logger.WarnContext(r.Context(), "property request read marker not saved",
+			slog.String("property_request_id", id.String()), slog.String("error", err.Error()))
+	}
+	h.writeCustomerDetail(w, r, p.UserID, id, http.StatusOK)
+}
+
+// writeCustomerDetail answers with one request as its customer sees it,
+// with the status timeline and the conversation.
+func (h *Handler) writeCustomerDetail(w http.ResponseWriter, r *http.Request, userID, id uuid.UUID, status int) {
+	req, entries, err := h.svc.MineOne(r.Context(), userID, id)
 	if err != nil {
 		h.fail(w, r, err)
 		return
@@ -687,10 +731,16 @@ func (h *Handler) MineOne(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
+	msgs, err := h.svc.Messages(r.Context(), id)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
 	timeline := customerTimeline(req, entries)
-	views[0].Timeline = &timeline
+	messages := customerMessages(req, msgs)
+	views[0].Timeline, views[0].Messages = &timeline, &messages
 	w.Header().Set("Cache-Control", "private, no-store")
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"request": views[0]})
+	httpx.WriteJSON(w, status, map[string]any{"request": views[0]})
 }
 
 // ---------------------------------------------------------------------------

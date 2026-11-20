@@ -44,6 +44,7 @@ func (s *MemoryStore) SeedRequests(_ context.Context, seeds []SeedRequest) error
 			delete(s.work, old.ID)
 			s.timeline = slices.DeleteFunc(s.timeline, func(e MemoryTimelineEntry) bool { return e.RequestID == old.ID })
 			s.notes = slices.DeleteFunc(s.notes, func(n Note) bool { return n.RequestID == old.ID })
+			s.messages = slices.DeleteFunc(s.messages, func(m Message) bool { return m.RequestID == old.ID })
 		}
 		s.requests = append(s.requests, req)
 		s.byKey[req.IdempotencyKey] = Record{ID: req.ID, Reference: req.Reference, Status: req.Status, RequestHash: req.RequestHash, CreatedAt: req.CreatedAt}

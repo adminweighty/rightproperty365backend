@@ -28,7 +28,8 @@ const requestColumns = `pr.id, pr.reference, pr.market_id, pr.listing_id, pr.req
 	COALESCE(pr.guest_name, u.full_name, ''), COALESCE(pr.guest_email, u.email, ''), COALESCE(pr.guest_phone, ''),
 	pr.recipient_type, pr.recipient_user_id, pr.recipient_organisation_id,
 	pr.check_in::text, pr.check_out::text, pr.guests, pr.created_at, pr.updated_at,
-	pr.exception_resolved_at, pr.exception_resolved_by, COALESCE(pr.exception_resolution_note, '')`
+	pr.exception_resolved_at, pr.exception_resolved_by, COALESCE(pr.exception_resolution_note, ''),
+	pr.message_count, pr.last_message_at, COALESCE(pr.last_message_author, ''), pr.customer_last_read_at, pr.professional_last_read_at`
 
 const requestFrom = ` FROM property_requests pr LEFT JOIN users u ON u.id = pr.customer_user_id `
 
@@ -54,10 +55,12 @@ func scanRequest(row pgx.Row) (StoredRequest, error) {
 		&r.CustomerUserID, &r.ContactName, &r.ContactEmail, &r.ContactPhone,
 		&recipientType, &recipientUser, &recipientOrg,
 		&checkIn, &checkOut, &guests, &r.CreatedAt, &r.UpdatedAt,
-		&r.ResolvedAt, &r.ResolvedBy, &r.ResolutionNote)
+		&r.ResolvedAt, &r.ResolvedBy, &r.ResolutionNote,
+		&r.MessageCount, &r.LastMessageAt, &r.LastMessageAuthor, &r.CustomerLastReadAt, &r.ProfessionalLastReadAt)
 	if err != nil {
 		return StoredRequest{}, err
 	}
+	r.LastMessageAt, r.CustomerLastReadAt, r.ProfessionalLastReadAt = utcPtr(r.LastMessageAt), utcPtr(r.CustomerLastReadAt), utcPtr(r.ProfessionalLastReadAt)
 	if recipientType != nil {
 		r.Recipient = &Recipient{Type: *recipientType, UserID: recipientUser, OrganisationID: recipientOrg}
 	}

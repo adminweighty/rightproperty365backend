@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.45.0
+  version: 0.46.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,19 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Replies on property requests (new in 0.46.0, FR-063, BR-022, FR-064)
+    - `GET`/`POST /v1/agent/property-requests/{id}/messages`: whoever may work the request writes to
+      the customer. A first reply to a `NEW_ENQUIRY` or `ASSIGNED` request also moves it to
+      `CONTACTED` (the customer reads `RESPONDED`; the lead funnel counts it as the first response).
+    - `GET`/`POST /v1/me/property-requests/{id}/messages`: the customer who sent the request while
+      signed in answers, once the receiving side has written (`409 REPLY_NOT_OPEN` before).
+      Neither side writes on a `CLOSED` request (`409 REQUEST_CLOSED`).
+    - Private notes never appear in the conversation. The customer sees the other side as
+      "The agent" or "The seller", never a person's name.
+    - Emails: `request-update` to the customer on a reply (with a preview) and when THEIR status
+      changes; `request-customer-replied` to the receiving side. A guest gets the reply by email
+      only (no account to answer from). New in-app type `REQUEST_UPDATE`.
 
     Listing expiry and reminders (new in 0.45.0, FR-006, FR-044, FR-053)
     - The worker's hourly sweep stores `EXPIRED` for a `PUBLISHED` listing past its `expires_at`
@@ -6588,6 +6601,75 @@ paths:
         "504":
           $ref: "#/components/responses/Timeout"
 
+  /v1/agent/property-requests/{id}/messages:
+    parameters:
+      - $ref: "#/components/parameters/PropertyRequestId"
+    get:
+      tags: [organisation-workspace]
+      operationId: listPropertyRequestMessages
+      summary: The conversation on a property request (new in 0.46.0)
+      description: |
+        Who may call it: as `PATCH /v1/agent/property-requests/{id}`. A first reply to a NEW_ENQUIRY or ASSIGNED request also moves it to CONTACTED.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The messages, oldest first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequestMessageList"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/PropertyRequestNotFound"
+    post:
+      tags: [organisation-workspace]
+      operationId: replyToPropertyRequest
+      summary: Write a message on a property request (new in 0.46.0)
+      description: |
+        Who may call it: as `PATCH /v1/agent/property-requests/{id}`. A first reply to a NEW_ENQUIRY or ASSIGNED request also moves it to CONTACTED. `body` is trimmed, 1 to 2000 characters, plain text. `409 REQUEST_CLOSED` on a
+        CLOSED request. Rate limited like the other request work.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [body]
+              properties:
+                body:
+                  type: string
+                  minLength: 1
+                  maxLength: 2000
+      responses:
+        "201":
+          description: The message was stored. The body is the whole request (as the GET), with `messages`.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [request]
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/PropertyRequestNotFound"
+        "409":
+          description: "`REQUEST_CLOSED`, or `REPLY_NOT_OPEN` (customer route: the other side has not written yet)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
   /v1/agent/property-requests/{id}/assign:
     parameters:
       - $ref: "#/components/parameters/PropertyRequestId"
@@ -7938,6 +8020,75 @@ paths:
           $ref: "#/components/responses/InternalError"
         "504":
           $ref: "#/components/responses/Timeout"
+
+  /v1/me/property-requests/{id}/messages:
+    parameters:
+      - $ref: "#/components/parameters/PropertyRequestId"
+    get:
+      tags: [account]
+      operationId: listMyPropertyRequestMessages
+      summary: The conversation on a property request (new in 0.46.0)
+      description: |
+        Only the account that sent the request; the customer may write once the receiving side has written (`409 REPLY_NOT_OPEN`).
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: The messages, oldest first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequestMessageList"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/PropertyRequestNotFound"
+    post:
+      tags: [account]
+      operationId: replyOnMyPropertyRequest
+      summary: Write a message on a property request (new in 0.46.0)
+      description: |
+        Only the account that sent the request; the customer may write once the receiving side has written (`409 REPLY_NOT_OPEN`). `body` is trimmed, 1 to 2000 characters, plain text. `409 REQUEST_CLOSED` on a
+        CLOSED request. Rate limited like the other request work.
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [body]
+              properties:
+                body:
+                  type: string
+                  minLength: 1
+                  maxLength: 2000
+      responses:
+        "201":
+          description: The message was stored. The body is the request as its customer sees it, with `messages`.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [request]
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/PropertyRequestNotFound"
+        "409":
+          description: "`REQUEST_CLOSED`, or `REPLY_NOT_OPEN` (customer route: the other side has not written yet)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   /v1/listings/{slug}/application-form:
     parameters:
@@ -20893,6 +21044,16 @@ components:
       # No additionalProperties: false here (changed in 0.20.0), because
       # ReceivedPropertyRequest extends this schema; list items carry exactly these fields.
       properties:
+        message_count:
+          type: integer
+          description: New in 0.46.0. Messages in the conversation with the customer.
+        last_message_at:
+          type: [string, "null"]
+          format: date-time
+          description: New in 0.46.0.
+        awaiting_reply:
+          type: boolean
+          description: New in 0.46.0. The last message is the customer's.
         assigned_to:
           description: |
             New in 0.23.0. The member of the receiving organisation the request is assigned to;
@@ -21013,14 +21174,61 @@ components:
           items:
             $ref: "#/components/schemas/StageCount"
 
+    RequestMessage:
+      description: One message of a property request's conversation (new in 0.46.0).
+      type: object
+      additionalProperties: false
+      required: [id, author, author_name, body, created_at, mine]
+      properties:
+        id:
+          type: string
+          format: uuid
+        author:
+          type: string
+          enum: [PROFESSIONAL, CUSTOMER]
+        author_name:
+          type: string
+          description: |
+            To the receiving side, the author's name. To the customer, "You" for their own
+            messages and "The agent" or "The seller" for the other side's.
+        body:
+          type: string
+          maxLength: 2000
+        created_at:
+          type: string
+          format: date-time
+        mine:
+          type: boolean
+          description: True for a message the caller wrote.
+    RequestMessageList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RequestMessage"
+        can_reply:
+          type: boolean
+          description: Customer route only. The customer may write now.
+
     ReceivedPropertyRequest:
       description: A received request in full, as the receiving side sees it (new in 0.20.0).
       unevaluatedProperties: false
       allOf:
         - $ref: "#/components/schemas/OrganisationPropertyRequest"
         - type: object
-          required: [preferred_slot_utc, updated_at, allowed_stages, can_assign, timeline, notes]
+          required: [preferred_slot_utc, updated_at, allowed_stages, can_assign, timeline, notes, messages, can_reply]
           properties:
+            messages:
+              type: array
+              description: New in 0.46.0. The conversation with the customer, oldest first.
+              items:
+                $ref: "#/components/schemas/RequestMessage"
+            can_reply:
+              type: boolean
+              description: New in 0.46.0. False once the request is CLOSED.
             preferred_slot_utc:
               type: [string, "null"]
               format: date-time
@@ -21160,6 +21368,24 @@ components:
         created_at:
           type: string
           format: date-time
+        message_count:
+          type: integer
+          description: New in 0.46.0.
+        last_message_at:
+          type: [string, "null"]
+          format: date-time
+          description: New in 0.46.0.
+        unread_reply:
+          type: boolean
+          description: New in 0.46.0. The other side wrote last and the customer has not opened the request since.
+        can_reply:
+          type: boolean
+          description: New in 0.46.0. The customer may write now (the other side has written; not CLOSED).
+        messages:
+          type: array
+          description: New in 0.46.0. Only on the single request. "The agent" / "The seller" / "You", never names.
+          items:
+            $ref: "#/components/schemas/RequestMessage"
         timeline:
           type: array
           description: Only in `GET /v1/me/property-requests/{id}` (absent from lists). Oldest first.

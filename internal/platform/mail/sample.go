@@ -112,7 +112,13 @@ func SampleData(name string) Data {
 		d.ListingTitle, d.ListingRef = "Four-bedroom family home with garden", "RP-ZW-482913"
 		d.Reason = "The same property is already listed by your agency (RP-ZW-10001)."
 	case "request-update":
-		d.Path, d.Reference, d.StatusText = "/account", "RP-7K2M9Q4D", "The agent has replied"
+		d.Name, d.Path, d.Reference, d.StatusText = "Rudo Moyo", "/account/requests/0195c0de-0000-7000-8000-00000000a001", "RP-7K2M9Q4D", "You have a new reply"
+		d.ListingTitle, d.ListingRef = "Four-bedroom family home with garden", "RP-ZW-10001"
+		d.Preview = SafePreview("Thank you for your interest. The house is still available and we can show it to you on Saturday morning.", 300)
+	case "request-customer-replied":
+		d.Name, d.Path, d.Reference, d.RequestType = "Tendai Ncube", "/agent/requests/0195c0de-0000-7000-8000-00000000a001", "RP-7K2M9Q4D", RequestTypeName("ENQUIRY")
+		d.ListingTitle, d.ListingRef = "Four-bedroom family home with garden", "RP-ZW-10001"
+		d.Preview = SafePreview("Saturday at ten works for me. Is parking available at the property?", 300)
 	case "listing-expiring":
 		d.Name, d.Path, d.Days = "Tendai Ncube", "/account", 7
 		d.ListingTitle, d.ListingRef, d.ExpiresOn = "3-bedroom house in Borrowdale", "0195c0de-0000-7000-8000-000000000001", sampleTime.AddDate(0, 0, 7)

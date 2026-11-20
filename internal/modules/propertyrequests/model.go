@@ -276,6 +276,11 @@ type InboxItem struct {
 	// assigned to; null in the organisation inbox (and for a direct seller's
 	// own request).
 	AssignedTo *AssigneeView `json:"assigned_to"`
+	// The conversation with the customer (API 0.46.0): its size, its last
+	// message, and AwaitingReply when that last message is the customer's.
+	MessageCount  int        `json:"message_count"`
+	LastMessageAt *time.Time `json:"last_message_at"`
+	AwaitingReply bool       `json:"awaiting_reply"`
 }
 
 // AssigneeView names the person a request is assigned to.
@@ -293,6 +298,7 @@ func ItemOf(r StoredRequest) InboxItem {
 		Message: r.Message, PreferredContactMethod: r.PreferredContactMethod,
 		Contact:   InboxContact{Name: r.ContactName, Email: r.ContactEmail},
 		CreatedAt: r.CreatedAt, Stay: r.Stay,
+		MessageCount: r.MessageCount, LastMessageAt: r.LastMessageAt, AwaitingReply: r.AwaitingReply(),
 	}
 	if r.ContactPhone != "" {
 		phone := r.ContactPhone

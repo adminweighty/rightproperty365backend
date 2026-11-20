@@ -1,0 +1,18 @@
+{{define "subject"}}The customer replied on request {{.Reference}}{{end}}
+{{define "heading"}}The customer replied{{end}}
+{{define "button"}}Open the request{{end}}
+{{define "why"}}You are receiving this because this request was routed to you on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+The customer has answered on one of your requests.
+
+Reference: {{.Reference}}
+{{if .ListingTitle}}Property: {{.ListingTitle}}
+{{end}}{{if .ListingRef}}Listing reference: {{.ListingRef}}
+{{end}}{{if .RequestType}}Request: {{.RequestType}}
+{{end}}Received: {{date .When}}
+{{if .Preview}}
+Their message:
+  {{.Preview}}
+{{end}}
+Reply from the request page so the conversation stays in one place.{{end}}

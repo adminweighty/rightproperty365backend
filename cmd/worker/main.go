@@ -126,6 +126,9 @@ func run() error {
 	// Listing review emails (approved, changes requested, rejected) read the
 	// listing at send time.
 	handlers.SetListingSource(app.ListingRecord(listingStore))
+	// Replies on property requests (API 0.46.0): the reply emails show a
+	// preview of the message, read at send time.
+	handlers.SetRequestMessageSource(propertyrequests.NewPostgresStore(pool).Messages)
 	handlers.SetListingLookup(func(ctx context.Context, id uuid.UUID) (string, string, bool) {
 		records, err := listingStore.ByIDs(ctx, []uuid.UUID{id})
 		if err != nil || len(records) == 0 {
@@ -211,10 +214,11 @@ func run() error {
 	dispatcher := outbox.NewDispatcher(outbox.NewPostgresQueue(pool), logger, outbox.Config{})
 	handlers.Register(dispatcher)
 
-	// A request's stage changes and resolved routing exceptions are recorded
-	// in the outbox for later consumers (a customer notification, analytics).
-	// Nothing sends an email for them yet, so they are acknowledged: without a
-	// handler the dispatcher would retry and then dead-letter them.
+	// Resolved routing exceptions are recorded in the outbox for later
+	// consumers. Nothing sends an email for them, so they are acknowledged:
+	// without a handler the dispatcher would retry and then dead-letter them.
+	// (A request's stage changes are handled by the notifications since API
+	// 0.46.0: the customer is told when their status changes.)
 	for _, t := range propertyrequests.WorkEventTypes() {
 		dispatcher.Register(t, outbox.HandlerFunc(func(context.Context, outbox.Event) error { return nil }))
 	}

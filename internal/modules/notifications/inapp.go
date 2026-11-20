@@ -82,6 +82,7 @@ const (
 	pathMyAppointments    = "/account/appointments"
 	pathAgentApplications = "/agent/applications/"
 	pathMyApplications    = "/account/applications/"
+	pathMyRequests        = "/account/requests/"
 	pathHostVenueBookings = "/agent/venue-bookings"
 	pathMyVenueBookings   = "/account/venue-bookings"
 	pathAgentListings     = "/agent/listings/"
@@ -97,6 +98,14 @@ var inAppTemplates = map[string]inAppTemplate{
 	"property-request-new":      {typ: inapp.TypeNewLead, title: fixed("New property enquiry"), path: pathAgentRequests},
 	"property-request-assigned": {typ: inapp.TypeNewLead, title: fixed("Property enquiry assigned to you"), path: pathAgentRequests},
 	"business-enquiry-new":      {typ: inapp.TypeNewEnquiry, title: fixed("New business enquiry"), path: pathAgentEnquiries},
+	// The conversation on a request (API 0.46.0): never the message's text.
+	"request-customer-replied": {typ: inapp.TypeNewLead, title: fixed("The customer replied on your request"), path: pathAgentRequests},
+	"request-update": {typ: inapp.TypeRequestUpdate, path: pathMyRequests, title: func(d mail.Data) string {
+		if d.Preview != "" {
+			return "You have a reply on your request"
+		}
+		return "Your request is now: " + d.StatusText
+	}},
 
 	"appointment-requested": {typ: inapp.TypeAppointmentRequested, path: pathAgentAppointments,
 		title: func(d mail.Data) string { return "New " + kind(d) + " request" }},

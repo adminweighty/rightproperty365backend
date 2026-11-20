@@ -107,8 +107,9 @@ func Templates() []Template {
 		{"listing-expiring", "Listing expiring in 14, 7 or 1 days (to the listing's agent, or the organisation's owners and managers, or the direct owner)", true},
 		{"listing-expired", "Listing expired (to the advertiser, as above)", true},
 		{"listing-relisted", "Relisted listing approved and live again (to the advertiser, as above)", true},
+		{"request-update", "Reply on a property request, or its status changed for the customer (to the customer)", true},
+		{"request-customer-replied", "The customer answered on a property request (to the assigned member or direct seller, else the organisation's owners and managers)", true},
 
-		{"request-update", "Reply or status update to the customer", false},
 		{"renewal-invoice", "Renewal invoice issued", false},
 		{"payment-received", "Payment received", false},
 		{"account-deletion-requested", "Account deletion requested", false},
@@ -172,6 +173,10 @@ type Data struct {
 	// Edit is true for a listing review email about the changes to a
 	// published listing (not about the listing itself).
 	Edit bool
+
+	// Guest is true for request-update to a customer who sent the request
+	// without an account (no request page to link to).
+	Guest bool
 
 	// Team emails: the organisation, the person who acted (the inviter, the
 	// manager who assigned a request) and the invited job title.

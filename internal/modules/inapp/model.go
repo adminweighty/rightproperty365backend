@@ -29,6 +29,7 @@ import (
 const (
 	TypeNewLead                 = "NEW_LEAD"
 	TypeNewEnquiry              = "NEW_ENQUIRY"
+	TypeRequestUpdate           = "REQUEST_UPDATE"
 	TypeAppointmentRequested    = "APPOINTMENT_REQUESTED"
 	TypeAppointmentConfirmed    = "APPOINTMENT_CONFIRMED"
 	TypeAppointmentCancelled    = "APPOINTMENT_CANCELLED"
@@ -71,6 +72,7 @@ type TypeInfo struct {
 var catalogue = []TypeInfo{
 	{TypeNewLead, "New property enquiries", false, ""},
 	{TypeNewEnquiry, "New business enquiries", false, ""},
+	{TypeRequestUpdate, "Replies and updates on your requests", false, ""},
 	{TypeAppointmentRequested, "Viewing and consultation requests", false, ""},
 	{TypeAppointmentConfirmed, "Appointment confirmations", false, ""},
 	{TypeAppointmentCancelled, "Appointment cancellations", false, ""},

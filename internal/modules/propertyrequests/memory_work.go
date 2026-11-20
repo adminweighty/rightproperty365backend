@@ -22,6 +22,12 @@ type memoryWork struct {
 	// Recipient replaces the routed recipient once the request was assigned
 	// or unassigned (nil: as routed).
 	Recipient *Recipient
+	// The conversation summary and read markers (migration 0048).
+	MessageCount           int
+	LastMessageAt          *time.Time
+	LastMessageAuthor      string
+	CustomerLastReadAt     *time.Time
+	ProfessionalLastReadAt *time.Time
 }
 
 // stored builds the stored form of a request. Caller holds the lock.
@@ -36,6 +42,8 @@ func (s *MemoryStore) stored(req NewRequest) StoredRequest {
 	if w, ok := s.work[req.ID]; ok {
 		r.Stage, r.StageChangedAt, r.StageChangedBy, r.UpdatedAt = w.Stage, w.StageChangedAt, w.StageChangedBy, w.UpdatedAt
 		r.ResolvedAt, r.ResolvedBy, r.ResolutionNote = w.ResolvedAt, w.ResolvedBy, w.ResolutionNote
+		r.MessageCount, r.LastMessageAt, r.LastMessageAuthor = w.MessageCount, w.LastMessageAt, w.LastMessageAuthor
+		r.CustomerLastReadAt, r.ProfessionalLastReadAt = w.CustomerLastReadAt, w.ProfessionalLastReadAt
 		if w.Recipient != nil {
 			recipient := *w.Recipient
 			r.Recipient = &recipient

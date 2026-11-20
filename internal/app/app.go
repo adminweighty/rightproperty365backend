@@ -1003,6 +1003,10 @@ func NewRouter(d Deps) (http.Handler, error) {
 			r.Use(auth.RequireAuth)
 			r.Get("/", requestsH.Mine)
 			r.Get("/{id}", requestsH.MineOne)
+			// The conversation with the receiving side (API 0.46.0): the
+			// customer answers once the agent or seller has written.
+			r.Get("/{id}/messages", requestsH.CustomerMessages)
+			r.With(requestWorkLimiter.Middleware).Post("/{id}/messages", requestsH.PostCustomerMessage)
 		})
 		// The lead funnel and response-time KPIs of the requests the caller
 		// received as a direct seller (API 0.38.0, BR-005). Who may call it is
@@ -1469,6 +1473,10 @@ func NewRouter(d Deps) (http.Handler, error) {
 			// Giving a request to a member, or back to the organisation
 			// inbox: the organisation's OWNER and MANAGER only.
 			r.With(requestWorkLimiter.Middleware).Post("/{id}/assign", requestsH.Assign)
+			// Replying to the customer (API 0.46.0): whoever may work the
+			// request; a first reply moves NEW/ASSIGNED to CONTACTED.
+			r.Get("/{id}/messages", requestsH.ProfessionalMessages)
+			r.With(requestWorkLimiter.Middleware).Post("/{id}/messages", requestsH.PostProfessionalMessage)
 		})
 
 		// An organisation's team, for its OWNER and MANAGER (what each may

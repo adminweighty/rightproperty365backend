@@ -498,10 +498,40 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 - Working a request and resolving an exception share one per-IP limit: bursts of 60, refilled at
   60 per minute.
 
-**Not built** (dashboards and requests): replies to the customer and any email about a stage
-change; follow-up dates and reminders; editing or deleting a note; listing analytics; seeker
-favourites, saved searches and alerts. (Conversion funnels and response-time KPIs: API 0.38.0,
-below.)
+**Not built** (dashboards and requests): follow-up dates and reminders; editing or deleting a note;
+seeker saved searches and alerts. (Conversion funnels and response-time KPIs: API 0.38.0; replies
+to the customer: API 0.46.0, below.)
+
+## Replies on property requests (API 0.46.0)
+
+FR-063, BR-022, FR-064. A request now has a conversation between the receiving side and the
+customer, separate from the private notes:
+
+- `GET` / `POST /v1/agent/property-requests/{id}/messages`: whoever may work the request (the
+  assigned member, the organisation's OWNER and MANAGER, the direct seller; others 404). A first
+  reply to a `NEW_ENQUIRY` or `ASSIGNED` request also moves it to `CONTACTED` in the same
+  transaction (timeline `STAGE_CHANGED` with `via: REPLY`), so the customer reads `RESPONDED` and
+  the lead funnel counts the reply as the first response. Later replies leave the stage alone.
+- `GET` / `POST /v1/me/property-requests/{id}/messages`: only the account that sent the request,
+  and only after the receiving side has written (`409 REPLY_NOT_OPEN`), so the thread never becomes
+  a second enquiry form. Neither side writes on a `CLOSED` request (`409 REQUEST_CLOSED`; the
+  receiving side can reopen it).
+- Plain text, 1 to 2000 characters, rate limited like the other request work. Messages are never
+  edited or deleted; the timeline records `REPLIED` / `CUSTOMER_REPLIED` without the text.
+- The customer sees the other side as "The agent" or "The seller" and their own messages as "You";
+  never a person's name. Private notes never appear in any customer view.
+- Lists: inbox rows carry `message_count`, `last_message_at` and `awaiting_reply` (the customer
+  wrote last); the customer's rows `unread_reply` (the other side wrote last and the customer has
+  not opened the request since) and `can_reply`. Opening a request records the side's visit
+  (`customer_last_read_at` / `professional_last_read_at`, migration 0048).
+- Emails and in-app (worker): a reply sends the customer `request-update` with a 300-character
+  preview (in-app type `REQUEST_UPDATE`, never the text); a stage change sends it only when the
+  customer's status changes and the move was not made by a reply; the customer's answer sends the
+  receiving side `request-customer-replied` (in-app `NEW_LEAD`). A guest (no account) gets the
+  reply by email with a link to the home page and the wording "requests you send while signed in
+  keep the whole conversation"; linking guest requests to an account is not built.
+- Development without a database: the conversation works, but its events are kept in the memory
+  store and not emailed (as the other events of request work).
 
 ## Listing expiry and reminders (API 0.45.0)
 
@@ -3460,6 +3490,9 @@ Every template that `mail.Templates()` marks as triggered (template names in bra
 | Your listing is live again (`listing-relisted`; to the advertiser, with the new end date; instead of `listing-approved`) | `POST /v1/admin/listings/{id}/approve` of a relist (a NEW review of a listing published before) | outbox `LISTING_APPROVED` (`relist: true`) |
 | Invitation to join a team (`team-invitation`; to the invited address; the link is single-use, 7 days) | `POST /v1/agent/organisations/{id}/invitations` | request |
 | A request was assigned to you (`property-request-assigned`; to the assignee; reference, listing, preview) | `POST /v1/agent/property-requests/{id}/assign` | outbox `PROPERTY_REQUEST_ASSIGNED` |
+| A reply to your request (`request-update`; to the customer, with a preview; a guest is told the conversation continues from an account) | `POST /v1/agent/property-requests/{id}/messages` | outbox `PROPERTY_REQUEST_REPLIED` |
+| Update on your request (`request-update`; to the customer, the new status) | A stage change that changes the customer's status (`PATCH /v1/agent/property-requests/{id}`; not the move a reply makes, not an assignment) | outbox `PROPERTY_REQUEST_STAGE_CHANGED` |
+| The customer replied (`request-customer-replied`; to the assigned member or direct seller, else the organisation's owners and managers; with a preview) | `POST /v1/me/property-requests/{id}/messages` | outbox `PROPERTY_REQUEST_CUSTOMER_REPLIED` |
 | A document to sign or approve (`agreement-signing-request`; to a recipient, with their link) | An agreement sent (`POST /v1/me/agreements/{id}/send`, `POST /v1/me/leases/{id}/send`), the next signing order reached, a recipient replaced | request |
 | Reminder (`agreement-reminder`; with a new link) | `POST /v1/me/agreements/{id}/recipients/{rid}/remind`; the reminder interval, by the agreements sweep | request / sweep |
 | Code to confirm your email address (`agreement-signing-code`) | `POST /v1/signing/{token}/code` | request |
@@ -3480,7 +3513,6 @@ Every template that `mail.Templates()` marks as triggered (template names in bra
 
 **Designed, written and tested, but NOT sent** (`Triggered: false` in `mail.Templates()`):
 
-- `request-update` (a reply or status update to the customer): replies to customers are not built.
 - `renewal-invoice` and `payment-received`: superseded by `subscription-invoice` and
   `subscription-activated`.
 - `account-deletion-requested`: deletion (`DELETE /v1/me` and the administrators' delete) is

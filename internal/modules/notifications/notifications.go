@@ -283,6 +283,9 @@ type Handlers struct {
 	// listing returns the title and reference of a listing, for the property
 	// request emails. Nil (or not found) leaves them out.
 	listing func(ctx context.Context, id uuid.UUID) (title, reference string, ok bool)
+	// requestMessages returns a property request's conversation, for the
+	// reply emails' preview (API 0.46.0). Nil leaves the preview out.
+	requestMessages func(ctx context.Context, requestID uuid.UUID) ([]propertyrequests.Message, error)
 	// roleLabels returns the current reference-data labels of the account
 	// roles (code -> label). Nil means the built-in labels.
 	roleLabels func(ctx context.Context) (map[string]string, error)
@@ -613,6 +616,9 @@ func EventTypes() []string {
 	return append(append([]string{
 		propertyrequests.EventPropertyRequestCreated,
 		propertyrequests.EventRequestAssigned,
+		propertyrequests.EventStageChanged,
+		propertyrequests.EventReplied,
+		propertyrequests.EventCustomerReplied,
 		businessenquiries.EventBusinessEnquiryCreated,
 		identity.EventUserEmailVerified,
 		identity.EventPasswordChanged,
@@ -819,6 +825,11 @@ func (h *Handlers) build(ctx context.Context, ev outbox.Event) ([]plan, error) {
 			}); err != nil {
 				return nil, err
 			}
+		}
+
+	case propertyrequests.EventStageChanged, propertyrequests.EventReplied, propertyrequests.EventCustomerReplied:
+		if err := h.requestConversationNotes(ctx, ev, add); err != nil {
+			return nil, err
 		}
 
 	case businessenquiries.EventBusinessEnquiryCreated:

@@ -153,17 +153,18 @@ const (
 	ActorAdmin        = "ADMIN"
 )
 
-// Outbox events written after creation. Nothing sends an email for them: the
-// worker acknowledges them (see WorkEventTypes).
+// Outbox events written after creation. Since API 0.46.0 a stage change is
+// handled by the notifications (the customer is told when THEIR status
+// changes); nothing is sent for a resolved routing exception, so the worker
+// acknowledges it (see WorkEventTypes).
 const (
 	EventStageChanged      = "PROPERTY_REQUEST_STAGE_CHANGED"
 	EventExceptionResolved = "PROPERTY_REQUEST_EXCEPTION_RESOLVED"
 )
 
-// WorkEventTypes lists the outbox events of this file. They carry
-// identifiers and stages only. No notification exists for them yet, so the
-// worker registers a handler that acknowledges them.
-func WorkEventTypes() []string { return []string{EventStageChanged, EventExceptionResolved} }
+// WorkEventTypes lists the outbox events of this file that nothing consumes
+// yet: the worker registers a handler that acknowledges them.
+func WorkEventTypes() []string { return []string{EventExceptionResolved} }
 
 // Limits.
 const (
@@ -207,6 +208,13 @@ type StoredRequest struct {
 	ResolvedAt     *time.Time
 	ResolvedBy     *uuid.UUID
 	ResolutionNote string
+	// The conversation (API 0.46.0): its size, its last message and who
+	// wrote it, and when each side last opened the request.
+	MessageCount           int
+	LastMessageAt          *time.Time
+	LastMessageAuthor      string // "", AuthorProfessional or AuthorCustomer
+	CustomerLastReadAt     *time.Time
+	ProfessionalLastReadAt *time.Time
 }
 
 // Sees reports whether a request is visible under the scope. It is the one
@@ -327,6 +335,9 @@ type StageChange struct {
 	To    string
 	Actor Actor
 	At    time.Time
+	// Via is "" for a move made by hand, StageViaReply for the move a reply
+	// makes (the customer is then told by the reply email only).
+	Via string
 }
 
 // Resolution marks a routing exception as dealt with.
@@ -398,15 +409,32 @@ type WorkStore interface {
 	// OpenLeads counts, per assignee, the organisation's open requests
 	// (not CONVERTED or CLOSED) assigned to someone.
 	OpenLeads(ctx context.Context, organisationID uuid.UUID) (map[uuid.UUID]int, error)
+
+	// Messages returns a request's conversation, oldest first (API 0.46.0).
+	Messages(ctx context.Context, id uuid.UUID) ([]Message, error)
+	// AddMessage stores a message after allow accepted the current row,
+	// with the conversation summary, its timeline entry (REPLIED or
+	// CUSTOMER_REPLIED, never the text) and its outbox event, together. A
+	// professional's message on a request at a stage that replyAdvance moves
+	// also moves it to CONTACTED (StageChange.Via StageViaReply) in the same
+	// transaction. It returns the request as it is afterwards.
+	AddMessage(ctx context.Context, m Message, allow func(current StoredRequest) error) (StoredRequest, error)
+	// MarkRead records that one side (AuthorProfessional or AuthorCustomer)
+	// opened the request at at.
+	MarkRead(ctx context.Context, id uuid.UUID, side string, at time.Time) error
 }
 
 // stageEventPayload is the body of PROPERTY_REQUEST_STAGE_CHANGED:
 // identifiers and stages only.
 func stageEventPayload(r StoredRequest, from string, c StageChange) map[string]any {
-	return map[string]any{
+	payload := map[string]any{
 		"request_id": r.ID, "reference": r.Reference, "listing_id": r.ListingID, "market_id": r.MarketID,
 		"from": from, "to": c.To, "actor_user_id": c.Actor.UserID, "occurred_at": c.At,
 	}
+	if c.Via != "" {
+		payload["via"] = c.Via
+	}
+	return payload
 }
 
 // resolvedEventPayload is the body of PROPERTY_REQUEST_EXCEPTION_RESOLVED.

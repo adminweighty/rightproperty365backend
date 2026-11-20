@@ -431,6 +431,7 @@ func run() error {
 		// Calendar invitations on the appointment and venue booking emails (API 0.39.0).
 		handlers.SetCalendar(ics.Organizer(cfg.EmailFrom), memAppointments.Timeline)
 		handlers.SetListingSource(app.ListingRecord(memListings))
+		handlers.SetRequestMessageSource(memRequests.Messages)
 		handlers.SetSuspensionReasons(app.SuspensionReasons(accountStore))
 		handlers.SetSubscriptionSource(memSubscriptions.Subscription)
 		handlers.SetApplicationSource(app.ApplicationNotices(memApplications, memListings, referenceStore, memIdentity, logger))
