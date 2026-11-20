@@ -426,6 +426,12 @@ func openTestDatabase(t *testing.T) *pgxpool.Pool {
 func TestFlowPostgres(t *testing.T) {
 	pool := openTestDatabase(t)
 	ctx := context.Background()
+	// Reconcile works on every payment in the database, so the rows an
+	// earlier run left in this throwaway database would be counted: start
+	// from empty payment tables (nothing else writes them).
+	if _, err := pool.Exec(ctx, `DELETE FROM payment_events; DELETE FROM payment_refunds; DELETE FROM payments`); err != nil {
+		t.Fatal(err)
+	}
 	flowContract(t, func() *rig {
 		// Every row a foreign key names: the payer (checkout audit, opened_by).
 		user := uuid.New()
