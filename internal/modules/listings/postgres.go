@@ -47,7 +47,7 @@ const publicCondition = publishedCondition + ` AND ` + advertiserVerifiedConditi
 const recordColumns = `
 	l.id, l.slug, COALESCE(l.reference, ''), l.title, COALESCE(l.deal, ''), COALESCE(l.category, ''), COALESCE(l.property_type, ''),
 	COALESCE(l.price_amount::text, ''), l.currency_code, COALESCE(l.price_period, ''), COALESCE(l.suburb_code, ''), COALESCE(l.city_code, ''), m.code,
-	l.bedrooms, l.bathrooms, l.floor_area_m2, l.land_area_m2, l.max_guests, l.min_nights, COALESCE(l.summary, ''), COALESCE(l.description, ''), l.featured,
+	l.bedrooms, l.bathrooms, l.floor_area_m2, l.land_area_m2, l.max_guests, l.min_nights, COALESCE(l.summary, ''), COALESCE(l.description, ''), l.featured, COALESCE(l.placement_kind, ''),
 	l.status::text, l.published_at, l.expires_at, l.updated_at, l.organisation_id, l.agent_user_id, l.seller_user_id,
 	COALESCE(l.private_seller_name, '` + DefaultSellerName + `'), COALESCE(l.city_name, ''), COALESCE(l.region_name, ''),
 	ag.kind, ag.slug, ag.name, ag.verified, at.slug, at.name, at.verified,
@@ -107,7 +107,7 @@ func scanRecord(row pgx.CollectableRow) (Record, error) {
 	)
 	if err = row.Scan(&r.ID, &r.Slug, &r.Reference, &r.Title, &r.Deal, &r.Category, &r.PropertyType,
 		&priceText, &r.Price.Currency, &r.PricePeriod, &r.Suburb, &r.City, &r.MarketCode,
-		&r.Bedrooms, &r.Bathrooms, &r.FloorArea, &r.LandArea, &r.MaxGuests, &r.MinNights, &r.Summary, &r.Description, &r.Featured,
+		&r.Bedrooms, &r.Bathrooms, &r.FloorArea, &r.LandArea, &r.MaxGuests, &r.MinNights, &r.Summary, &r.Description, &r.Featured, &r.PlacementKind,
 		&r.Status, &publishedAt, &expiresAt, &r.UpdatedAt, &r.OrganisationID, &r.AgentUserID, &r.SellerUserID,
 		&sellerName, &r.CityName, &r.RegionName, &agKind, &agSlug, &agName, &agVerified, &atSlug, &atNm, &atVerified, &r.Features, &photos,
 		&orgName, &orgKind, &orgActive, &agVerifiedAt, &agChecksum, &agWidth, &agHeight,

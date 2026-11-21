@@ -751,6 +751,12 @@ func NewRouter(d Deps) (http.Handler, error) {
 		accountMailer, _ = d.Mailer.(accounts.Mailer)
 	}
 	subscriptionsSvc := subscriptions.NewService(subscriptions.Deps{Store: d.Subscriptions, Currency: marketCurrency(d.Markets), Logger: logger, Now: d.Now})
+	// Featured and sponsored placements (API 0.53.0): both listing stores
+	// keep them; a test double without them has no placement routes.
+	var placementsH *listings.PlacementHandler
+	if store, ok := d.Listings.(listings.PlacementStore); ok {
+		placementsH = listings.NewPlacementHandler(listings.NewPlacements(store, d.Listings, placementQuota(subscriptionsSvc), d.Now), logger)
+	}
 	// A paid subscription grants its plan's listing package (API 0.42.0).
 	LinkSubscriptionPackages(d.Subscriptions, d.Packages)
 	// Online payment (API 0.42.0): off unless PAYMENT_GATEWAY names a driver.
@@ -1372,6 +1378,17 @@ func NewRouter(d Deps) (http.Handler, error) {
 				r.Use(auth.RequirePlatformRole(auth.ListingReviewRoles()...))
 				developmentsH.AdminRoutes(r, listingLimiter.Middleware)
 			})
+			// Placements (API 0.53.0): SUPER_ADMIN, PLATFORM_ADMIN and
+			// FINANCE_ADMIN everywhere, MARKET_ADMIN in its own markets;
+			// every grant and end is audited.
+			if placementsH != nil {
+				r.Route("/placements", func(r chi.Router) {
+					r.Use(httpx.PrivateNoStore, auth.RequirePlatformRole(listings.PlacementRoles()...))
+					r.Get("/", placementsH.List)
+					r.With(listingLimiter.Middleware).Post("/", placementsH.Grant)
+					r.With(listingLimiter.Middleware).Post("/{id}/end", placementsH.End)
+				})
+			}
 			r.Route("/listings", func(r chi.Router) {
 				r.Use(auth.RequirePlatformRole(auth.ListingReviewRoles()...))
 				r.Get("/", manageH.AdminList)

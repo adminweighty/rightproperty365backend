@@ -377,6 +377,7 @@ func run() error {
 		memAudit := &adminaudit.MemoryLog{}
 		adminAuditLog = memAudit
 		memReference.SetAuditLog(memAudit)
+		memListings.SetPlacementAudit(memAudit)
 		memReviews.SetAuditLog(memAudit)
 		// Administrator MFA records (API 0.40.0).
 		memIdentity.SetAuditLog(memAudit)

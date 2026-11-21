@@ -502,6 +502,25 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 seeker saved searches and alerts. (Conversion funnels and response-time KPIs: API 0.38.0; replies
 to the customer: API 0.46.0, below.)
 
+## Featured and sponsored placements (API 0.53.0)
+
+FR-046 ("paid placement"), FR-047 ("sponsored listings"), Handover section 8 ("featured sponsorship disclosure").
+Migration 0055 (`listing_placements`, `listings.placement_kind`, the audit target `LISTING`).
+
+- An administrator (SUPER_ADMIN, PLATFORM_ADMIN, FINANCE_ADMIN; MARKET_ADMIN in its own markets, `404` elsewhere)
+  grants a PUBLISHED listing a `FEATURED` or `SPONSORED` placement for a period of at most 366 days
+  (`POST /v1/admin/placements`), optionally tied to the advertiser's ACTIVE subscription (then it counts against the
+  plan's `MAX_FEATURED_LISTINGS` over the period, `409 PLACEMENT_LIMIT`, counted under a lock), and may end it early
+  with a reason (`POST /v1/admin/placements/{id}/end`). Overlapping placements on one listing are refused
+  (`409 PLACEMENT_OVERLAP`). Granting charges nothing: billing stays with subscriptions and invoices.
+- `listings.featured` and `placement_kind` show the active placement. The sync (`listings.Placements.Sync`; at once on
+  every grant and end, and every 5 minutes in the worker, `app.RunPlacementSync`) sets them for every listing that has
+  placements and writes `LISTING_UPDATED` for each listing it changes, so the search index follows. A listing that
+  never had a placement keeps its `featured` value (the sample data).
+- Public listings: `placement: {kind, label}` ("Featured" / "Sponsored") or null.
+- Every grant and end is in the administrator audit log (`LISTING_PLACEMENT_GRANTED`, `LISTING_PLACEMENT_ENDED`,
+  target `LISTING`) with who, the kind and the period.
+
 ## Saved searches and alerts (API 0.52.0)
 
 FR-042 ("alerts"). Migration 0054 (`saved_searches`).

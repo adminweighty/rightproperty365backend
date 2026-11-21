@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"rightproperty365.com/backend/internal/modules/packages"
+	"rightproperty365.com/backend/internal/platform/adminaudit"
 	"rightproperty365.com/backend/internal/platform/outbox"
 )
 
@@ -39,6 +40,9 @@ type MemoryStore struct {
 	// expiry.go).
 	cycles  map[uuid.UUID]int
 	notices map[expiryNoticeKey]bool
+	// placements and their audit (placements_memory.go, API 0.53.0).
+	placements     []Placement
+	placementAudit *adminaudit.MemoryLog
 
 	// quota resolves the listing package of an account in a market (the
 	// memory twin of packages.EnforceTx; nil: no limit). See quota.go.

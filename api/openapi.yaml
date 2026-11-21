@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.52.0
+  version: 0.53.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,13 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Featured and sponsored placements (new in 0.53.0, FR-046/FR-047)
+    - `GET /v1/admin/placements?listing_id=&status=ACTIVE|SCHEDULED|ENDED&page=`, `POST /v1/admin/placements`
+      `{listing_id, kind FEATURED|SPONSORED, starts_at?, ends_at, subscription_id?, note?}` (`409 PLACEMENT_OVERLAP`,
+      `PLACEMENT_LIMIT`, `LISTING_NOT_PUBLISHED`), `POST /v1/admin/placements/{id}/end` `{reason}` (`409 PLACEMENT_ENDED`).
+      SUPER_ADMIN, PLATFORM_ADMIN, FINANCE_ADMIN; MARKET_ADMIN in its markets. Audited.
+    - Public listings gain `placement: {kind, label} | null`.
 
     Saved searches and alerts (new in 0.52.0, FR-042)
     - `GET|POST /v1/me/saved-searches`, `PATCH|DELETE /v1/me/saved-searches/{id}`: `{name, query, frequency}` where
@@ -10882,6 +10889,60 @@ paths:
             schema:
               type: object
               description: "{token}"
+      responses:
+        "200":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+  /v1/admin/placements:
+    get:
+      tags: [admin]
+      operationId: adminListPlacements
+      summary: "Featured and sponsored placements (new in 0.53.0)"
+      security:
+        - cookieSession: []
+      responses:
+        "200":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+    post:
+      tags: [admin]
+      operationId: adminGrantPlacement
+      summary: "Give a listing a placement for a period (audited) (new in 0.53.0)"
+      security:
+        - cookieSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{listing_id, kind, starts_at?, ends_at, subscription_id?, note?}"
+      responses:
+        "201":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+  /v1/admin/placements/{id}/end:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      tags: [admin]
+      operationId: adminEndPlacement
+      summary: "End a placement now (audited) (new in 0.53.0)"
+      security:
+        - cookieSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{reason}"
       responses:
         "200":
           description: "See the summary above."

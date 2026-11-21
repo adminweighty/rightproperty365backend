@@ -149,7 +149,7 @@ func present(r Record, labels map[string]map[string]string) Listing {
 		PropertyType: coded(labels[SetPropertyTypes], r.PropertyType),
 		Price:        r.Price, City: PlaceOf(labels[SetCities], r.City, r.CityName),
 		MarketCode: r.MarketCode, Bedrooms: r.Bedrooms, Bathrooms: r.Bathrooms, FloorArea: r.FloorArea, LandArea: r.LandArea,
-		Summary: r.Summary, Description: r.Description, Featured: r.Featured,
+		Summary: r.Summary, Description: r.Description, Featured: r.Featured, Placement: placementView(r.PlacementKind),
 		Features: make([]Coded, 0, len(r.Features)), Photos: append([]Photo{}, r.Photos...), Advertiser: presentAdvertiser(r, labels),
 		PublishedAt: r.PublishedAt.UTC(), ExpiresAt: r.ExpiresAt.UTC(), UpdatedAt: r.UpdatedAt.UTC(),
 	}

@@ -417,14 +417,17 @@ type Listing struct {
 	LandArea   *int    `json:"land_area"`
 	// MaxGuests and MinNights are set for short stays only (null otherwise):
 	// how many guests the place sleeps and the shortest stay, in nights.
-	MaxGuests   *int       `json:"max_guests"`
-	MinNights   *int       `json:"min_nights"`
-	Summary     string     `json:"summary"`
-	Description string     `json:"description"`
-	Features    []Coded    `json:"features"`
-	Featured    bool       `json:"featured"`
-	Photos      []Photo    `json:"photos"`
-	Advertiser  Advertiser `json:"advertiser"`
+	MaxGuests   *int    `json:"max_guests"`
+	MinNights   *int    `json:"min_nights"`
+	Summary     string  `json:"summary"`
+	Description string  `json:"description"`
+	Features    []Coded `json:"features"`
+	Featured    bool    `json:"featured"`
+	// Placement is the active paid placement (API 0.53.0): {kind, label},
+	// null when there is none (a sample listing may be featured without one).
+	Placement  *PlacementView `json:"placement"`
+	Photos     []Photo        `json:"photos"`
+	Advertiser Advertiser     `json:"advertiser"`
 
 	// Video is the listing's YouTube video tour, null when it has none;
 	// HasVideo says whether it has one (for the cards of a search).
@@ -544,8 +547,10 @@ type Record struct {
 	Description string
 	Features    []string
 	Featured    bool
-	Photos      []Photo
-	Advertiser  Advertiser
+	// PlacementKind is the active placement's kind ("" for none, API 0.53.0).
+	PlacementKind string
+	Photos        []Photo
+	Advertiser    Advertiser
 	// YouTubeVideoID is the id of the listing's YouTube video tour ("" for
 	// none); YouTubeStartSeconds where it starts (nil: at the beginning).
 	YouTubeVideoID      string

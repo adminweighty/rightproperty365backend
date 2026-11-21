@@ -342,6 +342,12 @@ func run() error {
 	go app.RunRentScheduleSweeps(ctx, tenancies.NewService(tenancies.Deps{Store: tenancies.NewPostgresStore(pool), Logger: logger}), logger)
 	logger.Info("rent schedule job scheduled", slog.Duration("interval", app.RentScheduleSweepInterval))
 
+	// Placements (API 0.53.0): every five minutes the listings show exactly
+	// their active featured or sponsored placement (LISTING_UPDATED for the
+	// index when that changes).
+	go app.RunPlacementSync(ctx, listings.NewPlacements(listingStore, listingStore, nil, nil), logger)
+	logger.Info("placement sync job scheduled", slog.Duration("interval", listings.PlacementSyncInterval))
+
 	// Saved search alerts (API 0.52.0): every two minutes the due searches
 	// are run on the database search for listings published since their last
 	// check; new ones become one SAVED_SEARCH_MATCHED each (email and in-app,
