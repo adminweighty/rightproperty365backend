@@ -83,5 +83,9 @@ func outboxPayload(req NewRequest) ([]byte, error) {
 	if req.Recipient != nil {
 		payload["recipient_type"] = req.Recipient.Type
 	}
+	// The campaign (API 0.58.0), for the analytics enquiry_submit event.
+	if !req.Campaign.Empty() {
+		payload["campaign"] = req.Campaign
+	}
 	return json.Marshal(payload)
 }

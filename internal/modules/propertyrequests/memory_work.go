@@ -41,6 +41,7 @@ func (s *MemoryStore) stored(req NewRequest) StoredRequest {
 		Message: req.Message, PreferredContactMethod: req.PreferredContactMethod, PreferredSlot: req.PreferredSlot,
 		CustomerUserID: req.CustomerUserID, ContactName: req.GuestName, ContactEmail: req.GuestEmail, ContactPhone: req.GuestPhone,
 		Recipient: req.Recipient, Stay: req.Stay, CreatedAt: req.CreatedAt, UpdatedAt: req.CreatedAt,
+		Campaign: req.Campaign,
 	}
 	if b, ok := s.branches[req.ListingID]; ok {
 		r.ListingBranchID = &b

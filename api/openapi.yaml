@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.57.0
+  version: 0.58.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,14 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Campaign attribution (new in 0.58.0, FR-013)
+    - `POST /v1/property-requests` and each event of `POST /v1/analytics/events` accept an optional
+      `campaign: {source?, medium?, campaign?}` (the landing page's utm_source, utm_medium, utm_campaign, kept by the
+      browser for its session). Values are cleaned, never rejected: lower case, letters, digits and `. _ - + : /`, at
+      most 100 characters. Under `DNT: 1` or `Sec-GPC: 1` no campaign is stored. Not part of the request hash.
+    - Agent inbox items and request detail gain `campaign: {source, medium, campaign} | null`; the lead funnel gains
+      `by_campaign` (top 20 by received, then `campaign: null` for the requests without one) and CSV `campaign` rows.
 
     Branches (new in 0.57.0, FR-002)
     - `GET|POST /v1/agent/organisations/{id}/branches`, `PATCH .../branches/{branchId}` `{name?, active?}`;
@@ -3944,6 +3952,9 @@ paths:
       description: |
         The single entry point for every customer enquiry about a listing.
 
+        Optional `campaign: {source?, medium?, campaign?}` (new in 0.58.0): the campaign the visit
+        came from, cleaned by the API and dropped under `DNT: 1` or `Sec-GPC: 1`.
+
         The request, its timeline entry, the customer activity record and the notification
         outbox event are committed in one database transaction; `201` is returned only after
         that commit. The response status is always `RECEIVED` — acceptance does not mean the
@@ -4129,6 +4140,9 @@ paths:
       operationId: ingestAnalyticsEvents
       summary: Send browser analytics events (new in 0.30.0)
       description: |
+        Each event may carry `campaign: {source?, medium?, campaign?}` (new in 0.58.0), stored with
+        the raw event (not in the rollups) and dropped under `DNT: 1` or `Sec-GPC: 1`.
+
         Public; a session is optional (a cookie session needs an allowed `Origin` like every
         unsafe request). The body may be sent as `application/json` or as `text/plain` holding the
         same JSON (what `navigator.sendBeacon` sends without a CORS preflight). At most 32 KB.
@@ -18093,7 +18107,7 @@ paths:
     get:
       tags: [reports, property-requests]
       operationId: organisationLeadFunnel
-      summary: "The organisation's lead funnel and response-time KPIs (OWNER/MANAGER: everything; AGENT/STAFF: what their inbox shows; new in 0.38.0)"
+      summary: "The organisation's lead funnel and response-time KPIs (OWNER/MANAGER: everything; AGENT/STAFF: what their inbox shows; new in 0.38.0; by_campaign new in 0.58.0)"
       security: [{ cookieSession: [] }, { bearerToken: [] }]
       parameters:
         - { name: from, in: query, schema: { type: string, format: date }, description: "First day (UTC), inclusive. Default: `to` minus 29 days." }

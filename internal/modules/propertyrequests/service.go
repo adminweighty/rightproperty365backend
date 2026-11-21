@@ -172,6 +172,7 @@ func (s *Service) Create(ctx context.Context, in Input, headerIdempotencyKey str
 		CreatedAt:              now,
 		Stay:                   v.stay,
 		ServiceID:              v.serviceID,
+		Campaign:               in.Attribution,
 	}
 	if req.Recipient == nil {
 		// Still accepted: the customer gets RECEIVED and operations picks up

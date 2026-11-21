@@ -30,7 +30,8 @@ const requestColumns = `pr.id, pr.reference, pr.market_id, pr.listing_id, pr.req
 	pr.check_in::text, pr.check_out::text, pr.guests, pr.created_at, pr.updated_at,
 	pr.exception_resolved_at, pr.exception_resolved_by, COALESCE(pr.exception_resolution_note, ''),
 	pr.message_count, pr.last_message_at, COALESCE(pr.last_message_author, ''), pr.customer_last_read_at, pr.professional_last_read_at,
-	(SELECT lb.branch_id FROM listings lb WHERE lb.id = pr.listing_id)`
+	(SELECT lb.branch_id FROM listings lb WHERE lb.id = pr.listing_id),
+	COALESCE(pr.utm_source, ''), COALESCE(pr.utm_medium, ''), COALESCE(pr.utm_campaign, '')`
 
 const requestFrom = ` FROM property_requests pr LEFT JOIN users u ON u.id = pr.customer_user_id `
 
@@ -57,7 +58,8 @@ func scanRequest(row pgx.Row) (StoredRequest, error) {
 		&recipientType, &recipientUser, &recipientOrg,
 		&checkIn, &checkOut, &guests, &r.CreatedAt, &r.UpdatedAt,
 		&r.ResolvedAt, &r.ResolvedBy, &r.ResolutionNote,
-		&r.MessageCount, &r.LastMessageAt, &r.LastMessageAuthor, &r.CustomerLastReadAt, &r.ProfessionalLastReadAt, &r.ListingBranchID)
+		&r.MessageCount, &r.LastMessageAt, &r.LastMessageAuthor, &r.CustomerLastReadAt, &r.ProfessionalLastReadAt, &r.ListingBranchID,
+		&r.Campaign.Source, &r.Campaign.Medium, &r.Campaign.Campaign)
 	if err != nil {
 		return StoredRequest{}, err
 	}

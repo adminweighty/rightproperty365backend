@@ -8,6 +8,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"rightproperty365.com/backend/internal/platform/attribution"
 )
 
 // The Postgres side of funnel.go. The cohort is read with the inbox's own
@@ -40,6 +42,7 @@ func (s *PostgresStore) FunnelFacts(ctx context.Context, f FunnelFilter) ([]Funn
 	rows, err := s.pool.Query(ctx, `
 		SELECT pr.id, pr.listing_id, pr.request_type, pr.stage, pr.created_at,
 		       COALESCE(pr.recipient_type, ''), pr.recipient_user_id,
+		       COALESCE(pr.utm_source, ''), COALESCE(pr.utm_medium, ''), COALESCE(pr.utm_campaign, ''),
 		       t.event_type, t.actor_type, COALESCE(t.detail->>'to', ''), t.created_at
 		FROM property_requests pr
 		LEFT JOIN request_timeline t ON t.request_id = pr.id AND t.event_type IN ('`+TimelineStageChanged+`', '`+TimelineAssigned+`')
@@ -58,7 +61,7 @@ func (s *PostgresStore) FunnelFacts(ctx context.Context, f FunnelFilter) ([]Funn
 			at           *time.Time
 		)
 		if err := rows.Scan(&fact.RequestID, &fact.ListingID, &fact.RequestType, &fact.Stage, &fact.CreatedAt,
-			&fact.RecipientType, &fact.HandlerUserID, &event, &actor, &to, &at); err != nil {
+			&fact.RecipientType, &fact.HandlerUserID, &fact.Campaign.Source, &fact.Campaign.Medium, &fact.Campaign.Campaign, &event, &actor, &to, &at); err != nil {
 			return nil, fmt.Errorf("read funnel cohort: %w", err)
 		}
 		if n := len(out); n == 0 || out[n-1].RequestID != fact.RequestID {
@@ -134,13 +137,15 @@ func seedOne(ctx context.Context, tx pgx.Tx, seed SeedRequest) error {
 			id, reference, market_id, listing_id, request_type, status, message,
 			preferred_contact_method, preferred_slot_at, idempotency_key, request_hash,
 			guest_name, guest_email, guest_phone, consent_privacy_version, consent_accepted_at,
-			recipient_type, recipient_user_id, recipient_organisation_id, created_at, updated_at, customer_user_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $20, $21)
+			recipient_type, recipient_user_id, recipient_organisation_id, created_at, updated_at, customer_user_id,
+			utm_source, utm_medium, utm_campaign)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $20, $21, $22, $23, $24)
 		ON CONFLICT (id) DO NOTHING`,
 		req.ID, req.Reference, req.MarketID, req.ListingID, req.RequestType, req.Status, req.Message,
 		req.PreferredContactMethod, req.PreferredSlot, req.IdempotencyKey, req.RequestHash,
 		guestName, guestEmail, guestPhone, req.PrivacyVersion, req.ConsentAcceptedAt,
-		recipientType, recipientUser, recipientOrg, req.CreatedAt, req.CustomerUserID)
+		recipientType, recipientUser, recipientOrg, req.CreatedAt, req.CustomerUserID,
+		attribution.Nullable(req.Campaign.Source), attribution.Nullable(req.Campaign.Medium), attribution.Nullable(req.Campaign.Campaign))
 	if err != nil {
 		return fmt.Errorf("insert: %w", err)
 	}

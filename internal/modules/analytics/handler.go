@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"rightproperty365.com/backend/internal/platform/attribution"
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/httpx"
 )
@@ -80,7 +81,7 @@ func (h *Handler) Ingest(w http.ResponseWriter, r *http.Request) {
 	if body.Schema != nil {
 		schema = *body.Schema
 	}
-	res, err := h.svc.Ingest(r.Context(), Client{UserAgent: r.Header.Get("User-Agent"), IP: httpx.ClientIP(r)}, schema, body.Events)
+	res, err := h.svc.Ingest(r.Context(), Client{UserAgent: r.Header.Get("User-Agent"), IP: httpx.ClientIP(r), Untracked: attribution.Suppressed(r)}, schema, body.Events)
 	if err != nil {
 		h.fail(w, r, err)
 		return

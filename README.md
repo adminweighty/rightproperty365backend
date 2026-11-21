@@ -502,6 +502,22 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 seeker saved searches and alerts. (Conversion funnels and response-time KPIs: API 0.38.0; replies
 to the customer: API 0.46.0, below.)
 
+## Campaign attribution (API 0.58.0)
+
+FR-013 ("enquiry captures … source campaign/medium when consent allows"). Migration 0060 (`utm_source`, `utm_medium`,
+`utm_campaign` on `property_requests` and `analytics_events`; package `internal/platform/attribution`).
+
+- The website keeps the first campaign of a browser session (`utm_source`, `utm_medium`, `utm_campaign` of the landing
+  page, in sessionStorage; a later landing URL with UTM parameters replaces it) and sends it as
+  `campaign: {source, medium, campaign}` with property requests and analytics events. Nothing else of the URL is sent.
+- **Consent:** Do Not Track and Global Privacy Control are the opt-out. The browser keeps and sends nothing under
+  either, and the API drops the campaign of any request carrying `DNT: 1` or `Sec-GPC: 1`.
+- **Cleaning, never rejecting:** lower case, whitespace collapsed, only letters, digits and `. _ - + : /`, at most 100
+  characters; nothing left is no campaign. The campaign is not part of a property request's hash.
+- Shown on the lead (`campaign` on inbox items and the request detail) and in the lead funnel: `by_campaign` (top 20 by
+  received, then the requests without a campaign as `campaign: null`) and `campaign` rows in its CSV. Analytics keep it
+  on the raw events only, the API's own `enquiry_submit` included (the daily rollups and reports are unchanged).
+
 ## Branches (API 0.57.0)
 
 FR-002 ("a staff account from branch A receives 403 when requesting branch B private objects"). Migration 0059

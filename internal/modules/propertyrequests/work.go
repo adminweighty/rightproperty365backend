@@ -11,6 +11,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+
+	"rightproperty365.com/backend/internal/platform/attribution"
 )
 
 // This file is everything that happens to a request AFTER it was received:
@@ -218,6 +220,8 @@ type StoredRequest struct {
 	// ListingBranchID is the branch of the listing the request is about
 	// (API 0.57.0); nil for none.
 	ListingBranchID *uuid.UUID
+	// Campaign is where the customer's visit came from (API 0.58.0).
+	Campaign attribution.Campaign
 }
 
 // branchHides reports whether the caller's branch pin hides the request.

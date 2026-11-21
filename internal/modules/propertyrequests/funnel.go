@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"rightproperty365.com/backend/internal/platform/attribution"
 )
 
 // This file is the lead conversion funnel and the response-time KPIs of the
@@ -51,6 +53,11 @@ const DefaultFunnelDays = 30
 
 // TopFunnelListings is the number of listings in the by-listing breakdown.
 const TopFunnelListings = 20
+
+// TopFunnelCampaigns is the number of campaigns in the by-campaign
+// breakdown (API 0.58.0); the requests without one are a row of their own
+// on top of these.
+const TopFunnelCampaigns = 20
 
 // Report scopes.
 const (
@@ -182,6 +189,8 @@ type FunnelFact struct {
 	EverAssigned bool
 	// Moves are the STAGE_CHANGED rows, oldest first.
 	Moves []FunnelMove
+	// Campaign is where the customer's visit came from (API 0.58.0).
+	Campaign attribution.Campaign
 }
 
 // FunnelStore is the part of Store behind this file.
@@ -371,6 +380,13 @@ type ListingRow struct {
 	BreakdownCounts
 }
 
+// CampaignRow is one row of the by-campaign breakdown (API 0.58.0).
+// Campaign is null on the row of the requests that came with none.
+type CampaignRow struct {
+	Campaign *attribution.Campaign `json:"campaign"`
+	BreakdownCounts
+}
+
 // Funnel is the computed report (without its window and filters).
 type Funnel struct {
 	Received         int              `json:"received"`
@@ -381,6 +397,7 @@ type Funnel struct {
 	ByAgent          []AgentRow       `json:"by_agent"`
 	ByRequestType    []TypeRow        `json:"by_request_type"`
 	ByListing        []ListingRow     `json:"by_listing"`
+	ByCampaign       []CampaignRow    `json:"by_campaign"`
 }
 
 // ComputeFunnel counts a report from the facts of its cohort. Agent names
@@ -399,6 +416,7 @@ func ComputeFunnel(facts []FunnelFact) Funnel {
 		types[t] = &TypeRow{RequestType: t, Label: RequestTypeLabel(t)}
 	}
 	listings := map[uuid.UUID]*ListingRow{}
+	campaigns := map[attribution.Campaign]*CampaignRow{}
 
 	for _, f := range facts {
 		d := derive(f)
@@ -460,6 +478,10 @@ func ComputeFunnel(facts []FunnelFact) Funnel {
 			listings[f.ListingID] = &ListingRow{ListingID: f.ListingID}
 		}
 		listings[f.ListingID].add(d)
+		if campaigns[f.Campaign] == nil {
+			campaigns[f.Campaign] = &CampaignRow{Campaign: f.Campaign.Ptr()}
+		}
+		campaigns[f.Campaign].add(d)
 	}
 
 	for k, s := range steps {
@@ -509,6 +531,7 @@ func ComputeFunnel(facts []FunnelFact) Funnel {
 	if len(out.ByListing) > TopFunnelListings {
 		out.ByListing = out.ByListing[:TopFunnelListings]
 	}
+	out.ByCampaign = byCampaign(campaigns)
 	return out
 }
 
@@ -551,4 +574,41 @@ func (s *Service) FunnelReport(ctx context.Context, f FunnelFilter) (Funnel, err
 		sortAgents(out.ByAgent)
 	}
 	return out, nil
+}
+
+// byCampaign orders the campaigns by received (descending), then source,
+// medium and name, keeps the top TopFunnelCampaigns and puts the row of the
+// requests without a campaign last.
+func byCampaign(rows map[attribution.Campaign]*CampaignRow) []CampaignRow {
+	out := []CampaignRow{}
+	var none *CampaignRow
+	for c, row := range rows {
+		row.finish()
+		if c.Empty() {
+			none = row
+			continue
+		}
+		out = append(out, *row)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Received != b.Received {
+			return a.Received > b.Received
+		}
+		x, y := *a.Campaign, *b.Campaign
+		if x.Source != y.Source {
+			return x.Source < y.Source
+		}
+		if x.Medium != y.Medium {
+			return x.Medium < y.Medium
+		}
+		return x.Campaign < y.Campaign
+	})
+	if len(out) > TopFunnelCampaigns {
+		out = out[:TopFunnelCampaigns]
+	}
+	if none != nil {
+		out = append(out, *none)
+	}
+	return out
 }

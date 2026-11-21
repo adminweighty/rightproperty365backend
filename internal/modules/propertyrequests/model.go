@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"rightproperty365.com/backend/internal/platform/attribution"
 )
 
 // Request types accepted by the API.
@@ -112,6 +114,12 @@ type Input struct {
 	// CONSULTATION_REQUEST with a preferred slot (API 0.51.0). The
 	// appointment planner checks it.
 	ServiceID *string `json:"service_id"`
+	// Campaign is the campaign the visit came from (API 0.58.0, FR-013),
+	// optional; the handler cleans it into Attribution.
+	Campaign *attribution.Input `json:"campaign"`
+	// Attribution is set by the handler (nothing when Do Not Track or
+	// Global Privacy Control is on), never read from the body.
+	Attribution attribution.Campaign `json:"-"`
 
 	// Customer is the authenticated caller, set by the handler from the
 	// session and never read from the body. Nil for a guest request.
@@ -235,6 +243,9 @@ type NewRequest struct {
 	// Appointment is written together with the request, or not at all. Nil
 	// when the request gets no appointment.
 	Appointment *LinkedAppointment
+	// Campaign is where the visit came from (API 0.58.0); not part of the
+	// request hash, so a replay with another campaign is the same request.
+	Campaign attribution.Campaign
 }
 
 // MaxInboxItems caps Service.Inbox, the unpaged form of the inbox.
@@ -296,6 +307,9 @@ type InboxItem struct {
 	MessageCount  int        `json:"message_count"`
 	LastMessageAt *time.Time `json:"last_message_at"`
 	AwaitingReply bool       `json:"awaiting_reply"`
+	// Campaign is the campaign the customer's visit came from (API 0.58.0);
+	// null when there was none or the browser asked not to be tracked.
+	Campaign *attribution.Campaign `json:"campaign"`
 }
 
 // AssigneeView names the person a request is assigned to.
@@ -314,6 +328,7 @@ func ItemOf(r StoredRequest) InboxItem {
 		Contact:   InboxContact{Name: r.ContactName, Email: r.ContactEmail},
 		CreatedAt: r.CreatedAt, Stay: r.Stay,
 		MessageCount: r.MessageCount, LastMessageAt: r.LastMessageAt, AwaitingReply: r.AwaitingReply(),
+		Campaign: r.Campaign.Ptr(),
 	}
 	if r.ContactPhone != "" {
 		phone := r.ContactPhone

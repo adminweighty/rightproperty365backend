@@ -14,6 +14,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/saved"
 	"rightproperty365.com/backend/internal/modules/venues"
+	"rightproperty365.com/backend/internal/platform/attribution"
 	"rightproperty365.com/backend/internal/platform/outbox"
 )
 
@@ -71,6 +72,8 @@ type eventBody struct {
 	Resubmission  bool       `json:"resubmission"`
 	// FirstConfirmation: an hourly booking confirmed for the first time.
 	FirstConfirmation bool `json:"first_confirmation"`
+	// Campaign is the property request's campaign (API 0.58.0).
+	Campaign *attribution.Input `json:"campaign"`
 }
 
 func (b eventBody) when(fallback time.Time) time.Time {
@@ -135,5 +138,6 @@ func (r *Recorder) Handle(ctx context.Context, ev outbox.Event) error {
 	if listing == nil || *listing == uuid.Nil {
 		return nil // not about a listing: nothing to count
 	}
-	return r.svc.RecordServer(ctx, ServerEvent{SourceID: ev.ID, Type: eventType, ListingID: *listing, OccurredAt: body.when(ev.CreatedAt)})
+	return r.svc.RecordServer(ctx, ServerEvent{SourceID: ev.ID, Type: eventType, ListingID: *listing, OccurredAt: body.when(ev.CreatedAt),
+		Campaign: attribution.From(body.Campaign)})
 }

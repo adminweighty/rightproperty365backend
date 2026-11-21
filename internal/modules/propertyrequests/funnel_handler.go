@@ -192,6 +192,9 @@ func (h *Handler) leadFunnel(w http.ResponseWriter, r *http.Request, scope Inbox
 	httpx.WriteJSON(w, http.StatusOK, resp)
 }
 
+// NoCampaignLabel names the by-campaign row of the requests without one.
+const NoCampaignLabel = "No campaign"
+
 // FunnelCSVHeader is the header row of the CSV form of a report.
 func FunnelCSVHeader() []string {
 	return []string{"table", "key", "label", "received", "contacted", "converted", "conversion_rate", "median_first_response_minutes"}
@@ -217,7 +220,8 @@ func csvRow(table, key, label string, b BreakdownCounts) []string {
 }
 
 // FunnelCSVRows are the breakdown tables of a report as CSV rows (without
-// the header): agents, then request types, then listings.
+// the header): agents, then request types, then listings, then campaigns
+// (key "source/medium/campaign", empty for the requests without one).
 func FunnelCSVRows(report Funnel) [][]string {
 	var out [][]string
 	for _, a := range report.ByAgent {
@@ -236,6 +240,14 @@ func FunnelCSVRows(report Funnel) [][]string {
 			title = l.Listing.Title
 		}
 		out = append(out, csvRow("listing", l.ListingID.String(), title, l.BreakdownCounts))
+	}
+	for _, c := range report.ByCampaign {
+		key, label := "", NoCampaignLabel
+		if c.Campaign != nil {
+			key = c.Campaign.Source + "/" + c.Campaign.Medium + "/" + c.Campaign.Campaign
+			label = key
+		}
+		out = append(out, csvRow("campaign", key, label, c.BreakdownCounts))
 	}
 	return out
 }

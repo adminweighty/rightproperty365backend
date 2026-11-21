@@ -73,11 +73,12 @@ func (s *PostgresStore) Insert(ctx context.Context, ev Event, spaWindow time.Dur
 	}
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO analytics_events (event_id, event_type, origin, occurred_at, received_at, local_day, listing_id, market_code,
-			placement, rank, source, device, session_id, network, bot, bot_reason)
-		VALUES ($1, $2, $3, $4, $5, $6::date, $7, $8, $9, $10, $11, $12, $13, $14::cidr, $15, $16)
+			placement, rank, source, device, session_id, network, bot, bot_reason, utm_source, utm_medium, utm_campaign)
+		VALUES ($1, $2, $3, $4, $5, $6::date, $7, $8, $9, $10, $11, $12, $13, $14::cidr, $15, $16, $17, $18, $19)
 		ON CONFLICT (event_id) DO NOTHING`,
 		ev.ID, ev.Type, ev.Origin, ev.OccurredAt, ev.ReceivedAt, ev.LocalDay, ev.ListingID, ev.MarketCode,
-		nullText(ev.Placement), ev.Rank, nullText(ev.Source), nullText(ev.Device), nullText(ev.Session), network, ev.Bot, nullText(ev.BotReason))
+		nullText(ev.Placement), ev.Rank, nullText(ev.Source), nullText(ev.Device), nullText(ev.Session), network, ev.Bot, nullText(ev.BotReason),
+		nullText(ev.Campaign.Source), nullText(ev.Campaign.Medium), nullText(ev.Campaign.Campaign))
 	if err != nil {
 		return 0, fmt.Errorf("insert analytics event: %w", err)
 	}

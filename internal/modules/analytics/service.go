@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"rightproperty365.com/backend/internal/platform/attribution"
 )
 
 // ListingInfo is what analytics needs to know about a listing: who may see
@@ -153,6 +155,10 @@ func addDays(day string, n int) string {
 type Client struct {
 	UserAgent string
 	IP        string
+	// Untracked: Do Not Track or Global Privacy Control is on. The
+	// browser sends nothing then; an event that comes anyway keeps no
+	// campaign (API 0.58.0).
+	Untracked bool
 }
 
 // IngestResult is the 202 body of POST /v1/analytics/events.
@@ -173,7 +179,10 @@ type browserEvent struct {
 	Source     *string `json:"source"`
 	Device     *string `json:"device"`
 	Session    *string `json:"session"`
-	Consent    *struct {
+	// Campaign is the campaign the visit came from (API 0.58.0), cleaned
+	// and never a reason to reject the event.
+	Campaign *attribution.Input `json:"campaign"`
+	Consent  *struct {
 		Analytics *bool `json:"analytics"`
 	} `json:"consent"`
 }
@@ -241,6 +250,7 @@ func parseBrowserEvent(raw json.RawMessage) (Event, bool) {
 		}
 		ev.Session = *in.Session
 	}
+	ev.Campaign = attribution.From(in.Campaign)
 	return ev, true
 }
 
@@ -268,6 +278,9 @@ func (s *Service) Ingest(ctx context.Context, c Client, schema int, raw []json.R
 		if !ok {
 			res.Rejected++
 			continue
+		}
+		if c.Untracked {
+			ev.Campaign = attribution.Campaign{}
 		}
 		events = append(events, ev)
 		if !slices.Contains(ids, ev.ListingID) {
@@ -367,6 +380,8 @@ type ServerEvent struct {
 	Type       string
 	ListingID  uuid.UUID
 	OccurredAt time.Time
+	// Campaign is the campaign of the visit that caused it (API 0.58.0).
+	Campaign attribution.Campaign
 }
 
 // RecordServer records a server-side event. A listing that does not exist
@@ -400,7 +415,7 @@ func (s *Service) RecordServer(ctx context.Context, e ServerEvent) error {
 		return s.recordLate(ctx, id, e.Type, info, at, now, loc)
 	}
 	ev := Event{ID: id, Type: e.Type, OccurredAt: at, ReceivedAt: now, LocalDay: LocalDay(at, loc), ListingID: info.ID,
-		MarketCode: info.MarketCode, Origin: OriginServer}
+		MarketCode: info.MarketCode, Origin: OriginServer, Campaign: e.Campaign}
 	if _, err := s.store.Insert(ctx, ev, SPAWindow); err != nil {
 		return fmt.Errorf("store analytics event: %w", err)
 	}

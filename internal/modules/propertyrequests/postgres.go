@@ -10,6 +10,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"rightproperty365.com/backend/internal/platform/attribution"
 )
 
 // Constraint names from migrations/0001_init.up.sql.
@@ -151,9 +153,10 @@ func (s *PostgresStore) Create(ctx context.Context, req NewRequest) (Record, boo
 			guest_name, guest_email, guest_phone,
 			consent_privacy_version, consent_accepted_at,
 			recipient_type, recipient_user_id, recipient_organisation_id,
-			created_at, updated_at, customer_user_id, check_in, check_out, guests)
+			created_at, updated_at, customer_user_id, check_in, check_out, guests,
+			utm_source, utm_medium, utm_campaign)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $20, $21,
-		        $22::text::date, $23::text::date, $24)
+		        $22::text::date, $23::text::date, $24, $25, $26, $27)
 		ON CONFLICT (idempotency_key) DO NOTHING`,
 		req.ID, req.Reference, req.MarketID, req.ListingID, req.RequestType, req.Status, req.Message,
 		req.PreferredContactMethod, req.PreferredSlot, req.IdempotencyKey, req.RequestHash,
@@ -161,6 +164,7 @@ func (s *PostgresStore) Create(ctx context.Context, req NewRequest) (Record, boo
 		req.PrivacyVersion, req.ConsentAcceptedAt,
 		recipientType, recipientUserID, recipientOrgID,
 		req.CreatedAt, req.CustomerUserID, stayCheckIn, stayCheckOut, stayGuests,
+		attribution.Nullable(req.Campaign.Source), attribution.Nullable(req.Campaign.Medium), attribution.Nullable(req.Campaign.Campaign),
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError

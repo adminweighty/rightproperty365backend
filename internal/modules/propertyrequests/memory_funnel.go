@@ -84,7 +84,7 @@ func (s *MemoryStore) FunnelFacts(_ context.Context, f FunnelFilter) ([]FunnelFa
 		}
 		fact := &FunnelFact{
 			RequestID: r.ID, ListingID: r.ListingID, RequestType: r.RequestType, Stage: r.Stage, CreatedAt: r.CreatedAt,
-			RecipientType: r.Recipient.Type, HandlerUserID: r.Recipient.UserID,
+			RecipientType: r.Recipient.Type, HandlerUserID: r.Recipient.UserID, Campaign: r.Campaign,
 		}
 		byID[r.ID] = fact
 		out = append(out, fact)

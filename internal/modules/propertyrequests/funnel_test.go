@@ -16,6 +16,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"rightproperty365.com/backend/internal/platform/attribution"
+
 	"rightproperty365.com/backend/internal/modules/markets"
 	"rightproperty365.com/backend/internal/platform/auth"
 )
@@ -96,6 +98,10 @@ func funnelFixture(p funnelPeople) []SeedRequest {
 	seller := p.seller
 	add(p.sellerListing, TypeEnquiry, Recipient{Type: RecipientSeller, UserID: &seller}, base,
 		move(Actor{UserID: p.seller, Name: "Seller"}, StageContacted, base.Add(5*time.Minute)))
+	// Campaigns (API 0.58.0): R1 and R6 from one, R2 from another, the rest none.
+	spring := attribution.Campaign{Source: "facebook", Medium: "cpc", Campaign: "spring"}
+	out[0].Request.Campaign, out[5].Request.Campaign = spring, spring
+	out[1].Request.Campaign = attribution.Campaign{Source: "newsletter", Medium: "email"}
 	return out
 }
 
@@ -187,6 +193,13 @@ func checkManagerReport(t *testing.T, got Funnel) {
 	}
 	if len(got.ByListing) != 2 || got.ByListing[0].Received != 6 || got.ByListing[1].Received != 2 || got.ByListing[1].Contacted != 1 {
 		t.Fatalf("by listing %+v", got.ByListing)
+	}
+	// By campaign: most received first, the requests without one last.
+	bc := got.ByCampaign
+	if len(bc) != 3 || bc[0].Campaign == nil || *bc[0].Campaign != (attribution.Campaign{Source: "facebook", Medium: "cpc", Campaign: "spring"}) ||
+		bc[0].Received != 2 || bc[0].Converted != 2 || bc[1].Campaign == nil || bc[1].Campaign.Source != "newsletter" || bc[1].Received != 1 ||
+		bc[2].Campaign != nil || bc[2].Received != 5 {
+		t.Fatalf("by campaign %+v", bc)
 	}
 }
 
@@ -437,8 +450,14 @@ func TestFunnelCSV(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(rows[0], FunnelCSVHeader()) || len(rows) != 1+3+5+2 {
+	if !reflect.DeepEqual(rows[0], FunnelCSVHeader()) || len(rows) != 1+3+5+2+3 {
 		t.Fatalf("csv rows %v", rows)
+	}
+	if want := []string{"campaign", "facebook/cpc/spring", "facebook/cpc/spring", "2", "2", "2", "1.0000", "765"}; !reflect.DeepEqual(rows[11], want) {
+		t.Fatalf("campaign row %v", rows[11])
+	}
+	if want := []string{"campaign", "", NoCampaignLabel, "5", "1", "0", "0.0000", "600"}; !reflect.DeepEqual(rows[13], want) {
+		t.Fatalf("no-campaign row %v", rows[13])
 	}
 	if want := []string{"agent", p.agentA.String(), "Agent A", "3", "3", "2", "0.6667", "600"}; !reflect.DeepEqual(rows[1], want) {
 		t.Fatalf("agent row %v, want %v", rows[1], want)

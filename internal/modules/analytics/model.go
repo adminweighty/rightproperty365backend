@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"rightproperty365.com/backend/internal/platform/attribution"
 )
 
 // SchemaVersion is the only accepted value of the ingestion body's "schema".
@@ -168,6 +170,9 @@ type Event struct {
 	Bot       bool
 	BotReason string
 	Origin    string
+	// Campaign is where the visit came from (API 0.58.0); stored with the
+	// raw event, not in the daily rollups.
+	Campaign attribution.Campaign
 }
 
 // LateEvent is an event dropped because it arrived too late. Only its

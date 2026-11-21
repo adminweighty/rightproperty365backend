@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"rightproperty365.com/backend/internal/platform/attribution"
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/httpx"
 )
@@ -49,6 +50,10 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	if !httpx.DecodeJSON(w, r, &in) {
 		return
 	}
+
+	// The campaign is cleaned here; Do Not Track or Global Privacy Control
+	// on the request means none is kept (API 0.58.0).
+	in.Attribution = attribution.FromRequest(r, in.Campaign)
 
 	// The customer's identity comes from the session only, never from the body.
 	if p := auth.FromContext(r.Context()); p != nil {
