@@ -56,7 +56,9 @@ func RunInvoiceSweeps(ctx context.Context, svc *invoices.Service, logger *slog.L
 	ticker := time.NewTicker(invoices.SweepInterval)
 	defer ticker.Stop()
 	for {
+		start := time.Now()
 		n, err := svc.Sweep(ctx)
+		sweepDone("invoices", start, err)
 		if err != nil {
 			logger.ErrorContext(ctx, "invoice sweep failed", slog.String("error", err.Error()))
 		} else if n > 0 {

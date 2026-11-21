@@ -58,7 +58,9 @@ func RunAgreementSweeps(ctx context.Context, svc *agreements.Service, leaseSvc *
 	ticker := time.NewTicker(AgreementSweepInterval)
 	defer ticker.Stop()
 	for {
+		start := time.Now()
 		expired, reminded, err := svc.Sweep(ctx)
+		sweepDone("agreements", start, err)
 		if err != nil {
 			logger.ErrorContext(ctx, "agreement sweep failed", slog.String("error", err.Error()))
 		} else if expired > 0 || reminded > 0 {
@@ -83,7 +85,9 @@ func RunSubscriptionSweeps(ctx context.Context, svc *subscriptions.Service, logg
 	ticker := time.NewTicker(SubscriptionSweepInterval)
 	defer ticker.Stop()
 	for {
+		start := time.Now()
 		expired, err := svc.Sweep(ctx)
+		sweepDone("subscriptions", start, err)
 		if err != nil {
 			logger.ErrorContext(ctx, "subscription sweep failed", slog.String("error", err.Error()))
 		} else if expired > 0 {

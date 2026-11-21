@@ -15,7 +15,9 @@ func RunUploadIntentSweeps(ctx context.Context, svc *uploads.Service, logger *sl
 	ticker := time.NewTicker(uploads.SweepInterval)
 	defer ticker.Stop()
 	for {
+		start := time.Now()
 		n, err := svc.Sweep(ctx)
+		sweepDone("upload_intents", start, err)
 		if err != nil {
 			logger.ErrorContext(ctx, "upload intent sweep failed", slog.String("error", err.Error()))
 		}

@@ -118,7 +118,9 @@ func RunSavedSearchSweeps(ctx context.Context, svc *savedsearches.Service, logge
 	ticker := time.NewTicker(savedsearches.SweepInterval)
 	defer ticker.Stop()
 	for {
+		start := time.Now()
 		n, err := svc.Sweep(ctx)
+		sweepDone("saved_searches", start, err)
 		if err != nil {
 			logger.ErrorContext(ctx, "saved search sweep failed", slog.String("error", err.Error()))
 		}

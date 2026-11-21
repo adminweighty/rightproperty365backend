@@ -65,6 +65,7 @@ import (
 	"rightproperty365.com/backend/internal/platform/logging"
 	"rightproperty365.com/backend/internal/platform/mail"
 	"rightproperty365.com/backend/internal/platform/malware"
+	"rightproperty365.com/backend/internal/platform/metrics"
 	"rightproperty365.com/backend/internal/platform/outbox"
 	"rightproperty365.com/backend/internal/platform/paygateway"
 	"rightproperty365.com/backend/internal/platform/push"
@@ -97,6 +98,11 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Prometheus metrics (API 0.61.0) on their own listener, METRICS_ADDR;
+	// never on the public port.
+	metricsProc := metrics.NewProcess(logger)
+	go metrics.Serve(ctx, cfg.MetricsAddr, metricsProc.Handler(), logger)
 
 	// Email transport. This logs which mailer is in use before anything can
 	// trigger an email. MAIL_DRIVER=log forces the development log mailer
@@ -601,6 +607,7 @@ func run() error {
 		healthH = health.NewHandler(health.StorePostgres, pool.Ping, logger)
 		deliveryLog = mail.NewPostgresDeliveryLog(pool)
 		emailDeliveryStore = emaildelivery.NewPostgresStore(pool)
+		app.RegisterQueueGauges(metricsProc, pool)
 		onboardingStore = onboarding.NewPostgresStore(pool)
 		teamStore = teams.NewPostgresStore(pool)
 		leaseStore = leases.NewPostgresStore(pool)
@@ -711,6 +718,7 @@ func run() error {
 		SavedSearches: savedSearchStore,
 		DataExports:   dataExportStore,
 		Uploads:       uploadStore,
+		Metrics:       metricsProc,
 		EmailDelivery: emaildelivery.NewService(emaildelivery.Deps{Store: emailDeliveryStore,
 			Secret: cfg.ResendWebhookSecret.Reveal(), Logger: logger}),
 		Branches:         branchStore,

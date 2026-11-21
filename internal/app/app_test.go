@@ -60,6 +60,7 @@ import (
 	"rightproperty365.com/backend/internal/platform/logging"
 	"rightproperty365.com/backend/internal/platform/mail"
 	"rightproperty365.com/backend/internal/platform/malware"
+	"rightproperty365.com/backend/internal/platform/metrics"
 	"rightproperty365.com/backend/internal/platform/storage"
 )
 
@@ -290,6 +291,8 @@ type env struct {
 	emailDelivery *emaildelivery.Service
 	emailLog      *mail.MemoryDeliveryLog
 	emailSecret   string
+	// metrics counts the requests (API 0.61.0).
+	metrics *metrics.Process
 	// saved holds the customers' saved listings (the sample tenant has two).
 	saved *saved.MemoryStore
 	// savedSearches holds saved searches (API 0.52.0).
@@ -479,6 +482,7 @@ func newEnvWith(t *testing.T, mutate func(*config.Config), scanner malware.Scann
 	e.saved = saved.NewMemoryStore()
 	e.savedSearches = savedsearches.NewMemoryStore()
 	e.dataExports = dataexport.NewMemoryStore()
+	e.metrics = metrics.NewProcess(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	// Email delivery (API 0.59.0): a random webhook secret per run.
 	e.emailLog = mail.NewMemoryDeliveryLog()
 	e.emailSecret = randomWebhookSecret(t)
@@ -536,6 +540,7 @@ func newEnvWith(t *testing.T, mutate func(*config.Config), scanner malware.Scann
 		Saved: e.saved, SavedSearches: e.savedSearches, DataExports: e.dataExports, Analytics: e.analytics,
 		EmailDelivery: e.emailDelivery,
 		Uploads:       uploads.NewMemoryStore(),
+		Metrics:       e.metrics,
 		CRM:           e.crm, CRMItems: e.crmItems,
 		Applications: e.apps,
 		Venues:       e.venues,

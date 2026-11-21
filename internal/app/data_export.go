@@ -15,7 +15,9 @@ func RunDataExportSweeps(ctx context.Context, svc *dataexport.Service, logger *s
 	ticker := time.NewTicker(dataexport.SweepInterval)
 	defer ticker.Stop()
 	for {
+		start := time.Now()
 		n, err := svc.Sweep(ctx)
+		sweepDone("data_export", start, err)
 		if err != nil {
 			logger.ErrorContext(ctx, "data export sweep failed", slog.String("error", err.Error()))
 		}

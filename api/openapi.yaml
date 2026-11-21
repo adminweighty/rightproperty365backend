@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.60.0
+  version: 0.61.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,12 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Metrics (new in 0.61.0, FR-056, FR-065)
+    - No new public endpoint. The API and the worker serve Prometheus metrics on their own listener (`METRICS_ADDR`,
+      `GET /metrics`), never on this API's port: request rate, errors and latency by route pattern, the outbox backlog
+      and its oldest event, dead letters, push deliveries, open routing exceptions, email bounces and complaints, upload
+      intents, and the health of the background sweeps.
 
     Upload intents (new in 0.60.0, FR-010)
     - `POST /v1/media/upload-intents` `{purpose: LISTING_PHOTO, content_type, size_bytes, sha256}` authorises one

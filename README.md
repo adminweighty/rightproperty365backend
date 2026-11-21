@@ -235,6 +235,7 @@ All configuration comes from environment variables. For local development you ma
 | `PUBLIC_WEB_URL` | `http://localhost:3000` | Public origin of the web app; every link and image in an email is built from it (`WEB_BASE_URL` is a deprecated alias) |
 | `RESEND_API_KEY`, `MAIL_DRIVER`, `EMAIL_FROM`, `EMAIL_REPLY_TO` | | Email settings: see "Email". **A key in `.env` makes local runs send real email unless `MAIL_DRIVER=log`** |
 | `RESEND_WEBHOOK_SECRET` | | Resend's webhook signing secret (`whsec_…`) for `POST /v1/webhooks/email/resend` (API 0.59.0). Secret: environment only. Unset, the webhook answers 503 |
+| `METRICS_ADDR` | | Listen address of the Prometheus endpoint (API 0.61.0), e.g. `:9090`. Its own listener, never the public port; unset = off |
 | `DEV_SEED_PASSWORD` | _(empty)_ | Development only: shared password of the seed users. Ignored outside `APP_ENV=development`; never logged |
 | `AUTH_DEMO_CODE` | _(empty)_ | A demo sign-in code (4–6 digits) accepted for every sign-in besides the emailed one. **Development and staging only: set with `APP_ENV=production` the API and the worker refuse to start.** Never logged; the API logs a warning while it is active. See "Sign-in code" |
 | `ADMIN_SESSION_TTL` | `12h` | Absolute lifetime of an administrator session (Go duration, 1m–24h) |
@@ -502,6 +503,26 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 **Not built** (dashboards and requests): follow-up dates and reminders; editing or deleting a note;
 seeker saved searches and alerts. (Conversion funnels and response-time KPIs: API 0.38.0; replies
 to the customer: API 0.46.0, below.)
+
+## Metrics and alerts (API 0.61.0)
+
+FR-056/FR-065 ("measure … email bounce … dead-letter backlog"). Package `internal/platform/metrics` writes the Prometheus
+text format itself (no client library).
+
+- **Not public:** set `METRICS_ADDR` (e.g. `:9090`) and the API and the worker each serve `GET /metrics` on that
+  separate listener. It is never on the API port: `/metrics` there is 404, and no Service port or ingress rule exposes
+  it. Unset, there is no endpoint.
+- **API:** `rp365_http_requests_total{method, route, status}` (route = the chi route pattern, never the raw path;
+  status = 2xx…5xx) and `rp365_http_request_duration_seconds` (histogram).
+- **Both (read from the database at scrape time):** `rp365_outbox_pending{event_type}`,
+  `rp365_outbox_oldest_pending_age_seconds`, `rp365_outbox_dead_letters{event_type}`, `rp365_push_deliveries{status}`,
+  `rp365_routing_exceptions_open`, `rp365_email_delivery_events_last_hour{event_type}`,
+  `rp365_email_accepted_last_hour`, `rp365_upload_intents_open`.
+- **Worker:** `rp365_sweep_runs_total{sweep, result}`, `rp365_sweep_last_success_timestamp_seconds{sweep}` and
+  `rp365_sweep_last_run_duration_seconds{sweep}` for the data export, invoice, saved search, upload intent, email
+  delivery, agreement and subscription sweeps.
+- **Alert rules** are files in the GitOps repository (`monitoring/prometheus-rules.yaml`, with `scrape-example.yaml`).
+  They are **not referenced by any environment**, so nothing applies them until they are reviewed.
 
 ## Upload intents (API 0.60.0)
 

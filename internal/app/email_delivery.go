@@ -19,7 +19,10 @@ func RunEmailDeliverySweeps(ctx context.Context, svc *emaildelivery.Service, log
 	ticker := time.NewTicker(EmailSpikeInterval)
 	defer ticker.Stop()
 	for {
-		if _, err := svc.Sweep(ctx); err != nil {
+		start := time.Now()
+		_, err := svc.Sweep(ctx)
+		sweepDone("email_delivery", start, err)
+		if err != nil {
 			logger.ErrorContext(ctx, "email delivery sweep failed", slog.String("error", err.Error()))
 		}
 		select {

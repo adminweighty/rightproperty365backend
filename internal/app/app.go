@@ -62,6 +62,7 @@ import (
 	"rightproperty365.com/backend/internal/platform/i18n"
 	"rightproperty365.com/backend/internal/platform/ics"
 	"rightproperty365.com/backend/internal/platform/malware"
+	"rightproperty365.com/backend/internal/platform/metrics"
 	"rightproperty365.com/backend/internal/platform/paygateway"
 	"rightproperty365.com/backend/internal/platform/storage"
 )
@@ -330,6 +331,9 @@ type Deps struct {
 	// Uploads holds upload intents (API 0.60.0). Nil: no intent routes, and
 	// photos are uploaded through the API only.
 	Uploads uploads.Store
+	// Metrics counts requests for the Prometheus endpoint (API 0.61.0). Nil:
+	// nothing is counted.
+	Metrics *metrics.Process
 
 	// Analytics holds the raw analytics events and the daily rollups (API
 	// 0.30.0). The raw retention is Config.AnalyticsRawRetentionDays.
@@ -853,6 +857,15 @@ func NewRouter(d Deps) (http.Handler, error) {
 	adminCodeLimiter := httpx.NewRateLimiter(SignInCodeRequestsPerMinute, SignInCodeRequestsBurst)
 
 	r := chi.NewRouter()
+	if d.Metrics != nil {
+		// Route patterns, never raw paths, so the labels stay bounded.
+		r.Use(d.Metrics.Middleware(func(req *http.Request) string {
+			if rc := chi.RouteContext(req.Context()); rc != nil {
+				return rc.RoutePattern()
+			}
+			return ""
+		}))
+	}
 	r.Use(
 		httpx.RequestID,
 		// The language of messages (API 0.43.0): ?lang, else Accept-Language, else en.

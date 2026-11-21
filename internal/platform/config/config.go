@@ -93,6 +93,10 @@ type Config struct {
 	// Resend's delivery webhooks ("whsec_…", API 0.59.0). Optional: unset,
 	// POST /v1/webhooks/email/resend answers 503. Never logged.
 	ResendWebhookSecret Secret
+	// MetricsAddr is METRICS_ADDR, the listen address of the Prometheus
+	// endpoint (API 0.61.0), e.g. ":9090". Empty: no endpoint. It is its own
+	// listener, never the public API port.
+	MetricsAddr string
 	// SearchDriver is SearchDriverDatabase or SearchDriverElasticsearch,
 	// already resolved from SEARCH_DRIVER and ELASTICSEARCH_URL.
 	SearchDriver string
@@ -449,6 +453,7 @@ func FromLookup(get func(string) string) (Config, error) {
 	// Email. The API key is never echoed, not even in an error.
 	cfg.ResendAPIKey = Secret(val("RESEND_API_KEY", ""))
 	cfg.ResendWebhookSecret = Secret(val("RESEND_WEBHOOK_SECRET", ""))
+	cfg.MetricsAddr = strings.TrimSpace(val("METRICS_ADDR", ""))
 	driver, err := resolveMailDriver(val("MAIL_DRIVER", ""), cfg.Env, cfg.ResendAPIKey.IsSet())
 	if err != nil {
 		errs = append(errs, err)

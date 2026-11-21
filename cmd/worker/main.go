@@ -53,6 +53,7 @@ import (
 	"rightproperty365.com/backend/internal/platform/logging"
 	"rightproperty365.com/backend/internal/platform/mail"
 	"rightproperty365.com/backend/internal/platform/malware"
+	"rightproperty365.com/backend/internal/platform/metrics"
 	"rightproperty365.com/backend/internal/platform/outbox"
 	"rightproperty365.com/backend/internal/platform/paygateway"
 	"rightproperty365.com/backend/internal/platform/push"
@@ -97,6 +98,13 @@ func run() error {
 		return err
 	}
 	defer pool.Close()
+
+	// Prometheus metrics (API 0.61.0): the queue gauges and the sweeps'
+	// health, on METRICS_ADDR (not public).
+	metricsProc := metrics.NewProcess(logger)
+	app.RegisterQueueGauges(metricsProc, pool)
+	app.SetSweepMetrics(metricsProc)
+	go metrics.Serve(ctx, cfg.MetricsAddr, metricsProc.Handler(), logger)
 
 	// Notification emails: one per recipient per event, sent once (see
 	// mail.Service). The line naming the mailer is logged before any event is
