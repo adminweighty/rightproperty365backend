@@ -38,7 +38,17 @@ func TenanciesService(store tenancies.Store, contacts crm.Store, listingStore li
 		Store: store, Logger: logger, Now: now,
 		Links: tenancyLinks{contacts: contacts, ledger: ledgerLinks{contacts: contacts, listings: listingStore, leases: leaseStore}},
 		Currencies: func(ctx context.Context) ([]string, error) {
-			return list(ctx, func(m markets.Market) string { return m.CurrencyCode })
+			// The main currency and the extra permitted ones (API 0.56.0).
+			all, err := marketStore.List(ctx)
+			if err != nil {
+				return nil, err
+			}
+			out := []string{}
+			for _, m := range all {
+				out = append(out, m.CurrencyCode)
+				out = append(out, m.ExtraCurrencies...)
+			}
+			return out, nil
 		},
 		Markets: func(ctx context.Context) ([]string, error) {
 			return list(ctx, func(m markets.Market) string { return m.Code })

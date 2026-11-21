@@ -52,16 +52,14 @@ func SeedPostgres(ctx context.Context, pool *pgxpool.Pool, files storage.Storage
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 
-	// Countries: every ISO country (also upserted by migration 0014). A row
-	// keeps its ID and its `enabled` flag; name, currency and zone are reset
-	// to the table in internal/modules/markets.
+	// Countries: every ISO country (also upserted by migration 0014). An
+	// existing row is left exactly as it is: administrators change a
+	// country's name, currencies, zone and status (API 0.56.0).
 	for _, m := range markets.Seed() {
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO markets (id, code, name, currency_code, timezone, status, sort_order)
-			VALUES ($1, $2, $3, $4, $5, 'ACTIVE', $6)
-			ON CONFLICT (code) DO UPDATE
-			SET name = EXCLUDED.name, currency_code = EXCLUDED.currency_code, timezone = EXCLUDED.timezone,
-			    status = 'ACTIVE', updated_at = now()`,
+			INSERT INTO markets (id, code, name, currency_code, timezone, status, enabled, sort_order)
+			VALUES ($1, $2, $3, $4, $5, 'ACTIVE', true, $6)
+			ON CONFLICT (code) DO NOTHING`,
 			m.ID, m.Code, m.Name, m.CurrencyCode, m.Timezone, m.SortOrder); err != nil {
 			return fmt.Errorf("seed country %s: %w", m.Code, err)
 		}

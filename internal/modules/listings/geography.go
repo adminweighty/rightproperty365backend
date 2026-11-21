@@ -22,6 +22,9 @@ type CountryInfo struct {
 	// Currency is the market's currency: the default for price filters when
 	// the search is narrowed to that country.
 	Currency string
+	// Currencies are the currencies a listing of the country may be priced
+	// in: the main one and the extra permitted ones (API 0.56.0).
+	Currencies []string
 }
 
 // Geography is the location hierarchy, all of it reference data:

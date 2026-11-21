@@ -330,7 +330,7 @@ func Seed() []Market {
 		}
 		m := Market{
 			ID: IDFor(parts[0]), Code: parts[0], Name: parts[1], CurrencyCode: parts[2], Timezone: parts[3],
-			Status: StatusActive, Enabled: true, SortOrder: DefaultSortOrder,
+			Status: StatusActive, Enabled: true, SortOrder: DefaultSortOrder, AdminStatus: AdminActive, ExtraCurrencies: []string{},
 		}
 		if n, ok := sortOrders[m.Code]; ok {
 			m.SortOrder = n

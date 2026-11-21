@@ -456,6 +456,7 @@ func newEnvWith(t *testing.T, mutate func(*config.Config), scanner malware.Scann
 	e.marketStore = markets.NewMemoryStore()
 	e.calendars = availability.NewMemoryStore()
 	e.audit = &adminaudit.MemoryLog{}
+	e.marketStore.SetAudit(e.audit)
 	e.listings.SetPlacementAudit(e.audit)
 	e.reference.SetAuditLog(e.audit)
 	e.reviews.SetAuditLog(e.audit)

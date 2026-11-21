@@ -102,7 +102,7 @@ func (p places) Geography(ctx context.Context) (listings.Geography, error) {
 		return g, err
 	}
 	for _, m := range all {
-		g.Countries[m.Code] = listings.CountryInfo{Name: m.Name, Currency: m.CurrencyCode}
+		g.Countries[m.Code] = listings.CountryInfo{Name: m.Name, Currency: m.CurrencyCode, Currencies: m.Currencies}
 	}
 	for set, fill := range map[string]func(reference.Item){
 		reference.SetRegions: func(it reference.Item) {

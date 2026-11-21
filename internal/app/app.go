@@ -449,7 +449,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 	if d.Packages == nil {
 		return nil, errors.New("app: no listing packages store")
 	}
-	packagesSvc := packages.NewService(packages.Deps{Store: d.Packages, Markets: d.Markets, Logger: logger, Now: d.Now})
+	packagesSvc := packages.NewService(packages.Deps{Store: d.Packages, Markets: everyMarket{store: d.Markets}, Logger: logger, Now: d.Now})
 	packagesH := packages.NewHandler(packagesSvc, logger)
 	manager := listings.NewManager(listingsSvc, manageStore, d.Files, logger)
 	manager.SetQuota(packagesSvc)
@@ -804,10 +804,16 @@ func NewRouter(d Deps) (http.Handler, error) {
 		Subscriptions: AccountSubscriptions(d.Subscriptions, d.Now), Logger: logger, Now: d.Now}), logger, secure)
 	// Legal documents, tax rules and translations (API 0.43.0).
 	legalStore, legalAcceptances, taxStore := legalStores(d)
-	legalH := legal.NewHandler(legal.NewService(legal.Deps{Store: legalStore, Acceptances: legalAcceptances,
-		KnownMarket: knownMarket(d.Markets), Now: d.Now}), logger)
+	legalSvc := legal.NewService(legal.Deps{Store: legalStore, Acceptances: legalAcceptances,
+		KnownMarket: knownMarket(everyMarket{store: d.Markets}), Now: d.Now})
+	legalH := legal.NewHandler(legalSvc, logger)
+	// Market administration (API 0.56.0): both market stores have it.
+	var marketsAdminH *markets.AdminHandler
+	if store, ok := d.Markets.(markets.AdminStore); ok {
+		marketsAdminH = markets.NewAdminHandler(markets.NewAdmin(store, marketChecker{packages: d.Packages, legal: legalSvc}, d.Now), logger)
+	}
 	identityH.SetPendingLegalHook(func(r *http.Request, userID uuid.UUID) (any, error) { return legalH.PendingViews(r, userID) })
-	taxSvc := tax.NewService(taxStore, knownMarket(d.Markets), d.Now)
+	taxSvc := tax.NewService(taxStore, knownMarket(everyMarket{store: d.Markets}), d.Now)
 	taxH := tax.NewHandler(taxSvc, logger)
 	invoicesSvc = InvoicesService(d.Invoices, subscriptionsSvc, taxSvc, d.Markets, gateway, logger, d.Now)
 	invoicesH := invoices.NewHandler(invoicesSvc, logger, cfg.PublicWebURL)
@@ -1406,6 +1412,18 @@ func NewRouter(d Deps) (http.Handler, error) {
 				r.Use(auth.RequirePlatformRole(auth.ListingReviewRoles()...))
 				developmentsH.AdminRoutes(r, listingLimiter.Middleware)
 			})
+			// Market administration (API 0.56.0): SUPER_ADMIN and
+			// PLATFORM_ADMIN; a MARKET_ADMIN edits its own markets (not their
+			// status). Audited.
+			if marketsAdminH != nil {
+				r.Route("/markets", func(r chi.Router) {
+					r.Use(httpx.PrivateNoStore, auth.RequirePlatformRole(markets.AdminRoles()...))
+					r.Get("/", marketsAdminH.List)
+					r.Get("/{code}", marketsAdminH.Get)
+					r.With(listingLimiter.Middleware).Post("/", marketsAdminH.Create)
+					r.With(listingLimiter.Middleware).Patch("/{code}", marketsAdminH.Update)
+				})
+			}
 			// Placements (API 0.53.0): SUPER_ADMIN, PLATFORM_ADMIN and
 			// FINANCE_ADMIN everywhere, MARKET_ADMIN in its own markets;
 			// every grant and end is audited.

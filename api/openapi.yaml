@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.55.0
+  version: 0.56.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,13 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Market administration (new in 0.56.0, BR-001)
+    - `GET|POST /v1/admin/markets`, `GET|PATCH /v1/admin/markets/{code}` (SUPER_ADMIN, PLATFORM_ADMIN; a MARKET_ADMIN
+      edits its own markets but not their status): name, main and extra currencies, time zone, default listing
+      package, notice, status PLANNED|ACTIVE|SUSPENDED. Activation is refused while not ready (`409 MARKET_NOT_READY`
+      with the problems). Audited.
+    - Public countries gain `currencies` (main, then extra) and `notice`; only ACTIVE countries are listed.
 
     Personal data export (new in 0.55.0, FSD section 9)
     - `POST /v1/me/data-export` -> `202 {export}` (one a day: `409 EXPORT_RECENT`; administrator sessions `403
@@ -11099,6 +11106,71 @@ paths:
       responses:
         "200":
           description: "See the summary above."
+  /v1/admin/markets:
+    get:
+      tags: [admin]
+      operationId: adminListMarkets
+      summary: "Every market, whatever its status (new in 0.56.0)"
+      security:
+        - cookieSession: []
+      responses:
+        "200":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+    post:
+      tags: [admin]
+      operationId: adminCreateMarket
+      summary: "Provision a country (PLANNED) (new in 0.56.0)"
+      security:
+        - cookieSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{code, name, currency_code, timezone}"
+      responses:
+        "201":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+  /v1/admin/markets/{code}:
+    parameters:
+      - name: code
+        in: path
+        required: true
+        schema: {type: string}
+    get:
+      tags: [admin]
+      operationId: adminGetMarket
+      summary: "A market and its readiness (new in 0.56.0)"
+      security:
+        - cookieSession: []
+      responses:
+        "200":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+    patch:
+      tags: [admin]
+      operationId: adminUpdateMarket
+      summary: "Change a market (activation is checked) (new in 0.56.0)"
+      security:
+        - cookieSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{name?, currency_code?, extra_currencies?, timezone?, default_package_code?, notice?, status?}"
+      responses:
+        "200":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
   /v1/appointments:
     post:
       tags: [appointments]

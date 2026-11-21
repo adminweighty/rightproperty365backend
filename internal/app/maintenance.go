@@ -59,7 +59,11 @@ func MaintenanceService(d MaintenanceDeps) *maintenance.Service {
 			}
 			out := make([]string, 0, len(all))
 			for _, m := range all {
-				out = append(out, m.CurrencyCode)
+				// The main currency and the extra permitted ones (API 0.56.0).
+				out = append(out, m.Currencies...)
+				if len(m.Currencies) == 0 {
+					out = append(out, m.CurrencyCode)
+				}
 			}
 			return out, nil
 		},

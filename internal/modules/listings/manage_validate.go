@@ -396,7 +396,7 @@ func (s *Service) validateContent(ctx context.Context, c Content, g Geography, f
 	if c.Currency != "" {
 		known := false
 		for _, info := range g.Countries {
-			if info.Currency == c.Currency {
+			if info.Currency == c.Currency || slices.Contains(info.Currencies, c.Currency) {
 				known = true
 				break
 			}

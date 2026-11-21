@@ -23,6 +23,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"rightproperty365.com/backend/internal/platform/adminaudit"
+
 	"rightproperty365.com/backend/internal/platform/httpx"
 )
 
@@ -59,6 +61,24 @@ type Market struct {
 	Enabled bool `json:"-"`
 	// SortOrder puts a few countries before the alphabetical rest.
 	SortOrder int `json:"-"`
+
+	// Market administration (API 0.56.0). Currencies is the main currency
+	// then the extra permitted ones; Notice a short text shown on the
+	// country's pages (nil for none).
+	Currencies []string `json:"currencies"`
+	Notice     *string  `json:"notice"`
+	// The administrators' fields: the real status (PLANNED, ACTIVE,
+	// SUSPENDED), the extra currencies and the default listing package.
+	AdminStatus        string    `json:"-"`
+	ExtraCurrencies    []string  `json:"-"`
+	DefaultPackageCode string    `json:"-"`
+	UpdatedAt          time.Time `json:"-"`
+}
+
+// withCurrencies fills Currencies from the main and extra currencies.
+func withCurrencies(m Market) Market {
+	m.Currencies = append([]string{m.CurrencyCode}, m.ExtraCurrencies...)
+	return m
 }
 
 // Store lists the enabled countries, ordered by sort order, then name.
@@ -83,6 +103,8 @@ func Order(list []Market) {
 type MemoryStore struct {
 	mu      sync.RWMutex
 	markets []Market
+	// audit receives the market administration events (API 0.56.0).
+	audit *adminaudit.MemoryLog
 }
 
 // NewMemoryStore returns a store holding Seed().
@@ -95,7 +117,7 @@ func (s *MemoryStore) List(context.Context) ([]Market, error) {
 	out := make([]Market, 0, len(s.markets))
 	for _, m := range s.markets {
 		if m.Enabled {
-			out = append(out, m)
+			out = append(out, withCurrencies(m))
 		}
 	}
 	return out, nil
@@ -127,7 +149,7 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore { return &PostgresStore
 // List implements Store.
 func (s *PostgresStore) List(ctx context.Context) ([]Market, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, code, name, currency_code, timezone, sort_order
+		SELECT id, code, name, currency_code, timezone, sort_order, extra_currencies, notice
 		FROM markets
 		WHERE enabled
 		ORDER BY sort_order, name, code`)
@@ -139,10 +161,10 @@ func (s *PostgresStore) List(ctx context.Context) ([]Market, error) {
 	out := []Market{}
 	for rows.Next() {
 		m := Market{Status: StatusActive, Enabled: true}
-		if err := rows.Scan(&m.ID, &m.Code, &m.Name, &m.CurrencyCode, &m.Timezone, &m.SortOrder); err != nil {
+		if err := rows.Scan(&m.ID, &m.Code, &m.Name, &m.CurrencyCode, &m.Timezone, &m.SortOrder, &m.ExtraCurrencies, &m.Notice); err != nil {
 			return nil, err
 		}
-		out = append(out, m)
+		out = append(out, withCurrencies(m))
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

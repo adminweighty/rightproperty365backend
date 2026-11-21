@@ -382,6 +382,9 @@ func run() error {
 		adminAuditLog = memAudit
 		memReference.SetAuditLog(memAudit)
 		memListings.SetPlacementAudit(memAudit)
+		if ms, ok := marketStore.(*markets.MemoryStore); ok {
+			ms.SetAudit(memAudit)
+		}
 		memReviews.SetAuditLog(memAudit)
 		// Administrator MFA records (API 0.40.0).
 		memIdentity.SetAuditLog(memAudit)

@@ -502,6 +502,27 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 seeker saved searches and alerts. (Conversion funnels and response-time KPIs: API 0.38.0; replies
 to the customer: API 0.46.0, below.)
 
+## Market administration (API 0.56.0)
+
+BR-001 ("provision an inactive test market and change permitted currencies and notices without a code release").
+Migration 0058 (`markets.extra_currencies`, `default_package_code`, `notice`; `status` now drives `enabled`, enforced by
+`markets_enabled_follows_status`; the audit target `MARKET`).
+
+- **Statuses:** PLANNED (provisioned, hidden from every public list and from new listings), ACTIVE (public),
+  SUSPENDED (hidden again; existing records stay with their owners). A public country never goes back to PLANNED.
+- `POST /v1/admin/markets` (SUPER_ADMIN, PLATFORM_ADMIN) creates a PLANNED country; `PATCH /v1/admin/markets/{code}`
+  changes the name, main currency, up to 5 **extra permitted currencies** (listing prices, ledgers, maintenance and
+  tenancies accept them), the time zone, the **default listing package** (a package code of that market) and a
+  **notice** (up to 280 characters, public). A MARKET_ADMIN edits its own markets but not their status.
+- **Activation guard:** PLANNED or SUSPENDED -> ACTIVE is `409 MARKET_NOT_READY` (with the problems in `fields`)
+  unless the time zone loads, the currency is ISO 4217-shaped, the default package is an active package of that
+  market, and the Terms of service and Privacy policy resolve for it (its own, or GLOBAL, reported as a warning).
+  `GET /v1/admin/markets/{code}` returns the same `readiness`.
+- The administrators' tools (listing packages, legal documents, tax rules) accept PLANNED countries so a market can be
+  prepared before it goes live (`app.everyMarket`); every public reader still lists ACTIVE countries only.
+- The development seed no longer rewrites existing countries: administrators' changes survive `cmd/seed`.
+- Every create and change is in the admin audit log (before and after).
+
 ## Personal data export (API 0.55.0)
 
 FSD section 9 ("data export/delete requests"). Migration 0057 (`data_exports`). Module `internal/modules/dataexport`.
