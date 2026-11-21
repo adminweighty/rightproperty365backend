@@ -1204,8 +1204,10 @@ clamd is a warning, never a startup failure (uploads then fail closed, below).
 ### Every upload path
 
 Storage is Amazon S3 (one private bucket; the `local` disk in development). **Every upload goes
-through the API, as `multipart/form-data` (base64 JSON for signature images); there are no
-presigned uploads**, so the bytes are always in the API's hands before anything is stored.
+through the API, as `multipart/form-data` (base64 JSON for signature images)**, so the bytes are
+always in the API's hands before anything is stored. Since 0.60.0 a listing photo may also arrive
+through an upload intent (a presigned PUT to a private `intents/` key); its bytes are scanned when
+the intent is completed, before it can be used (see "Upload intents").
 
 | Path | What | Stored as | Scanned |
 | --- | --- | --- | --- |
