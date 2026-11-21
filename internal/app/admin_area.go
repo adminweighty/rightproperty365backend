@@ -99,7 +99,8 @@ func MemoryActiveListings(store *listings.MemoryStore) func(kind string, id uuid
 	return func(kind string, id uuid.UUID, now time.Time) int {
 		n := 0
 		for _, r := range store.ReportRows(now) {
-			if r.Status != listings.StatusPublished {
+			// A paused listing keeps its place (API 0.48.0).
+			if r.Status != listings.StatusPublished && r.Status != listings.StatusPaused {
 				continue
 			}
 			switch {

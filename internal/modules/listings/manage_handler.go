@@ -89,6 +89,8 @@ func (h *ManageHandler) fail(w http.ResponseWriter, r *http.Request, err error) 
 		httpx.WriteError(w, r, http.StatusForbidden, CodeSelfReviewForbidden, "You cannot review a listing of your own organisation, or one you own, are the agent of or submitted. Another reviewer must decide it.", nil)
 	case errors.Is(err, ErrConflict):
 		httpx.WriteError(w, r, http.StatusConflict, CodeListingChanged, "The listing was changed by someone else. Reload it and try again.", nil)
+	case errors.Is(err, ErrTypeConflict):
+		httpx.WriteError(w, r, http.StatusConflict, CodeTypeConflict, "A listing for sale is marked sold, and one to let is marked let.", nil)
 	case errors.Is(err, ErrPhotoLimit):
 		httpx.WriteError(w, r, http.StatusConflict, CodePhotoLimitReached, PhotoLimitMessage, nil)
 	case errors.Is(err, ErrPhotoNotFound):
@@ -225,6 +227,28 @@ func (h *ManageHandler) Archive(w http.ResponseWriter, r *http.Request) {
 // Relist handles POST /v1/me/listings/{id}/relist.
 func (h *ManageHandler) Relist(w http.ResponseWriter, r *http.Request) {
 	h.withListing(w, r, func(p *auth.Principal, id uuid.UUID) (ManagedView, error) { return h.mg.Relist(r.Context(), p, id) })
+}
+
+// Pause, Resume, MarkSold, MarkLet and Close handle the lifecycle actions
+// (POST /v1/me/listings/{id}/pause and the others, API 0.48.0).
+func (h *ManageHandler) Pause(w http.ResponseWriter, r *http.Request) {
+	h.withListing(w, r, func(p *auth.Principal, id uuid.UUID) (ManagedView, error) { return h.mg.Pause(r.Context(), p, id) })
+}
+
+func (h *ManageHandler) Resume(w http.ResponseWriter, r *http.Request) {
+	h.withListing(w, r, func(p *auth.Principal, id uuid.UUID) (ManagedView, error) { return h.mg.Resume(r.Context(), p, id) })
+}
+
+func (h *ManageHandler) MarkSold(w http.ResponseWriter, r *http.Request) {
+	h.withListing(w, r, func(p *auth.Principal, id uuid.UUID) (ManagedView, error) { return h.mg.MarkSold(r.Context(), p, id) })
+}
+
+func (h *ManageHandler) MarkLet(w http.ResponseWriter, r *http.Request) {
+	h.withListing(w, r, func(p *auth.Principal, id uuid.UUID) (ManagedView, error) { return h.mg.MarkLet(r.Context(), p, id) })
+}
+
+func (h *ManageHandler) Close(w http.ResponseWriter, r *http.Request) {
+	h.withListing(w, r, func(p *auth.Principal, id uuid.UUID) (ManagedView, error) { return h.mg.Close(r.Context(), p, id) })
 }
 
 // Delete handles DELETE /v1/me/listings/{id}.

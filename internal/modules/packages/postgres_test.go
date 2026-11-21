@@ -272,14 +272,17 @@ func TestPostgresStoreContract(t *testing.T) {
 		t.Fatalf("audit rows: %d %v", audits, err)
 	}
 
-	// Counting: PUBLISHED and unexpired only; markets and names.
+	// Counting: PUBLISHED or PAUSED (a paused listing keeps its place, API
+	// 0.48.0) and unexpired only; markets and names.
 	future, past := now.Add(24*time.Hour), now.Add(-time.Hour)
 	listing(t, pool, fx.org, "PUBLISHED", &future)
 	listing(t, pool, fx.org, "PUBLISHED", &past)
 	listing(t, pool, fx.org, "PAUSED", &future)
+	listing(t, pool, fx.org, "PAUSED", &past)
+	listing(t, pool, fx.org, "SOLD", &future)
 	listing(t, pool, fx.org, "PENDING_REVIEW", nil)
 	live, err := s.LiveListings(ctx, acct, "ZW", now)
-	if err != nil || len(live) != 1 || !live[0].Equal(future) {
+	if err != nil || len(live) != 2 || !live[0].Equal(future) || !live[1].Equal(future) {
 		t.Fatalf("live: %v %v", live, err)
 	}
 	if markets, err := s.AccountMarkets(ctx, acct, now); err != nil || len(markets) != 1 || markets[0] != "ZW" {

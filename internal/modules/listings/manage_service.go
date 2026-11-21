@@ -282,9 +282,10 @@ func (mg *Manager) actions(m ManagedListing, canEdit bool, now time.Time) []stri
 	case StatusDraft, StatusPendingReview, StatusChangesRequested, StatusPublished, StatusExpired, StatusPaused:
 		out = append(out, ActArchive)
 	}
-	if status == StatusArchived || status == StatusExpired {
+	if slices.Contains(relistFrom, status) {
 		out = append(out, ActRelist)
 	}
+	out = append(out, lifecycleActions(m, status)...)
 	if m.PublishedAt.IsZero() {
 		out = append(out, ActDelete)
 	}
@@ -616,8 +617,8 @@ func (mg *Manager) Relist(ctx context.Context, p *auth.Principal, id uuid.UUID) 
 	}
 	now := mg.clock()
 	from := m.EffectiveStatus(now)
-	if from != StatusArchived && from != StatusExpired {
-		return ManagedView{}, conflict("Only an archived or expired listing can be relisted.")
+	if !slices.Contains(relistFrom, from) {
+		return ManagedView{}, conflict("Only an archived, expired, sold, let or closed listing can be relisted.")
 	}
 	expect := m.UpdatedAt
 	mergeRevision(&m)

@@ -24,7 +24,11 @@ import (
 //	                       │  └──request changes──> CHANGES_REQUESTED ──edit, submit──> PENDING_REVIEW
 //	                       └──reject──> REJECTED (final: the listing can only be deleted)
 //	DRAFT | PENDING_REVIEW | CHANGES_REQUESTED | PUBLISHED | EXPIRED | PAUSED ──archive──> ARCHIVED
-//	ARCHIVED | EXPIRED ──relist──> PENDING_REVIEW (was published before) or DRAFT (never was)
+//	ARCHIVED | EXPIRED | SOLD | LET | CLOSED ──relist──> PENDING_REVIEW (was published before) or DRAFT (never was)
+//	PUBLISHED ──pause──> PAUSED ──resume──> PUBLISHED (EXPIRED when the period ended meanwhile)
+//	PUBLISHED | PAUSED | EXPIRED ──mark sold / mark let / close──> SOLD | LET | CLOSED
+//	(API 0.48.0: a PAUSED listing keeps its place in the package and its
+//	period keeps running; SOLD, LET and CLOSED free the place.)
 //
 // A PUBLISHED listing is edited through a REVISION: the changes (and new
 // photos) are kept beside the live listing, which stays public with its
@@ -38,12 +42,17 @@ const (
 	StatusRejected         = "REJECTED"
 	StatusArchived         = "ARCHIVED"
 	StatusPaused           = "PAUSED"
+	// Final states an owner sets (API 0.48.0): the listing is off the market
+	// and frees its place in the package; relist starts a new cycle.
+	StatusSold   = "SOLD"
+	StatusLet    = "LET"
+	StatusClosed = "CLOSED"
 )
 
 // Statuses returns every listing status, in lifecycle order.
 func Statuses() []string {
 	return []string{StatusDraft, StatusPendingReview, StatusChangesRequested, StatusRejected, StatusPublished,
-		StatusExpired, StatusArchived, StatusPaused, "SOLD", "LET", "CLOSED"}
+		StatusExpired, StatusArchived, StatusPaused, StatusSold, StatusLet, StatusClosed}
 }
 
 // StatusLabel is how a status is shown ("Pending review").
@@ -335,6 +344,12 @@ const (
 	ActionRelisted         = "RELISTED"
 	// ActionExpired is the expiry sweep storing EXPIRED (actor SYSTEM).
 	ActionExpired = "EXPIRED"
+	// The owner's lifecycle actions (API 0.48.0, FSD section 3).
+	ActionPaused     = "PAUSED"
+	ActionResumed    = "RESUMED"
+	ActionMarkedSold = "MARKED_SOLD"
+	ActionMarkedLet  = "MARKED_LET"
+	ActionClosed     = "CLOSED"
 )
 
 // TimelineEntry is one recorded step of a listing's lifecycle.

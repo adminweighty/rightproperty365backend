@@ -86,7 +86,7 @@ func accountMatches(r Record, acct packages.Account) bool {
 func (s *MemoryStore) liveLocked(acct packages.Account, market string, exclude uuid.UUID, now time.Time) []time.Time {
 	out := []time.Time{}
 	for _, r := range s.records {
-		if r.ID != exclude && r.MarketCode == market && r.Status == StatusPublished && r.ExpiresAt.After(now) && accountMatches(r, acct) {
+		if r.ID != exclude && r.MarketCode == market && r.HoldsSlot(now) && accountMatches(r, acct) {
 			out = append(out, r.ExpiresAt.UTC())
 		}
 	}

@@ -264,6 +264,32 @@ func expiryStoreContract(t *testing.T, store expiryStore, seller uuid.UUID, even
 			t.Fatalf("concurrent timeline: %+v %v", timeline, err)
 		}
 	}
+
+	// A paused listing (API 0.48.0): its period keeps running, it gets its
+	// reminder and it expires; the timeline says it came from PAUSED.
+	paused := publish("Expiry contract paused", now.Add(3*day))
+	pm, perr := store.Managed(ctx, paused)
+	if perr != nil {
+		t.Fatal(perr)
+	}
+	pausedAt := pm.UpdatedAt
+	pm.Status, pm.UpdatedAt = StatusPaused, pausedAt.Add(time.Second)
+	if _, err := store.SaveListing(ctx, pm, pausedAt, Change{Entry: &TimelineEntry{ID: uuid.New(), ListingID: paused, ActorKind: ActorAdvertiser,
+		Action: ActionPaused, FromStatus: StatusPublished, ToStatus: StatusPaused, CreatedAt: pm.UpdatedAt}}); err != nil {
+		t.Fatal(err)
+	}
+	sweep()
+	expectSent(paused, "7#1")
+	move(paused, now.Add(-time.Minute))
+	sweep()
+	expectSent(paused, "7#1", "EXPIRED#1")
+	if got, err := store.Managed(ctx, paused); err != nil || got.Status != StatusExpired {
+		t.Fatalf("paused expiry: %s %v", got.Status, err)
+	}
+	timeline, terr := store.Timeline(ctx, paused)
+	if terr != nil || len(timeline) != 2 || timeline[1].FromStatus != StatusPaused || timeline[0].Action != ActionPaused {
+		t.Fatalf("paused timeline: %+v %v", timeline, terr)
+	}
 }
 
 func TestMemoryExpirySweep(t *testing.T) {
@@ -335,7 +361,7 @@ func TestPostgresExpirySweep(t *testing.T) {
 	// The notices of the listings above, as recorded.
 	var skipped int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM listing_expiry_notices n JOIN listings l ON l.id = n.listing_id
-		WHERE l.seller_user_id = $1 AND n.skipped`, seller).Scan(&skipped); err != nil || skipped != 1 {
-		t.Fatalf("%d skipped notices, %v (want 1: the 14-day reminder of B)", skipped, err)
+		WHERE l.seller_user_id = $1 AND n.skipped`, seller).Scan(&skipped); err != nil || skipped != 2 {
+		t.Fatalf("%d skipped notices, %v (want 2: the 14-day reminders of B and of the paused listing)", skipped, err)
 	}
 }

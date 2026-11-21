@@ -605,7 +605,17 @@ func (r Record) EffectiveStatus(now time.Time) string {
 	if r.Status == StatusPublished && !r.ExpiresAt.After(now) {
 		return StatusExpired
 	}
+	// A paused listing's period keeps running (API 0.48.0).
+	if r.Status == StatusPaused && !r.ExpiresAt.IsZero() && !r.ExpiresAt.After(now) {
+		return StatusExpired
+	}
 	return r.Status
+}
+
+// HoldsSlot reports whether the listing takes a place in its account's
+// package at now: live, or paused within its period (API 0.48.0).
+func (r Record) HoldsSlot(now time.Time) bool {
+	return (r.Status == StatusPublished || r.Status == StatusPaused) && r.ExpiresAt.After(now)
 }
 
 // EverPublished reports whether the listing has been public at some point, so

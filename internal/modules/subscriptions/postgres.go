@@ -547,7 +547,7 @@ func (s *PostgresStore) ActiveListings(ctx context.Context, kind string, subscri
 		where = `((seller_user_id = $1 AND organisation_id IS NULL) OR agent_user_id = $1)`
 	}
 	var n int
-	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM listings WHERE `+where+` AND status = 'PUBLISHED' AND expires_at > $2`,
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM listings WHERE `+where+` AND status IN ('PUBLISHED', 'PAUSED') AND expires_at > $2`,
 		subscriberID, now).Scan(&n); err != nil {
 		return 0, fmt.Errorf("count active listings: %w", err)
 	}

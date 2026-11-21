@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.47.0
+  version: 0.48.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,13 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Listing lifecycle (new in 0.48.0, FSD section 3)
+    - `POST /v1/me/listings/{id}/pause`, `/resume`, `/mark-sold`, `/mark-let`, `/close` (answers the managed listing;
+      `409 LISTING_STATE_CONFLICT`, `409 LISTING_TYPE_CONFLICT` for sold on a listing to let or let on a sale).
+    - PAUSED is hidden but keeps its place in the package and its period keeps running (the expiry sweep expires it);
+      SOLD, LET and CLOSED free the place; relist (to review) is allowed from them as after expiry.
+    - `actions` gains `pause`, `resume`, `mark_sold`, `mark_let`, `close`.
 
     Renewal invoices (new in 0.47.0, BR-015, FR-037 to FR-040)
     - Finance administrators (`SUPER_ADMIN`, `FINANCE_ADMIN`; read: also `PLATFORM_ADMIN`, `SUPPORT`) draft
@@ -8644,6 +8651,116 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
+  /v1/me/listings/{id}/pause:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      tags: [listing-management]
+      operationId: pauseMyListing
+      summary: "Pause a published listing (hidden; keeps its package place and its period) (new in 0.48.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: "`{\"listing\": ...}`: the managed listing, as `GET /v1/me/listings/{id}`."
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: "`LISTING_NOT_FOUND`"
+        "409":
+          description: "`LISTING_STATE_CONFLICT`, `LISTING_TYPE_CONFLICT`, `LISTING_CHANGED`"
+  /v1/me/listings/{id}/resume:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      tags: [listing-management]
+      operationId: resumeMyListing
+      summary: "Resume a paused listing (EXPIRED when the period ended meanwhile) (new in 0.48.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: "`{\"listing\": ...}`: the managed listing, as `GET /v1/me/listings/{id}`."
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: "`LISTING_NOT_FOUND`"
+        "409":
+          description: "`LISTING_STATE_CONFLICT`, `LISTING_TYPE_CONFLICT`, `LISTING_CHANGED`"
+  /v1/me/listings/{id}/mark-sold:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      tags: [listing-management]
+      operationId: markMyListingSold
+      summary: "Mark a listing for sale sold (frees the package place) (new in 0.48.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: "`{\"listing\": ...}`: the managed listing, as `GET /v1/me/listings/{id}`."
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: "`LISTING_NOT_FOUND`"
+        "409":
+          description: "`LISTING_STATE_CONFLICT`, `LISTING_TYPE_CONFLICT`, `LISTING_CHANGED`"
+  /v1/me/listings/{id}/mark-let:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      tags: [listing-management]
+      operationId: markMyListingLet
+      summary: "Mark a listing to let let (frees the package place) (new in 0.48.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: "`{\"listing\": ...}`: the managed listing, as `GET /v1/me/listings/{id}`."
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: "`LISTING_NOT_FOUND`"
+        "409":
+          description: "`LISTING_STATE_CONFLICT`, `LISTING_TYPE_CONFLICT`, `LISTING_CHANGED`"
+  /v1/me/listings/{id}/close:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      tags: [listing-management]
+      operationId: closeMyListing
+      summary: "Close a listing (withdrawn; frees the package place) (new in 0.48.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: "`{\"listing\": ...}`: the managed listing, as `GET /v1/me/listings/{id}`."
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: "`LISTING_NOT_FOUND`"
+        "409":
+          description: "`LISTING_STATE_CONFLICT`, `LISTING_TYPE_CONFLICT`, `LISTING_CHANGED`"
   /v1/listings/{slug}/application-form:
     parameters:
       - { name: slug, in: path, required: true, schema: { type: string } }

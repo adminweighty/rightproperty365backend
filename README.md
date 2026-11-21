@@ -502,6 +502,25 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 seeker saved searches and alerts. (Conversion funnels and response-time KPIs: API 0.38.0; replies
 to the customer: API 0.46.0, below.)
 
+## Listing lifecycle (API 0.48.0)
+
+FSD section 3 (`PUBLISHED > EXPIRED / PAUSED / SOLD / LET / CLOSED`). Whoever may edit a listing can now:
+
+| Route | From | To | Package place | Period |
+| --- | --- | --- | --- | --- |
+| `POST /v1/me/listings/{id}/pause` | PUBLISHED | PAUSED (hidden, `LISTING_UNPUBLISHED`) | kept | keeps running |
+| `.../resume` | PAUSED | PUBLISHED (`LISTING_PUBLISHED`), or EXPIRED when the period ended | kept | unchanged |
+| `.../mark-sold` | PUBLISHED, PAUSED, EXPIRED; a sale only | SOLD | freed | stops |
+| `.../mark-let` | the same; a listing to let only (`deal` rent) | LET | freed | stops |
+| `.../close` | the same; any listing | CLOSED | freed | stops |
+
+- Wrong type: `409 LISTING_TYPE_CONFLICT`; wrong state: `409 LISTING_STATE_CONFLICT`. Each action writes a
+  timeline entry (`PAUSED`, `RESUMED`, `MARKED_SOLD`, `MARKED_LET`, `CLOSED`; migration 0050) and an audit log line.
+- A paused listing counts as active in the package usage and quota (it may come back at any moment), so pausing cannot
+  dodge the limit; the expiry sweep reminds and expires it like a published one.
+- Relist (to review, a new cycle on approval) is allowed from ARCHIVED, EXPIRED, SOLD, LET and CLOSED. Sold and let
+  listings disappear from public pages like expired ones (no public "sold" banner).
+
 ## Renewal invoices (API 0.47.0)
 
 BR-015, FR-037 to FR-040, Handover section 10. Finance administrators (`SUPER_ADMIN`,

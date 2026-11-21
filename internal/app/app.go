@@ -1059,6 +1059,12 @@ func NewRouter(d Deps) (http.Handler, error) {
 			r.With(listingLimiter.Middleware).Post("/{id}/submit", manageH.Submit)
 			r.With(listingLimiter.Middleware).Post("/{id}/archive", manageH.Archive)
 			r.With(listingLimiter.Middleware).Post("/{id}/relist", manageH.Relist)
+			// The lifecycle (API 0.48.0): pause and resume, mark sold or let, close.
+			r.With(listingLimiter.Middleware).Post("/{id}/pause", manageH.Pause)
+			r.With(listingLimiter.Middleware).Post("/{id}/resume", manageH.Resume)
+			r.With(listingLimiter.Middleware).Post("/{id}/mark-sold", manageH.MarkSold)
+			r.With(listingLimiter.Middleware).Post("/{id}/mark-let", manageH.MarkLet)
+			r.With(listingLimiter.Middleware).Post("/{id}/close", manageH.Close)
 			r.With(uploadLimiter.Middleware).Post("/{id}/photos", manageH.AddPhoto)
 			r.With(listingLimiter.Middleware).Put("/{id}/photos/order", manageH.OrderPhotos)
 			r.With(listingLimiter.Middleware).Patch("/{id}/photos/{photoId}", manageH.PatchPhoto)

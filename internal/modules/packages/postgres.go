@@ -561,7 +561,7 @@ func liveListings(ctx context.Context, q querier, acct Account, market string, e
 	}
 	rows, err := q.Query(ctx, `
 		SELECT l.expires_at FROM listings l JOIN markets m ON m.id = l.market_id
-		WHERE `+owner+` AND m.code = $2 AND l.status = 'PUBLISHED' AND l.expires_at > $3 AND l.id <> $4
+		WHERE `+owner+` AND m.code = $2 AND l.status IN ('PUBLISHED', 'PAUSED') AND l.expires_at > $3 AND l.id <> $4
 		ORDER BY l.expires_at`, acct.ID, market, now, exclude)
 	if err != nil {
 		return nil, fmt.Errorf("count active listings: %w", err)

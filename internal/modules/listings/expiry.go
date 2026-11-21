@@ -184,6 +184,8 @@ type expiryCandidate struct {
 	id        uuid.UUID
 	expiresAt time.Time
 	relistNo  int
+	// status is PUBLISHED or PAUSED (a paused listing's period keeps running).
+	status string
 }
 
 // expiryNotice is one row of listing_expiry_notices to record.
@@ -241,9 +243,12 @@ func (st expiryStep) event(c expiryCandidate, now time.Time) ChangeEvent {
 }
 
 // expiryEntry is the timeline entry of an expiry.
-func expiryEntry(id uuid.UUID, now time.Time) *TimelineEntry {
+func expiryEntry(id uuid.UUID, from string, now time.Time) *TimelineEntry {
+	if from == "" {
+		from = StatusPublished
+	}
 	return &TimelineEntry{ID: uuid.New(), ListingID: id, ActorKind: ActorSystem, Action: ActionExpired,
-		FromStatus: StatusPublished, ToStatus: StatusExpired, CreatedAt: now}
+		FromStatus: from, ToStatus: StatusExpired, CreatedAt: now}
 }
 
 // ---------------------------------------------------------------------------
@@ -263,7 +268,7 @@ func (s *MemoryStore) ExpiryBatch(_ context.Context, now time.Time, limit int) (
 	defer s.mu.Unlock()
 	var due []int
 	for i, r := range s.records {
-		if r.Status != StatusPublished || r.ExpiresAt.IsZero() || r.ExpiresAt.After(now.Add(ExpiringSoonWindow)) {
+		if (r.Status != StatusPublished && r.Status != StatusPaused) || r.ExpiresAt.IsZero() || r.ExpiresAt.After(now.Add(ExpiringSoonWindow)) {
 			continue
 		}
 		kind := dueKind(r.ExpiresAt, now)
@@ -278,7 +283,7 @@ func (s *MemoryStore) ExpiryBatch(_ context.Context, now time.Time, limit int) (
 	out := ExpiryResult{Claimed: len(due)}
 	for _, i := range due {
 		r := s.records[i]
-		c := expiryCandidate{id: r.ID, expiresAt: r.ExpiresAt, relistNo: max(s.cycles[r.ID]-1, 0)}
+		c := expiryCandidate{id: r.ID, expiresAt: r.ExpiresAt, relistNo: max(s.cycles[r.ID]-1, 0), status: r.Status}
 		step, _ := planExpiry(r.ExpiresAt, now)
 		recorded := make([]bool, len(step.notices))
 		for n, notice := range step.notices {
@@ -293,7 +298,7 @@ func (s *MemoryStore) ExpiryBatch(_ context.Context, now time.Time, limit int) (
 		ch := Change{}
 		if step.expire {
 			s.records[i].Status, s.records[i].UpdatedAt = StatusExpired, now
-			ch.Entry = expiryEntry(r.ID, now)
+			ch.Entry = expiryEntry(r.ID, c.status, now)
 			out.Expired++
 		}
 		if recorded[0] {
@@ -317,9 +322,9 @@ const currentRelistNo = `COALESCE((SELECT max(pc.relist_no) FROM publication_cyc
 // claimExpiry selects the listings with a notice due at $1 (the same
 // thresholds as planExpiry, in exact hours), locking them.
 const claimExpiry = `
-	SELECT l.id, l.expires_at, ` + currentRelistNo + `
+	SELECT l.id, l.expires_at, ` + currentRelistNo + `, l.status::text
 	FROM listings l
-	WHERE l.status = 'PUBLISHED' AND l.expires_at IS NOT NULL AND l.expires_at <= $1::timestamptz + interval '336 hours'
+	WHERE l.status IN ('PUBLISHED', 'PAUSED') AND l.expires_at IS NOT NULL AND l.expires_at <= $1::timestamptz + interval '336 hours'
 	  AND (l.expires_at <= $1::timestamptz OR NOT EXISTS (
 	        SELECT 1 FROM listing_expiry_notices n
 	        WHERE n.listing_id = l.id AND n.relist_no = ` + currentRelistNo + `
@@ -343,7 +348,7 @@ func (s *PostgresStore) ExpiryBatch(ctx context.Context, now time.Time, limit in
 	}
 	claimed, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (expiryCandidate, error) {
 		var c expiryCandidate
-		err := row.Scan(&c.id, &c.expiresAt, &c.relistNo)
+		err := row.Scan(&c.id, &c.expiresAt, &c.relistNo, &c.status)
 		return c, err
 	})
 	if err != nil {
@@ -374,12 +379,12 @@ func (s *PostgresStore) ExpiryBatch(ctx context.Context, now time.Time, limit in
 		}
 		ch := Change{}
 		if step.expire {
-			tag, err := tx.Exec(ctx, `UPDATE listings SET status = 'EXPIRED', updated_at = $2 WHERE id = $1 AND status = 'PUBLISHED'`, c.id, now)
+			tag, err := tx.Exec(ctx, `UPDATE listings SET status = 'EXPIRED', updated_at = $2 WHERE id = $1 AND status IN ('PUBLISHED', 'PAUSED')`, c.id, now)
 			if err != nil {
 				return ExpiryResult{}, fmt.Errorf("expire listing: %w", err)
 			}
 			if tag.RowsAffected() == 1 {
-				ch.Entry = expiryEntry(c.id, now)
+				ch.Entry = expiryEntry(c.id, c.status, now)
 				out.Expired++
 			}
 		}
