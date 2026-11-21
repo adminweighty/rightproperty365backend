@@ -591,6 +591,13 @@ func (h *Handlers) appointmentNotes(ctx context.Context, ev outbox.Event, add fu
 			return toProfessional("appointment-cancelled-by-customer")
 		}
 		return toCustomer("appointment-cancelled")
+	case appointments.EventReminder:
+		// API 0.51.0: both parties, once per confirmed start time.
+		d.Location = mail.SafePreview(a.LocationNote, 200)
+		if err := toCustomer("appointment-reminder"); err != nil {
+			return err
+		}
+		return toProfessional("appointment-reminder-professional")
 	}
 	// Completed, no-show and assigned: recorded, nobody is emailed.
 	return nil
@@ -942,7 +949,7 @@ func (h *Handlers) build(ctx context.Context, ev outbox.Event) ([]plan, error) {
 		}
 
 	case appointments.EventRequested, appointments.EventConfirmed, appointments.EventRescheduleRequested,
-		appointments.EventCancelled, appointments.EventCompleted, appointments.EventNoShow, appointments.EventAssigned:
+		appointments.EventCancelled, appointments.EventCompleted, appointments.EventNoShow, appointments.EventAssigned, appointments.EventReminder:
 		if err := h.appointmentNotes(ctx, ev, add); err != nil {
 			return nil, err
 		}

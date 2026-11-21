@@ -80,7 +80,8 @@ func SampleData(name string) Data {
 		d.Name, d.Path, d.RoleName = "Sample Plumbers Owner", "/account", "Property Service Provider"
 		d.Reason = "We could not confirm the business registration with the documents provided."
 	case "appointment-requested", "appointment-cancelled-by-customer", "appointment-reschedule-proposed",
-		"appointment-confirmed", "appointment-new-time-proposed", "appointment-cancelled":
+		"appointment-confirmed", "appointment-new-time-proposed", "appointment-cancelled",
+		"appointment-reminder", "appointment-reminder-professional":
 		start := time.Date(2026, 11, 17, 8, 0, 0, 0, time.UTC)
 		d.Reference, d.AppointmentType = "AP-5T8W2KXN", "Property viewing"
 		d.ListingTitle, d.ListingRef = "Four-bedroom family home with garden", "RP-ZW-10001"
@@ -100,6 +101,12 @@ func SampleData(name string) Data {
 		case "appointment-new-time-proposed":
 			d.Path, d.StatusText, d.WithName = "/account/appointments", "Reschedule Requested", "Tendai Ncube"
 			d.ProposedTime = LocalDateTime(start.Add(26*time.Hour), "Africa/Harare")
+		case "appointment-reminder":
+			d.Path, d.StatusText, d.WithName = "/account/appointments", "Confirmed", "Tendai Ncube"
+			d.Location = "Meet at the main gate of the property."
+		case "appointment-reminder-professional":
+			d.Name, d.Path, d.StatusText = "Tendai Ncube", "/agent/appointments", "Confirmed"
+			d.Location = "Meet at the main gate of the property."
 		case "appointment-cancelled":
 			d.Path, d.StatusText, d.WithName = "/account/appointments", "Cancelled", "Tendai Ncube"
 			d.Reason = "The property is no longer available for viewing on that day."

@@ -120,6 +120,11 @@ var inAppTemplates = map[string]inAppTemplate{
 		title: func(d mail.Data) string { return "A new time was proposed for your " + kind(d) }},
 	"appointment-cancelled": {typ: inapp.TypeAppointmentCancelled, path: pathMyAppointments,
 		title: func(d mail.Data) string { return "Your " + kind(d) + " was cancelled" }},
+	// Reminders (API 0.51.0).
+	"appointment-reminder": {typ: inapp.TypeAppointmentReminder, path: pathMyAppointments,
+		title: func(d mail.Data) string { return "Reminder: your " + kind(d) + " is coming up" }},
+	"appointment-reminder-professional": {typ: inapp.TypeAppointmentReminder, path: pathAgentAppointments,
+		title: func(d mail.Data) string { return "Reminder: a " + kind(d) + " is coming up" }},
 
 	"application-new":       {typ: inapp.TypeApplicationReceived, title: fixed("New application"), path: pathAgentApplications},
 	"application-more-info": {typ: inapp.TypeApplicationUpdated, title: fixed("More information requested on your application"), path: pathMyApplications},

@@ -175,6 +175,15 @@ type Appointment struct {
 	DurationMinutes int
 	LocationNote    string
 
+	// The consultation service it was booked for (API 0.51.0): a snapshot
+	// of its name and channel; ServiceID is nil when none was chosen or the
+	// service was deleted.
+	ServiceID      *uuid.UUID
+	ServiceName    string
+	ServiceChannel string
+	// RemindedForStart is the start time the reminder was sent for.
+	RemindedForStart *time.Time
+
 	ProposedStartUTC *time.Time
 	ProposedBy       string
 

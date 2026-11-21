@@ -69,6 +69,8 @@ func Templates() []Template {
 		{"appointment-confirmed", "Appointment confirmed (to the customer)", true},
 		{"appointment-new-time-proposed", "New time proposed (to the customer)", true},
 		{"appointment-cancelled", "Appointment cancelled (to the customer)", true},
+		{"appointment-reminder", "Reminder a day before a confirmed appointment (to the customer)", true},
+		{"appointment-reminder-professional", "Reminder a day before a confirmed appointment (to the professional)", true},
 		{"listing-approved", "Listing or its changes approved (to the advertiser)", true},
 		{"listing-changes-requested", "Listing needs changes (to the advertiser)", true},
 		{"listing-rejected", "Listing or its changes not approved (to the advertiser)", true},

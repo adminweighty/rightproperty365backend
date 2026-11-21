@@ -597,6 +597,8 @@ func NewRouter(d Deps) (http.Handler, error) {
 		Store: d.Appointments, Listings: requestStore, Profiles: d.Enquiries,
 		Catalogue: listingCards{store: d.Listings}, Zones: marketZones{markets: d.Markets},
 		People: people{identity: d.Identity}, Vocabulary: vocab, Now: d.Now,
+		// Availability, services and slots (API 0.51.0): both stores have them.
+		Availability: availabilityOf(d.Appointments),
 	})
 	// A viewing or consultation request with a preferred slot creates its
 	// appointment in the same transaction.
@@ -1243,6 +1245,19 @@ func NewRouter(d Deps) (http.Handler, error) {
 		// Appointments. A signed-in customer asks for one and manages their
 		// own; they never see another customer's (404).
 		r.With(auth.RequireAuth, appointmentLimiter.Middleware).Post("/appointments", appointmentsH.Create)
+		// Availability (API 0.51.0): the slots a customer may choose (public,
+		// never naming the professional), and the professional's own hours
+		// and consultation services.
+		r.With(venueQuoteLimiter.Middleware).Get("/appointments/slots", appointmentsH.Slots)
+		r.With(auth.RequireAuth).Get("/me/appointment-settings", appointmentsH.MySettings)
+		r.With(auth.RequireAuth, calendarLimiter.Middleware).Put("/me/appointment-settings", appointmentsH.SaveSettings)
+		r.Route("/me/consultation-services", func(r chi.Router) {
+			r.Use(auth.RequireAuth)
+			r.Get("/", appointmentsH.MyServices)
+			r.With(calendarLimiter.Middleware).Post("/", appointmentsH.CreateService)
+			r.With(calendarLimiter.Middleware).Patch("/{id}", appointmentsH.UpdateService)
+			r.With(calendarLimiter.Middleware).Delete("/{id}", appointmentsH.ArchiveService)
+		})
 		r.Route("/me/appointments", func(r chi.Router) {
 			r.Use(auth.RequireAuth)
 			r.Get("/", appointmentsH.ListMine)
@@ -1663,4 +1678,13 @@ func NewRouter(d Deps) (http.Handler, error) {
 		r.With(auth.RequireAuth, invitationLimiter.Middleware).Post("/invitations/{token}/accept", teamsH.Accept)
 	})
 	return r, nil
+}
+
+// availabilityOf returns the appointment store's availability side, or nil
+// when it has none (a test double).
+func availabilityOf(store appointments.Store) appointments.AvailabilityStore {
+	if a, ok := store.(appointments.AvailabilityStore); ok {
+		return a
+	}
+	return nil
 }

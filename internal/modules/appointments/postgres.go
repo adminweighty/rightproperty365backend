@@ -50,7 +50,8 @@ const columns = `
 	a.start_at, a.duration_minutes, COALESCE(a.location_note, ''),
 	a.proposed_start_at, COALESCE(a.proposed_by, ''), COALESCE(a.cancelled_by, ''), COALESCE(a.cancel_reason, ''),
 	COALESCE(a.idempotency_key, ''), COALESCE(a.request_hash, ''), COALESCE(a.consent_privacy_version, ''), a.consent_accepted_at,
-	a.created_at, a.updated_at`
+	a.created_at, a.updated_at,
+	a.service_id, COALESCE(a.service_name, ''), COALESCE(a.service_channel, ''), a.reminded_for_start`
 
 func scan(row pgx.Row) (Appointment, error) {
 	var a Appointment
@@ -67,6 +68,7 @@ func scan(row pgx.Row) (Appointment, error) {
 		&a.ProposedStartUTC, &a.ProposedBy, &a.CancelledBy, &a.CancelReason,
 		&a.IdempotencyKey, &a.RequestHash, &a.PrivacyVersion, &a.ConsentAcceptedAt,
 		&a.CreatedAt, &a.UpdatedAt,
+		&a.ServiceID, &a.ServiceName, &a.ServiceChannel, &a.RemindedForStart,
 	)
 	if err != nil {
 		return Appointment{}, err
@@ -101,9 +103,10 @@ func insert(ctx context.Context, q querier, a Appointment) (inserted bool, err e
 			start_at, duration_minutes, end_at, location_note,
 			proposed_start_at, proposed_by, cancelled_by, cancel_reason,
 			idempotency_key, request_hash, consent_privacy_version, consent_accepted_at,
-			created_at, updated_at)
+			created_at, updated_at, service_id, service_name, service_channel)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-		        $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41)
+		        $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41,
+		        $42, $43, $44)
 		ON CONFLICT (idempotency_key) DO NOTHING`,
 		a.ID, a.Reference, a.MarketID, a.Timezone, a.Type, a.Status,
 		a.ListingID, null(a.ListingSlug), null(a.ListingTitle), null(a.ListingReference),
@@ -114,7 +117,7 @@ func insert(ctx context.Context, q querier, a Appointment) (inserted bool, err e
 		a.StartUTC, a.DurationMinutes, a.EndUTC(), null(a.LocationNote),
 		a.ProposedStartUTC, null(a.ProposedBy), null(a.CancelledBy), null(a.CancelReason),
 		null(a.IdempotencyKey), null(a.RequestHash), null(a.PrivacyVersion), a.ConsentAcceptedAt,
-		a.CreatedAt, a.UpdatedAt,
+		a.CreatedAt, a.UpdatedAt, a.ServiceID, null(a.ServiceName), null(a.ServiceChannel),
 	)
 	if err != nil {
 		return false, err

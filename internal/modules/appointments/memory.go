@@ -24,11 +24,16 @@ type MemoryStore struct {
 	timeline []TimelineEntry
 	outbox   []outbox.Event
 	sink     outbox.Sink
+
+	// Availability (API 0.51.0).
+	settings map[uuid.UUID]Settings
+	services map[uuid.UUID]ConsultationService
 }
 
 // NewMemoryStore returns an empty store.
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{byID: map[uuid.UUID]Appointment{}, byKey: map[string]uuid.UUID{}, refs: map[string]struct{}{}}
+	return &MemoryStore{byID: map[uuid.UUID]Appointment{}, byKey: map[string]uuid.UUID{}, refs: map[string]struct{}{},
+		settings: map[uuid.UUID]Settings{}, services: map[uuid.UUID]ConsultationService{}}
 }
 
 // SetOutboxSink registers a receiver for events as they are written

@@ -341,6 +341,12 @@ func run() error {
 	go app.RunRentScheduleSweeps(ctx, tenancies.NewService(tenancies.Deps{Store: tenancies.NewPostgresStore(pool), Logger: logger}), logger)
 	logger.Info("rent schedule job scheduled", slog.Duration("interval", app.RentScheduleSweepInterval))
 
+	// Appointment reminders (API 0.51.0): a confirmed appointment starting
+	// within a day gets one reminder per start time (email and in-app, to
+	// the customer and the professional, through the outbox).
+	go app.RunAppointmentReminderSweeps(ctx, appointmentStore, logger, nil)
+	logger.Info("appointment reminder job scheduled", slog.Duration("interval", appointments.ReminderSweepInterval))
+
 	err = dispatcher.Run(ctx)
 	logger.Info("worker stopped")
 	return err

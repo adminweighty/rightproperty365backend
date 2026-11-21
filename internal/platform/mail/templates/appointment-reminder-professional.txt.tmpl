@@ -1,0 +1,18 @@
+{{define "subject"}}Reminder: appointment {{.Reference}} is coming up{{end}}
+{{define "heading"}}You have an appointment coming up{{end}}
+{{define "button"}}View your appointments{{end}}
+{{define "why"}}You are receiving this because an appointment is confirmed with you on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+This is a reminder of a confirmed appointment at the time below.
+
+Reference: {{.Reference}}
+Appointment: {{.AppointmentType}}
+{{if .ListingTitle}}Property: {{.ListingTitle}}
+{{end}}{{if .ListingRef}}Listing reference: {{.ListingRef}}
+{{end}}{{if .WithName}}With: {{.WithName}}
+{{end}}Time: {{.AppointmentTime}}
+{{if .Location}}Location: {{.Location}}
+{{end}}Status: {{.StatusText}}
+
+If you can no longer attend, propose a new time or cancel it from your appointments page.{{end}}

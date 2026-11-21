@@ -515,8 +515,8 @@ func TestAccountNotifications(t *testing.T) {
 		}
 	})
 
-	if got := len(EventTypes()); got != 55 {
-		t.Fatalf("%d event types handled, want 55 (the rerouted request, the 3 invoice events, 8 identity and request events with the request assignment and the 2 administrator MFA notices, the 3 request conversation events (stage changed, replied, customer replied), the 4 onboarding events, the 7 appointment events, the 3 listing review events, the 2 listing expiry events, the 2 account events, the 5 subscription events, the 4 application events, the 8 venue booking events, the 2 maintenance events, the 2 inspection events and the review moderation event)", got)
+	if got := len(EventTypes()); got != 56 {
+		t.Fatalf("%d event types handled, want 56 (the rerouted request, the 3 invoice events, 8 identity and request events with the request assignment and the 2 administrator MFA notices, the 3 request conversation events (stage changed, replied, customer replied), the 4 onboarding events, the 8 appointment events (with the reminder), the 3 listing review events, the 2 listing expiry events, the 2 account events, the 5 subscription events, the 4 application events, the 8 venue booking events, the 2 maintenance events, the 2 inspection events and the review moderation event)", got)
 	}
 }
 

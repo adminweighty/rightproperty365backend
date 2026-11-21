@@ -105,6 +105,10 @@ type Input struct {
 	CheckIn  *string `json:"check_in"`
 	CheckOut *string `json:"check_out"`
 	Guests   *int    `json:"guests"`
+	// ServiceID is a consultation service of the professional, for a
+	// CONSULTATION_REQUEST with a preferred slot (API 0.51.0). The
+	// appointment planner checks it.
+	ServiceID *string `json:"service_id"`
 
 	// Customer is the authenticated caller, set by the handler from the
 	// session and never read from the body. Nil for a guest request.
@@ -223,6 +227,8 @@ type NewRequest struct {
 	CreatedAt         time.Time  // UTC, microsecond precision
 	// Stay is set for a STAY_REQUEST only.
 	Stay *StayDetails
+	// ServiceID is the consultation service asked for ("" for none).
+	ServiceID string
 	// Appointment is written together with the request, or not at all. Nil
 	// when the request gets no appointment.
 	Appointment *LinkedAppointment

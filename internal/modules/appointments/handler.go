@@ -83,6 +83,14 @@ type listingView struct {
 	Reference string `json:"reference"`
 }
 
+// appointmentServiceView is the service snapshot on an appointment; id is
+// null when the service was deleted.
+type appointmentServiceView struct {
+	ID      *uuid.UUID `json:"id"`
+	Name    string     `json:"name"`
+	Channel string     `json:"channel"`
+}
+
 type withView struct {
 	Kind string `json:"kind"`
 	Slug string `json:"slug"`
@@ -122,8 +130,10 @@ type baseView struct {
 	CancelledBy              *string         `json:"cancelled_by"`
 	CancelReason             *string         `json:"cancel_reason"`
 	Timeline                 *[]timelineView `json:"timeline,omitempty"`
-	CreatedAt                time.Time       `json:"created_at"`
-	UpdatedAt                time.Time       `json:"updated_at"`
+	// Service is the consultation service it was booked for (API 0.51.0).
+	Service   *appointmentServiceView `json:"service"`
+	CreatedAt time.Time               `json:"created_at"`
+	UpdatedAt time.Time               `json:"updated_at"`
 }
 
 // customerView is an appointment as its customer sees it. It never carries
@@ -181,6 +191,9 @@ func base(a Appointment) baseView {
 	}
 	if a.ListingSlug != "" {
 		v.Listing = &listingView{Slug: a.ListingSlug, Title: a.ListingTitle, Reference: a.ListingReference}
+	}
+	if a.ServiceName != "" {
+		v.Service = &appointmentServiceView{ID: a.ServiceID, Name: a.ServiceName, Channel: a.ServiceChannel}
 	}
 	if a.WithSlug != "" {
 		v.With = &withView{Kind: a.WithKind, Slug: a.WithSlug, Name: a.WithName}
@@ -288,6 +301,10 @@ func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 		httpx.WriteError(w, r, http.StatusNotFound, CodeRecipientNotFound, "This profile does not exist.", nil)
 	case errors.Is(err, ErrRecipientUnavailable):
 		httpx.WriteError(w, r, http.StatusGone, CodeRecipientUnavailable, "This profile is not accepting appointments.", nil)
+	case errors.Is(err, ErrServiceNotFound):
+		httpx.WriteError(w, r, http.StatusNotFound, CodeServiceNotFound, "This consultation service does not exist.", nil)
+	case errors.Is(err, ErrTooManyServices):
+		httpx.WriteError(w, r, http.StatusConflict, CodeTooManyServices, "You already offer the most active services allowed. Archive one first.", nil)
 	case errors.Is(err, ErrIdempotencyConflict):
 		httpx.WriteError(w, r, http.StatusConflict, CodeIdempotencyConflict, "This idempotency key was already used for a different appointment.", nil)
 	default:

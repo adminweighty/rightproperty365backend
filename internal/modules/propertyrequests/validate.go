@@ -47,6 +47,8 @@ type validated struct {
 	customerUserID *uuid.UUID
 	// stay is set for a STAY_REQUEST; its Nights are filled by the Service.
 	stay *StayDetails
+	// serviceID is the consultation service asked for (API 0.51.0).
+	serviceID string
 }
 
 // validate normalises in and returns per-field errors (empty when valid).
@@ -132,6 +134,23 @@ func validate(in Input, headerKey string, now time.Time, ok allowed) (validated,
 	}
 
 	// Preferred slot.
+	if in.ServiceID != nil && strings.TrimSpace(*in.ServiceID) != "" {
+		raw := strings.TrimSpace(*in.ServiceID)
+		switch {
+		case in.RequestType != TypeConsultationRequest:
+			fields["service_id"] = "is only allowed for CONSULTATION_REQUEST"
+		case in.PreferredSlotUTC == nil || strings.TrimSpace(*in.PreferredSlotUTC) == "":
+			fields["service_id"] = "needs preferred_slot_utc"
+		case len(raw) != 36:
+			fields["service_id"] = "must be a UUID"
+		default:
+			if _, err := uuid.Parse(raw); err != nil {
+				fields["service_id"] = "must be a UUID"
+			} else {
+				v.serviceID = strings.ToLower(raw)
+			}
+		}
+	}
 	if in.PreferredSlotUTC != nil && strings.TrimSpace(*in.PreferredSlotUTC) != "" {
 		slotAllowed := in.RequestType == TypeViewingRequest || in.RequestType == TypeConsultationRequest
 		t, err := time.Parse(time.RFC3339, strings.TrimSpace(*in.PreferredSlotUTC))
@@ -287,8 +306,10 @@ func (v validated) hash() string {
 		CheckIn  string `json:"check_in,omitempty"`
 		CheckOut string `json:"check_out,omitempty"`
 		Guests   int    `json:"guests,omitempty"`
+		// Omitted without a service, which keeps earlier hashes.
+		ServiceID string `json:"service_id,omitempty"`
 	}{v.listingID.String(), v.requestType, v.message, v.contactMethod, slot, v.name, v.email, v.phone, v.privacyVersion, customer,
-		stay.CheckIn, stay.CheckOut, stay.Guests})
+		stay.CheckIn, stay.CheckOut, stay.Guests, v.serviceID})
 	sum := sha256.Sum256(canonical)
 	return hex.EncodeToString(sum[:])
 }

@@ -502,6 +502,34 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 seeker saved searches and alerts. (Conversion funnels and response-time KPIs: API 0.38.0; replies
 to the customer: API 0.46.0, below.)
 
+## Appointment availability, consultation services and reminders (API 0.51.0)
+
+FR-020..022. Migration 0053 (`appointment_settings`, `consultation_services`, four columns on `appointments`).
+
+- **Whose calendar.** A professional (`/v1/me/...` needs the appointment inbox's rights: `403` otherwise) keeps their
+  own: `GET|PUT /v1/me/appointment-settings` with `enabled`, `timezone` (IANA), `working_hours` per ISO weekday,
+  `exceptions` (closed dates or their own hours, with a note), `slot_minutes` (15-240, steps of 15), `buffer_minutes`,
+  `lead_time_hours`, `horizon_days`, `max_per_day` (0 = no limit). Wall times are resolved with the venues' rules
+  (`venues.Settings.Day`), so DST days are right. Slots are offered for the user an appointment would be routed to
+  (the listing's agent or direct owner, an agent profile's agent). An organisation with nobody assigned has no single
+  calendar: no slots, the free time picker as before.
+- **Slots.** `GET /v1/appointments/slots` (public, rate limited, `no-store`; never names the user): `configured=false`
+  when there is no calendar or it is off. Busy time is the user's REQUESTED, CONFIRMED and RESCHEDULE_REQUESTED
+  appointments and pending proposed times, widened by the buffer; the daily maximum counts them per local date.
+- **Enforced** only when the calendar is on: a customer's `start_utc` (new appointment, counter-proposal) and a viewing
+  or consultation request's `preferred_slot_utc` must be an offered slot start (`400` on that field); the slot length
+  (or the service's) becomes the duration. The professional may still confirm or propose any time. Two customers can
+  still race to the same slot as REQUESTED; confirming keeps the `409 SLOT_TAKEN` check.
+- **Consultation services** (`/v1/me/consultation-services`): free only (`price` is refused: paid consultations need
+  a payment rule and an app-store review first), at most 20 active, DELETE archives. `service_id` on appointments and
+  CONSULTATION_REQUEST; the appointment keeps `service: {id, name, channel}` (a snapshot) and the service's location
+  as its location note.
+- **Reminders.** The worker (`app.RunAppointmentReminderSweeps`, every 5 minutes) marks CONFIRMED appointments that
+  start within 24 hours (`reminded_for_start = start_at`) and writes `APPOINTMENT_REMINDER` in the same transaction
+  (SKIP LOCKED): one reminder per start time, a new one after a reschedule. Emails `appointment-reminder` (customer,
+  also guests) and `appointment-reminder-professional`, in-app type `APPOINTMENT_REMINDER` ("Appointment reminders",
+  a preference like the others).
+
 ## Account security (API 0.50.0)
 
 Handover section 14. For customer accounts (administrator accounts get `403 PLATFORM_ACCOUNT`: their credentials are
@@ -2251,8 +2279,8 @@ REQUESTED | CONFIRMED | RESCHEDULE_REQUESTED ──cancel──> CANCELLED
   `consumer@example.test`.
 
 **Not built** (appointments): venue and showroom hourly bookings, short-stay bookings,
-appointment slot configuration (any future time can be requested), ICS invites,
-calendar sync, reminders, push notifications (`GET /v1/agent/organisations/{id}/members` now
+organisation-wide calendars (slots are per user, API 0.51.0), paid consultations,
+calendar sync, push notifications (`GET /v1/agent/organisations/{id}/members` now
 gives OWNER and MANAGER the user IDs `assign` needs), appointments created from business enquiries
 (`business_enquiry_id` exists and is always null), and automatic expiry of requests that were
 never answered.

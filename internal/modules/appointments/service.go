@@ -69,7 +69,10 @@ type Deps struct {
 	Zones      Zones
 	People     People
 	Vocabulary Vocabulary
-	Now        func() time.Time
+	// Availability (API 0.51.0): settings, services and busy time. Nil:
+	// no slots are offered anywhere.
+	Availability AvailabilityStore
+	Now          func() time.Time
 }
 
 // Service holds the appointment rules.
@@ -217,6 +220,8 @@ type Input struct {
 	Phone                  string        `json:"phone"`
 	IdempotencyKey         string        `json:"idempotency_key"`
 	Consent                *Consent      `json:"consent"`
+	// ServiceID is a consultation service of the professional (API 0.51.0).
+	ServiceID string `json:"service_id"`
 
 	// Customer is the authenticated caller, set by the handler from the
 	// session and never read from the body.
@@ -347,7 +352,7 @@ func (s *Service) Create(ctx context.Context, in Input, headerKey string) (a App
 	}
 	canonical, _ := json.Marshal([]string{
 		in.Type, target, start.Format(time.RFC3339), fmt.Sprint(duration), note, in.PreferredContactMethod, phone,
-		privacyVersion, in.Customer.UserID.String(),
+		privacyVersion, in.Customer.UserID.String(), strings.TrimSpace(in.ServiceID),
 	})
 	sum := sha256.Sum256(canonical)
 	hash := hex.EncodeToString(sum[:])
@@ -419,6 +424,11 @@ func (s *Service) Create(ctx context.Context, in Input, headerKey string) (a App
 		a.WithKind, a.WithSlug, a.WithName = profile.Kind, profile.Slug, profile.Name
 	}
 	if a.Timezone, err = s.timezone(ctx, a.MarketID); err != nil {
+		return Appointment{}, false, err
+	}
+	// Availability (API 0.51.0): the service, and an offered slot when the
+	// professional's calendar is on.
+	if err := s.bookable(ctx, &a, in.ServiceID, "start_utc"); err != nil {
 		return Appointment{}, false, err
 	}
 	if a.ID, err = uuid.NewV7(); err != nil {
@@ -524,6 +534,13 @@ func (s *Service) PlanAppointment(ctx context.Context, req propertyrequests.NewR
 		CreatedAt: req.CreatedAt, UpdatedAt: req.CreatedAt,
 	}
 	if a.Timezone, err = s.timezone(ctx, a.MarketID); err != nil {
+		return nil, err
+	}
+	if err := s.bookable(ctx, &a, req.ServiceID, "preferred_slot_utc"); err != nil {
+		var verr *ValidationError
+		if errors.As(err, &verr) {
+			return nil, &propertyrequests.ValidationError{Fields: verr.Fields}
+		}
 		return nil, err
 	}
 	if err := s.nameListing(ctx, &a); err != nil {
@@ -707,8 +724,22 @@ func (s *Service) CustomerCancel(ctx context.Context, userID, id uuid.UUID, reas
 	})
 }
 
-// CustomerReschedule proposes a new time on behalf of the customer.
+// CustomerReschedule proposes a new time on behalf of the customer. When the
+// professional's calendar is on, it must be an offered slot (API 0.51.0).
 func (s *Service) CustomerReschedule(ctx context.Context, userID, id uuid.UUID, in RescheduleInput) (Appointment, error) {
+	if start, msg := parseStart(in.StartUTC, s.now()); msg == "" {
+		cur, err := s.Mine(ctx, userID, id)
+		if err != nil {
+			return Appointment{}, err
+		}
+		msg, _, err := s.checkOffered(ctx, cur.AssignedUserID, start, cur.DurationMinutes, cur.ID)
+		if err != nil {
+			return Appointment{}, err
+		}
+		if msg != "" {
+			return Appointment{}, &ValidationError{Fields: map[string]string{"start_utc": msg}}
+		}
+	}
 	return s.reschedule(ctx, customerActor(userID), id, in)
 }
 

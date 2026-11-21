@@ -19,11 +19,14 @@ const (
 	EventCompleted           = "APPOINTMENT_COMPLETED"
 	EventNoShow              = "APPOINTMENT_NO_SHOW"
 	EventAssigned            = "APPOINTMENT_ASSIGNED"
+	// EventReminder is the reminder before a confirmed appointment (API
+	// 0.51.0). It is not a transition: no timeline entry.
+	EventReminder = "APPOINTMENT_REMINDER"
 )
 
 // EventTypes lists every outbox event this module writes.
 func EventTypes() []string {
-	return []string{EventRequested, EventConfirmed, EventRescheduleRequested, EventCancelled, EventCompleted, EventNoShow, EventAssigned}
+	return []string{EventRequested, EventConfirmed, EventRescheduleRequested, EventCancelled, EventCompleted, EventNoShow, EventAssigned, EventReminder}
 }
 
 // Store persists appointments.

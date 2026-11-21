@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.50.0
+  version: 0.51.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,17 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Appointment availability (new in 0.51.0, FR-020..022)
+    - `GET|PUT /v1/me/appointment-settings`: a professional's working hours, exceptions, slot length, buffer, lead time,
+      horizon and daily maximum (`enabled`). `GET|POST /v1/me/consultation-services`, `PATCH|DELETE .../{id}`: free
+      consultation services (name, duration, channel IN_PERSON|VIDEO|PHONE, location, notes); `price` is refused.
+    - `GET /v1/appointments/slots?type=&listing_id=|recipient_kind=&recipient_slug=&service_id=&from=&days=` (public):
+      `{configured, timezone, slot_minutes, services, days:[{date, slots:[{start_utc, end_utc}]}]}`.
+    - With the professional's availability on, `start_utc` (appointments, the customer's reschedule) and
+      `preferred_slot_utc` (property requests) must be an offered slot start. `service_id` on appointments and
+      CONSULTATION_REQUEST; appointments gain `service: {id, name, channel} | null`.
+    - Reminders a day ahead (`APPOINTMENT_REMINDER`, email and in-app, both parties, once per start time).
 
     Account security (new in 0.50.0, Handover section 14)
     - `POST /v1/me/password` `{current_password, new_password}`: 204; other sessions are signed out.
@@ -10672,6 +10683,117 @@ paths:
         "504":
           $ref: "#/components/responses/Timeout"
 
+  /v1/appointments/slots:
+    get:
+      tags: [appointments]
+      operationId: appointmentSlots
+      summary: "The slots a customer may choose (public; never names the professional) (new in 0.51.0)"
+      responses:
+        "200":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+  /v1/me/appointment-settings:
+    get:
+      tags: [appointments]
+      operationId: getMyAppointmentSettings
+      summary: "The professional's bookable hours (new in 0.51.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+    put:
+      tags: [appointments]
+      operationId: saveMyAppointmentSettings
+      summary: "Save the professional's bookable hours (new in 0.51.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{enabled, timezone, working_hours:[{weekday, opens, closes}], exceptions:[{date, closed, opens?, closes?, note?}], slot_minutes, buffer_minutes, lead_time_hours, horizon_days, max_per_day}"
+      responses:
+        "200":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+  /v1/me/consultation-services:
+    get:
+      tags: [appointments]
+      operationId: listMyConsultationServices
+      summary: "The professional's consultation services (new in 0.51.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+    post:
+      tags: [appointments]
+      operationId: createMyConsultationService
+      summary: "Offer a free consultation service (new in 0.51.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{name, duration_minutes, channel, location?, notes?}"
+      responses:
+        "201":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+  /v1/me/consultation-services/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    patch:
+      tags: [appointments]
+      operationId: updateMyConsultationService
+      summary: "Change a consultation service (new in 0.51.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{name?, duration_minutes?, channel?, location?, notes?, active?}"
+      responses:
+        "200":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+    delete:
+      tags: [appointments]
+      operationId: archiveMyConsultationService
+      summary: "Archive a consultation service (new in 0.51.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "204":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
   /v1/appointments:
     post:
       tags: [appointments]

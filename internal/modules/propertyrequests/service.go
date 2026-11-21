@@ -171,6 +171,7 @@ func (s *Service) Create(ctx context.Context, in Input, headerIdempotencyKey str
 		Recipient:              ResolveRecipient(listing),
 		CreatedAt:              now,
 		Stay:                   v.stay,
+		ServiceID:              v.serviceID,
 	}
 	if req.Recipient == nil {
 		// Still accepted: the customer gets RECEIVED and operations picks up
