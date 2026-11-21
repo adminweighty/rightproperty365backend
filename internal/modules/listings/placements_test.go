@@ -118,6 +118,9 @@ func placementContract(t *testing.T, store placementRig, seller, admin uuid.UUID
 	if err != nil || total != 1 || list[0].ID != sponsored.ID || list[0].ListingReference == "" || list[0].MarketCode != "ZW" {
 		t.Fatalf("list: %+v %d %v", list, total, err)
 	}
+	if list, total, err := svc.List(ctx, root, PlacementFilter{ListingID: &two, Page: 1, PageSize: 10}); err != nil || total != 1 || len(list) != 1 {
+		t.Fatalf("unfiltered list: %d %v", total, err)
+	}
 	if list, _, _ := svc.List(ctx, elsewhere, PlacementFilter{ListingID: &two, Page: 1, PageSize: 10}); len(list) != 0 {
 		t.Fatalf("another market's list: %+v", list)
 	}

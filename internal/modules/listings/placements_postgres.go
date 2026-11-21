@@ -35,7 +35,8 @@ const placementUntil = `LEAST(p.ends_at, COALESCE(p.ended_at, p.ends_at))`
 
 // ListPlacements implements PlacementStore.
 func (s *PostgresStore) ListPlacements(ctx context.Context, f PlacementFilter) ([]Placement, int, error) {
-	where, args := []string{"true"}, []any{f.Now}
+	// $1 (now) is always referenced, also without a status filter.
+	where, args := []string{"$1::timestamptz IS NOT NULL"}, []any{f.Now}
 	add := func(cond string, v any) {
 		args = append(args, v)
 		where = append(where, fmt.Sprintf(cond, len(args)))
