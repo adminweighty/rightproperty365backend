@@ -44,6 +44,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/reports"
 	"rightproperty365.com/backend/internal/modules/reviews"
 	"rightproperty365.com/backend/internal/modules/saved"
+	"rightproperty365.com/backend/internal/modules/savedsearches"
 	"rightproperty365.com/backend/internal/modules/subscriptions"
 	"rightproperty365.com/backend/internal/modules/tax"
 	"rightproperty365.com/backend/internal/modules/teams"
@@ -313,6 +314,9 @@ type Deps struct {
 
 	// Saved holds the listings customers saved (API 0.27.0).
 	Saved saved.Store
+	// SavedSearches holds saved searches and their alert state (API 0.52.0).
+	// Nil: the routes answer 404 (a test double without them).
+	SavedSearches savedsearches.Store
 
 	// Analytics holds the raw analytics events and the daily rollups (API
 	// 0.30.0). The raw retention is Config.AnalyticsRawRetentionDays.
@@ -453,6 +457,12 @@ func NewRouter(d Deps) (http.Handler, error) {
 		return nil, errors.New("app: no saved-listings store")
 	}
 	savedH := saved.NewHandler(saved.NewService(d.Saved, listingsSvc, d.Now), logger)
+	// Saved searches (API 0.52.0): validated with the search's own parser.
+	var savedSearchesH *savedsearches.Handler
+	if d.SavedSearches != nil {
+		savedSearchesH = savedsearches.NewHandler(savedsearches.NewService(savedsearches.Deps{
+			Store: d.SavedSearches, Checker: searchQueries{svc: listingsSvc}, Now: d.Now}), logger)
+	}
 	// Listing analytics: ingestion of the browser events and the owner-scoped
 	// and administrators' reports. The rollups and the server-side events are
 	// the worker's.
@@ -1063,6 +1073,17 @@ func NewRouter(d Deps) (http.Handler, error) {
 			r.With(listingLimiter.Middleware).Put("/{listingId}", savedH.Save)
 			r.With(listingLimiter.Middleware).Delete("/{listingId}", savedH.Remove)
 		})
+		// Saved searches and alerts (API 0.52.0, FR-042).
+		if savedSearchesH != nil {
+			r.Route("/me/saved-searches", func(r chi.Router) {
+				r.Use(auth.RequireAuth)
+				r.Get("/", savedSearchesH.List)
+				r.With(listingLimiter.Middleware).Post("/", savedSearchesH.Create)
+				r.With(listingLimiter.Middleware).Patch("/{id}", savedSearchesH.Update)
+				r.With(listingLimiter.Middleware).Delete("/{id}", savedSearchesH.Delete)
+			})
+			r.With(authLimiter.Middleware).Post("/saved-searches/unsubscribe", savedSearchesH.Unsubscribe)
+		}
 
 		// The lister's side: the listings the caller may manage, creating and
 		// editing them with their photos and sending them for review, and the

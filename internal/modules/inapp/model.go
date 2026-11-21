@@ -35,6 +35,7 @@ const (
 	TypeAppointmentCancelled    = "APPOINTMENT_CANCELLED"
 	TypeAppointmentRescheduled  = "APPOINTMENT_RESCHEDULED"
 	TypeAppointmentReminder     = "APPOINTMENT_REMINDER"
+	TypeSavedSearchAlert        = "SAVED_SEARCH_ALERT"
 	TypeApplicationReceived     = "APPLICATION_RECEIVED"
 	TypeApplicationUpdated      = "APPLICATION_UPDATED"
 	TypeVenueBookingRequested   = "VENUE_BOOKING_REQUESTED"
@@ -79,6 +80,7 @@ var catalogue = []TypeInfo{
 	{TypeAppointmentCancelled, "Appointment cancellations", false, ""},
 	{TypeAppointmentRescheduled, "Appointment time changes", false, ""},
 	{TypeAppointmentReminder, "Appointment reminders", false, ""},
+	{TypeSavedSearchAlert, "Saved search alerts", false, ""},
 	{TypeApplicationReceived, "New applications", false, ""},
 	{TypeApplicationUpdated, "Application updates", false, ""},
 	{TypeVenueBookingRequested, "Venue booking requests", false, ""},

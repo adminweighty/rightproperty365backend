@@ -38,6 +38,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/reference"
 	"rightproperty365.com/backend/internal/modules/reviews"
 	"rightproperty365.com/backend/internal/modules/saved"
+	"rightproperty365.com/backend/internal/modules/savedsearches"
 	"rightproperty365.com/backend/internal/modules/subscriptions"
 	"rightproperty365.com/backend/internal/modules/tax"
 	"rightproperty365.com/backend/internal/modules/tenancies"
@@ -340,6 +341,16 @@ func run() error {
 	// so a rolling schedule gains the next month's due when the month turns.
 	go app.RunRentScheduleSweeps(ctx, tenancies.NewService(tenancies.Deps{Store: tenancies.NewPostgresStore(pool), Logger: logger}), logger)
 	logger.Info("rent schedule job scheduled", slog.Duration("interval", app.RentScheduleSweepInterval))
+
+	// Saved search alerts (API 0.52.0): every two minutes the due searches
+	// are run on the database search for listings published since their last
+	// check; new ones become one SAVED_SEARCH_MATCHED each (email and in-app,
+	// with a one-click unsubscribe link). SKIP LOCKED: safe with several workers.
+	savedSearchStore := savedsearches.NewPostgresStore(pool)
+	handlers.SetSavedSearchSource(savedSearchStore.Get)
+	go app.RunSavedSearchSweeps(ctx, app.SavedSearchService(savedSearchStore, listingStore, listingStore,
+		reference.NewService(reference.NewPostgresStore(pool), nil), markets.NewPostgresStore(pool), nil), logger)
+	logger.Info("saved search alert job scheduled", slog.Duration("interval", savedsearches.SweepInterval))
 
 	// Appointment reminders (API 0.51.0): a confirmed appointment starting
 	// within a day gets one reminder per start time (email and in-app, to

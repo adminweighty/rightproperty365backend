@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.51.0
+  version: 0.52.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,13 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Saved searches and alerts (new in 0.52.0, FR-042)
+    - `GET|POST /v1/me/saved-searches`, `PATCH|DELETE /v1/me/saved-searches/{id}`: `{name, query, frequency}` where
+      `query` is a `GET /v1/listings` query string (paging, sort and bbox dropped; checked like the search, errors under
+      `query.<param>`), frequency INSTANT|DAILY|WEEKLY|OFF (default DAILY); at most 25 (`409 SAVED_SEARCH_LIMIT`).
+    - The worker sends `saved-search-alert` (email and in-app `SAVED_SEARCH_ALERT`) for listings published since the last
+      check; `POST /v1/saved-searches/unsubscribe` `{token}` (public, from the email) switches one search OFF.
 
     Appointment availability (new in 0.51.0, FR-020..022)
     - `GET|PUT /v1/me/appointment-settings`: a professional's working hours, exceptions, slot length, buffer, lead time,
@@ -10791,6 +10798,92 @@ paths:
         - bearerToken: []
       responses:
         "204":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+  /v1/me/saved-searches:
+    get:
+      tags: [saved]
+      operationId: listMySavedSearches
+      summary: "The customer's saved searches (new in 0.52.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+    post:
+      tags: [saved]
+      operationId: createMySavedSearch
+      summary: "Save a search (new in 0.52.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{name, query, frequency?}"
+      responses:
+        "201":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+  /v1/me/saved-searches/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    patch:
+      tags: [saved]
+      operationId: updateMySavedSearch
+      summary: "Rename a saved search or change its frequency (new in 0.52.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{name?, frequency?}"
+      responses:
+        "200":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+    delete:
+      tags: [saved]
+      operationId: deleteMySavedSearch
+      summary: "Delete a saved search (new in 0.52.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "204":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+  /v1/saved-searches/unsubscribe:
+    post:
+      tags: [saved]
+      operationId: unsubscribeSavedSearch
+      summary: "Switch a saved search's alerts off from the email link (public) (new in 0.52.0)"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{token}"
+      responses:
+        "200":
           description: "See the summary above."
         "400":
           $ref: "#/components/responses/ValidationFailed"

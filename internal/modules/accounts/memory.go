@@ -37,6 +37,8 @@ type MemoryDeps struct {
 	DeleteSignature func(userID uuid.UUID)
 	// DeleteSavedListings removes the user's saved listings (nil: nothing to do).
 	DeleteSavedListings func(userID uuid.UUID)
+	// DeleteSavedSearches removes the user's saved searches (API 0.52.0).
+	DeleteSavedSearches func(userID uuid.UUID)
 	// EraseApplications deletes the user's draft applications and anonymises
 	// the others (nil: nothing to do).
 	EraseApplications func(userID uuid.UUID, at time.Time)
@@ -314,6 +316,9 @@ func (s *MemoryStore) Delete(ctx context.Context, d Deletion) (Deleted, error) {
 	}
 	if s.deps.DeleteSavedListings != nil {
 		s.deps.DeleteSavedListings(d.UserID)
+	}
+	if s.deps.DeleteSavedSearches != nil {
+		s.deps.DeleteSavedSearches(d.UserID)
 	}
 	if s.deps.EraseApplications != nil {
 		s.deps.EraseApplications(d.UserID, d.At)

@@ -438,6 +438,10 @@ func (s *PostgresStore) Delete(ctx context.Context, d Deletion) (Deleted, error)
 		if _, err := tx.Exec(ctx, `DELETE FROM saved_listings WHERE user_id = $1`, d.UserID); err != nil {
 			return fmt.Errorf("delete saved listings: %w", err)
 		}
+		// Saved searches (migration 0054) likewise: no alert after deletion.
+		if _, err := tx.Exec(ctx, `DELETE FROM saved_searches WHERE user_id = $1`, d.UserID); err != nil {
+			return fmt.Errorf("delete saved searches: %w", err)
+		}
 		// Applications (migration 0031): drafts are deleted; the others are
 		// withdrawn when open, their answers and files erased (the objects are
 		// queued for the worker) and the applicant unlinked.

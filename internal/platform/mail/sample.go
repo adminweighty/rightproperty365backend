@@ -79,6 +79,14 @@ func SampleData(name string) Data {
 		d.StatusText = "Rejected"
 		d.Name, d.Path, d.RoleName = "Sample Plumbers Owner", "/account", "Property Service Provider"
 		d.Reason = "We could not confirm the business registration with the documents provided."
+	case "saved-search-alert":
+		d.Name, d.Path, d.WithName = "Tendai Ncube", "/listings", "Houses to rent in Borrowdale"
+		d.MatchTotal, d.MatchMore = 2, false
+		d.Matches = []MatchLine{
+			{Title: "Four-bedroom family home with garden", Place: "Borrowdale, Harare", Price: "USD 1500 per month", URL: "https://rightproperty365.com/listings/four-bedroom-family-home"},
+			{Title: "Three-bedroom cottage", Place: "Borrowdale, Harare", Price: "USD 900 per month", URL: "https://rightproperty365.com/listings/three-bedroom-cottage"},
+		}
+		d.UnsubscribeURL = "https://rightproperty365.com/saved-searches/unsubscribe?token=sample-token"
 	case "appointment-requested", "appointment-cancelled-by-customer", "appointment-reschedule-proposed",
 		"appointment-confirmed", "appointment-new-time-proposed", "appointment-cancelled",
 		"appointment-reminder", "appointment-reminder-professional":

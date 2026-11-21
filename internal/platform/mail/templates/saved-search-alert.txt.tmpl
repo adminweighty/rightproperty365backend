@@ -1,0 +1,13 @@
+{{define "subject"}}New listings for your saved search: {{.WithName}}{{end}}
+{{define "heading"}}New listings for “{{.WithName}}”{{end}}
+{{define "button"}}See all results{{end}}
+{{define "why"}}You are receiving this because you saved this search on RightProperty365 with alerts on.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+{{if .MatchMore}}More than {{.MatchTotal}}{{else}}{{.MatchTotal}}{{end}} new {{if eq .MatchTotal 1}}listing matches{{else}}listings match{{end}} your saved search “{{.WithName}}”.
+{{range .Matches}}
+- {{.Title}}, {{.Place}}: {{.Price}}
+  {{.URL}}
+{{end}}
+Stop these alerts: {{.UnsubscribeURL}}
+You can also change how often they come from your saved searches page.{{end}}

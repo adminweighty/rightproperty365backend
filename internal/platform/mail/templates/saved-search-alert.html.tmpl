@@ -1,0 +1,10 @@
+{{define "preheader"}}{{if .MatchMore}}More than {{.MatchTotal}}{{else}}{{.MatchTotal}}{{end}} new {{if eq .MatchTotal 1}}listing matches{{else}}listings match{{end}} your saved search.{{end}}
+{{define "heading"}}New listings for “{{.WithName}}”{{end}}
+{{define "button"}}See all results{{end}}
+{{define "why"}}You are receiving this because you saved this search on RightProperty365 with alerts on.{{end}}
+{{define "body"}}
+<p class="ink" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;color:#131722;">{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}</p>
+<p class="ink" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;color:#131722;">{{if .MatchMore}}More than {{.MatchTotal}}{{else}}{{.MatchTotal}}{{end}} new {{if eq .MatchTotal 1}}listing matches{{else}}listings match{{end}} your saved search.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 20px;">{{range .Matches}}<tr><td style="padding:10px 0;border-top:1px solid #e6e9f0;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:22px;color:#131722;"><a href="{{.URL}}" style="color:#1f2bb5;font-weight:600;text-decoration:none;">{{.Title}}</a><br><span class="muted" style="color:#4f586a;font-size:14px;">{{.Place}} &middot; {{.Price}}</span></td></tr>{{end}}</table>
+<p class="muted" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:14px;line-height:21px;color:#4f586a;"><a href="{{.UnsubscribeURL}}" style="color:#4f586a;">Stop these alerts</a>. You can also change how often they come from your saved searches page.</p>
+{{end}}

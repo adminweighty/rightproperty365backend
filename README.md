@@ -502,6 +502,28 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 seeker saved searches and alerts. (Conversion funnels and response-time KPIs: API 0.38.0; replies
 to the customer: API 0.46.0, below.)
 
+## Saved searches and alerts (API 0.52.0)
+
+FR-042 ("alerts"). Migration 0054 (`saved_searches`).
+
+- `GET|POST /v1/me/saved-searches`, `PATCH|DELETE /v1/me/saved-searches/{id}` (any customer session): `{name, query,
+  frequency}`. `query` is the query string of `GET /v1/listings` as the search page sends it; only the search's own
+  filters are kept (paging, `sort`, `bbox`, `has_location` are dropped, empty values too) and it is checked with
+  `listings.ParseQuery` and `Service.Resolve`, so a saved search is always one the site can run (`400` with
+  `query.<param>`). The query cannot be changed afterwards (save a new one). Frequency `INSTANT` (every 10 minutes),
+  `DAILY` (default), `WEEKLY` or `OFF`; at most 25 per account (`409 SAVED_SEARCH_LIMIT`, counted under a lock).
+- **Alerts.** `app.RunSavedSearchSweeps` in the worker (every 2 minutes) claims the due searches (`next_check_at`,
+  SKIP LOCKED with a 10-minute lease) and runs each on the **database** search, newest first, for listings published
+  after the watermark (`last_checked_at`, set at creation and when alerts are switched back on: never the backlog).
+  New ones (up to 10 named, with the count) become one `SAVED_SEARCH_MATCHED` written with the new watermark in one
+  transaction. The email `saved-search-alert` and the in-app `SAVED_SEARCH_ALERT` ("Saved search alerts" preference)
+  name listings only (title, place, price, link) and link to all results; the in-app title never repeats the search's
+  name. The search is read at send time: switched off meanwhile, nothing is sent.
+- **Unsubscribe.** Each email links `/saved-searches/unsubscribe?token=`; `POST /v1/saved-searches/unsubscribe`
+  `{token}` (public) switches that search OFF and returns its name (`400 INVALID_TOKEN`). The token can only do that.
+  A `List-Unsubscribe` header is not sent yet (the mail layer has no custom headers).
+- Deleting an account deletes its saved searches (the users row is anonymised, so the cascade does not fire).
+
 ## Appointment availability, consultation services and reminders (API 0.51.0)
 
 FR-020..022. Migration 0053 (`appointment_settings`, `consultation_services`, four columns on `appointments`).

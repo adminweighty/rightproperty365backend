@@ -45,6 +45,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/reference"
 	"rightproperty365.com/backend/internal/modules/reviews"
 	"rightproperty365.com/backend/internal/modules/saved"
+	"rightproperty365.com/backend/internal/modules/savedsearches"
 	"rightproperty365.com/backend/internal/modules/subscriptions"
 	"rightproperty365.com/backend/internal/modules/teams"
 	"rightproperty365.com/backend/internal/modules/tenancies"
@@ -282,6 +283,8 @@ type env struct {
 	audit    *adminaudit.MemoryLog
 	// saved holds the customers' saved listings (the sample tenant has two).
 	saved *saved.MemoryStore
+	// savedSearches holds saved searches (API 0.52.0).
+	savedSearches *savedsearches.MemoryStore
 	// analytics holds the raw analytics events and the rollups (empty).
 	analytics *analytics.MemoryStore
 	// crm holds the contact books (the sample ones); crmItems reads the
@@ -461,6 +464,7 @@ func newEnvWith(t *testing.T, mutate func(*config.Config), scanner malware.Scann
 		t.Fatal(err)
 	}
 	e.saved = saved.NewMemoryStore()
+	e.savedSearches = savedsearches.NewMemoryStore()
 	e.developments = developments.NewMemoryStore()
 	e.inbox = inapp.NewMemoryStore()
 	e.inboxSvc = inapp.NewService(e.inbox, "log", logger, func() time.Time { return e.now })
@@ -468,7 +472,7 @@ func newEnvWith(t *testing.T, mutate func(*config.Config), scanner malware.Scann
 	devseed.SeedMemorySaved(e.saved, e.now)
 	e.accounts = accounts.NewMemoryStore(accounts.MemoryDeps{Identity: e.identity, Listings: e.listings, Teams: e.team, Directory: e.directory,
 		Audit: e.audit, CancelSubscriptions: e.subs.CancelForDeletedUser, DeleteSignature: e.agree.DeleteSavedSignature,
-		DeleteSavedListings: e.saved.DeleteUser,
+		DeleteSavedListings: e.saved.DeleteUser, DeleteSavedSearches: e.savedSearches.DeleteUser,
 		EraseApplications:   func(u uuid.UUID, at time.Time) { e.apps.EraseApplicant(u, at) },
 		DeleteVenueBookings: e.venues.DeleteCustomer,
 		DeleteNotifications: e.inbox.DeleteUser,
@@ -510,7 +514,7 @@ func newEnvWith(t *testing.T, mutate func(*config.Config), scanner malware.Scann
 		Leases:       e.leases,
 		Agreements:   e.agree,
 		Accounts:     e.accounts, Subscriptions: e.subs, Reports: reportStore, AdminAudit: e.audit,
-		Saved: e.saved, Analytics: e.analytics,
+		Saved: e.saved, SavedSearches: e.savedSearches, Analytics: e.analytics,
 		CRM: e.crm, CRMItems: e.crmItems,
 		Applications: e.apps,
 		Venues:       e.venues,

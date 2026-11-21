@@ -322,3 +322,7 @@ func (h *Handler) Suggest(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.WriteCacheableJSON(w, r, suggestResponse{Suggestions: suggestions}, CacheMaxAge, CacheStale)
 }
+
+// ParseQuery reads a search from query parameters, as GET /v1/listings does
+// (saved searches validate and run their query string with it, API 0.52.0).
+func ParseQuery(v url.Values) (Query, map[string]string) { return parseQuery(v) }

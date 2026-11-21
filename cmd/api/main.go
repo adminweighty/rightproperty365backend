@@ -47,6 +47,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/reports"
 	"rightproperty365.com/backend/internal/modules/reviews"
 	"rightproperty365.com/backend/internal/modules/saved"
+	"rightproperty365.com/backend/internal/modules/savedsearches"
 	"rightproperty365.com/backend/internal/modules/subscriptions"
 	"rightproperty365.com/backend/internal/modules/tax"
 	"rightproperty365.com/backend/internal/modules/teams"
@@ -164,6 +165,8 @@ func run() error {
 		adminAuditLog     adminaudit.Log
 		// savedStore holds the listings customers saved.
 		savedStore saved.Store
+		// savedSearchStore holds saved searches (API 0.52.0).
+		savedSearchStore savedsearches.Store
 		// analyticsStore holds the raw analytics events and the rollups.
 		analyticsStore analytics.Store
 		// crmStore holds the contact books; crmItems reads what contacts link to.
@@ -285,6 +288,8 @@ func run() error {
 		memSaved := saved.NewMemoryStore()
 		devseed.SeedMemorySaved(memSaved, time.Now())
 		savedStore = memSaved
+		memSavedSearches := savedsearches.NewMemoryStore()
+		savedSearchStore = memSavedSearches
 		memAnalytics := analytics.NewMemoryStore()
 		analyticsStore = memAnalytics
 		// Contact books: the sample ones, audited into the team audit trail.
@@ -397,7 +402,7 @@ func run() error {
 		developmentStore = memDevelopments
 		accountStore = accounts.NewMemoryStore(accounts.MemoryDeps{Identity: memIdentity, Listings: memListings, Teams: memTeams,
 			Directory: memDirectory, Audit: memAudit, CancelSubscriptions: memSubscriptions.CancelForDeletedUser,
-			DeleteSignature: memAgreements.DeleteSavedSignature, DeleteSavedListings: memSaved.DeleteUser,
+			DeleteSignature: memAgreements.DeleteSavedSignature, DeleteSavedListings: memSaved.DeleteUser, DeleteSavedSearches: memSavedSearches.DeleteUser,
 			EraseApplications:   func(userID uuid.UUID, at time.Time) { memApplications.EraseApplicant(userID, at) },
 			DeleteVenueBookings: memVenues.DeleteCustomer, DeleteNotifications: memInbox.DeleteUser,
 			ForgetTenancies: memTenancies.ForgetUser, ForgetMaintenance: memMaintenance.ForgetUser,
@@ -580,6 +585,7 @@ func run() error {
 		subscriptionStore = subscriptions.NewPostgresStore(pool)
 		reportStore = reports.NewPostgresStore(pool)
 		savedStore = saved.NewPostgresStore(pool)
+		savedSearchStore = savedsearches.NewPostgresStore(pool)
 		analyticsStore = analytics.NewPostgresStore(pool)
 		crmStore, crmItems = crm.NewPostgresStore(pool), crm.NewPostgresItems(pool)
 		applicationStore = applications.NewPostgresStore(pool)
@@ -673,6 +679,7 @@ func run() error {
 		Reports:          reportStore,
 		AdminAudit:       adminAuditLog,
 		Saved:            savedStore,
+		SavedSearches:    savedSearchStore,
 		Analytics:        analyticsStore,
 		CRM:              crmStore,
 		CRMItems:         crmItems,

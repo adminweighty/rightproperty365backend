@@ -43,6 +43,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/onboarding"
 	"rightproperty365.com/backend/internal/modules/propertyrequests"
 	"rightproperty365.com/backend/internal/modules/reviews"
+	"rightproperty365.com/backend/internal/modules/savedsearches"
 	"rightproperty365.com/backend/internal/modules/subscriptions"
 	"rightproperty365.com/backend/internal/modules/teams"
 	"rightproperty365.com/backend/internal/modules/venues"
@@ -313,6 +314,8 @@ type Handlers struct {
 	roleLabels func(ctx context.Context) (map[string]string, error)
 	// onboarding loads the data behind an onboarding event.
 	onboarding func(ctx context.Context, applicationID uuid.UUID) (onboarding.NotificationInfo, error)
+	// savedSearch loads the saved search behind an alert (API 0.52.0).
+	savedSearch func(ctx context.Context, id uuid.UUID) (savedsearches.SavedSearch, error)
 	// appointment loads the appointment behind an appointment event.
 	appointment func(ctx context.Context, id uuid.UUID) (appointments.Appointment, error)
 	// listingRecord loads the listing behind a listing review event.
@@ -656,7 +659,7 @@ func EventTypes() []string {
 		identity.EventAdminMFARecoveryCodeUsed,
 		identity.EventAdminMFAReset,
 	}, onboarding.EventTypes()...), append(append(append(append(appointments.EventTypes(), listings.ReviewEventTypes()...), listings.ExpiryEventTypes()...),
-		accounts.EventTypes()...), append(append(subscriptions.EventTypes(), applications.OutboxEventTypes()...), append(append(append(venues.EventTypes(), maintenance.OutboxEventTypes()...), inspections.OutboxEventTypes()...), reviews.OutboxEventTypes()...)...)...)...), invoices.EventTypes()...)
+		accounts.EventTypes()...), append(append(subscriptions.EventTypes(), applications.OutboxEventTypes()...), append(append(append(venues.EventTypes(), maintenance.OutboxEventTypes()...), inspections.OutboxEventTypes()...), reviews.OutboxEventTypes()...)...)...)...), append(invoices.EventTypes(), savedsearches.EventTypes()...)...)
 }
 
 // PathOnboarding is the web page where an applicant fills in an application.
@@ -864,6 +867,11 @@ func (h *Handlers) build(ctx context.Context, ev outbox.Event) ([]plan, error) {
 
 	case invoices.EventSent, invoices.EventOverdue, invoices.EventPaymentRecorded:
 		if err := h.invoiceNotes(ctx, ev, add); err != nil {
+			return nil, err
+		}
+
+	case savedsearches.EventMatched:
+		if err := h.savedSearchNotes(ctx, ev, add); err != nil {
 			return nil, err
 		}
 

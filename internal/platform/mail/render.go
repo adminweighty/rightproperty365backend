@@ -71,6 +71,7 @@ func Templates() []Template {
 		{"appointment-cancelled", "Appointment cancelled (to the customer)", true},
 		{"appointment-reminder", "Reminder a day before a confirmed appointment (to the customer)", true},
 		{"appointment-reminder-professional", "Reminder a day before a confirmed appointment (to the professional)", true},
+		{"saved-search-alert", "New listings for a saved search (to the customer, with an unsubscribe link)", true},
 		{"listing-approved", "Listing or its changes approved (to the advertiser)", true},
 		{"listing-changes-requested", "Listing needs changes (to the advertiser)", true},
 		{"listing-rejected", "Listing or its changes not approved (to the advertiser)", true},
@@ -120,6 +121,15 @@ func Templates() []Template {
 	}
 }
 
+// MatchLine is one listing in a saved search alert (API 0.52.0): public
+// catalogue data and its absolute link.
+type MatchLine struct {
+	Title string
+	Place string
+	Price string
+	URL   string
+}
+
 // Role is one account role shown in the welcome email.
 type Role struct {
 	// Code is the role code; Name is its label.
@@ -153,16 +163,24 @@ type Data struct {
 	StatusText   string
 	// RoleName is the label of the account role an onboarding email is about;
 	// Reason is the verification team's reason (changes requested, rejected).
-	RoleName      string
-	Reason        string
-	Roles         []Role
-	When          time.Time
-	ExpiresOn     time.Time
-	DueOn         time.Time
-	DeletionOn    time.Time
-	Days          int
-	Amount        string // with the currency code, e.g. "USD 25.00"
-	InvoiceNumber string
+	RoleName string
+	Reason   string
+	Roles    []Role
+	// Matches and the alert's numbers (API 0.52.0, saved-search-alert):
+	// MatchTotal new listings, MatchMore when there may be more.
+	Matches    []MatchLine
+	MatchTotal int
+	MatchMore  bool
+	// UnsubscribeURL is an absolute one-click link that switches this
+	// alert off (built with Renderer.Link).
+	UnsubscribeURL string
+	When           time.Time
+	ExpiresOn      time.Time
+	DueOn          time.Time
+	DeletionOn     time.Time
+	Days           int
+	Amount         string // with the currency code, e.g. "USD 25.00"
+	InvoiceNumber  string
 
 	// Appointment emails. AppointmentTime and ProposedTime are already
 	// formatted in the market's time zone with the zone named (see
