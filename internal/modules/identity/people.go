@@ -83,6 +83,11 @@ type PeopleStore interface {
 	// OrganisationMembers returns the members of an organisation whose
 	// membership was not removed, ordered by role (OWNER first) then name.
 	OrganisationMembers(ctx context.Context, organisationID uuid.UUID) ([]Member, error)
+	// RoutableOrganisations returns the ACTIVE organisations of a market
+	// with their ACTIVE members whose role holds leads (OWNER, MANAGER,
+	// AGENT), by name; organisations without such a member are left out
+	// (API 0.49.0, for reassigning a routing exception).
+	RoutableOrganisations(ctx context.Context, marketCode string) ([]RoutableOrganisation, error)
 	// AccountStats counts accounts and returns the newest `recent` of them.
 	AccountStats(ctx context.Context, now time.Time, recent int) (AccountStats, error)
 }
@@ -292,4 +297,76 @@ func (s *PostgresStore) AccountStats(ctx context.Context, now time.Time, recent 
 		stats.Recent = recentAccounts
 	}
 	return stats, nil
+}
+
+// RoutableOrganisation is an organisation that can receive requests, with
+// the members who may hold them.
+type RoutableOrganisation struct {
+	ID      uuid.UUID
+	Name    string
+	Kind    string
+	Members []Member
+}
+
+var leadRoles = map[string]bool{"OWNER": true, "MANAGER": true, "AGENT": true}
+
+// RoutableOrganisations implements Store.
+func (s *MemoryStore) RoutableOrganisations(_ context.Context, marketCode string) ([]RoutableOrganisation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	byOrg := map[uuid.UUID]*RoutableOrganisation{}
+	for _, m := range s.memberships {
+		o, ok := s.organisations[m.OrganisationID]
+		u, uok := s.users[m.UserID]
+		if !ok || !uok || o.MarketCode != marketCode || !leadRoles[m.Role] || u.Status != StatusActive ||
+			(m.Status != "" && m.Status != MemberActive) {
+			continue
+		}
+		r := byOrg[o.ID]
+		if r == nil {
+			r = &RoutableOrganisation{ID: o.ID, Name: o.Name, Kind: o.Kind}
+			byOrg[o.ID] = r
+		}
+		r.Members = append(r.Members, Member{UserID: u.ID, Name: u.Name, Role: m.Role, MarketCode: m.MarketCode, Status: MemberActive})
+	}
+	out := make([]RoutableOrganisation, 0, len(byOrg))
+	for _, r := range byOrg {
+		sort.SliceStable(r.Members, func(i, j int) bool { return r.Members[i].Name < r.Members[j].Name })
+		out = append(out, *r)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+// RoutableOrganisations implements Store.
+func (s *PostgresStore) RoutableOrganisations(ctx context.Context, marketCode string) ([]RoutableOrganisation, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT o.id, o.name, o.kind::text, u.id, u.full_name, m.role
+		FROM organisations o
+		JOIN markets mk ON mk.id = o.market_id
+		JOIN memberships m ON m.organisation_id = o.id AND m.status = 'ACTIVE' AND m.role IN ('OWNER', 'MANAGER', 'AGENT')
+		JOIN users u ON u.id = m.user_id AND u.status = 'ACTIVE'
+		WHERE mk.code = $1 AND o.status = 'ACTIVE'
+		ORDER BY o.name, o.id, u.full_name`, marketCode)
+	if err != nil {
+		return nil, fmt.Errorf("load routable organisations: %w", err)
+	}
+	defer rows.Close()
+	var out []RoutableOrganisation
+	for rows.Next() {
+		var orgID, userID uuid.UUID
+		var name, kind, userName, role string
+		if err := rows.Scan(&orgID, &name, &kind, &userID, &userName, &role); err != nil {
+			return nil, err
+		}
+		if len(out) == 0 || out[len(out)-1].ID != orgID {
+			out = append(out, RoutableOrganisation{ID: orgID, Name: name, Kind: kind})
+		}
+		last := &out[len(out)-1]
+		last.Members = append(last.Members, Member{UserID: userID, Name: userName, Role: role, MarketCode: marketCode, Status: MemberActive})
+	}
+	if out == nil {
+		out = []RoutableOrganisation{}
+	}
+	return out, rows.Err()
 }

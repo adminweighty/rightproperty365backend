@@ -57,6 +57,8 @@ type Service struct {
 	newRef func() (string, error)
 	// assignees says who can hold the requests of an organisation (assign.go).
 	assignees Assignees
+	// routeTargets checks where a routing exception may be reassigned (API 0.49.0).
+	routeTargets RouteTargets
 }
 
 // Option customises a Service (used by tests).

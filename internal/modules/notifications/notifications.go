@@ -622,6 +622,7 @@ func EventTypes() []string {
 		propertyrequests.EventStageChanged,
 		propertyrequests.EventReplied,
 		propertyrequests.EventCustomerReplied,
+		propertyrequests.EventRerouted,
 		businessenquiries.EventBusinessEnquiryCreated,
 		identity.EventUserEmailVerified,
 		identity.EventPasswordChanged,
@@ -828,6 +829,11 @@ func (h *Handlers) build(ctx context.Context, ev outbox.Event) ([]plan, error) {
 			}); err != nil {
 				return nil, err
 			}
+		}
+
+	case propertyrequests.EventRerouted:
+		if err := h.reroutedNotes(ctx, ev, add); err != nil {
+			return nil, err
 		}
 
 	case invoices.EventSent, invoices.EventOverdue, invoices.EventPaymentRecorded:

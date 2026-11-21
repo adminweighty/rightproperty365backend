@@ -481,3 +481,83 @@ func (a assignees) Assignable(ctx context.Context, organisationID, userID uuid.U
 func (a assignees) Name(ctx context.Context, userID uuid.UUID) (string, error) {
 	return people{identity: a.identity}.Name(ctx, userID)
 }
+
+// routeTargets adapts the accounts and markets to
+// propertyrequests.RouteTargets (API 0.49.0): a routing exception may go to
+// an organisation of the request's market that has at least one ACTIVE
+// member whose role holds leads (OWNER, MANAGER, AGENT), and to one of
+// those members. Read on every call.
+type routeTargets struct {
+	identity identity.Store
+	markets  markets.Store
+}
+
+// routable lists the organisations of the market that manage listings and
+// have ACTIVE members holding leads (auth.KindManagesListings: a service
+// provider never receives property requests).
+func (t routeTargets) routable(ctx context.Context, marketID uuid.UUID) ([]identity.RoutableOrganisation, error) {
+	all, err := t.markets.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	code := ""
+	for _, m := range all {
+		if m.ID == marketID {
+			code = m.Code
+		}
+	}
+	if code == "" {
+		return nil, nil
+	}
+	orgs, err := t.identity.RoutableOrganisations(ctx, code)
+	if err != nil {
+		return nil, err
+	}
+	out := orgs[:0]
+	for _, o := range orgs {
+		if auth.KindManagesListings(o.Kind) {
+			out = append(out, o)
+		}
+	}
+	return out, nil
+}
+
+// Eligible implements propertyrequests.RouteTargets.
+func (t routeTargets) Eligible(ctx context.Context, organisationID, marketID uuid.UUID, userID *uuid.UUID) (string, bool, string, error) {
+	orgs, err := t.routable(ctx, marketID)
+	if err != nil {
+		return "", false, "", err
+	}
+	for _, o := range orgs {
+		if o.ID != organisationID {
+			continue
+		}
+		if userID == nil {
+			return "", true, "", nil
+		}
+		for _, m := range o.Members {
+			if m.UserID == *userID {
+				return m.Name, true, "", nil
+			}
+		}
+		return "", false, "must be an active owner, manager or estate agent member of the organisation", nil
+	}
+	return "", false, "must be an organisation of the request's country that manages listings and has an active owner, manager or estate agent", nil
+}
+
+// Candidates implements propertyrequests.RouteTargets.
+func (t routeTargets) Candidates(ctx context.Context, marketID uuid.UUID) ([]propertyrequests.RouteCandidate, error) {
+	orgs, err := t.routable(ctx, marketID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]propertyrequests.RouteCandidate, 0, len(orgs))
+	for _, o := range orgs {
+		c := propertyrequests.RouteCandidate{OrganisationID: o.ID, Name: o.Name, Kind: o.Kind, Members: []propertyrequests.CandidateMember{}}
+		for _, m := range o.Members {
+			c.Members = append(c.Members, propertyrequests.CandidateMember{UserID: m.UserID, Name: m.Name, Role: m.Role})
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}

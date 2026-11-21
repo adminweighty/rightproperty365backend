@@ -355,7 +355,9 @@ func (s *PostgresStore) ListExceptions(ctx context.Context, f ExceptionFilter) (
 	if f.MarketIDs != nil {
 		markets = uuidStrings(f.MarketIDs)
 	}
-	where := `pr.status = 'ROUTING_EXCEPTION'
+	// A rerouted exception (API 0.49.0) is RECEIVED now but stays in the
+	// list, resolved: it is the only kind of request with a resolution.
+	where := `(pr.status = 'ROUTING_EXCEPTION' OR pr.exception_resolved_at IS NOT NULL)
 		AND ($1::text[] IS NULL OR pr.market_id IN (SELECT unnest($1::text[])::uuid))
 		AND ($2::boolean IS NULL OR (pr.exception_resolved_at IS NOT NULL) = $2)`
 	var total int

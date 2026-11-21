@@ -22,6 +22,9 @@ type memoryWork struct {
 	// Recipient replaces the routed recipient once the request was assigned
 	// or unassigned (nil: as routed).
 	Recipient *Recipient
+	// Status replaces the stored status once a routing exception was
+	// reassigned (API 0.49.0; "" keeps it).
+	Status string
 	// The conversation summary and read markers (migration 0048).
 	MessageCount           int
 	LastMessageAt          *time.Time
@@ -47,6 +50,9 @@ func (s *MemoryStore) stored(req NewRequest) StoredRequest {
 		if w.Recipient != nil {
 			recipient := *w.Recipient
 			r.Recipient = &recipient
+		}
+		if w.Status != "" {
+			r.Status = w.Status
 		}
 	}
 	return r
@@ -240,7 +246,7 @@ func (s *MemoryStore) ListExceptions(_ context.Context, f ExceptionFilter) ([]St
 	var kept []StoredRequest
 	for _, req := range s.requests {
 		r := s.stored(req)
-		if r.Status != StatusRoutingException || (f.MarketIDs != nil && !slices.Contains(f.MarketIDs, r.MarketID)) ||
+		if (r.Status != StatusRoutingException && r.ResolvedAt == nil) || (f.MarketIDs != nil && !slices.Contains(f.MarketIDs, r.MarketID)) ||
 			(f.Resolved != nil && *f.Resolved != (r.ResolvedAt != nil)) {
 			continue
 		}

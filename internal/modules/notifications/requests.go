@@ -121,3 +121,33 @@ func (h *Handlers) addRequestUpdate(info PropertyRequestInfo, ev outbox.Event, d
 	}
 	return add("request-update", "customer", info.Customer, d)
 }
+
+// reroutedNotes is the handler of PROPERTY_REQUEST_REROUTED (API 0.49.0): a
+// routing exception given to an organisation by an administrator. Its
+// recipients (the member it was given to, otherwise the organisation's
+// owners and managers) get the usual new-request email; the customer is not
+// emailed again.
+func (h *Handlers) reroutedNotes(ctx context.Context, ev outbox.Event, add func(template, recipient string, to Person, d mail.Data) error) error {
+	info, err := h.source.PropertyRequest(ctx, ev.AggregateID)
+	if err != nil {
+		return err
+	}
+	var listingTitle, listingRef string
+	if h.listing != nil {
+		listingTitle, listingRef, _ = h.listing(ctx, info.ListingID)
+	}
+	stay := ""
+	if info.Stay != nil {
+		stay = mail.StayText(info.Stay.CheckIn, info.Stay.CheckOut, info.Stay.Nights, info.Stay.Guests)
+	}
+	for _, r := range info.Recipients {
+		if err := add("property-request-new", recipientKey(r), r, mail.Data{
+			Name: r.Name, Path: PathInbox, Reference: info.Reference, RequestType: mail.RequestTypeName(info.RequestType),
+			Place: h.placeOf(ctx, &info.ListingID), ListingTitle: listingTitle, ListingRef: listingRef, Stay: stay,
+			Preview: mail.SafePreview(info.Message, previewLength), When: occurredAt(ev),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}

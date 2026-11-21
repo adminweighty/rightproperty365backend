@@ -422,6 +422,10 @@ type WorkStore interface {
 	// MarkRead records that one side (AuthorProfessional or AuthorCustomer)
 	// opened the request at at.
 	MarkRead(ctx context.Context, id uuid.UUID, side string, at time.Time) error
+	// RerouteException gives a routing exception to an organisation (or one
+	// of its members) after allow accepted the current row: the recipient,
+	// RECEIVED, the resolution, the timeline, the events and the audit.
+	RerouteException(ctx context.Context, id uuid.UUID, rr Reroute, allow func(current StoredRequest) error) (StoredRequest, error)
 }
 
 // stageEventPayload is the body of PROPERTY_REQUEST_STAGE_CHANGED:

@@ -502,6 +502,22 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 seeker saved searches and alerts. (Conversion funnels and response-time KPIs: API 0.38.0; replies
 to the customer: API 0.46.0, below.)
 
+## Reassigning routing exceptions (API 0.49.0)
+
+FR-061, FSD 2B. A request nobody could receive (`ROUTING_EXCEPTION`) can now be given to someone, not only marked
+resolved. Same administrators as `resolve` (SUPER_ADMIN, PLATFORM_ADMIN, SUPPORT; MARKET_ADMIN for its own markets):
+
+- `GET /v1/admin/routing-exceptions/{id}/candidates`: the ACTIVE organisations of the request's country that manage
+  listings (agencies, law firms, property managers, hosts, developers; never service providers) and have
+  at least one ACTIVE owner, manager or estate agent, with those members.
+- `POST /v1/admin/routing-exceptions/{id}/assign` `{organisation_id, user_id?, note?}`: refused (400) for an organisation
+  of another country or without such a member, or a user who is not one of them. Otherwise, in one transaction: status
+  RECEIVED with the organisation (inbox) or the member as recipient, stage ASSIGNED when a member was named, the
+  exception resolved (who, when, note), timeline `REROUTED`, the organisation's audit (`REQUEST_ASSIGNED`), and
+  `PROPERTY_REQUEST_REROUTED`, which sends the new recipients the usual `property-request-new` email and in-app notice.
+  The customer is not emailed again. A second call: `409 ALREADY_RESOLVED`.
+- The request stays in the resolved list of exceptions. Migration 0051 lets a RECEIVED request keep its resolution.
+
 ## Listing lifecycle (API 0.48.0)
 
 FSD section 3 (`PUBLISHED > EXPIRED / PAUSED / SOLD / LET / CLOSED`). Whoever may edit a listing can now:

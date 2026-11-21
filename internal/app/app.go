@@ -549,6 +549,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 	requestOpts := []propertyrequests.Option{
 		propertyrequests.WithVocabulary(vocab), propertyrequests.WithStayChecker(stayChecker{svc: availabilitySvc}),
 		propertyrequests.WithAssignees(assignees{identity: d.Identity}),
+		propertyrequests.WithRouteTargets(routeTargets{identity: d.Identity, markets: d.Markets}),
 	}
 	enquiryOpts := []businessenquiries.Option{businessenquiries.WithVocabulary(vocab)}
 	if d.Now != nil {
@@ -1470,6 +1471,9 @@ func NewRouter(d Deps) (http.Handler, error) {
 				r.Use(auth.RequirePlatformRole(propertyrequests.ExceptionAdminRoles()...))
 				r.Get("/", requestsH.Exceptions)
 				r.With(requestWorkLimiter.Middleware).Post("/{id}/resolve", requestsH.ResolveException)
+				// Give it to an organisation of its market, or one of its members (API 0.49.0).
+				r.Get("/{id}/candidates", requestsH.Candidates)
+				r.With(requestWorkLimiter.Middleware).Post("/{id}/assign", requestsH.RerouteException)
 			})
 
 			// Moderating reviews of service providers (API 0.36.4):

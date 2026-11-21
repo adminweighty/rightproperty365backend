@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.48.0
+  version: 0.49.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,13 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Reassigning routing exceptions (new in 0.49.0, FR-061)
+    - `GET /v1/admin/routing-exceptions/{id}/candidates`: the organisations of the request's country that may receive it
+      (an active owner, manager or estate agent), with those members.
+    - `POST /v1/admin/routing-exceptions/{id}/assign` `{organisation_id, user_id?, note?}`: the request becomes RECEIVED in
+      that organisation's inbox (or the member's), the exception is resolved and the receiving side is notified
+      (`property-request-new`). Same roles and market scope as `resolve`.
 
     Listing lifecycle (new in 0.48.0, FSD section 3)
     - `POST /v1/me/listings/{id}/pause`, `/resume`, `/mark-sold`, `/mark-let`, `/close` (answers the managed listing;
@@ -8761,6 +8768,59 @@ paths:
           description: "`LISTING_NOT_FOUND`"
         "409":
           description: "`LISTING_STATE_CONFLICT`, `LISTING_TYPE_CONFLICT`, `LISTING_CHANGED`"
+  /v1/admin/routing-exceptions/{id}/candidates:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    get:
+      tags: [admin]
+      operationId: listRoutingCandidates
+      summary: "Organisations a routing exception may be given to (new in 0.49.0)"
+      security:
+        - cookieSession: []
+      responses:
+        "200":
+          description: "`{\"organisations\": [{organisation_id, name, kind, members: [{user_id, name, role}]}]}` (candidates) or `{\"request\": ...}` (assign)."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "404":
+          description: "`PROPERTY_REQUEST_NOT_FOUND` (not an open exception of the caller's markets)"
+        "409":
+          description: "`ALREADY_RESOLVED`"
+  /v1/admin/routing-exceptions/{id}/assign:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      tags: [admin]
+      operationId: rerouteRoutingException
+      summary: "Give a routing exception to an organisation or one of its members (new in 0.49.0)"
+      security:
+        - cookieSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [organisation_id]
+              properties:
+                organisation_id: {type: string, format: uuid}
+                user_id: {type: [string, "null"], format: uuid}
+                note: {type: string, maxLength: 2000}
+      responses:
+        "200":
+          description: "`{\"organisations\": [{organisation_id, name, kind, members: [{user_id, name, role}]}]}` (candidates) or `{\"request\": ...}` (assign)."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "404":
+          description: "`PROPERTY_REQUEST_NOT_FOUND` (not an open exception of the caller's markets)"
+        "409":
+          description: "`ALREADY_RESOLVED`"
   /v1/listings/{slug}/application-form:
     parameters:
       - { name: slug, in: path, required: true, schema: { type: string } }
