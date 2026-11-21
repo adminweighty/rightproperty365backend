@@ -141,9 +141,9 @@ type Service struct {
 	mailer Mailer
 	// securityMailer sends the email-change emails (API 0.50.0; nil: none).
 	securityMailer SecurityMailer
-	hasher Hasher
-	logger *slog.Logger
-	now    func() time.Time
+	hasher         Hasher
+	logger         *slog.Logger
+	now            func() time.Time
 	// dummyHash is verified against when a login names an unknown account, so
 	// that the response takes as long as a real password check.
 	dummyHash string

@@ -30,10 +30,10 @@ func (m *captureMailer) SendEmailChangeNotice(_ context.Context, to, _, _ string
 
 func TestClientLabel(t *testing.T) {
 	for ua, want := range map[string]string{
-		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36": "Chrome on Windows",
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36":  "Chrome on Windows",
 		"Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile Safari/604.1": "Safari on iOS",
 		"RightProperty365/1.4 (Android 14)": "RightProperty365 app on Android",
-		"": "Unknown device",
+		"":                                  "Unknown device",
 	} {
 		if got := identity.ClientLabel(ua); got != want {
 			t.Errorf("%q: %q, want %q", ua, got, want)
