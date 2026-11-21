@@ -198,3 +198,42 @@ func TestReservedTestDomainsAreNeverSent(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// API 0.59.0: a suppressed address gets no email (no dead letter, no retry),
+// except the security and account kinds.
+func TestDeliverSkipsSuppressedAddresses(t *testing.T) {
+	sender := &scriptedSender{}
+	log := NewMemoryDeliveryLog()
+	svc := NewService(sender, log, quietLogger())
+	blocked := RecipientHash("bounced@example.com")
+	svc.SetSuppression(func(_ context.Context, hash string) (bool, error) { return hash == blocked, nil })
+
+	alert := Notification{Key: "saved-search/1", Message: Message{To: "Bounced@example.com", Kind: "saved-search-alert"}}
+	for range 2 {
+		if err := svc.Deliver(context.Background(), alert); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code := Notification{Key: "sign-in/1", Message: Message{To: "bounced@example.com", Kind: "sign-in-code"}}
+	other := Notification{Key: "saved-search/2", Message: Message{To: "fine@example.com", Kind: "saved-search-alert"}}
+	for _, n := range []Notification{code, other} {
+		if err := svc.Deliver(context.Background(), n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if strings.Join(sender.keys, ",") != "sign-in/1,saved-search/2" {
+		t.Fatalf("sent %v", sender.keys)
+	}
+	for _, r := range log.Records() {
+		if r.Key == "saved-search/1" && (r.Status != StatusFailed || !r.Terminal || r.LastError != ReasonSuppressed || r.Attempts != 1) {
+			t.Fatalf("suppressed record %+v", r)
+		}
+	}
+	if !SuppressionExempt("reset-password") || SuppressionExempt("welcome") {
+		t.Fatal("exempt kinds")
+	}
+	svc.SetSuppression(func(context.Context, string) (bool, error) { return false, errors.New("db down") })
+	if err := svc.Deliver(context.Background(), Notification{Key: "saved-search/3", Message: Message{To: "x@example.com", Kind: "welcome"}}); err == nil {
+		t.Fatal("a failed check must be retried")
+	}
+}

@@ -29,6 +29,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/dataexport"
 	"rightproperty365.com/backend/internal/modules/developments"
 	"rightproperty365.com/backend/internal/modules/directory"
+	"rightproperty365.com/backend/internal/modules/emaildelivery"
 	"rightproperty365.com/backend/internal/modules/health"
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/inapp"
@@ -108,6 +109,8 @@ func run() error {
 		return err
 	}
 	var deliveryLog mail.DeliveryLog
+	// emailDeliveryStore holds delivery states and suppressions (API 0.59.0).
+	var emailDeliveryStore emaildelivery.Store
 
 	// Push (API 0.35.0): one line names the pusher (fcm, log in development,
 	// or disabled). Without a service account push is off; that is never a
@@ -434,7 +437,11 @@ func run() error {
 		// the in-memory stores. Development only: no retries, nothing durable.
 		memDeliveries := mail.NewMemoryDeliveryLog()
 		deliveryLog = memDeliveries
-		handlers := notifications.NewHandlers(mail.NewService(sender, memDeliveries, logger), renderer,
+		memEmail := emaildelivery.NewMemoryStore(memDeliveries.Records, memAudit)
+		emailDeliveryStore = memEmail
+		memMail := mail.NewService(sender, memDeliveries, logger)
+		memMail.SetSuppression(memEmail.IsSuppressed)
+		handlers := notifications.NewHandlers(memMail, renderer,
 			notifications.NewMemorySource(memIdentity, memRequests, memEnquiries), logger)
 		handlers.SetListingLookup(func(ctx context.Context, id uuid.UUID) (string, string, bool) {
 			records, err := memListings.ByIDs(ctx, []uuid.UUID{id})
@@ -589,6 +596,7 @@ func run() error {
 		listingStore, listingSearch, directoryStore = pgListings, pgListings, directory.NewPostgresStore(pool)
 		healthH = health.NewHandler(health.StorePostgres, pool.Ping, logger)
 		deliveryLog = mail.NewPostgresDeliveryLog(pool)
+		emailDeliveryStore = emaildelivery.NewPostgresStore(pool)
 		onboardingStore = onboarding.NewPostgresStore(pool)
 		teamStore = teams.NewPostgresStore(pool)
 		leaseStore = leases.NewPostgresStore(pool)
@@ -651,7 +659,9 @@ func run() error {
 
 	// Verification and password-reset emails are sent from the request path
 	// (their links are credentials and never go through the outbox).
-	mailer := notifications.NewAccountMailer(mail.NewService(sender, deliveryLog, logger), renderer)
+	accountMail := mail.NewService(sender, deliveryLog, logger)
+	accountMail.SetSuppression(emailDeliveryStore.IsSuppressed)
+	mailer := notifications.NewAccountMailer(accountMail, renderer)
 	// An invitation to an existing account is also an in-app notification.
 	mailer.SetInbox(inboxSvc, func(ctx context.Context, email string) (uuid.UUID, bool) {
 		u, err := identityStore.UserByEmail(ctx, identity.NormalizeEmail(email))
@@ -669,32 +679,34 @@ func run() error {
 	}
 
 	handler, err := app.NewRouter(app.Deps{
-		Config:           cfg,
-		Logger:           logger,
-		Health:           healthH,
-		Markets:          marketStore,
-		Requests:         requestStore,
-		Enquiries:        enquiryStore,
-		Reference:        referenceStore,
-		Listings:         listingStore,
-		ListingSearch:    listingSearch,
-		Directory:        directoryStore,
-		Identity:         identityStore,
-		Mailer:           mailer,
-		Onboarding:       onboardingStore,
-		Appointments:     appointmentStore,
-		Availability:     availabilityStore,
-		Teams:            teamStore,
-		Leases:           leaseStore,
-		Agreements:       agreementStore,
-		Files:            files,
-		Accounts:         accountStore,
-		Subscriptions:    subscriptionStore,
-		Reports:          reportStore,
-		AdminAudit:       adminAuditLog,
-		Saved:            savedStore,
-		SavedSearches:    savedSearchStore,
-		DataExports:      dataExportStore,
+		Config:        cfg,
+		Logger:        logger,
+		Health:        healthH,
+		Markets:       marketStore,
+		Requests:      requestStore,
+		Enquiries:     enquiryStore,
+		Reference:     referenceStore,
+		Listings:      listingStore,
+		ListingSearch: listingSearch,
+		Directory:     directoryStore,
+		Identity:      identityStore,
+		Mailer:        mailer,
+		Onboarding:    onboardingStore,
+		Appointments:  appointmentStore,
+		Availability:  availabilityStore,
+		Teams:         teamStore,
+		Leases:        leaseStore,
+		Agreements:    agreementStore,
+		Files:         files,
+		Accounts:      accountStore,
+		Subscriptions: subscriptionStore,
+		Reports:       reportStore,
+		AdminAudit:    adminAuditLog,
+		Saved:         savedStore,
+		SavedSearches: savedSearchStore,
+		DataExports:   dataExportStore,
+		EmailDelivery: emaildelivery.NewService(emaildelivery.Deps{Store: emailDeliveryStore,
+			Secret: cfg.ResendWebhookSecret.Reveal(), Logger: logger}),
 		Branches:         branchStore,
 		Analytics:        analyticsStore,
 		CRM:              crmStore,

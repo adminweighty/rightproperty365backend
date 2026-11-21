@@ -31,6 +31,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/dataexport"
 	"rightproperty365.com/backend/internal/modules/developments"
 	"rightproperty365.com/backend/internal/modules/directory"
+	"rightproperty365.com/backend/internal/modules/emaildelivery"
 	"rightproperty365.com/backend/internal/modules/health"
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/inapp"
@@ -56,6 +57,7 @@ import (
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/httpx"
 	"rightproperty365.com/backend/internal/platform/logging"
+	"rightproperty365.com/backend/internal/platform/mail"
 	"rightproperty365.com/backend/internal/platform/malware"
 	"rightproperty365.com/backend/internal/platform/storage"
 )
@@ -282,6 +284,11 @@ type env struct {
 	accounts *accounts.MemoryStore
 	subs     *subscriptions.MemoryStore
 	audit    *adminaudit.MemoryLog
+	// emailDelivery is the delivery webhook and suppressions (API 0.59.0);
+	// emailLog the email log it reads; emailSecret its random signing secret.
+	emailDelivery *emaildelivery.Service
+	emailLog      *mail.MemoryDeliveryLog
+	emailSecret   string
 	// saved holds the customers' saved listings (the sample tenant has two).
 	saved *saved.MemoryStore
 	// savedSearches holds saved searches (API 0.52.0).
@@ -471,6 +478,11 @@ func newEnvWith(t *testing.T, mutate func(*config.Config), scanner malware.Scann
 	e.saved = saved.NewMemoryStore()
 	e.savedSearches = savedsearches.NewMemoryStore()
 	e.dataExports = dataexport.NewMemoryStore()
+	// Email delivery (API 0.59.0): a random webhook secret per run.
+	e.emailLog = mail.NewMemoryDeliveryLog()
+	e.emailSecret = randomWebhookSecret(t)
+	e.emailDelivery = emaildelivery.NewService(emaildelivery.Deps{Store: emaildelivery.NewMemoryStore(e.emailLog.Records, e.audit),
+		Secret: e.emailSecret, Now: func() time.Time { return e.now }})
 	e.developments = developments.NewMemoryStore()
 	e.inbox = inapp.NewMemoryStore()
 	e.inboxSvc = inapp.NewService(e.inbox, "log", logger, func() time.Time { return e.now })
@@ -521,7 +533,8 @@ func newEnvWith(t *testing.T, mutate func(*config.Config), scanner malware.Scann
 		Agreements:   e.agree,
 		Accounts:     e.accounts, Subscriptions: e.subs, Reports: reportStore, AdminAudit: e.audit,
 		Saved: e.saved, SavedSearches: e.savedSearches, DataExports: e.dataExports, Analytics: e.analytics,
-		CRM: e.crm, CRMItems: e.crmItems,
+		EmailDelivery: e.emailDelivery,
+		CRM:           e.crm, CRMItems: e.crmItems,
 		Applications: e.apps,
 		Venues:       e.venues,
 		Ledger:       e.ledger,

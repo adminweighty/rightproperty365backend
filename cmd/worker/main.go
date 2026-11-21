@@ -23,6 +23,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/crm"
 	"rightproperty365.com/backend/internal/modules/dataexport"
+	"rightproperty365.com/backend/internal/modules/emaildelivery"
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/inapp"
 	"rightproperty365.com/backend/internal/modules/inspections"
@@ -107,8 +108,16 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// Suppressed addresses (a hard bounce or a complaint, API 0.59.0) get no
+	// email, except the security and account kinds.
+	emailDeliveries := emaildelivery.NewPostgresStore(pool)
+	newMail := func() *mail.Service {
+		m := mail.NewService(sender, mail.NewPostgresDeliveryLog(pool), logger)
+		m.SetSuppression(emailDeliveries.IsSuppressed)
+		return m
+	}
 	handlers := notifications.NewHandlers(
-		mail.NewService(sender, mail.NewPostgresDeliveryLog(pool), logger),
+		newMail(),
 		renderer, notifications.NewPostgresSource(pool), logger)
 
 	handlers.SetRoleLabels(func(ctx context.Context) (map[string]string, error) {
@@ -293,7 +302,7 @@ func run() error {
 	// emails carry signing links, so they are sent from here, not through
 	// the outbox. A lease follows its agreement.
 	agreementSvc := agreements.NewService(agreements.Deps{Store: agreements.NewPostgresStore(pool),
-		Mailer: notifications.NewAccountMailer(mail.NewService(sender, mail.NewPostgresDeliveryLog(pool), logger), renderer),
+		Mailer: notifications.NewAccountMailer(newMail(), renderer),
 		Logger: logger, PublicWebURL: cfg.PublicWebURL})
 	leaseSvc := leases.NewService(leases.Deps{Store: leases.NewPostgresStore(pool), Logger: logger})
 	go app.RunAgreementSweeps(ctx, agreementSvc, leaseSvc, logger)
@@ -346,6 +355,9 @@ func run() error {
 	// Personal data export (API 0.55.0): every minute the requested exports
 	// are built into the private bucket (DATA_EXPORT_READY: email and
 	// in-app), and the ones older than 7 days are deleted.
+	// Email bounce and complaint spikes (API 0.59.0). The webhook itself is
+	// served by the API; the worker only counts.
+	go app.RunEmailDeliverySweeps(ctx, emaildelivery.NewService(emaildelivery.Deps{Store: emailDeliveries, Logger: logger}), logger)
 	go app.RunDataExportSweeps(ctx, dataexport.NewService(dataexport.NewPostgresStore(pool), files,
 		dataexport.NewPostgresCollector(pool), logger, nil), logger)
 	logger.Info("data export job scheduled", slog.Duration("interval", dataexport.SweepInterval))

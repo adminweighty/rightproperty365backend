@@ -234,6 +234,7 @@ All configuration comes from environment variables. For local development you ma
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `PUBLIC_WEB_URL` | `http://localhost:3000` | Public origin of the web app; every link and image in an email is built from it (`WEB_BASE_URL` is a deprecated alias) |
 | `RESEND_API_KEY`, `MAIL_DRIVER`, `EMAIL_FROM`, `EMAIL_REPLY_TO` | | Email settings: see "Email". **A key in `.env` makes local runs send real email unless `MAIL_DRIVER=log`** |
+| `RESEND_WEBHOOK_SECRET` | | Resend's webhook signing secret (`whsec_…`) for `POST /v1/webhooks/email/resend` (API 0.59.0). Secret: environment only. Unset, the webhook answers 503 |
 | `DEV_SEED_PASSWORD` | _(empty)_ | Development only: shared password of the seed users. Ignored outside `APP_ENV=development`; never logged |
 | `AUTH_DEMO_CODE` | _(empty)_ | A demo sign-in code (4–6 digits) accepted for every sign-in besides the emailed one. **Development and staging only: set with `APP_ENV=production` the API and the worker refuse to start.** Never logged; the API logs a warning while it is active. See "Sign-in code" |
 | `ADMIN_SESSION_TTL` | `12h` | Absolute lifetime of an administrator session (Go duration, 1m–24h) |
@@ -501,6 +502,27 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 **Not built** (dashboards and requests): follow-up dates and reminders; editing or deleting a note;
 seeker saved searches and alerts. (Conversion funnels and response-time KPIs: API 0.38.0; replies
 to the customer: API 0.46.0, below.)
+
+## Email bounces and complaints (API 0.59.0)
+
+FR-065 ("measure … email bounce"). Migration 0061 (`email_messages.delivery_state`, `email_delivery_events`,
+`email_suppressions`, `email_delivery_alerts`; the admin audit target `EMAIL_SUPPRESSION`). Module
+`internal/modules/emaildelivery`.
+
+- **Webhook:** `POST /v1/webhooks/email/resend` verifies Resend's Svix signature with `RESEND_WEBHOOK_SECRET`
+  (environment only, never logged; unset → `503 WEBHOOK_NOT_CONFIGURED`, which is how staging runs). Point Resend's
+  webhook at it for `email.delivered`, `email.delivery_delayed`, `email.bounced` and `email.complained`. Events are
+  deduplicated on `svix-id`.
+- **States and suppression:** each message gets DELIVERED, DELAYED, BOUNCED or COMPLAINED (a bounce or complaint is never
+  undone). A permanent bounce or a complaint suppresses the address hash. `mail.Service` then records the message as
+  FAILED `suppressed` (terminal, no dead letter) instead of sending it, except for the kinds in
+  `mail.SuppressionExempt` (sign-in and verification codes, password and address changes, signing codes, account
+  notices), so nobody is locked out.
+- **Spikes:** the worker's sweep (every 5 minutes, last hour) stores a BOUNCE_SPIKE (≥ 5 and ≥ 5 % of accepted) or
+  COMPLAINT_SPIKE (≥ 3 and ≥ 0.1 %) alert, at most one per kind per hour, and logs it at ERROR.
+- **Administrators** (SUPER_ADMIN, PLATFORM_ADMIN, SUPPORT): `GET /v1/admin/email-deliveries` (figures, spikes, recent
+  problems, recipients as hash prefixes), `GET .../suppressions?email=` and `DELETE .../suppressions/{hash}` with a
+  reason (audited).
 
 ## Campaign attribution (API 0.58.0)
 

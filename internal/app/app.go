@@ -27,6 +27,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/dataexport"
 	"rightproperty365.com/backend/internal/modules/developments"
 	"rightproperty365.com/backend/internal/modules/directory"
+	"rightproperty365.com/backend/internal/modules/emaildelivery"
 	"rightproperty365.com/backend/internal/modules/health"
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/inapp"
@@ -322,6 +323,9 @@ type Deps struct {
 	// DataExports holds personal data export requests (API 0.55.0). Nil: no
 	// export routes (a test double without them).
 	DataExports dataexport.Store
+	// EmailDelivery is Resend's delivery webhook, the suppressions and the
+	// administrators' email figures (API 0.59.0). Nil: no routes.
+	EmailDelivery *emaildelivery.Service
 
 	// Analytics holds the raw analytics events and the daily rollups (API
 	// 0.30.0). The raw retention is Config.AnalyticsRawRetentionDays.
@@ -921,6 +925,11 @@ func NewRouter(d Deps) (http.Handler, error) {
 		// Online payment (API 0.42.0): the provider's signed webhooks, and the
 		// fake provider's hosted page (PAYMENT_GATEWAY=fake only). No session.
 		r.Post("/payments/webhooks/{provider}", paymentsH.Webhook)
+		// Email delivery (API 0.59.0): Resend's signed webhooks. No session;
+		// 503 while RESEND_WEBHOOK_SECRET is unset.
+		if d.EmailDelivery != nil {
+			r.Post("/webhooks/email/resend", emaildelivery.NewHandler(d.EmailDelivery, logger).Webhook)
+		}
 		if _, fake := gateway.(*paygateway.Fake); fake {
 			r.Get("/payments/fake/checkout/{ref}", paymentsH.FakeCheckout)
 			r.Post("/payments/fake/checkout/{ref}/{action}", paymentsH.FakeComplete)
@@ -1424,6 +1433,17 @@ func NewRouter(d Deps) (http.Handler, error) {
 			// Market administration (API 0.56.0): SUPER_ADMIN and
 			// PLATFORM_ADMIN; a MARKET_ADMIN edits its own markets (not their
 			// status). Audited.
+			// Email deliveries (API 0.59.0): SUPER_ADMIN, PLATFORM_ADMIN and
+			// SUPPORT see the figures and suppressions and clear one (audited).
+			if d.EmailDelivery != nil {
+				emailH := emaildelivery.NewHandler(d.EmailDelivery, logger)
+				r.Route("/email-deliveries", func(r chi.Router) {
+					r.Use(httpx.PrivateNoStore, auth.RequirePlatformRole(emaildelivery.AdminRoles()...))
+					r.Get("/", emailH.Overview)
+					r.Get("/suppressions", emailH.Suppressions)
+					r.With(listingLimiter.Middleware).Delete("/suppressions/{hash}", emailH.Clear)
+				})
+			}
 			if marketsAdminH != nil {
 				r.Route("/markets", func(r chi.Router) {
 					r.Use(httpx.PrivateNoStore, auth.RequirePlatformRole(markets.AdminRoles()...))

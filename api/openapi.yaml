@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.58.0
+  version: 0.59.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,15 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Email bounces and complaints (new in 0.59.0, FR-065)
+    - `POST /v1/webhooks/email/resend`: Resend's signed delivery webhooks (Svix signature; `503 WEBHOOK_NOT_CONFIGURED`
+      while `RESEND_WEBHOOK_SECRET` is unset, `401 WEBHOOK_SIGNATURE_INVALID`). Delivered, delayed, bounced and
+      complained set each message's delivery state; a hard bounce or a complaint suppresses the address, which then gets
+      no email except sign-in, verification, password, address-change, signing and account notices.
+    - `GET /v1/admin/email-deliveries` (SUPER_ADMIN, PLATFORM_ADMIN, SUPPORT): figures for 24 h and 7 days, bounce and
+      complaint spikes (worker sweep, last hour), recent problems. `GET .../suppressions?email=` and
+      `DELETE .../suppressions/{hash}` `{reason}` (audited).
 
     Campaign attribution (new in 0.58.0, FR-013)
     - `POST /v1/property-requests` and each event of `POST /v1/analytics/events` accept an optional
@@ -11247,6 +11256,72 @@ paths:
       responses:
         "200":
           description: "See the summary above."
+  /v1/webhooks/email/resend:
+    post:
+      tags: [admin]
+      operationId: resendEmailWebhook
+      summary: "Resend's delivery webhook (new in 0.59.0; not for clients)"
+      description: |
+        No session: the `svix-id`, `svix-timestamp` and `svix-signature` headers are verified
+        (HMAC-SHA256 of `id.timestamp.body` with RESEND_WEBHOOK_SECRET, within 5 minutes).
+        `503 WEBHOOK_NOT_CONFIGURED` while the secret is unset; `401 WEBHOOK_SIGNATURE_INVALID`.
+        `204` for every verified event, including repeats (deduplicated on `svix-id`) and event
+        types that are not about delivery.
+      security: []
+      responses:
+        "204":
+          description: "Recorded, already recorded, or ignored."
+        "401":
+          description: "WEBHOOK_SIGNATURE_INVALID"
+        "503":
+          description: "WEBHOOK_NOT_CONFIGURED"
+  /v1/admin/email-deliveries:
+    get:
+      tags: [admin]
+      operationId: adminEmailDeliveries
+      summary: "Email figures (24 h, 7 days), spikes and recent problems (new in 0.59.0)"
+      security:
+        - cookieSession: []
+      responses:
+        "200":
+          description: "{webhook_configured, last_24h, last_7d, alerts, problems}; recipients as 12-character hash prefixes."
+  /v1/admin/email-deliveries/suppressions:
+    get:
+      tags: [admin]
+      operationId: adminEmailSuppressions
+      summary: "Active suppressions; ?email= looks one address up (new in 0.59.0)"
+      security:
+        - cookieSession: []
+      parameters:
+        - { name: email, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: "{items: [{hash, reason, created_at, updated_at}]}"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+  /v1/admin/email-deliveries/suppressions/{hash}:
+    delete:
+      tags: [admin]
+      operationId: adminClearEmailSuppression
+      summary: "Clear a suppression, with a reason (audited; new in 0.59.0)"
+      security:
+        - cookieSession: []
+      parameters:
+        - { name: hash, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{reason} (5 to 500 characters)"
+      responses:
+        "204":
+          description: "Cleared."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "404":
+          description: "SUPPRESSION_NOT_FOUND"
   /v1/admin/markets:
     get:
       tags: [admin]

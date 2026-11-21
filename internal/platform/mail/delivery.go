@@ -78,10 +78,37 @@ var ErrTerminal = errors.New("email cannot be sent")
 
 // Service delivers notifications once each.
 type Service struct {
-	sender Sender
-	log    DeliveryLog
-	logger *slog.Logger
-	now    func() time.Time
+	sender     Sender
+	log        DeliveryLog
+	logger     *slog.Logger
+	now        func() time.Time
+	suppressed SuppressionCheck
+}
+
+// SuppressionCheck reports whether an address (its RecipientHash) is
+// suppressed after a hard bounce or a complaint (API 0.59.0).
+type SuppressionCheck func(ctx context.Context, recipientSHA256 string) (bool, error)
+
+// SetSuppression makes Deliver skip suppressed addresses, except for the
+// security and account kinds (SuppressionExempt).
+func (s *Service) SetSuppression(check SuppressionCheck) { s.suppressed = check }
+
+// ReasonSuppressed is the last_error of a message not sent because its
+// address is suppressed.
+const ReasonSuppressed = "suppressed"
+
+// SuppressionExempt reports whether an email kind is sent even to a
+// suppressed address: sign-in and verification codes, password and address
+// changes, signing codes and account notices, without which the person could
+// be locked out or not told about their account.
+func SuppressionExempt(kind string) bool {
+	switch kind {
+	case "sign-in-code", "admin-sign-in", "verify-email", "reset-password", "password-changed", "email-change-confirm",
+		"email-change-notice", "agreement-signing-code", "admin-mfa-reset", "admin-mfa-recovery-code-used",
+		"account-deletion-requested", "account-deletion-completed", "account-suspended", "account-reactivated", "data-export-ready":
+		return true
+	}
+	return false
 }
 
 // NewService builds a Service.
@@ -180,7 +207,25 @@ func (s *Service) Deliver(ctx context.Context, n Notification) error {
 			s.logger.InfoContext(ctx, "email already accepted by the provider; not sending again", attrs...)
 			return nil
 		case previous.Status == StatusFailed && previous.Terminal:
+			if previous.LastError == ReasonSuppressed {
+				return nil
+			}
 			return fmt.Errorf("%w: %s", ErrTerminal, previous.LastError)
+		}
+	}
+	if s.suppressed != nil && !SuppressionExempt(n.Message.Kind) {
+		suppressed, err := s.suppressed(ctx, hash)
+		if err != nil {
+			return fmt.Errorf("check email suppression: %w", err)
+		}
+		if suppressed {
+			// Not sent, and not a dead letter: the address bounced hard or
+			// complained. An administrator can clear it.
+			if err := s.log.Failed(context.WithoutCancel(ctx), n.Key, ReasonSuppressed, true, now); err != nil {
+				return fmt.Errorf("record suppressed email: %w", err)
+			}
+			s.logger.InfoContext(ctx, "email not sent: the recipient is suppressed", attrs...)
+			return nil
 		}
 	}
 
