@@ -17,7 +17,9 @@ import (
 
 // Error codes specific to this module.
 const (
-	CodeListingNotFound    = "LISTING_NOT_FOUND"
+	CodeListingNotFound = "LISTING_NOT_FOUND"
+	// CodeBranchForbidden: the caller is pinned to another branch (API 0.57.0).
+	CodeBranchForbidden    = "BRANCH_FORBIDDEN"
 	CodeListingUnavailable = "LISTING_UNAVAILABLE"
 )
 

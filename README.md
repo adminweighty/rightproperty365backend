@@ -502,6 +502,22 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 seeker saved searches and alerts. (Conversion funnels and response-time KPIs: API 0.38.0; replies
 to the customer: API 0.46.0, below.)
 
+## Branches (API 0.57.0)
+
+FR-002 ("a staff account from branch A receives 403 when requesting branch B private objects"). Migration 0059
+(`organisation_branches`; `branch_id` on memberships, listings and ledger entries; the organisation audit actions
+`BRANCH_CREATED`, `BRANCH_UPDATED`, `MEMBER_BRANCH_CHANGED`, `LISTING_BRANCH_CHANGED`).
+
+- OWNER and MANAGER create, rename and archive branches (`/v1/agent/organisations/{id}/branches`), pin members
+  (`PUT .../members/{userId}/branch`) and tie listings (`PUT .../listings/{listingId}/branch`); `null` clears.
+- **Scoping** (`auth.Principal.MayAccessBranch`): an unpinned member sees the whole organisation; a pinned one sees
+  objects with no branch or their own. Another branch's listing (manage views and edits), lead (a property request
+  on such a listing) or ledger entry is `403 BRANCH_FORBIDDEN`; inbox, listing and ledger lists leave them out. The
+  pin is read at sign-in, so a change applies from the member's next session.
+- **Ledger:** a `branch` text naming an active branch (case-insensitive) is stored with its `branch_id`; any other text
+  stays free text, as before. The migration turned each organisation's distinct branch texts into branches (first
+  spelling wins) and linked the existing entries; their text is unchanged (entries are immutable).
+
 ## Market administration (API 0.56.0)
 
 BR-001 ("provision an inactive test market and change permitted currencies and notices without a code release").

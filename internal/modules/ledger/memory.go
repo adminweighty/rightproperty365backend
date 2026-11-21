@@ -17,7 +17,9 @@ import (
 // Postgres store, including its guards: nothing posted is ever changed and
 // nothing is ever deleted.
 type MemoryStore struct {
-	mu          sync.Mutex
+	mu sync.Mutex
+	// branchOf resolves an organisation's active branch by name (API 0.57.0).
+	branchOf    func(org uuid.UUID, name string) *uuid.UUID
 	entries     map[uuid.UUID]Entry
 	order       []uuid.UUID
 	notes       []Note
@@ -83,6 +85,7 @@ func matches(e Entry, f Filter) bool {
 		f.From != "" && e.EffectiveDate < f.From,
 		f.To != "" && e.EffectiveDate > f.To,
 		f.Branch != nil && !strings.EqualFold(e.Branch, *f.Branch),
+		f.OnlyBranch != nil && e.BranchID != nil && *e.BranchID != *f.OnlyBranch,
 		f.ContactID != nil && (e.ContactID == nil || *e.ContactID != *f.ContactID),
 		f.ListingID != nil && (e.ListingID == nil || *e.ListingID != *f.ListingID),
 		f.LeaseID != nil && (e.LeaseID == nil || *e.LeaseID != *f.LeaseID),
@@ -372,6 +375,9 @@ func (s *MemoryStore) ApplyWith(ctx context.Context, ch Change, with func() erro
 					return ErrOverSettled
 				}
 			}
+			if e.Book.OrganisationID != nil && e.Branch != "" && s.branchOf != nil {
+				e.BranchID = s.branchOf(*e.Book.OrganisationID, e.Branch)
+			}
 			entries[e.ID] = e
 			order = append(order, e.ID)
 		}
@@ -475,4 +481,12 @@ func (s *MemoryStore) Put(ch Change) error {
 	s.audit = sink
 	s.mu.Unlock()
 	return err
+}
+
+// SetBranchResolver resolves branch names of organisation entries (API
+// 0.57.0; the branches store owns the branches).
+func (s *MemoryStore) SetBranchResolver(branchOf func(org uuid.UUID, name string) *uuid.UUID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.branchOf = branchOf
 }

@@ -20,6 +20,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/applications"
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/availability"
+	"rightproperty365.com/backend/internal/modules/branches"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/crm"
 	"rightproperty365.com/backend/internal/modules/dashboard"
@@ -343,6 +344,9 @@ type Deps struct {
 	// Ledger holds the agent books (API 0.34.0); their attachments are kept
 	// in Files.
 	Ledger ledger.Store
+	// Branches holds organisation branches and their pins and ties (API
+	// 0.57.0). Nil: no branch routes.
+	Branches branches.Store
 
 	// Tenancies holds the properties, units and tenancies (API 0.36.0).
 	Tenancies tenancies.Store
@@ -696,6 +700,11 @@ func NewRouter(d Deps) (http.Handler, error) {
 		teamsSvc.SetClock(d.Now)
 	}
 	teamsH := teams.NewHandler(teamsSvc, onboardingSvc, logger)
+	// Branches (API 0.57.0): OWNER and MANAGER manage them; any member reads.
+	var branchesH *branches.Handler
+	if d.Branches != nil {
+		branchesH = branches.NewHandler(branches.NewService(d.Branches, d.Now), logger)
+	}
 	teamLimiter := httpx.NewRateLimiter(teamChangesPerMinute, teamChangesBurst)
 	invitationLimiter := httpx.NewRateLimiter(invitationRequestsPerMinute, invitationRequestsBurst)
 
@@ -1667,6 +1676,13 @@ func NewRouter(d Deps) (http.Handler, error) {
 			r.Get("/members", teamsH.Members)
 			r.With(teamLimiter.Middleware).Patch("/members/{userId}", teamsH.PatchMember)
 			r.With(teamLimiter.Middleware).Delete("/members/{userId}", teamsH.RemoveMember)
+			if branchesH != nil {
+				r.Get("/branches", branchesH.List)
+				r.With(teamLimiter.Middleware).Post("/branches", branchesH.Create)
+				r.With(teamLimiter.Middleware).Patch("/branches/{branchId}", branchesH.Update)
+				r.With(teamLimiter.Middleware).Put("/members/{userId}/branch", branchesH.PinMember)
+				r.With(teamLimiter.Middleware).Put("/listings/{listingId}/branch", branchesH.TieListing)
+			}
 			r.Get("/invitations", teamsH.Invitations)
 			r.With(teamLimiter.Middleware).Post("/invitations", teamsH.Invite)
 			r.With(teamLimiter.Middleware).Delete("/invitations/{invitationId}", teamsH.CancelInvitation)

@@ -134,6 +134,9 @@ type Membership struct {
 	OrganisationKind string
 	MarketCode       string
 	Role             string
+	// BranchID pins the member to one branch of the organisation (API
+	// 0.57.0, FR-002); nil sees the whole organisation.
+	BranchID *uuid.UUID
 }
 
 // Principal is the authenticated caller. Everyone is implicitly a consumer;

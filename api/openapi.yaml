@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.56.0
+  version: 0.57.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,15 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Branches (new in 0.57.0, FR-002)
+    - `GET|POST /v1/agent/organisations/{id}/branches`, `PATCH .../branches/{branchId}` `{name?, active?}`;
+      `PUT .../members/{userId}/branch` and `PUT .../listings/{listingId}/branch` `{branch_id | null}` (OWNER and
+      MANAGER; any member lists). Names are unique in the organisation (`409 BRANCH_NAME_TAKEN`). Audited.
+    - A member pinned to a branch sees only the organisation's objects with no branch or their own branch: another
+      branch's listing (manage views), lead (a request on such a listing) or ledger entry is `403 BRANCH_FORBIDDEN`,
+      and lists leave them out. A ledger entry's `branch` text that names an active branch is linked to it
+      (`branch_id`); other text stays free text.
 
     Market administration (new in 0.56.0, BR-001)
     - `GET|POST /v1/admin/markets`, `GET|PATCH /v1/admin/markets/{code}` (SUPER_ADMIN, PLATFORM_ADMIN; a MARKET_ADMIN
@@ -6860,6 +6869,124 @@ paths:
         "504":
           $ref: "#/components/responses/Timeout"
 
+  /v1/agent/organisations/{id}/branches:
+    parameters:
+      - $ref: "#/components/parameters/OrganisationId"
+    get:
+      tags: [organisation-workspace]
+      operationId: listOrganisationBranches
+      summary: "The branches and the pinned members {items, member_branches} (new in 0.57.0)"
+      security:
+        - bearerToken: []
+        - cookieSession: []
+      responses:
+        "200":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+    post:
+      tags: [organisation-workspace]
+      operationId: createOrganisationBranch
+      summary: "Add a branch (OWNER, MANAGER) (new in 0.57.0)"
+      security:
+        - bearerToken: []
+        - cookieSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{name}"
+      responses:
+        "201":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+  /v1/agent/organisations/{id}/branches/{branchId}:
+    parameters:
+      - $ref: "#/components/parameters/OrganisationId"
+      - name: branchId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    patch:
+      tags: [organisation-workspace]
+      operationId: updateOrganisationBranch
+      summary: "Rename or archive a branch (new in 0.57.0)"
+      security:
+        - bearerToken: []
+        - cookieSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{name?, active?}"
+      responses:
+        "200":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+  /v1/agent/organisations/{id}/members/{userId}/branch:
+    parameters:
+      - $ref: "#/components/parameters/OrganisationId"
+      - name: userId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    put:
+      tags: [organisation-workspace]
+      operationId: pinOrganisationMemberBranch
+      summary: "Pin a member to a branch, or unpin (null) (new in 0.57.0)"
+      security:
+        - bearerToken: []
+        - cookieSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{branch_id | null}"
+      responses:
+        "204":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+  /v1/agent/organisations/{id}/listings/{listingId}/branch:
+    parameters:
+      - $ref: "#/components/parameters/OrganisationId"
+      - name: listingId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    put:
+      tags: [organisation-workspace]
+      operationId: tieOrganisationListingBranch
+      summary: "Tie a listing (and its leads) to a branch, or untie (null) (new in 0.57.0)"
+      security:
+        - bearerToken: []
+        - cookieSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{branch_id | null}"
+      responses:
+        "204":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
   /v1/agent/organisations/{id}/members/{userId}:
     parameters:
       - $ref: "#/components/parameters/OrganisationId"

@@ -76,6 +76,8 @@ func (h *ManageHandler) fail(w http.ResponseWriter, r *http.Request, err error) 
 			}
 		}
 		httpx.WriteError(w, r, http.StatusUnprocessableEntity, CodeListingIncomplete, "The listing needs more information before it can be submitted.", fields)
+	case errors.Is(err, ErrBranchForbidden):
+		httpx.WriteError(w, r, http.StatusForbidden, CodeBranchForbidden, "This belongs to another branch of your organisation.", nil)
 	case errors.As(err, &state):
 		httpx.WriteError(w, r, http.StatusConflict, state.Code, state.Message, nil)
 	case errors.As(err, &quota):

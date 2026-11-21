@@ -48,6 +48,8 @@ func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 		httpx.WriteError(w, r, http.StatusBadRequest, httpx.CodeValidationFailed, "Some fields need your attention.", verr.Fields)
 	case errors.Is(err, ErrNotFound):
 		httpx.WriteError(w, r, http.StatusNotFound, CodeRequestNotFound, "This request does not exist.", nil)
+	case errors.Is(err, ErrBranchForbidden):
+		httpx.WriteError(w, r, http.StatusForbidden, "BRANCH_FORBIDDEN", "This request belongs to another branch of your organisation.", nil)
 	case errors.Is(err, ErrInvalidTransition):
 		httpx.WriteError(w, r, http.StatusConflict, CodeInvalidStageTransition, "This request cannot move to that stage from its current stage.", nil)
 	case errors.Is(err, ErrForbidden):
@@ -70,11 +72,20 @@ func forbidden(w http.ResponseWriter, r *http.Request) {
 // ScopeOf builds the inbox scope of a caller from their user ID and
 // memberships only (see InboxScope).
 func ScopeOf(p *auth.Principal) InboxScope {
-	return InboxScope{
+	s := InboxScope{
 		UserID:                 p.UserID,
 		ManagedOrganisationIDs: p.OrganisationIDs(auth.RoleOwner, auth.RoleManager),
 		MemberOrganisationIDs:  p.OrganisationIDs(auth.RoleAgent, auth.RoleStaff),
 	}
+	for _, m := range p.Memberships {
+		if m.BranchID != nil {
+			if s.Branches == nil {
+				s.Branches = map[uuid.UUID]uuid.UUID{}
+			}
+			s.Branches[m.OrganisationID] = *m.BranchID
+		}
+	}
+	return s
 }
 
 // MayOpenInbox reports whether the caller may use the request inbox at all:

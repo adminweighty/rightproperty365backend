@@ -40,6 +40,8 @@ func SeedListingID(n int) uuid.UUID {
 type MemoryStore struct {
 	mu       sync.Mutex
 	listings map[uuid.UUID]Listing
+	// branches holds the listings' branches (API 0.57.0).
+	branches map[uuid.UUID]uuid.UUID
 	byKey    map[string]Record
 	refs     map[string]struct{}
 	requests []NewRequest
@@ -116,6 +118,7 @@ type MemoryOutboxEvent struct {
 func NewMemoryStore() *MemoryStore {
 	s := &MemoryStore{
 		listings: make(map[uuid.UUID]Listing),
+		branches: make(map[uuid.UUID]uuid.UUID),
 		byKey:    make(map[string]Record),
 		refs:     make(map[string]struct{}),
 		work:     make(map[uuid.UUID]*memoryWork),
@@ -262,4 +265,16 @@ func (s *MemoryStore) Outbox() []MemoryOutboxEvent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]MemoryOutboxEvent(nil), s.outbox...)
+}
+
+// SetListingBranch records a listing's branch (API 0.57.0; the branches
+// store owns the change).
+func (s *MemoryStore) SetListingBranch(listing uuid.UUID, branch *uuid.UUID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if branch == nil {
+		delete(s.branches, listing)
+		return
+	}
+	s.branches[listing] = *branch
 }

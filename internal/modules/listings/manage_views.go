@@ -165,6 +165,8 @@ type OwnerView struct {
 	Type           string     `json:"type"`
 	OrganisationID *uuid.UUID `json:"organisation_id"`
 	AgentUserID    *uuid.UUID `json:"agent_user_id"`
+	// BranchID is the organisation branch the listing belongs to (API 0.57.0).
+	BranchID *uuid.UUID `json:"branch_id"`
 }
 
 // TimelineView is one step of the listing's history.

@@ -549,8 +549,11 @@ type Record struct {
 	Featured    bool
 	// PlacementKind is the active placement's kind ("" for none, API 0.53.0).
 	PlacementKind string
-	Photos        []Photo
-	Advertiser    Advertiser
+	// BranchID is the organisation branch the listing belongs to (API
+	// 0.57.0); nil for none. Private: never on a public listing.
+	BranchID   *uuid.UUID
+	Photos     []Photo
+	Advertiser Advertiser
 	// YouTubeVideoID is the id of the listing's YouTube video tour ("" for
 	// none); YouTubeStartSeconds where it starts (nil: at the beginning).
 	YouTubeVideoID      string

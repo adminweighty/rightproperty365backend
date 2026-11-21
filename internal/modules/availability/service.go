@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -263,6 +264,11 @@ func (s *Service) MyListings(ctx context.Context, p *auth.Principal, category, s
 	if err != nil {
 		return ListingsPage{}, fmt.Errorf("load listings: %w", err)
 	}
+	// A member pinned to a branch sees the listings without a branch and
+	// those of their own branch (API 0.57.0).
+	records = slices.DeleteFunc(records, func(r listings.Record) bool {
+		return r.OrganisationID != nil && !p.MayAccessBranch(*r.OrganisationID, r.BranchID)
+	})
 	now := s.clock()
 	var kept []listings.Record
 	for _, r := range records {

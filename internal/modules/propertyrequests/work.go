@@ -215,12 +215,28 @@ type StoredRequest struct {
 	LastMessageAuthor      string // "", AuthorProfessional or AuthorCustomer
 	CustomerLastReadAt     *time.Time
 	ProfessionalLastReadAt *time.Time
+	// ListingBranchID is the branch of the listing the request is about
+	// (API 0.57.0); nil for none.
+	ListingBranchID *uuid.UUID
+}
+
+// branchHides reports whether the caller's branch pin hides the request.
+func (s InboxScope) branchHides(r StoredRequest) bool {
+	if r.ListingBranchID == nil || r.Recipient == nil || r.Recipient.OrganisationID == nil {
+		return false
+	}
+	b, pinned := s.Branches[*r.Recipient.OrganisationID]
+	return pinned && b != *r.ListingBranchID
 }
 
 // Sees reports whether a request is visible under the scope. It is the one
 // statement of the rule documented on InboxScope; the Postgres list query
 // expresses the same in SQL.
 func (s InboxScope) Sees(r StoredRequest) bool {
+	return s.seesOrganisation(r) && !s.branchHides(r)
+}
+
+func (s InboxScope) seesOrganisation(r StoredRequest) bool {
 	if r.Recipient == nil {
 		return false // routing exception: in nobody's inbox
 	}
@@ -484,6 +500,9 @@ func (s *Service) Received(ctx context.Context, scope InboxScope, id uuid.UUID) 
 		return StoredRequest{}, err
 	}
 	if !scope.Sees(r) {
+		if scope.seesOrganisation(r) {
+			return StoredRequest{}, ErrBranchForbidden
+		}
 		return StoredRequest{}, ErrNotFound
 	}
 	return r, nil

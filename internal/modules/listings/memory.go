@@ -567,3 +567,20 @@ func (s *MemoryStore) Suggest(ctx context.Context, term string, limit int, now t
 	}
 	return out, nil
 }
+
+// SetBranch ties a listing to a branch (API 0.57.0; the branches store
+// owns the change).
+func (s *MemoryStore) SetBranch(id uuid.UUID, branch *uuid.UUID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.records {
+		if s.records[i].ID == id {
+			if branch == nil {
+				s.records[i].BranchID = nil
+			} else {
+				b := *branch
+				s.records[i].BranchID = &b
+			}
+		}
+	}
+}

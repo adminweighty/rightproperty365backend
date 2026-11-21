@@ -42,6 +42,9 @@ func (s *MemoryStore) stored(req NewRequest) StoredRequest {
 		CustomerUserID: req.CustomerUserID, ContactName: req.GuestName, ContactEmail: req.GuestEmail, ContactPhone: req.GuestPhone,
 		Recipient: req.Recipient, Stay: req.Stay, CreatedAt: req.CreatedAt, UpdatedAt: req.CreatedAt,
 	}
+	if b, ok := s.branches[req.ListingID]; ok {
+		r.ListingBranchID = &b
+	}
 	if w, ok := s.work[req.ID]; ok {
 		r.Stage, r.StageChangedAt, r.StageChangedBy, r.UpdatedAt = w.Stage, w.StageChangedAt, w.StageChangedBy, w.UpdatedAt
 		r.ResolvedAt, r.ResolvedBy, r.ResolutionNote = w.ResolvedAt, w.ResolvedBy, w.ResolutionNote

@@ -62,7 +62,7 @@ const entryColumns = `e.id, e.organisation_id, e.book_user_id, e.type, e.directi
 	e.amount::text, e.currency, e.effective_date::text, e.recorded_at, e.author_user_id, e.author_name, e.status, e.reconciled_at,
 	e.reconciled_by, e.reconciled_by_name, COALESCE(e.reconcile_note, ''), e.reversal_of, e.reversed_by, e.correction_of, e.corrected_by,
 	e.transfer_pair, e.settles_entry_id, COALESCE(e.reason, ''), e.contact_id, e.listing_id, e.lease_id, e.tenancy_id, COALESCE(e.branch, ''),
-	e.description, e.reference, e.property_id,
+	e.description, e.reference, e.property_id, e.branch_id,
 	(SELECT count(*) FROM ledger_entry_notes n WHERE n.entry_id = e.id),
 	(SELECT count(*) FROM ledger_attachments a WHERE a.entry_id = e.id)`
 
@@ -71,7 +71,7 @@ func scanEntry(row pgx.Row) (Entry, error) {
 	if err := row.Scan(&e.ID, &e.Book.OrganisationID, &e.Book.UserID, &e.Type, &e.Direction, &e.Category, &e.Method, &e.Amount, &e.Currency,
 		&e.EffectiveDate, &e.RecordedAt, &e.AuthorUserID, &e.AuthorName, &e.Status, &e.ReconciledAt, &e.ReconciledBy, &e.ReconciledName,
 		&e.ReconcileNote, &e.ReversalOf, &e.ReversedBy, &e.CorrectionOf, &e.CorrectedBy, &e.TransferPair, &e.Settles, &e.Reason,
-		&e.ContactID, &e.ListingID, &e.LeaseID, &e.TenancyID, &e.Branch, &e.Description, &e.Reference, &e.PropertyID, &e.NoteCount,
+		&e.ContactID, &e.ListingID, &e.LeaseID, &e.TenancyID, &e.Branch, &e.Description, &e.Reference, &e.PropertyID, &e.BranchID, &e.NoteCount,
 		&e.AttachmentCount); err != nil {
 		return Entry{}, err
 	}
@@ -148,6 +148,9 @@ func entryWhere(book Book, f Filter) (string, []any) {
 	}
 	if f.Branch != nil {
 		add("COALESCE(lower(e.branch), '') = lower(?)", *f.Branch)
+	}
+	if f.OnlyBranch != nil {
+		add("(e.branch_id IS NULL OR e.branch_id = ?)", *f.OnlyBranch)
 	}
 	if f.ContactID != nil {
 		add("e.contact_id = ?", *f.ContactID)
@@ -398,9 +401,10 @@ func insertEntry(ctx context.Context, tx pgx.Tx, e Entry) error {
 	_, err := tx.Exec(ctx, `INSERT INTO ledger_entries (id, organisation_id, book_user_id, type, direction, category, method, amount, currency,
 		effective_date, recorded_at, author_user_id, author_name, status, reconciled_at, reconciled_by, reconciled_by_name, reconcile_note,
 		reversal_of, correction_of, transfer_pair, settles_entry_id, reason, contact_id, listing_id, lease_id, tenancy_id, branch, description, reference,
-		property_id)
+		property_id, branch_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::numeric, $9, $10::date, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24,
-		$25, $26, $27, $28, $29, $30, $31)`,
+		$25, $26, $27, $28, $29, $30, $31,
+		(SELECT b.id FROM organisation_branches b WHERE b.organisation_id = $2 AND lower(b.name) = lower(trim($28)) AND b.active))`,
 		e.ID, e.Book.OrganisationID, e.Book.UserID, e.Type, e.Direction, nullable(e.Category), nullable(e.Method), e.Amount, e.Currency,
 		e.EffectiveDate, e.RecordedAt, e.AuthorUserID, e.AuthorName, e.Status, e.ReconciledAt, e.ReconciledBy, e.ReconciledName,
 		nullable(e.ReconcileNote), e.ReversalOf, e.CorrectionOf, e.TransferPair, e.Settles, nullable(e.Reason), e.ContactID, e.ListingID,

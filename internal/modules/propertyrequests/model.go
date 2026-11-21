@@ -55,6 +55,9 @@ var (
 	ErrIdempotencyConflict = errors.New("idempotency key reused with different content")
 	// ErrNotFound is returned by Store.FindByIdempotencyKey when no request exists.
 	ErrNotFound = errors.New("property request not found")
+	// ErrBranchForbidden: the request is about a listing of another branch
+	// than the caller's (403 BRANCH_FORBIDDEN, API 0.57.0).
+	ErrBranchForbidden = errors.New("the request belongs to another branch")
 	// ErrReferenceCollision is returned by Store.Create when the generated
 	// human-friendly reference already exists; the service retries with a new one.
 	ErrReferenceCollision = errors.New("reference already in use")
@@ -250,10 +253,16 @@ const MaxInboxItems = 100
 //
 // Routing exceptions (no recipient) are never matched, and neither are other
 // people's direct-seller requests. Account roles play no part here.
+//
+// Branches (API 0.57.0): a caller pinned to a branch of an organisation
+// does not see that organisation's requests about listings of another
+// branch (requests about listings without a branch stay visible).
 type InboxScope struct {
 	UserID                 uuid.UUID
 	ManagedOrganisationIDs []uuid.UUID
 	MemberOrganisationIDs  []uuid.UUID
+	// Branches maps an organisation to the branch the caller is pinned to.
+	Branches map[uuid.UUID]uuid.UUID
 }
 
 // InboxItem is one request as shown to the receiving organisation. Status is

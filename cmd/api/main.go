@@ -23,6 +23,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/applications"
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/availability"
+	"rightproperty365.com/backend/internal/modules/branches"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/crm"
 	"rightproperty365.com/backend/internal/modules/dataexport"
@@ -170,6 +171,8 @@ func run() error {
 		savedSearchStore savedsearches.Store
 		// dataExportStore holds personal data export requests (API 0.55.0).
 		dataExportStore dataexport.Store
+		// branchStore holds organisation branches (API 0.57.0).
+		branchStore branches.Store
 		// analyticsStore holds the raw analytics events and the rollups.
 		analyticsStore analytics.Store
 		// crmStore holds the contact books; crmItems reads what contacts link to.
@@ -326,6 +329,7 @@ func run() error {
 			return fmt.Errorf("seed sample books: %w", err)
 		}
 		ledgerStore = memLedger
+		branchStore = app.MemoryBranches(memIdentity, memListings, memRequests, memLedger, memTeams.AuditSink())
 		// Properties and tenancies: the samples; creating, activating, ending and
 		// deleting a tenancy is audited into the team audit trail.
 		memTenancies := tenancies.NewMemoryStore()
@@ -595,6 +599,7 @@ func run() error {
 		savedStore = saved.NewPostgresStore(pool)
 		savedSearchStore = savedsearches.NewPostgresStore(pool)
 		dataExportStore = dataexport.NewPostgresStore(pool)
+		branchStore = branches.NewPostgresStore(pool)
 		analyticsStore = analytics.NewPostgresStore(pool)
 		crmStore, crmItems = crm.NewPostgresStore(pool), crm.NewPostgresItems(pool)
 		applicationStore = applications.NewPostgresStore(pool)
@@ -690,6 +695,7 @@ func run() error {
 		Saved:            savedStore,
 		SavedSearches:    savedSearchStore,
 		DataExports:      dataExportStore,
+		Branches:         branchStore,
 		Analytics:        analyticsStore,
 		CRM:              crmStore,
 		CRMItems:         crmItems,

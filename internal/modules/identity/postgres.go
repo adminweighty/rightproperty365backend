@@ -231,7 +231,7 @@ func (s *PostgresStore) loadUser(ctx context.Context, where string, arg any) (Us
 
 	// Active memberships of active organisations only.
 	rows, err = s.pool.Query(ctx, `
-		SELECT o.id, o.name, o.kind, mk.code, m.role
+		SELECT o.id, o.name, o.kind, mk.code, m.role, m.branch_id
 		FROM memberships m
 		JOIN organisations o ON o.id = m.organisation_id
 		JOIN markets mk ON mk.id = m.market_id
@@ -242,7 +242,7 @@ func (s *PostgresStore) loadUser(ctx context.Context, where string, arg any) (Us
 	}
 	u.Memberships, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (auth.Membership, error) {
 		var m auth.Membership
-		err := row.Scan(&m.OrganisationID, &m.OrganisationName, &m.OrganisationKind, &m.MarketCode, &m.Role)
+		err := row.Scan(&m.OrganisationID, &m.OrganisationName, &m.OrganisationKind, &m.MarketCode, &m.Role, &m.BranchID)
 		return m, err
 	})
 	if err != nil {

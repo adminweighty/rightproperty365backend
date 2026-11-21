@@ -29,7 +29,8 @@ const requestColumns = `pr.id, pr.reference, pr.market_id, pr.listing_id, pr.req
 	pr.recipient_type, pr.recipient_user_id, pr.recipient_organisation_id,
 	pr.check_in::text, pr.check_out::text, pr.guests, pr.created_at, pr.updated_at,
 	pr.exception_resolved_at, pr.exception_resolved_by, COALESCE(pr.exception_resolution_note, ''),
-	pr.message_count, pr.last_message_at, COALESCE(pr.last_message_author, ''), pr.customer_last_read_at, pr.professional_last_read_at`
+	pr.message_count, pr.last_message_at, COALESCE(pr.last_message_author, ''), pr.customer_last_read_at, pr.professional_last_read_at,
+	(SELECT lb.branch_id FROM listings lb WHERE lb.id = pr.listing_id)`
 
 const requestFrom = ` FROM property_requests pr LEFT JOIN users u ON u.id = pr.customer_user_id `
 
@@ -56,7 +57,7 @@ func scanRequest(row pgx.Row) (StoredRequest, error) {
 		&recipientType, &recipientUser, &recipientOrg,
 		&checkIn, &checkOut, &guests, &r.CreatedAt, &r.UpdatedAt,
 		&r.ResolvedAt, &r.ResolvedBy, &r.ResolutionNote,
-		&r.MessageCount, &r.LastMessageAt, &r.LastMessageAuthor, &r.CustomerLastReadAt, &r.ProfessionalLastReadAt)
+		&r.MessageCount, &r.LastMessageAt, &r.LastMessageAuthor, &r.CustomerLastReadAt, &r.ProfessionalLastReadAt, &r.ListingBranchID)
 	if err != nil {
 		return StoredRequest{}, err
 	}
@@ -102,6 +103,20 @@ func inboxWhere(f InboxFilter) (string, []any) {
 	add := func(clause string, arg any) {
 		args = append(args, arg)
 		where += " AND " + strings.ReplaceAll(clause, "?", fmt.Sprintf("$%d", len(args)))
+	}
+	// Branch pins (API 0.57.0): "org:branch" pairs; a request of a pinned
+	// organisation about a listing of another branch is left out.
+	if len(f.Scope.Branches) > 0 {
+		pairs := make([]string, 0, len(f.Scope.Branches))
+		for org, b := range f.Scope.Branches {
+			pairs = append(pairs, org.String()+":"+b.String())
+		}
+		args = append(args, pairs)
+		n := len(args)
+		where += fmt.Sprintf(` AND NOT EXISTS (SELECT 1 FROM listings lb, unnest($%d::text[]) pin
+			WHERE lb.id = pr.listing_id AND lb.branch_id IS NOT NULL
+			  AND split_part(pin, ':', 1)::uuid = pr.recipient_organisation_id
+			  AND split_part(pin, ':', 2)::uuid <> lb.branch_id)`, n)
 	}
 	if f.Type != "" {
 		add("pr.request_type = ?", f.Type)

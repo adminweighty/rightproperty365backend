@@ -90,6 +90,8 @@ func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 		httpx.WriteError(w, r, http.StatusUnauthorized, httpx.CodeUnauthenticated, "You need to sign in to do this.", nil)
 	case errors.Is(err, ErrBookNotFound):
 		httpx.WriteError(w, r, http.StatusNotFound, CodeBookNotFound, "These books do not exist or are not yours.", nil)
+	case errors.Is(err, ErrBranchForbidden):
+		httpx.WriteError(w, r, http.StatusForbidden, "BRANCH_FORBIDDEN", "This entry belongs to another branch of your organisation.", nil)
 	case errors.Is(err, ErrEntryNotFound):
 		httpx.WriteError(w, r, http.StatusNotFound, CodeEntryNotFound, "This entry does not exist in these books.", nil)
 	case errors.Is(err, ErrAttachmentNotFound):

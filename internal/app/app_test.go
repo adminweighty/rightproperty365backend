@@ -525,6 +525,7 @@ func newEnvWith(t *testing.T, mutate func(*config.Config), scanner malware.Scann
 		Applications: e.apps,
 		Venues:       e.venues,
 		Ledger:       e.ledger,
+		Branches:     MemoryBranches(e.identity, e.listings, e.requests, e.ledger, e.team.AuditSink()),
 		Tenancies:    e.tenancies,
 		Maintenance:  e.maintenance,
 		Inspections:  e.inspections,

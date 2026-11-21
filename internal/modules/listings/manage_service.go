@@ -61,6 +61,10 @@ const (
 	CodeInReview      = "LISTING_IN_REVIEW"
 )
 
+// ErrBranchForbidden is the answer to a member pinned to another branch
+// (403 BRANCH_FORBIDDEN, API 0.57.0).
+var ErrBranchForbidden = errors.New("the listing belongs to another branch")
+
 func conflict(message string) error { return &StateError{Code: CodeStateConflict, Message: message} }
 
 var errInReview = &StateError{Code: CodeInReview, Message: "The listing is waiting for review and cannot be changed until the review is done."}
@@ -134,6 +138,10 @@ func (mg *Manager) readable(ctx context.Context, p *auth.Principal, id uuid.UUID
 			return ManagedListing{}, ErrForbidden
 		}
 		return ManagedListing{}, ErrNotFound
+	}
+	// A member pinned to another branch (API 0.57.0, FR-002).
+	if m.OrganisationID != nil && !p.MayAccessBranch(*m.OrganisationID, m.BranchID) {
+		return ManagedListing{}, ErrBranchForbidden
 	}
 	return m, nil
 }
@@ -322,7 +330,7 @@ func (mg *Manager) view(ctx context.Context, m ManagedListing, canEdit bool, rev
 		CreatedAt: m.CreatedAt.UTC(), UpdatedAt: m.UpdatedAt.UTC(), Timeline: timelineViews(timeline, reviewer),
 	}
 	if m.OrganisationID != nil {
-		v.Owner.Type, v.Owner.OrganisationID = "organisation", m.OrganisationID
+		v.Owner.Type, v.Owner.OrganisationID, v.Owner.BranchID = "organisation", m.OrganisationID, m.BranchID
 	}
 	if err := mg.usage(ctx, &v, m, status, reviewer); err != nil {
 		return ManagedView{}, err

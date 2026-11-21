@@ -195,9 +195,12 @@ const (
 
 // Errors.
 var (
-	ErrUnauthenticated      = errors.New("not signed in")
-	ErrBookNotFound         = errors.New("book not found")
-	ErrEntryNotFound        = errors.New("ledger entry not found")
+	ErrUnauthenticated = errors.New("not signed in")
+	ErrBookNotFound    = errors.New("book not found")
+	ErrEntryNotFound   = errors.New("ledger entry not found")
+	// ErrBranchForbidden: the entry belongs to another branch than the
+	// caller's (403 BRANCH_FORBIDDEN, API 0.57.0).
+	ErrBranchForbidden      = errors.New("the ledger entry belongs to another branch")
 	ErrAttachmentNotFound   = errors.New("ledger attachment not found")
 	ErrCategoryNotFound     = errors.New("ledger category not found")
 	ErrForbidden            = errors.New("not allowed")
@@ -285,8 +288,12 @@ type Entry struct {
 	TenancyID *uuid.UUID
 	// PropertyID is set on the EXPENSE entry of a maintenance cost (and its
 	// reversal) only: the maintenance module posts those (API 0.36.2).
-	PropertyID  *uuid.UUID
-	Branch      string // "" when none
+	PropertyID *uuid.UUID
+	Branch     string // "" when none
+	// BranchID is the organisation branch Branch names (API 0.57.0): set by
+	// the stores when an organisation book's entry names an active branch;
+	// nil otherwise (free text, or a personal book).
+	BranchID    *uuid.UUID
 	Description string
 	Reference   string
 
@@ -359,17 +366,20 @@ func DefaultCategories() []Category {
 
 // Filter narrows a list of entries. Dates are inclusive "YYYY-MM-DD" ("" = open).
 type Filter struct {
-	Currency  string
-	Type      string
-	Category  string
-	Method    string
-	Status    string
-	From, To  string
-	Branch    *string
-	ContactID *uuid.UUID
-	ListingID *uuid.UUID
-	LeaseID   *uuid.UUID
-	Q         string
+	Currency string
+	Type     string
+	Category string
+	Method   string
+	Status   string
+	From, To string
+	Branch   *string
+	// OnlyBranch keeps the entries without a branch and those of this
+	// branch (a member pinned to it, API 0.57.0).
+	OnlyBranch *uuid.UUID
+	ContactID  *uuid.UUID
+	ListingID  *uuid.UUID
+	LeaseID    *uuid.UUID
+	Q          string
 	// ExcludeReversed hides reversed entries and REVERSAL entries.
 	ExcludeReversed bool
 	// Ascending sorts oldest first (effective date, then recorded_at, then id).

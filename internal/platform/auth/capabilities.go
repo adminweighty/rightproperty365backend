@@ -42,6 +42,31 @@ func (p *Principal) membership(organisationID uuid.UUID) (Membership, bool) {
 	return Membership{}, false
 }
 
+// MayAccessBranch reports whether the caller may see an object of the
+// organisation that belongs to branch (API 0.57.0): an object without a
+// branch, a member not pinned to one, or the member's own branch. It says
+// nothing about the organisation itself (the other checks do).
+func (p *Principal) MayAccessBranch(organisationID uuid.UUID, branch *uuid.UUID) bool {
+	if p == nil || branch == nil {
+		return true
+	}
+	m, ok := p.membership(organisationID)
+	return !ok || m.BranchID == nil || *m.BranchID == *branch
+}
+
+// BranchOf returns the branch the caller is pinned to in the organisation
+// (nil: none, or not a member).
+func (p *Principal) BranchOf(organisationID uuid.UUID) *uuid.UUID {
+	if p == nil {
+		return nil
+	}
+	m, ok := p.membership(organisationID)
+	if !ok {
+		return nil
+	}
+	return m.BranchID
+}
+
 // MayManageListings reports whether the caller may create and edit listings
 // of the organisation: an OWNER, MANAGER or AGENT of an organisation whose
 // kind manages listings. STAFF support the others and do not.

@@ -132,6 +132,9 @@ func (s *Service) entry(ctx context.Context, a access, id uuid.UUID) (Entry, err
 	if !e.Book.Same(a.book) {
 		return Entry{}, ErrEntryNotFound
 	}
+	if e.Book.OrganisationID != nil && !a.p.MayAccessBranch(*e.Book.OrganisationID, e.BranchID) {
+		return Entry{}, ErrBranchForbidden
+	}
 	return e, nil
 }
 
@@ -278,7 +281,7 @@ func (v *viewer) view(ctx context.Context, e Entry) (EntryView, error) {
 		SignedAmount: money.Format(signed, e.Currency), Currency: e.Currency, MinorUnit: money.MinorUnit(e.Currency),
 		EffectiveDate: e.EffectiveDate, RecordedAt: e.RecordedAt, Author: PersonRef{UserID: e.AuthorUserID, Name: e.AuthorName},
 		Status: e.Status, StatusLabel: StatusLabel(e.Status), Description: e.Description, Reference: e.Reference,
-		Branch: strPtr(e.Branch), ReversalOf: e.ReversalOf, ReversedBy: e.ReversedBy, CorrectionOf: e.CorrectionOf,
+		Branch: strPtr(e.Branch), BranchID: e.BranchID, ReversalOf: e.ReversalOf, ReversedBy: e.ReversedBy, CorrectionOf: e.CorrectionOf,
 		CorrectedBy: e.CorrectedBy, TransferPair: e.TransferPair, Settles: e.Settles, Reason: strPtr(e.Reason), TenancyID: e.TenancyID,
 		PropertyID: e.PropertyID, IsReversed: e.ReversedBy != nil, Cash: e.Cash(), NoteCount: e.NoteCount, AttachmentCount: e.AttachmentCount, Can: v.a.can(e),
 	}
@@ -608,6 +611,10 @@ func (s *Service) List(ctx context.Context, p *auth.Principal, bookID uuid.UUID,
 		return Page{}, err
 	}
 	f.Limit, f.Offset = size, (page-1)*size
+	if a.book.OrganisationID != nil {
+		// A member pinned to a branch (API 0.57.0).
+		f.OnlyBranch = a.p.BranchOf(*a.book.OrganisationID)
+	}
 	list, total, err := s.store.Entries(ctx, a.book, f)
 	if err != nil {
 		return Page{}, err

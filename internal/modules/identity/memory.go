@@ -24,6 +24,8 @@ type MemoryStore struct {
 	byEmail       map[string]uuid.UUID
 	organisations map[uuid.UUID]MemoryOrganisation
 	memberships   []memoryMembership
+	// branchOf returns a member's branch pin (API 0.57.0); nil: none.
+	branchOf      func(organisationID, userID uuid.UUID) *uuid.UUID
 	platformRoles map[uuid.UUID][]auth.PlatformRole
 	accountRoles  map[uuid.UUID][]AccountRole
 	sessions      map[string]*Session // key: hex token hash
@@ -439,9 +441,13 @@ func (s *MemoryStore) view(u *memoryUser) User {
 			continue
 		}
 		org := s.organisations[m.OrganisationID]
+		var branch *uuid.UUID
+		if s.branchOf != nil {
+			branch = s.branchOf(org.ID, u.ID)
+		}
 		out.Memberships = append(out.Memberships, auth.Membership{
 			OrganisationID: org.ID, OrganisationName: org.Name, OrganisationKind: org.Kind,
-			MarketCode: m.MarketCode, Role: m.Role,
+			MarketCode: m.MarketCode, Role: m.Role, BranchID: branch,
 		})
 	}
 	sort.SliceStable(out.Memberships, func(i, j int) bool {
@@ -833,4 +839,13 @@ func (s *MemoryStore) Sessions() []Session {
 		out = append(out, *sess)
 	}
 	return out
+}
+
+// SetBranchLookup tells the store which branch a member is pinned to (API
+// 0.57.0; the branches store owns the pins). The lookup must not call back
+// into this store.
+func (s *MemoryStore) SetBranchLookup(branchOf func(organisationID, userID uuid.UUID) *uuid.UUID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.branchOf = branchOf
 }

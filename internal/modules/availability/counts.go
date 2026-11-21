@@ -3,6 +3,7 @@ package availability
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/google/uuid"
 
@@ -42,6 +43,11 @@ func (s *Service) ListingCounts(ctx context.Context, p *auth.Principal) (Listing
 	if err != nil {
 		return ListingCounts{}, fmt.Errorf("load listings: %w", err)
 	}
+	// A member pinned to a branch sees the listings without a branch and
+	// those of their own branch (API 0.57.0).
+	records = slices.DeleteFunc(records, func(r listings.Record) bool {
+		return r.OrganisationID != nil && !p.MayAccessBranch(*r.OrganisationID, r.BranchID)
+	})
 	var published []uuid.UUID
 	now := s.clock()
 	for _, r := range records {
