@@ -55,6 +55,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/tax"
 	"rightproperty365.com/backend/internal/modules/teams"
 	"rightproperty365.com/backend/internal/modules/tenancies"
+	"rightproperty365.com/backend/internal/modules/uploads"
 	"rightproperty365.com/backend/internal/modules/venues"
 	"rightproperty365.com/backend/internal/platform/adminaudit"
 	"rightproperty365.com/backend/internal/platform/config"
@@ -174,6 +175,8 @@ func run() error {
 		savedSearchStore savedsearches.Store
 		// dataExportStore holds personal data export requests (API 0.55.0).
 		dataExportStore dataexport.Store
+		// uploadStore holds upload intents (API 0.60.0).
+		uploadStore uploads.Store
 		// branchStore holds organisation branches (API 0.57.0).
 		branchStore branches.Store
 		// analyticsStore holds the raw analytics events and the rollups.
@@ -300,6 +303,7 @@ func run() error {
 		memSavedSearches := savedsearches.NewMemoryStore()
 		savedSearchStore = memSavedSearches
 		dataExportStore = dataexport.NewMemoryStore()
+		uploadStore = uploads.NewMemoryStore()
 		memAnalytics := analytics.NewMemoryStore()
 		analyticsStore = memAnalytics
 		// Contact books: the sample ones, audited into the team audit trail.
@@ -607,6 +611,7 @@ func run() error {
 		savedStore = saved.NewPostgresStore(pool)
 		savedSearchStore = savedsearches.NewPostgresStore(pool)
 		dataExportStore = dataexport.NewPostgresStore(pool)
+		uploadStore = uploads.NewPostgresStore(pool)
 		branchStore = branches.NewPostgresStore(pool)
 		analyticsStore = analytics.NewPostgresStore(pool)
 		crmStore, crmItems = crm.NewPostgresStore(pool), crm.NewPostgresItems(pool)
@@ -705,6 +710,7 @@ func run() error {
 		Saved:         savedStore,
 		SavedSearches: savedSearchStore,
 		DataExports:   dataExportStore,
+		Uploads:       uploadStore,
 		EmailDelivery: emaildelivery.NewService(emaildelivery.Deps{Store: emailDeliveryStore,
 			Secret: cfg.ResendWebhookSecret.Reveal(), Logger: logger}),
 		Branches:         branchStore,

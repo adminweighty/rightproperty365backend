@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -177,8 +178,9 @@ type S3Config struct {
 	Transport http.RoundTripper
 }
 
-// S3 stores objects in one private bucket. It never makes an object public
-// and never produces a presigned URL.
+// S3 stores objects in one private bucket. It never makes an object public;
+// its only presigned URLs are short-lived PUTs for upload intents (API
+// 0.60.0, PresignPut).
 //
 // NOTE: the automated tests use a fake HTTP transport; put, get and delete
 // have also been run against MinIO and Amazon S3.
@@ -282,4 +284,39 @@ func (s *S3) Delete(ctx context.Context, key string) error {
 		return s3Error("delete object", err)
 	}
 	return nil
+}
+
+// Presigner makes a short-lived URL to PUT one object straight into private
+// storage (API 0.60.0, upload intents). Only S3 does.
+type Presigner interface {
+	PresignPut(ctx context.Context, key string, ttl time.Duration) (string, error)
+}
+
+// PresignPut returns a presigned PUT URL for key when the storage (or the
+// storage a scanner wraps) can make one; ok is false otherwise.
+func PresignPut(ctx context.Context, s Storage, key string, ttl time.Duration) (url string, ok bool, err error) {
+	for s != nil {
+		if p, is := s.(Presigner); is {
+			u, err := p.PresignPut(ctx, key, ttl)
+			return u, err == nil, err
+		}
+		w, wraps := s.(interface{ Base() Storage })
+		if !wraps {
+			break
+		}
+		s = w.Base()
+	}
+	return "", false, nil
+}
+
+// PresignPut implements Presigner.
+func (s *S3) PresignPut(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	if err := checkKey(key); err != nil {
+		return "", err
+	}
+	u, err := s.client.PresignedPutObject(ctx, s.bucket, key, ttl)
+	if err != nil {
+		return "", s3Error("presign", err)
+	}
+	return u.String(), nil
 }

@@ -44,6 +44,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/subscriptions"
 	"rightproperty365.com/backend/internal/modules/tax"
 	"rightproperty365.com/backend/internal/modules/tenancies"
+	"rightproperty365.com/backend/internal/modules/uploads"
 	"rightproperty365.com/backend/internal/modules/venues"
 	"rightproperty365.com/backend/internal/platform/config"
 	"rightproperty365.com/backend/internal/platform/database"
@@ -357,6 +358,9 @@ func run() error {
 	// in-app), and the ones older than 7 days are deleted.
 	// Email bounce and complaint spikes (API 0.59.0). The webhook itself is
 	// served by the API; the worker only counts.
+	// Upload intents not used within a day are deleted with their objects
+	// (API 0.60.0).
+	go app.RunUploadIntentSweeps(ctx, uploads.NewService(uploads.Deps{Store: uploads.NewPostgresStore(pool), Storage: files, Logger: logger}), logger)
 	go app.RunEmailDeliverySweeps(ctx, emaildelivery.NewService(emaildelivery.Deps{Store: emailDeliveries, Logger: logger}), logger)
 	go app.RunDataExportSweeps(ctx, dataexport.NewService(dataexport.NewPostgresStore(pool), files,
 		dataexport.NewPostgresCollector(pool), logger, nil), logger)

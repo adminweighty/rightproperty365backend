@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.59.0
+  version: 0.60.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,14 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Upload intents (new in 0.60.0, FR-010)
+    - `POST /v1/media/upload-intents` `{purpose: LISTING_PHOTO, content_type, size_bytes, sha256}` authorises one
+      upload and answers `{intent, upload: {method: PUT, url, headers, direct, expires_at}}`: a presigned S3 PUT valid 10
+      minutes (`direct: true`), or with local storage a path on this API (`PUT /v1/media/upload-intents/{id}/content`,
+      same session). `POST .../{id}/complete` checks size, SHA-256, the real type and malware: READY, or `422
+      UPLOAD_REJECTED` with `fields.reason` and the object deleted. `POST /v1/me/listings/{id}/photos` also takes JSON
+      `{upload_intent_id}` (used once). Intents not used within 24 hours are deleted with their objects.
 
     Email bounces and complaints (new in 0.59.0, FR-065)
     - `POST /v1/webhooks/email/resend`: Resend's signed delivery webhooks (Svix signature; `503 WEBHOOK_NOT_CONFIGURED`
@@ -2526,6 +2534,84 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
 
+  /v1/media/upload-intents:
+    post:
+      tags: [listings]
+      operationId: createUploadIntent
+      summary: "Authorise one upload (new in 0.60.0)"
+      security:
+        - bearerToken: []
+        - cookieSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{purpose: LISTING_PHOTO, content_type: image/jpeg|image/png|image/webp, size_bytes (≤ 15 MB), sha256 (hex)}"
+      responses:
+        "201":
+          description: "{intent, upload: {method, url, headers, direct, expires_at}}"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "429":
+          description: "UPLOAD_INTENTS_LIMIT (50 waiting) or the upload rate limit"
+  /v1/media/upload-intents/{intentId}:
+    parameters:
+      - { name: intentId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [listings]
+      operationId: getUploadIntent
+      summary: "One of the caller's upload intents (new in 0.60.0)"
+      security:
+        - bearerToken: []
+        - cookieSession: []
+      responses:
+        "200":
+          description: "{intent}"
+        "404":
+          description: "UPLOAD_INTENT_NOT_FOUND"
+  /v1/media/upload-intents/{intentId}/content:
+    parameters:
+      - { name: intentId, in: path, required: true, schema: { type: string, format: uuid } }
+    put:
+      tags: [listings]
+      operationId: putUploadIntentContent
+      summary: "The file, through the API when storage cannot take it directly (new in 0.60.0)"
+      security:
+        - bearerToken: []
+        - cookieSession: []
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "204":
+          description: "Stored, waiting to be completed."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "410":
+          description: "UPLOAD_INTENT_EXPIRED"
+  /v1/media/upload-intents/{intentId}/complete:
+    parameters:
+      - { name: intentId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [listings]
+      operationId: completeUploadIntent
+      summary: "Check the uploaded file: READY or rejected (new in 0.60.0)"
+      security:
+        - bearerToken: []
+        - cookieSession: []
+      responses:
+        "200":
+          description: "{intent} READY (completing again changes nothing)"
+        "409":
+          description: "UPLOAD_REJECTED NOT_UPLOADED: nothing uploaded yet (try again after the PUT)"
+        "422":
+          description: "UPLOAD_REJECTED with fields.reason: SIZE_MISMATCH, TOO_LARGE, CHECKSUM_MISMATCH, TYPE_NOT_ALLOWED, INFECTED, TOO_LARGE_TO_SCAN"
+        "503":
+          description: "SCANNER_UNAVAILABLE: nothing changed, complete again later"
   /v1/me/listings/{id}/photos:
     parameters:
       - $ref: "#/components/parameters/ManagedListingId"
@@ -2534,6 +2620,10 @@ paths:
       operationId: addMyListingPhoto
       summary: Upload one photo
       description: |
+        New in 0.60.0: or JSON `{upload_intent_id}`, a READY upload intent of purpose LISTING_PHOTO
+        (used once; `409 UPLOAD_INTENT_STATE` otherwise). Either way the photo is re-encoded, so no
+        EXIF or GPS metadata is kept.
+
         New in 0.22.0. `multipart/form-data` with exactly one part `file`. **At most 20 photos per
         listing**: the 21st is `409 PHOTO_LIMIT_REACHED`, "A property can have up to 20
         photos." (checked before and, atomically, while storing).

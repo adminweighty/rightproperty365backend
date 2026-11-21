@@ -53,6 +53,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/teams"
 	"rightproperty365.com/backend/internal/modules/tenancies"
 	"rightproperty365.com/backend/internal/modules/trust"
+	"rightproperty365.com/backend/internal/modules/uploads"
 	"rightproperty365.com/backend/internal/modules/venues"
 	"rightproperty365.com/backend/internal/platform/adminaudit"
 	"rightproperty365.com/backend/internal/platform/auth"
@@ -326,6 +327,9 @@ type Deps struct {
 	// EmailDelivery is Resend's delivery webhook, the suppressions and the
 	// administrators' email figures (API 0.59.0). Nil: no routes.
 	EmailDelivery *emaildelivery.Service
+	// Uploads holds upload intents (API 0.60.0). Nil: no intent routes, and
+	// photos are uploaded through the API only.
+	Uploads uploads.Store
 
 	// Analytics holds the raw analytics events and the daily rollups (API
 	// 0.30.0). The raw retention is Config.AnalyticsRawRetentionDays.
@@ -462,6 +466,11 @@ func NewRouter(d Deps) (http.Handler, error) {
 	manager := listings.NewManager(listingsSvc, manageStore, d.Files, logger)
 	manager.SetQuota(packagesSvc)
 	manageH := listings.NewManageHandler(manager, logger)
+	var uploadsSvc *uploads.Service
+	if d.Uploads != nil {
+		uploadsSvc = uploads.NewService(uploads.Deps{Store: d.Uploads, Storage: d.Files, Logger: logger, Now: d.Now})
+		manageH.SetUploads(uploadsSvc)
+	}
 	// Listing reports (API 0.54.0): anyone reports, the listing reviewers
 	// decide; both listing stores keep them.
 	var listingReportsH *listings.ReportHandler
@@ -1149,6 +1158,18 @@ func NewRouter(d Deps) (http.Handler, error) {
 		// The handlers decide who may do what (auth/capabilities.go): 403 for a
 		// caller who manages no listings (or may only read this one), 404 for
 		// a listing that is not theirs.
+		// Upload intents (API 0.60.0): authorise one upload, PUT it straight to
+		// private storage (or through here with local storage), complete it.
+		if uploadsSvc != nil {
+			uploadsH := uploads.NewHandler(uploadsSvc, logger)
+			r.Route("/media/upload-intents", func(r chi.Router) {
+				r.Use(auth.RequireAuth, httpx.PrivateNoStore)
+				r.With(uploadLimiter.Middleware).Post("/", uploadsH.Create)
+				r.Get("/{intentId}", uploadsH.Get)
+				r.With(uploadLimiter.Middleware).Put("/{intentId}/content", uploadsH.Content)
+				r.With(uploadLimiter.Middleware).Post("/{intentId}/complete", uploadsH.Complete)
+			})
+		}
 		r.Route("/me/listings", func(r chi.Router) {
 			r.Use(auth.RequireAuth)
 			r.Get("/", availabilityH.MyListings)

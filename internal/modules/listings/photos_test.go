@@ -80,3 +80,38 @@ func TestSlugFor(t *testing.T) {
 		}
 	}
 }
+
+// API 0.60.0, FR-010 "metadata strip": a JPEG carrying EXIF with a GPS
+// position comes out of ProcessPhoto without any EXIF (or other APPn)
+// segment: every stored variant is re-encoded from pixels only.
+func TestProcessPhotoStripsEXIFAndGPS(t *testing.T) {
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 800, 600)), nil); err != nil {
+		t.Fatal(err)
+	}
+	plain := buf.Bytes()
+	// An APP1 Exif segment with a GPS IFD marker and a recognisable position.
+	payload := append([]byte("Exif\x00\x00MM\x00\x2a\x00\x00\x00\x08"), []byte("GPSLatitude=17.8292S;GPSLongitude=31.0522E;Model=TestCam")...)
+	seg := []byte{0xff, 0xe1, byte((len(payload) + 2) >> 8), byte((len(payload) + 2) & 0xff)}
+	withExif := append(append(append([]byte{}, plain[:2]...), append(seg, payload...)...), plain[2:]...)
+	if !bytes.Contains(withExif, []byte("GPSLatitude")) {
+		t.Fatal("fixture")
+	}
+	out, err := ProcessPhoto(withExif)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range out.Variants {
+		for _, needle := range [][]byte{[]byte("Exif\x00\x00"), []byte("GPSLatitude"), []byte("17.8292"), []byte("TestCam")} {
+			if bytes.Contains(v.Data, needle) {
+				t.Fatalf("%s variant still holds %q", v.Size, needle)
+			}
+		}
+		for at := 2; at+4 <= len(v.Data) && v.Data[at] == 0xff && v.Data[at+1] != 0xda; {
+			if m := v.Data[at+1]; m >= 0xe1 && m <= 0xef {
+				t.Fatalf("%s variant has an APP%d segment", v.Size, m-0xe0)
+			}
+			at += 2 + int(v.Data[at+2])<<8 + int(v.Data[at+3])
+		}
+	}
+}

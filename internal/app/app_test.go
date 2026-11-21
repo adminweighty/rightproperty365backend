@@ -51,6 +51,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/subscriptions"
 	"rightproperty365.com/backend/internal/modules/teams"
 	"rightproperty365.com/backend/internal/modules/tenancies"
+	"rightproperty365.com/backend/internal/modules/uploads"
 	"rightproperty365.com/backend/internal/modules/venues"
 	"rightproperty365.com/backend/internal/platform/adminaudit"
 	"rightproperty365.com/backend/internal/platform/auth"
@@ -534,6 +535,7 @@ func newEnvWith(t *testing.T, mutate func(*config.Config), scanner malware.Scann
 		Accounts:     e.accounts, Subscriptions: e.subs, Reports: reportStore, AdminAudit: e.audit,
 		Saved: e.saved, SavedSearches: e.savedSearches, DataExports: e.dataExports, Analytics: e.analytics,
 		EmailDelivery: e.emailDelivery,
+		Uploads:       uploads.NewMemoryStore(),
 		CRM:           e.crm, CRMItems: e.crmItems,
 		Applications: e.apps,
 		Venues:       e.venues,

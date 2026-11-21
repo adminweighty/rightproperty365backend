@@ -503,6 +503,26 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 seeker saved searches and alerts. (Conversion funnels and response-time KPIs: API 0.38.0; replies
 to the customer: API 0.46.0, below.)
 
+## Upload intents (API 0.60.0)
+
+FR-010 ("backend authorises upload intent, issues short-lived presigned PUT …; orphan uploads expire"). Migration 0062
+(`upload_intents`). Module `internal/modules/uploads`; `storage.PresignPut` (S3 only, through the malware guard).
+
+- `POST /v1/media/upload-intents` `{purpose, content_type, size_bytes, sha256}` checks the purpose's allowlist (now
+  LISTING_PHOTO: JPEG, PNG or WebP, ≤ 15 MB) and returns where to PUT: a **presigned S3 PUT valid 10 minutes** to a random
+  private `intents/…` key, or with local storage `PUT /v1/media/upload-intents/{id}/content` on this API. At most 50
+  intents waiting per person.
+- `POST /v1/media/upload-intents/{id}/complete` reads the object and checks the declared size, the SHA-256, the real
+  type (sniffed) and malware (`storage.Screen`). Anything wrong is `422 UPLOAD_REJECTED` with the reason, and the object
+  is deleted at once, so an infected or mistyped file is never served. A scanner outage changes nothing (`503`, complete
+  again later).
+- `POST /v1/me/listings/{id}/photos` also accepts JSON `{upload_intent_id}`. The READY intent goes through the same
+  processing as the multipart upload (which keeps working), so the photo is re-encoded and **no EXIF or GPS metadata is
+  kept** (tested). The intent is then USED and its object deleted.
+- The worker's sweep (every 15 minutes) deletes intents not used within 24 hours, with their objects.
+- **Direct browser uploads to S3 need the bucket's CORS** to allow PUT from the site's origin. That is a bucket setting,
+  not changed by the code; until it is set, the website falls back to the through-API upload.
+
 ## Email bounces and complaints (API 0.59.0)
 
 FR-065 ("measure … email bounce"). Migration 0061 (`email_messages.delivery_state`, `email_delivery_events`,

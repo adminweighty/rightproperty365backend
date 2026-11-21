@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 
 	"rightproperty365.com/backend/internal/modules/packages"
+	"rightproperty365.com/backend/internal/modules/uploads"
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/httpx"
 )
@@ -50,9 +51,14 @@ const (
 // ManageHandler serves /v1/me/listings (the advertiser's side),
 // /v1/admin/listings (the reviewers') and /v1/listing-photos.
 type ManageHandler struct {
-	mg     *Manager
-	logger *slog.Logger
+	mg      *Manager
+	logger  *slog.Logger
+	uploads *uploads.Service
 }
+
+// SetUploads lets AddPhoto take a READY upload intent (API 0.60.0) instead
+// of a multipart body.
+func (h *ManageHandler) SetUploads(u *uploads.Service) { h.uploads = u }
 
 // NewManageHandler builds the handler.
 func NewManageHandler(mg *Manager, logger *slog.Logger) *ManageHandler {
@@ -324,6 +330,36 @@ func (h *ManageHandler) AddPhoto(w http.ResponseWriter, r *http.Request) {
 	id, err := listingID(r, "id")
 	if err != nil {
 		h.fail(w, r, err)
+		return
+	}
+	// An upload intent (API 0.60.0): JSON {"upload_intent_id"}. The file was
+	// checked when it was completed; it goes through the same processing
+	// (re-encoding drops EXIF and GPS) and the intent is used once.
+	if mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); mt == "application/json" && h.uploads != nil {
+		var in struct {
+			UploadIntentID string `json:"upload_intent_id"`
+		}
+		if !httpx.DecodeJSON(w, r, &in) {
+			return
+		}
+		intent, err := uuid.Parse(in.UploadIntentID)
+		if err != nil {
+			httpx.WriteError(w, r, http.StatusBadRequest, httpx.CodeValidationFailed, "Some fields need your attention.",
+				map[string]string{"upload_intent_id": "must be the id of a completed upload"})
+			return
+		}
+		content, err := h.uploads.Read(r.Context(), p, intent, uploads.PurposeListingPhoto)
+		if err != nil {
+			uploads.Fail(w, r, h.logger, err)
+			return
+		}
+		v, err := h.mg.AddPhoto(r.Context(), p, id, content)
+		if err == nil {
+			if cerr := h.uploads.Consume(r.Context(), intent); cerr != nil {
+				h.logger.WarnContext(r.Context(), "listing photo: could not mark the upload intent used", slog.String("intent_id", intent.String()), slog.String("error", cerr.Error()))
+			}
+		}
+		h.writeManaged(w, r, http.StatusCreated, v, err)
 		return
 	}
 	content, err := readPhoto(r)
