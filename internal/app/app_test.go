@@ -28,6 +28,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/availability"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/crm"
+	"rightproperty365.com/backend/internal/modules/dataexport"
 	"rightproperty365.com/backend/internal/modules/developments"
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/health"
@@ -285,6 +286,8 @@ type env struct {
 	saved *saved.MemoryStore
 	// savedSearches holds saved searches (API 0.52.0).
 	savedSearches *savedsearches.MemoryStore
+	// dataExports holds data export requests (API 0.55.0).
+	dataExports *dataexport.MemoryStore
 	// analytics holds the raw analytics events and the rollups (empty).
 	analytics *analytics.MemoryStore
 	// crm holds the contact books (the sample ones); crmItems reads the
@@ -466,6 +469,7 @@ func newEnvWith(t *testing.T, mutate func(*config.Config), scanner malware.Scann
 	}
 	e.saved = saved.NewMemoryStore()
 	e.savedSearches = savedsearches.NewMemoryStore()
+	e.dataExports = dataexport.NewMemoryStore()
 	e.developments = developments.NewMemoryStore()
 	e.inbox = inapp.NewMemoryStore()
 	e.inboxSvc = inapp.NewService(e.inbox, "log", logger, func() time.Time { return e.now })
@@ -515,7 +519,7 @@ func newEnvWith(t *testing.T, mutate func(*config.Config), scanner malware.Scann
 		Leases:       e.leases,
 		Agreements:   e.agree,
 		Accounts:     e.accounts, Subscriptions: e.subs, Reports: reportStore, AdminAudit: e.audit,
-		Saved: e.saved, SavedSearches: e.savedSearches, Analytics: e.analytics,
+		Saved: e.saved, SavedSearches: e.savedSearches, DataExports: e.dataExports, Analytics: e.analytics,
 		CRM: e.crm, CRMItems: e.crmItems,
 		Applications: e.apps,
 		Venues:       e.venues,

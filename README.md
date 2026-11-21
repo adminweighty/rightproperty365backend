@@ -502,6 +502,25 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 seeker saved searches and alerts. (Conversion funnels and response-time KPIs: API 0.38.0; replies
 to the customer: API 0.46.0, below.)
 
+## Personal data export (API 0.55.0)
+
+FSD section 9 ("data export/delete requests"). Migration 0057 (`data_exports`). Module `internal/modules/dataexport`.
+
+- `POST /v1/me/data-export` (a customer session; administrator sessions `403 PLATFORM_ACCOUNT`) -> `202`. One export
+  in 24 hours (`409 EXPORT_RECENT`; a FAILED one does not count), under a per-user lock. `GET /v1/me/data-export` shows
+  the newest (`REQUESTED` while being built, `READY` with `expires_at`, `EXPIRED`, `FAILED`).
+- **Build** (`app.RunDataExportSweeps` in the worker, every minute, SKIP LOCKED with a 10-minute lease, 3 attempts):
+  `dataexport.PostgresCollector` reads one JSON section per kind of data, scoped to the person, with secrets removed
+  (`to_jsonb(row) - <columns>`): no password hash, session token, push token, unsubscribe token, signature image or
+  the identities of the other side (the advertiser's messages become "the advertiser"). Organisation data the person
+  works on (contact books, ledgers, tenancies, requests received) is the organisation's and is left out. A ZIP with
+  `README.txt` and the sections goes to the private bucket (`exports/<random>`); `DATA_EXPORT_READY` (written with
+  READY in one transaction) sends `data-export-ready` (email; the link opens `/account/data-export`, never the file)
+  and the in-app `DATA_EXPORT_READY` notice.
+- **Download** `GET /v1/me/data-export/download`: streamed through the API to the signed-in owner only (`no-store`,
+  attachment); there is no presigned bucket link. Each download is counted on the row. After 7 days the sweep deletes
+  the object and marks the request EXPIRED.
+
 ## Listing reports, moderation and duplicate flags (API 0.54.0)
 
 BR-018. Migration 0056 (`listing_reports`).

@@ -25,6 +25,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/availability"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/crm"
+	"rightproperty365.com/backend/internal/modules/dataexport"
 	"rightproperty365.com/backend/internal/modules/developments"
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/health"
@@ -167,6 +168,8 @@ func run() error {
 		savedStore saved.Store
 		// savedSearchStore holds saved searches (API 0.52.0).
 		savedSearchStore savedsearches.Store
+		// dataExportStore holds personal data export requests (API 0.55.0).
+		dataExportStore dataexport.Store
 		// analyticsStore holds the raw analytics events and the rollups.
 		analyticsStore analytics.Store
 		// crmStore holds the contact books; crmItems reads what contacts link to.
@@ -290,6 +293,7 @@ func run() error {
 		savedStore = memSaved
 		memSavedSearches := savedsearches.NewMemoryStore()
 		savedSearchStore = memSavedSearches
+		dataExportStore = dataexport.NewMemoryStore()
 		memAnalytics := analytics.NewMemoryStore()
 		analyticsStore = memAnalytics
 		// Contact books: the sample ones, audited into the team audit trail.
@@ -587,6 +591,7 @@ func run() error {
 		reportStore = reports.NewPostgresStore(pool)
 		savedStore = saved.NewPostgresStore(pool)
 		savedSearchStore = savedsearches.NewPostgresStore(pool)
+		dataExportStore = dataexport.NewPostgresStore(pool)
 		analyticsStore = analytics.NewPostgresStore(pool)
 		crmStore, crmItems = crm.NewPostgresStore(pool), crm.NewPostgresItems(pool)
 		applicationStore = applications.NewPostgresStore(pool)
@@ -681,6 +686,7 @@ func run() error {
 		AdminAudit:       adminAuditLog,
 		Saved:            savedStore,
 		SavedSearches:    savedSearchStore,
+		DataExports:      dataExportStore,
 		Analytics:        analyticsStore,
 		CRM:              crmStore,
 		CRMItems:         crmItems,

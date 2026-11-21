@@ -79,6 +79,8 @@ func SampleData(name string) Data {
 		d.StatusText = "Rejected"
 		d.Name, d.Path, d.RoleName = "Sample Plumbers Owner", "/account", "Property Service Provider"
 		d.Reason = "We could not confirm the business registration with the documents provided."
+	case "data-export-ready":
+		d.Name, d.Path, d.ExpiresOn = "Tendai Ncube", "/account/data-export", sampleTime.AddDate(0, 0, 7)
 	case "saved-search-alert":
 		d.Name, d.Path, d.WithName = "Tendai Ncube", "/listings", "Houses to rent in Borrowdale"
 		d.MatchTotal, d.MatchMore = 2, false

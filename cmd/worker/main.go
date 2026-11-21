@@ -22,6 +22,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/applications"
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/crm"
+	"rightproperty365.com/backend/internal/modules/dataexport"
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/inapp"
 	"rightproperty365.com/backend/internal/modules/inspections"
@@ -341,6 +342,13 @@ func run() error {
 	// so a rolling schedule gains the next month's due when the month turns.
 	go app.RunRentScheduleSweeps(ctx, tenancies.NewService(tenancies.Deps{Store: tenancies.NewPostgresStore(pool), Logger: logger}), logger)
 	logger.Info("rent schedule job scheduled", slog.Duration("interval", app.RentScheduleSweepInterval))
+
+	// Personal data export (API 0.55.0): every minute the requested exports
+	// are built into the private bucket (DATA_EXPORT_READY: email and
+	// in-app), and the ones older than 7 days are deleted.
+	go app.RunDataExportSweeps(ctx, dataexport.NewService(dataexport.NewPostgresStore(pool), files,
+		dataexport.NewPostgresCollector(pool), logger, nil), logger)
+	logger.Info("data export job scheduled", slog.Duration("interval", dataexport.SweepInterval))
 
 	// Placements (API 0.53.0): every five minutes the listings show exactly
 	// their active featured or sponsored placement (LISTING_UPDATED for the

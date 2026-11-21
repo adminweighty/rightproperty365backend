@@ -23,6 +23,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
 	"rightproperty365.com/backend/internal/modules/crm"
 	"rightproperty365.com/backend/internal/modules/dashboard"
+	"rightproperty365.com/backend/internal/modules/dataexport"
 	"rightproperty365.com/backend/internal/modules/developments"
 	"rightproperty365.com/backend/internal/modules/directory"
 	"rightproperty365.com/backend/internal/modules/health"
@@ -317,6 +318,9 @@ type Deps struct {
 	// SavedSearches holds saved searches and their alert state (API 0.52.0).
 	// Nil: the routes answer 404 (a test double without them).
 	SavedSearches savedsearches.Store
+	// DataExports holds personal data export requests (API 0.55.0). Nil: no
+	// export routes (a test double without them).
+	DataExports dataexport.Store
 
 	// Analytics holds the raw analytics events and the daily rollups (API
 	// 0.30.0). The raw retention is Config.AnalyticsRawRetentionDays.
@@ -464,6 +468,12 @@ func NewRouter(d Deps) (http.Handler, error) {
 		return nil, errors.New("app: no saved-listings store")
 	}
 	savedH := saved.NewHandler(saved.NewService(d.Saved, listingsSvc, d.Now), logger)
+	// Personal data export (API 0.55.0): the API takes requests and serves
+	// the archive; the worker builds it.
+	var dataExportH *dataexport.Handler
+	if d.DataExports != nil {
+		dataExportH = dataexport.NewHandler(dataexport.NewService(d.DataExports, d.Files, nil, logger, d.Now), logger)
+	}
 	// Saved searches (API 0.52.0): validated with the search's own parser.
 	var savedSearchesH *savedsearches.Handler
 	if d.SavedSearches != nil {
@@ -1090,6 +1100,13 @@ func NewRouter(d Deps) (http.Handler, error) {
 			r.With(listingLimiter.Middleware).Put("/{listingId}", savedH.Save)
 			r.With(listingLimiter.Middleware).Delete("/{listingId}", savedH.Remove)
 		})
+		// Personal data export (API 0.55.0): one a day; the archive streams
+		// to its owner only.
+		if dataExportH != nil {
+			r.With(auth.RequireAuth).Get("/me/data-export", dataExportH.Latest)
+			r.With(auth.RequireAuth, authLimiter.Middleware).Post("/me/data-export", dataExportH.Request)
+			r.With(auth.RequireAuth, httpx.PrivateNoStore).Get("/me/data-export/download", dataExportH.Download)
+		}
 		// Saved searches and alerts (API 0.52.0, FR-042).
 		if savedSearchesH != nil {
 			r.Route("/me/saved-searches", func(r chi.Router) {

@@ -34,6 +34,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/applications"
 	"rightproperty365.com/backend/internal/modules/appointments"
 	"rightproperty365.com/backend/internal/modules/businessenquiries"
+	"rightproperty365.com/backend/internal/modules/dataexport"
 	"rightproperty365.com/backend/internal/modules/identity"
 	"rightproperty365.com/backend/internal/modules/inapp"
 	"rightproperty365.com/backend/internal/modules/inspections"
@@ -660,7 +661,7 @@ func EventTypes() []string {
 		identity.EventAdminMFARecoveryCodeUsed,
 		identity.EventAdminMFAReset,
 	}, onboarding.EventTypes()...), append(append(append(append(appointments.EventTypes(), listings.ReviewEventTypes()...), listings.ExpiryEventTypes()...),
-		accounts.EventTypes()...), append(append(subscriptions.EventTypes(), applications.OutboxEventTypes()...), append(append(append(venues.EventTypes(), maintenance.OutboxEventTypes()...), inspections.OutboxEventTypes()...), reviews.OutboxEventTypes()...)...)...)...), append(invoices.EventTypes(), savedsearches.EventTypes()...)...)
+		accounts.EventTypes()...), append(append(subscriptions.EventTypes(), applications.OutboxEventTypes()...), append(append(append(venues.EventTypes(), maintenance.OutboxEventTypes()...), inspections.OutboxEventTypes()...), reviews.OutboxEventTypes()...)...)...)...), append(append(invoices.EventTypes(), savedsearches.EventTypes()...), dataexport.EventTypes()...)...)
 }
 
 // PathOnboarding is the web page where an applicant fills in an application.
@@ -868,6 +869,11 @@ func (h *Handlers) build(ctx context.Context, ev outbox.Event) ([]plan, error) {
 
 	case invoices.EventSent, invoices.EventOverdue, invoices.EventPaymentRecorded:
 		if err := h.invoiceNotes(ctx, ev, add); err != nil {
+			return nil, err
+		}
+
+	case dataexport.EventReady:
+		if err := h.dataExportNotes(ctx, ev, add); err != nil {
 			return nil, err
 		}
 

@@ -1,0 +1,9 @@
+{{define "subject"}}Your data export is ready{{end}}
+{{define "heading"}}Your data export is ready{{end}}
+{{define "button"}}Download it from your account{{end}}
+{{define "why"}}You are receiving this because you asked for a copy of your data on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+The copy of your data you asked for is ready. Sign in and download it from your account. It is kept until {{.ExpiresOn.Format "2 January 2006"}}, then deleted.
+
+If you did not ask for it, change your password and sign out the devices you do not recognise.{{end}}

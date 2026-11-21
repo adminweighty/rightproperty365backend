@@ -71,6 +71,7 @@ func Templates() []Template {
 		{"appointment-cancelled", "Appointment cancelled (to the customer)", true},
 		{"appointment-reminder", "Reminder a day before a confirmed appointment (to the customer)", true},
 		{"appointment-reminder-professional", "Reminder a day before a confirmed appointment (to the professional)", true},
+		{"data-export-ready", "A personal data export is ready (to the person; the link opens the account page, never the file)", true},
 		{"saved-search-alert", "New listings for a saved search (to the customer, with an unsubscribe link)", true},
 		{"listing-approved", "Listing or its changes approved (to the advertiser)", true},
 		{"listing-changes-requested", "Listing needs changes (to the advertiser)", true},

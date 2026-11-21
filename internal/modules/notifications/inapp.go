@@ -120,6 +120,8 @@ var inAppTemplates = map[string]inAppTemplate{
 		title: func(d mail.Data) string { return "A new time was proposed for your " + kind(d) }},
 	"appointment-cancelled": {typ: inapp.TypeAppointmentCancelled, path: pathMyAppointments,
 		title: func(d mail.Data) string { return "Your " + kind(d) + " was cancelled" }},
+	// Personal data export (API 0.55.0).
+	"data-export-ready": {typ: inapp.TypeDataExportReady, title: fixed("Your data export is ready"), path: PathDataExport, noRef: true},
 	// Saved search alerts (API 0.52.0): never the search's own name.
 	"saved-search-alert": {typ: inapp.TypeSavedSearchAlert, title: fixed("New listings for your saved search"), path: PathSavedSearches},
 	// Reminders (API 0.51.0).

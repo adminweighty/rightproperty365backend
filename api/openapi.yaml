@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.54.0
+  version: 0.55.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,11 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Personal data export (new in 0.55.0, FSD section 9)
+    - `POST /v1/me/data-export` -> `202 {export}` (one a day: `409 EXPORT_RECENT`; administrator sessions `403
+      PLATFORM_ACCOUNT`), `GET /v1/me/data-export` -> `{export | null}`, `GET /v1/me/data-export/download` -> the ZIP
+      to its owner (`404 EXPORT_NOT_READY`). Built by the worker; kept 7 days.
 
     Listing reports and moderation (new in 0.54.0, BR-018)
     - `POST /v1/listings/{slug}/reports` `{reason FRAUD|MISLEADING|ALREADY_SOLD_OR_LET|WRONG_PRICE|DUPLICATE|OFFENSIVE|OTHER,
@@ -11062,6 +11067,38 @@ paths:
           description: "See the summary above."
         "400":
           $ref: "#/components/responses/ValidationFailed"
+  /v1/me/data-export:
+    get:
+      tags: [account]
+      operationId: getMyDataExport
+      summary: "The newest data export request (new in 0.55.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: "See the summary above."
+    post:
+      tags: [account]
+      operationId: requestMyDataExport
+      summary: "Ask for a copy of your data (one a day) (new in 0.55.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "202":
+          description: "See the summary above."
+  /v1/me/data-export/download:
+    get:
+      tags: [account]
+      operationId: downloadMyDataExport
+      summary: "Download the ready archive (ZIP, owner only) (new in 0.55.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: "See the summary above."
   /v1/appointments:
     post:
       tags: [appointments]
