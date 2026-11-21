@@ -17,6 +17,10 @@ func SampleData(name string) Data {
 	switch name {
 	case "verify-email":
 		d.Path, d.Query = "/verify-email", url.Values{"token": {sampleToken}}
+	case "email-change-confirm":
+		d.Name, d.Path, d.Query = "Tendai Ncube", "/confirm-email-change", url.Values{"token": {"sample-token"}}
+	case "email-change-notice":
+		d.Name, d.Path, d.WithName, d.StatusText = "Tendai Ncube", "/account/security", "t***@example.com", "requested"
 	case "reset-password":
 		d.Path, d.Query = "/reset-password", url.Values{"token": {sampleToken}}
 	case "password-changed", "account-exists":

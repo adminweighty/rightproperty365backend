@@ -10,6 +10,8 @@ import (
 // Store persists users, their roles, sessions and one-time tokens. Token and
 // session lookups are always by SHA-256 digest; raw tokens are never stored.
 type Store interface {
+	// SecurityStore is account security (API 0.50.0, security.go).
+	SecurityStore
 	// CreateUser atomically creates the account, its registration consent
 	// record, its marketing consent record when it opts in (context
 	// REGISTRATION) and its account roles. It returns ErrEmailTaken when the email is

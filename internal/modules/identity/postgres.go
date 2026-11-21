@@ -498,9 +498,9 @@ func (s *PostgresStore) ResetPassword(ctx context.Context, tokenHash []byte, pas
 func (s *PostgresStore) CreateSession(ctx context.Context, sess Session, events ...OutboxEvent) error {
 	return s.inTx(ctx, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO sessions (id, user_id, token_hash, delivery, created_at, last_seen_at, expires_at, scope)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-			sess.ID, sess.UserID, sess.TokenHash, sess.Delivery, sess.CreatedAt, sess.LastSeenAt, sess.ExpiresAt, sess.Scope); err != nil {
+			INSERT INTO sessions (id, user_id, token_hash, delivery, created_at, last_seen_at, expires_at, scope, client)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULLIF($9, ''))`,
+			sess.ID, sess.UserID, sess.TokenHash, sess.Delivery, sess.CreatedAt, sess.LastSeenAt, sess.ExpiresAt, sess.Scope, sess.Client); err != nil {
 			return fmt.Errorf("insert session: %w", err)
 		}
 		for _, e := range events {

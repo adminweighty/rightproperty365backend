@@ -1,0 +1,9 @@
+{{define "preheader"}}{{if eq .StatusText "changed"}}Your account's email address was changed.{{else}}A change of your account's email address was requested.{{end}}{{end}}
+{{define "heading"}}{{if eq .StatusText "changed"}}Your email address was changed{{else}}Email change requested{{end}}{{end}}
+{{define "button"}}Review your account security{{end}}
+{{define "why"}}You are receiving this because this is, or was, the email address of your RightProperty365 account.{{end}}
+{{define "body"}}
+<p class="ink" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;color:#131722;">{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}</p>
+<p class="ink" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;color:#131722;">{{if eq .StatusText "changed"}}The email address of your RightProperty365 account is now {{.WithName}}. Emails from us now go there.{{else}}Someone asked to change the email address of your RightProperty365 account to {{.WithName}}. It changes only when the link sent to that address is opened.{{end}}</p>
+<p class="muted" style="margin:0 0 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:14px;line-height:21px;color:#4f586a;">If this was not you, change your password now and sign out the devices you do not recognise.</p>
+{{end}}

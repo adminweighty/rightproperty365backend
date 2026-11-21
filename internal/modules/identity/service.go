@@ -139,6 +139,8 @@ type ConsentInput struct {
 type Service struct {
 	store  Store
 	mailer Mailer
+	// securityMailer sends the email-change emails (API 0.50.0; nil: none).
+	securityMailer SecurityMailer
 	hasher Hasher
 	logger *slog.Logger
 	now    func() time.Time
@@ -674,7 +676,7 @@ func (s *Service) startSession(ctx context.Context, user User, delivery, scope s
 	}
 	sess := Session{
 		ID: id, UserID: user.ID, TokenHash: hash, Scope: scope, Delivery: delivery,
-		CreatedAt: now, LastSeenAt: now, ExpiresAt: now.Add(ttl),
+		CreatedAt: now, LastSeenAt: now, ExpiresAt: now.Add(ttl), Client: clientOf(ctx),
 	}
 	var events []OutboxEvent
 	if scope == auth.ScopeAdmin {

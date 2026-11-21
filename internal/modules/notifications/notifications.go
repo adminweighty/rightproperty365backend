@@ -202,6 +202,25 @@ func (m *AccountMailer) SendPasswordReset(ctx context.Context, to, name, token s
 	return m.send(ctx, "reset-password", to, mail.Data{Name: name, Path: PathResetPass, Query: url.Values{"token": {token}}})
 }
 
+// PathConfirmEmailChange is the web page that confirms a new email address.
+const PathConfirmEmailChange = "/confirm-email-change"
+
+// SendEmailChangeConfirm implements identity.SecurityMailer: the link that
+// confirms a new address, sent to that address (API 0.50.0).
+func (m *AccountMailer) SendEmailChangeConfirm(ctx context.Context, to, name, token string) error {
+	return m.send(ctx, "email-change-confirm", to, mail.Data{Name: name, Path: PathConfirmEmailChange, Query: url.Values{"token": {token}}})
+}
+
+// SendEmailChangeNotice implements identity.SecurityMailer: the notice to
+// the current address that a change was asked for or made (API 0.50.0).
+func (m *AccountMailer) SendEmailChangeNotice(ctx context.Context, to, name, maskedNew string, done bool) error {
+	status := "requested"
+	if done {
+		status = "changed"
+	}
+	return m.send(ctx, "email-change-notice", to, mail.Data{Name: name, Path: "/account/security", WithName: maskedNew, StatusText: status})
+}
+
 // SendAccountExists implements identity.Mailer.
 func (m *AccountMailer) SendAccountExists(ctx context.Context, to, name string) error {
 	return m.send(ctx, "account-exists", to, mail.Data{Name: name, Path: PathSignIn})

@@ -573,6 +573,10 @@ func NewRouter(d Deps) (http.Handler, error) {
 
 	secure := cfg.Env != config.EnvDevelopment
 	identityH := identity.NewHandler(identitySvc, logger, secure)
+	// Account security (API 0.50.0): the email-change emails.
+	if sm, ok := d.Mailer.(identity.SecurityMailer); ok {
+		identitySvc.SetSecurityMailer(sm)
+	}
 	if d.Inbox == nil {
 		return nil, errors.New("app: no notification centre")
 	}
@@ -942,6 +946,12 @@ func NewRouter(d Deps) (http.Handler, error) {
 		// The question of the registration form, in its own bucket so that
 		// asking for one does not use up the sign-in allowance.
 		r.Route("/auth", func(r chi.Router) {
+			// The device label of the sessions signing in starts (API 0.50.0).
+			r.Use(func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					next.ServeHTTP(w, r.WithContext(identity.WithClient(r.Context(), r.UserAgent())))
+				})
+			})
 			r.With(captchaLimiter.Middleware).Get("/captcha", identityH.Captcha)
 			// The second step of signing in: the emailed code.
 			r.With(codeLimiter.Middleware).Post("/login/verify", identityH.LoginVerify)
@@ -959,6 +969,14 @@ func NewRouter(d Deps) (http.Handler, error) {
 		})
 
 		r.With(auth.RequireAuth).Get("/me", identityH.Me)
+		// Account security (API 0.50.0): change the password, the signed-in
+		// devices, change the email address (confirmed from the new address).
+		r.With(auth.RequireAuth, authLimiter.Middleware).Post("/me/password", identityH.ChangePassword)
+		r.With(auth.RequireAuth).Get("/me/sessions", identityH.Sessions)
+		r.With(auth.RequireAuth).Delete("/me/sessions/{id}", identityH.RevokeSession)
+		r.With(auth.RequireAuth).Post("/me/sessions/revoke-others", identityH.RevokeOtherSessions)
+		r.With(auth.RequireAuth, authLimiter.Middleware).Post("/me/email", identityH.RequestEmailChange)
+		r.With(authLimiter.Middleware).Post("/auth/email-change/confirm", identityH.ConfirmEmailChange)
 		// The notification centre: devices, in-app notifications and
 		// preferences (API 0.35.0).
 		settingsLimiter := newSettingsLimiter()

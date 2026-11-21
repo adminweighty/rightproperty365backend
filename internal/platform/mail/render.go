@@ -46,6 +46,8 @@ func Templates() []Template {
 	return []Template{
 		{"verify-email", "Confirm your email address", true},
 		{"reset-password", "Reset your password", true},
+		{"email-change-confirm", "Confirm your new email address (to the new address, single-use link)", true},
+		{"email-change-notice", "Your email address is being changed / was changed (to the old address)", true},
 		{"password-changed", "Password changed (security notice)", true},
 		{"welcome", "Welcome, after verification", true},
 		{"admin-sign-in", "Administrator sign-in notice", true},

@@ -303,6 +303,8 @@ type Session struct {
 	LastSeenAt time.Time
 	ExpiresAt  time.Time // absolute expiry
 	RevokedAt  *time.Time
+	// Client is the browser and system label recorded at sign-in (API 0.50.0).
+	Client string
 }
 
 // UserView is the `user` object of the API (GET /v1/me, login, verify-email).

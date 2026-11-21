@@ -29,6 +29,8 @@ type MemoryStore struct {
 	sessions      map[string]*Session // key: hex token hash
 	verifications map[string]*memoryToken
 	resets        map[string]*memoryToken
+	// emailChanges are the pending changes of address (security.go).
+	emailChanges map[string]*memoryEmailChange
 	captchas      map[string]*memoryCaptcha  // key: captcha id
 	challenges    map[string]*LoginChallenge // key: hex id hash
 	consents      []MemoryConsent

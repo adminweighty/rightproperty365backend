@@ -1,0 +1,17 @@
+Subject: Confirm your new email address
+
+Confirm your new email address
+
+Hello Tendai Ncube,
+
+Someone asked to use this address for their RightProperty365 account. Open the link below to confirm it. The link works once, for 24 hours.
+
+If it was not you, ignore this email: nothing changes until the link is opened.
+
+Confirm this address:
+https://rightproperty365.com/confirm-email-change?token=sample-token
+
+--
+You are receiving this because this address was entered as the new email of a RightProperty365 account.
+Sent by RightProperty365.
+https://rightproperty365.com

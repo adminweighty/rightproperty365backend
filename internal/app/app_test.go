@@ -71,6 +71,10 @@ type captureMailer struct {
 	verifications []string
 	resets        []string
 	accountExists []string
+	// emailChanges are the email-change confirmation links (API 0.50.0);
+	// emailNotices the notices to the old address ("requested"/"changed").
+	emailChanges []string
+	emailNotices []string
 	// signInCodes are the sign-in codes that would have been emailed.
 	signInCodes []sentCode
 	// invitations are the team invitations that would have been emailed.

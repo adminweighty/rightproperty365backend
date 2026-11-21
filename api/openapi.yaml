@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.49.0
+  version: 0.50.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,14 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Account security (new in 0.50.0, Handover section 14)
+    - `POST /v1/me/password` `{current_password, new_password}`: 204; other sessions are signed out.
+    - `GET /v1/me/sessions` (signed-in devices with a `client` label, `current`), `DELETE /v1/me/sessions/{id}`,
+      `POST /v1/me/sessions/revoke-others` (`{revoked}`).
+    - `POST /v1/me/email` `{new_email, current_password}`: 202; a single-use link (24 hours) goes to the new address and a
+      notice to the current one. `POST /v1/auth/email-change/confirm` `{token}` sets it (`400 INVALID_TOKEN`,
+      `409 EMAIL_TAKEN`). Administrator accounts: `403 PLATFORM_ACCOUNT`.
 
     Reassigning routing exceptions (new in 0.49.0, FR-061)
     - `GET /v1/admin/routing-exceptions/{id}/candidates`: the organisations of the request's country that may receive it
@@ -8821,6 +8829,107 @@ paths:
           description: "`PROPERTY_REQUEST_NOT_FOUND` (not an open exception of the caller's markets)"
         "409":
           description: "`ALREADY_RESOLVED`"
+  /v1/me/password:
+    post:
+      tags: [account]
+      operationId: changeMyPassword
+      summary: "Change the password (current one required); other sessions are signed out (new in 0.50.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{current_password: string, new_password: string}"
+      responses:
+        "204":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+  /v1/me/sessions:
+    get:
+      tags: [account]
+      operationId: listMySessions
+      summary: "The signed-in devices (new in 0.50.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+  /v1/me/sessions/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    delete:
+      tags: [account]
+      operationId: revokeMySession
+      summary: "Sign one device out (new in 0.50.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "204":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+  /v1/me/sessions/revoke-others:
+    post:
+      tags: [account]
+      operationId: revokeMyOtherSessions
+      summary: "Sign every other device out (new in 0.50.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      responses:
+        "200":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+  /v1/me/email:
+    post:
+      tags: [account]
+      operationId: requestMyEmailChange
+      summary: "Ask to change the email address (link to the new one) (new in 0.50.0)"
+      security:
+        - cookieSession: []
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{new_email: string, current_password: string}"
+      responses:
+        "202":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+  /v1/auth/email-change/confirm:
+    post:
+      tags: [account]
+      operationId: confirmEmailChange
+      summary: "Confirm a new email address from its link (new in 0.50.0)"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{token: string}"
+      responses:
+        "200":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
   /v1/listings/{slug}/application-form:
     parameters:
       - { name: slug, in: path, required: true, schema: { type: string } }

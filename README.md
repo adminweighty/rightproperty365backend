@@ -502,6 +502,24 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 seeker saved searches and alerts. (Conversion funnels and response-time KPIs: API 0.38.0; replies
 to the customer: API 0.46.0, below.)
 
+## Account security (API 0.50.0)
+
+Handover section 14. For customer accounts (administrator accounts get `403 PLATFORM_ACCOUNT`: their credentials are
+changed with `cmd/adminctl`, as for the password reset):
+
+- `POST /v1/me/password` `{current_password, new_password}`: the current password is checked (`400` with
+  `error.fields.current_password`), the new one follows the registration rules and must differ; every other session is
+  revoked (this device stays signed in), reset links are invalidated and `PASSWORD_CHANGED` sends the usual notice.
+- `GET /v1/me/sessions`: the active customer sessions, newest first, with a `client` label recorded at sign-in from the
+  User-Agent ("Chrome on Windows", "RightProperty365 app on Android"; migration 0052 adds `sessions.client`; no IP is
+  stored) and `current`. `DELETE /v1/me/sessions/{id}` (404 `SESSION_NOT_FOUND` for another user's) and
+  `POST /v1/me/sessions/revoke-others`.
+- `POST /v1/me/email` `{new_email, current_password}` -> 202: a single-use link valid 24 hours goes to the new address
+  (`email-change-confirm`; a new request replaces the old one; table `email_change_tokens`) and a notice to the current
+  address (`email-change-notice`). A taken address gets the "account exists" email and the caller the same 202.
+- `POST /v1/auth/email-change/confirm` `{token}` (public: the link may be opened signed out): sets the address
+  (verified), keeps the sessions and tells the old address it was changed. `400 INVALID_TOKEN`, `409 EMAIL_TAKEN`.
+
 ## Reassigning routing exceptions (API 0.49.0)
 
 FR-061, FSD 2B. A request nobody could receive (`ROUTING_EXCEPTION`) can now be given to someone, not only marked
