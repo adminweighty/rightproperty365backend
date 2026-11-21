@@ -43,6 +43,8 @@ type MemoryStore struct {
 	// placements and their audit (placements_memory.go, API 0.53.0).
 	placements     []Placement
 	placementAudit *adminaudit.MemoryLog
+	// reports (reports_memory.go, API 0.54.0).
+	reports []ListingReport
 
 	// quota resolves the listing package of an account in a market (the
 	// memory twin of packages.EnforceTx; nil: no limit). See quota.go.

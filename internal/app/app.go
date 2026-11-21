@@ -450,6 +450,13 @@ func NewRouter(d Deps) (http.Handler, error) {
 	manager := listings.NewManager(listingsSvc, manageStore, d.Files, logger)
 	manager.SetQuota(packagesSvc)
 	manageH := listings.NewManageHandler(manager, logger)
+	// Listing reports (API 0.54.0): anyone reports, the listing reviewers
+	// decide; both listing stores keep them.
+	var listingReportsH *listings.ReportHandler
+	if store, ok := manageStore.(listings.ReportStore); ok {
+		listingReportsH = listings.NewReportHandler(listings.NewReports(store, listingsSvc, manager, logger), logger)
+	}
+	reportLimiter := httpx.NewRateLimiter(5, 5)
 	listingLimiter := httpx.NewRateLimiter(listingChangesPerMinute, listingChangesBurst)
 	// Saved listings: a customer's hearts. Whether a listing may be saved
 	// (public right now) is the listings service's own rule.
@@ -901,6 +908,10 @@ func NewRouter(d Deps) (http.Handler, error) {
 		r.Get("/listings", listingsH.List)
 		r.Get("/listings/suggest", listingsH.Suggest)
 		r.Get("/listings/{slug}", listingsH.Get)
+		if listingReportsH != nil {
+			// Anyone may report a public listing (API 0.54.0): 5 a minute per IP.
+			r.With(reportLimiter.Middleware).Post("/listings/{slug}/reports", listingReportsH.Report)
+		}
 		// A short stay's calendar as the public sees it: available or not
 		// per night, never why.
 		r.Get("/listings/{slug}/availability", availabilityH.Public)
@@ -1387,6 +1398,17 @@ func NewRouter(d Deps) (http.Handler, error) {
 					r.Get("/", placementsH.List)
 					r.With(listingLimiter.Middleware).Post("/", placementsH.Grant)
 					r.With(listingLimiter.Middleware).Post("/{id}/end", placementsH.End)
+				})
+			}
+			// The listing report queue (API 0.54.0): the listing reviewers,
+			// a MARKET_ADMIN in its own markets; every decision is audited.
+			if listingReportsH != nil {
+				r.Route("/listing-reports", func(r chi.Router) {
+					r.Use(httpx.PrivateNoStore, auth.RequirePlatformRole(auth.ListingReviewRoles()...))
+					r.Get("/", listingReportsH.List)
+					r.With(listingLimiter.Middleware).Post("/{id}/dismiss", listingReportsH.Decide(listings.ReportDecisionDismiss))
+					r.With(listingLimiter.Middleware).Post("/{id}/unpublish", listingReportsH.Decide(listings.ReportDecisionUnpublish))
+					r.With(listingLimiter.Middleware).Post("/{id}/warn", listingReportsH.Decide(listings.ReportDecisionWarn))
 				})
 			}
 			r.Route("/listings", func(r chi.Router) {

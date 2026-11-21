@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.53.0
+  version: 0.54.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,14 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Listing reports and moderation (new in 0.54.0, BR-018)
+    - `POST /v1/listings/{slug}/reports` `{reason FRAUD|MISLEADING|ALREADY_SOLD_OR_LET|WRONG_PRICE|DUPLICATE|OFFENSIVE|OTHER,
+      note?}` (anyone; 5 a minute per IP; one open report per signed-in reporter) -> `202`.
+    - `GET /v1/admin/listing-reports?status=`, `POST /v1/admin/listing-reports/{id}/dismiss {note}`, `/unpublish {reason}`,
+      `/warn {message}` (the listing reviewers; `409 REPORT_DECIDED`). Audited.
+    - Admin listing views and the review queue gain `flags: [{code, text, other_reference?}]` (POSSIBLE_DUPLICATE,
+      CONTACT_IN_TEXT, BURST, SHOUTING): hints only.
 
     Featured and sponsored placements (new in 0.53.0, FR-046/FR-047)
     - `GET /v1/admin/placements?listing_id=&status=ACTIVE|SCHEDULED|ENDED&page=`, `POST /v1/admin/placements`
@@ -10943,6 +10951,112 @@ paths:
             schema:
               type: object
               description: "{reason}"
+      responses:
+        "200":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+  /v1/listings/{slug}/reports:
+    parameters:
+      - name: slug
+        in: path
+        required: true
+        schema: {type: string}
+    post:
+      tags: [listings]
+      operationId: reportListing
+      summary: "Report a public listing (anyone) (new in 0.54.0)"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{reason, note?}"
+      responses:
+        "202":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+  /v1/admin/listing-reports:
+    get:
+      tags: [admin]
+      operationId: adminListingReports
+      summary: "The listing report queue (new in 0.54.0)"
+      security:
+        - cookieSession: []
+      responses:
+        "200":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+  /v1/admin/listing-reports/{id}/dismiss:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      tags: [admin]
+      operationId: adminDismissListingReport
+      summary: "Dismiss a report (audited) (new in 0.54.0)"
+      security:
+        - cookieSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{note}"
+      responses:
+        "200":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+  /v1/admin/listing-reports/{id}/unpublish:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      tags: [admin]
+      operationId: adminUnpublishOnReport
+      summary: "Take the listing down: CHANGES_REQUESTED with the reason (audited) (new in 0.54.0)"
+      security:
+        - cookieSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{reason}"
+      responses:
+        "200":
+          description: "See the summary above."
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+  /v1/admin/listing-reports/{id}/warn:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      tags: [admin]
+      operationId: adminWarnOnReport
+      summary: "Email the advertiser a warning (audited) (new in 0.54.0)"
+      security:
+        - cookieSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{message}"
       responses:
         "200":
           description: "See the summary above."

@@ -502,6 +502,29 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 seeker saved searches and alerts. (Conversion funnels and response-time KPIs: API 0.38.0; replies
 to the customer: API 0.46.0, below.)
 
+## Listing reports, moderation and duplicate flags (API 0.54.0)
+
+BR-018. Migration 0056 (`listing_reports`).
+
+- **Reporting.** Anyone may report a public listing: `POST /v1/listings/{slug}/reports` `{reason, note?}` -> `202`
+  (reasons FRAUD, MISLEADING, ALREADY_SOLD_OR_LET, WRONG_PRICE, DUPLICATE, OFFENSIVE, OTHER; a note up to 1000
+  characters, required for OTHER). 5 a minute per IP; a signed-in reporter has at most one OPEN report per listing (a
+  partial unique index; a second one answers the same `202`). No IP address or contact details are stored; for a
+  signed-in reporter the account is kept. Unknown or non-public listing: `404`.
+- **Moderation** (the listing reviewers: SUPER_ADMIN, PLATFORM_ADMIN, MODERATOR; MARKET_ADMIN in its markets):
+  `GET /v1/admin/listing-reports?status=OPEN|DISMISSED|ACTIONED` with the listing and its open-report count, then
+  `dismiss {note}` (nothing happens to the listing), `warn {message}` (`LISTING_WARNED`: the advertiser gets
+  `listing-warning`; the listing stays) or `unpublish {reason}` (`Manager.ModeratorUnpublish`: a PUBLISHED or PAUSED
+  listing becomes CHANGES_REQUESTED with the reason, leaves the public views at once through `LISTING_UNPUBLISHED`, the
+  advertiser gets the usual changes-requested email and may resubmit it for review). Warn and unpublish close every
+  OPEN report of the listing as ACTIONED. Every decision is in the admin audit log (`LISTING_REPORT_DISMISSED`,
+  `LISTING_WARNED_ON_REPORT`, `LISTING_UNPUBLISHED_ON_REPORT`, target LISTING); a decided report is `409 REPORT_DECIDED`.
+- **Flags (hints only).** The moderator's listing view and the review queue items carry `flags`: `POSSIBLE_DUPLICATE`
+  (another non-archived listing in the country with the same title, or the same price, city, suburb and bedrooms; up
+  to 3, with its reference), `CONTACT_IN_TEXT` (an email address, phone number or link in the title, summary or
+  description), `BURST` (more than 10 listings created by the advertiser in 24 hours), `SHOUTING` (a title mostly in
+  capitals). They are computed when read and never block anything.
+
 ## Featured and sponsored placements (API 0.53.0)
 
 FR-046 ("paid placement"), FR-047 ("sponsored listings"), Handover section 8 ("featured sponsorship disclosure").

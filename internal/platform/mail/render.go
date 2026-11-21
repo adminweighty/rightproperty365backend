@@ -74,6 +74,7 @@ func Templates() []Template {
 		{"saved-search-alert", "New listings for a saved search (to the customer, with an unsubscribe link)", true},
 		{"listing-approved", "Listing or its changes approved (to the advertiser)", true},
 		{"listing-changes-requested", "Listing needs changes (to the advertiser)", true},
+		{"listing-warning", "A moderator's warning about a reported listing (to the advertiser)", true},
 		{"listing-rejected", "Listing or its changes not approved (to the advertiser)", true},
 		{"team-invitation", "Invitation to join an organisation's team (to the invited address)", true},
 		{"property-request-assigned", "Property request assigned (to the member it was given to)", true},

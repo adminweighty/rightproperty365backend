@@ -1,0 +1,14 @@
+{{define "subject"}}A message about your listing{{end}}
+{{define "heading"}}A message about your listing{{end}}
+{{define "button"}}Review your listing{{end}}
+{{define "why"}}You are receiving this because you manage this listing on RightProperty365.{{end}}
+{{define "body"}}{{if .Name}}Hello {{.Name}},{{else}}Hello,{{end}}
+
+Our moderation team looked at your listing after it was reported, and has a message for you. The listing stays online.
+
+Listing: {{.ListingTitle}}
+{{if .ListingRef}}Reference: {{.ListingRef}}
+{{end}}Status: {{.StatusText}}
+Message: {{.Reason}}
+
+Please check the listing and correct it if needed. If the problem continues, the listing may be taken down.{{end}}

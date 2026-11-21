@@ -302,6 +302,8 @@ type AdminView struct {
 	PhotoChanges PhotoChanges  `json:"photo_changes"`
 	// Decisions are what the reviewer may do now: approve, request_changes, reject.
 	Decisions []string `json:"decisions"`
+	// Flags are duplicate and spam hints (API 0.54.0); they block nothing.
+	Flags []Flag `json:"flags"`
 }
 
 // QueueItem is one row of the review queue.
@@ -320,8 +322,10 @@ type QueueItem struct {
 		Name     string `json:"name"`
 		Verified bool   `json:"verified"`
 	} `json:"advertiser"`
-	PhotoCount        int `json:"photo_count"`
-	PendingPhotoCount int `json:"pending_photo_count"`
+	PhotoCount int `json:"photo_count"`
+	// Flags are duplicate and spam hints (API 0.54.0).
+	Flags             []Flag `json:"flags"`
+	PendingPhotoCount int    `json:"pending_photo_count"`
 	// Expiry is the publication period (null: never published).
 	Expiry *Expiry `json:"expiry"`
 }

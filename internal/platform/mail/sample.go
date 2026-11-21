@@ -126,6 +126,10 @@ func SampleData(name string) Data {
 		d.Name, d.Path, d.StatusText = "Tendai Ncube", "/agent/listings", "Changes requested"
 		d.ListingTitle, d.ListingRef = "Four-bedroom family home with garden", "RP-ZW-482913"
 		d.Reason = "The second photo shows a different property. Please replace it and describe every photo."
+	case "listing-warning":
+		d.Name, d.Path, d.StatusText = "Tendai Ncube", "/agent/listings", "Warning"
+		d.ListingTitle, d.ListingRef = "Four-bedroom family home with garden", "RP-ZW-482913"
+		d.Reason = "Customers report that the price shown is not the asking price. Please correct it."
 	case "listing-rejected":
 		d.Name, d.Path, d.StatusText = "Tendai Ncube", "/agent/listings", "Rejected"
 		d.ListingTitle, d.ListingRef = "Four-bedroom family home with garden", "RP-ZW-482913"

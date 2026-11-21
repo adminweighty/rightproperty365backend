@@ -940,7 +940,7 @@ func (mg *Manager) Queue(ctx context.Context, p *auth.Principal, f ReviewFilter)
 	for _, m := range items {
 		it := QueueItem{ID: m.ID, Reference: m.Reference, Title: m.WorkingContent().Title, Status: m.Status, ReviewKind: opt(m.ReviewKind()),
 			Country: Country{Code: m.MarketCode, Name: m.MarketCode}, SubmittedAt: utcTime(m.SubmittedAt), UpdatedAt: m.UpdatedAt.UTC(),
-			PhotoCount: len(m.AllPhotos), Expiry: ExpiryOf(m.Record, now)}
+			PhotoCount: len(m.AllPhotos), Expiry: ExpiryOf(m.Record, now), Flags: mg.flagsOf(ctx, m)}
 		if name := labels[keyCountryNames][m.MarketCode]; name != "" {
 			it.Country.Name = name
 		}
@@ -964,7 +964,7 @@ func (mg *Manager) adminView(ctx context.Context, m ManagedListing) (AdminView, 
 	if err != nil {
 		return AdminView{}, err
 	}
-	out := AdminView{ManagedView: v, Changes: []FieldChange{}, Decisions: []string{}}
+	out := AdminView{ManagedView: v, Changes: []FieldChange{}, Decisions: []string{}, Flags: mg.flagsOf(ctx, m)}
 	kind := m.ReviewKind()
 	out.ReviewKind = opt(kind)
 	if kind != "" {

@@ -378,6 +378,7 @@ var listingReviewTemplates = map[string]struct{ template, status string }{
 	listings.EventListingApproved:         {"listing-approved", "Published"},
 	listings.EventListingChangesRequested: {"listing-changes-requested", "Changes requested"},
 	listings.EventListingRejected:         {"listing-rejected", "Rejected"},
+	listings.EventListingWarned:           {"listing-warning", "Warning"},
 }
 
 // listingReviewNotes builds the email of a listing review decision. It goes
@@ -962,7 +963,7 @@ func (h *Handlers) build(ctx context.Context, ev outbox.Event) ([]plan, error) {
 			return nil, err
 		}
 
-	case listings.EventListingApproved, listings.EventListingChangesRequested, listings.EventListingRejected:
+	case listings.EventListingApproved, listings.EventListingChangesRequested, listings.EventListingRejected, listings.EventListingWarned:
 		if err := h.listingReviewNotes(ctx, ev, add); err != nil {
 			return nil, err
 		}

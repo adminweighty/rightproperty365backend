@@ -186,6 +186,7 @@ var inAppTemplates = map[string]inAppTemplate{
 		return "Listing approved"
 	}},
 	"listing-changes-requested": {typ: inapp.TypeListingReviewed, title: fixed("Changes requested on your listing"), path: pathAgentListings},
+	"listing-warning":           {typ: inapp.TypeListingReviewed, title: fixed("A message from moderation about your listing"), path: pathAgentListings},
 	"listing-rejected":          {typ: inapp.TypeListingReviewed, title: fixed("Listing not approved"), path: pathAgentListings},
 	// The approval of a relist, and the expiry sweep (API 0.45.0).
 	"listing-relisted": {typ: inapp.TypeListingReviewed, title: fixed("Your listing is live again"), path: pathAgentListings},

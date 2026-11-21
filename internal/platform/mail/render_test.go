@@ -60,8 +60,8 @@ func TestTemplatesMatchGoldenFiles(t *testing.T) {
 // Rules every email must meet, whatever its content.
 func TestEveryTemplateMeetsTheHouseRules(t *testing.T) {
 	r := testRenderer(t)
-	if len(Templates()) != 73 {
-		t.Fatalf("%d templates, want 73", len(Templates()))
+	if len(Templates()) != 74 {
+		t.Fatalf("%d templates, want 74", len(Templates()))
 	}
 	hrefRe := regexp.MustCompile(`(?:href|src)="([^"]*)"`)
 	bannedWords := regexp.MustCompile(`(?i)\b(delivered|amazing|simply|oops|awesome)\b`)

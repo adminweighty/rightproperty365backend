@@ -377,7 +377,7 @@ const (
 
 // ReviewEventTypes lists the review events.
 func ReviewEventTypes() []string {
-	return []string{EventListingApproved, EventListingChangesRequested, EventListingRejected}
+	return []string{EventListingApproved, EventListingChangesRequested, EventListingRejected, EventListingWarned}
 }
 
 // ReviewEventPayload is the payload of a review event. It names the listing
