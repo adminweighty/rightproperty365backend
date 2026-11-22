@@ -101,6 +101,8 @@ info:
       arrears `as_of`, rent statements `to`, the ledger reports' `to` and receivables `as_of` are the market's
       date (the organisation's market; for a direct owner, the market of their first property). Before, between local
       midnight and UTC midnight (00:00-02:00 in Zimbabwe) a receipt or cost dated today was refused.
+    - Additive: each `Membership` (in `GET /v1/me` and the sign-in responses) gains `branch_id` (uuid or null), the
+      branch the member is pinned to, so a client can say that other branches' items are hidden.
 
     Metrics (new in 0.61.0, FR-056, FR-065)
     - No new public endpoint. The API and the worker serve Prometheus metrics on their own listener (`METRICS_ADDR`,
@@ -21900,6 +21902,14 @@ components:
             Administrator", AGENT "Estate Agent", STAFF "Agency Staff". In any other
             organisation: OWNER "Principal", MANAGER "Manager", AGENT "Estate Agent", STAFF "Staff".
           examples: [Agency Principal]
+        branch_id:
+          type: [string, "null"]
+          format: uuid
+          description: |
+            New in 0.61.1. The branch the member is pinned to: they see only that branch's listings, leads and
+            ledger entries, and those with no branch (FR-002). Null: the whole organisation. The branch's name is
+            in `GET /v1/agent/organisations/{id}/branches`. Changes at once when an OWNER or MANAGER places the
+            member, so read it again after a `403 BRANCH_FORBIDDEN`.
 
     Session:
       type: object

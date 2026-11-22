@@ -775,11 +775,12 @@ type userBody struct {
 		MarketCode *string `json:"market_code"`
 	} `json:"platform_roles"`
 	Memberships []struct {
-		OrganisationID   string `json:"organisation_id"`
-		OrganisationName string `json:"organisation_name"`
-		OrganisationKind string `json:"organisation_kind"`
-		MarketCode       string `json:"market_code"`
-		Role             string `json:"role"`
+		OrganisationID   string  `json:"organisation_id"`
+		OrganisationName string  `json:"organisation_name"`
+		OrganisationKind string  `json:"organisation_kind"`
+		MarketCode       string  `json:"market_code"`
+		Role             string  `json:"role"`
+		BranchID         *string `json:"branch_id"`
 	} `json:"memberships"`
 	AccountRoles []accountRoleBody `json:"account_roles"`
 }
@@ -1151,7 +1152,7 @@ func TestSeedUsersAndMeShape(t *testing.T) {
 		rec := e.get("/v1/me", withCookie(e.loginCookie(identity.SeedAgentEmail, seedPassword)))
 		wantStatus(t, rec, http.StatusOK)
 		want := `"platform_roles":[],"memberships":[{"organisation_id":"` + propertyrequests.SeedOrganisationID.String() +
-			`","organisation_name":"Sample Estates","organisation_kind":"AGENCY","market_code":"ZW","role":"AGENT","role_label":"Estate Agent"}],` +
+			`","organisation_name":"Sample Estates","organisation_kind":"AGENCY","market_code":"ZW","role":"AGENT","role_label":"Estate Agent","branch_id":null}],` +
 			`"account_roles":[{"role":"AGENT","status":"ACTIVE","onboarding_status":null}]`
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("body = %s\nwant to contain %s", rec.Body, want)

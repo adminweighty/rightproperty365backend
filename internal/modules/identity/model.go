@@ -344,6 +344,10 @@ type MembershipView struct {
 	Role             string    `json:"role"`
 	// RoleLabel is how Role is shown: "Agency Principal", "Estate Agent", ...
 	RoleLabel string `json:"role_label"`
+	// BranchID is the branch the member is pinned to (API 0.61.1): they see
+	// only that branch's objects and those with no branch. Null: the whole
+	// organisation. The name is in GET .../branches.
+	BranchID *uuid.UUID `json:"branch_id"`
 }
 
 // View builds the API representation. Arrays are always present (never null).
@@ -376,7 +380,7 @@ func (u User) View() UserView {
 		v.Memberships = append(v.Memberships, MembershipView{
 			OrganisationID: m.OrganisationID, OrganisationName: m.OrganisationName,
 			OrganisationKind: m.OrganisationKind, MarketCode: m.MarketCode, Role: m.Role,
-			RoleLabel: auth.MembershipRoleLabel(m.OrganisationKind, m.Role),
+			RoleLabel: auth.MembershipRoleLabel(m.OrganisationKind, m.Role), BranchID: m.BranchID,
 		})
 	}
 	return v

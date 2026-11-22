@@ -519,6 +519,10 @@ unknown); the tenancies and ledger services get the zone from the countries tabl
 - Tests: `internal/platform/marketday`, `TestMarketDateAfterLocalMidnight` in `internal/modules/tenancies` and in
   `internal/app` (22:30 UTC: the next day is today in Harare, the day after is still the future).
 
+Also in 0.61.1 (asked for by the mobile app): each membership of `GET /v1/me` and the sign-in responses gains
+`branch_id`, the branch the member is pinned to (null: the whole organisation), so the app can say that other
+branches' items are hidden. `TestBranches` checks it for a pinned agent and the owner.
+
 ## Metrics and alerts (API 0.61.0)
 
 FR-056/FR-065 ("measure … email bounce … dead-letter backlog"). Package `internal/platform/metrics` writes the Prometheus

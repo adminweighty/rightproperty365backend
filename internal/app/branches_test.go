@@ -43,6 +43,23 @@ func TestBranches(t *testing.T) {
 	wantError(t, e.put(teamPath("/listings/"+listing+"/branch"), obj{"branch_id": "not-a-uuid"}, owner), http.StatusBadRequest, httpx.CodeValidationFailed)
 	wantStatus(t, e.put(teamPath("/listings/"+listing+"/branch"), obj{"branch_id": b.ID}, owner), http.StatusNoContent)
 	// The pin applies at once: the same session is now scoped.
+	// The member can see it (API 0.61.1): GET /v1/me says which branch, the
+	// owner's membership says null (the whole organisation).
+	pinned := func(who reqOpt) *string {
+		for _, m := range decode[authBody](t, e.get("/v1/me", who)).User.Memberships {
+			if m.OrganisationID == devseed.SampleEstates.ID.String() {
+				return m.BranchID
+			}
+		}
+		t.Fatal("no membership of the organisation")
+		return nil
+	}
+	if got := pinned(agent); got == nil || *got != a.ID {
+		t.Fatalf("agent branch_id = %v, want %s", got, a.ID)
+	}
+	if got := pinned(owner); got != nil {
+		t.Fatalf("owner branch_id = %s, want null", *got)
+	}
 
 	// The listing: 403 for the agent, fine for the owner.
 	wantError(t, e.get("/v1/me/listings/"+listing, agent), http.StatusForbidden, "BRANCH_FORBIDDEN")
