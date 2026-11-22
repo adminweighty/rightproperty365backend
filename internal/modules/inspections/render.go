@@ -14,6 +14,8 @@ type viewer struct {
 	s          *Service
 	a          access
 	properties map[uuid.UUID]tenancies.Property
+	// zones are the IANA zones of the properties' markets (API 0.62.0).
+	zones map[string]string
 }
 
 func (s *Service) viewer(ctx context.Context, a access, list []Inspection) (*viewer, error) {
@@ -27,6 +29,12 @@ func (s *Service) viewer(ctx context.Context, a access, list []Inspection) (*vie
 	var err error
 	if v.properties, err = s.tenancies.Properties(ctx, props); err != nil {
 		return nil, err
+	}
+	v.zones = map[string]string{}
+	for _, p := range v.properties {
+		if _, ok := v.zones[p.MarketCode]; !ok {
+			v.zones[p.MarketCode] = s.tenancies.MarketZone(ctx, p.MarketCode)
+		}
 	}
 	return v, nil
 }
@@ -55,7 +63,7 @@ func (v *viewer) summary(in Inspection) Summary {
 	prop := v.properties[in.PropertyID]
 	return Summary{ID: in.ID, Reference: in.Reference, Type: in.Type, TypeLabel: TypeLabel(in.Type), Status: in.Status,
 		StatusLabel: StatusLabel(in.Status), Property: SummaryProperty{ID: in.PropertyID, Name: prop.Name, Archived: prop.DeletedAt != nil},
-		Unit: unitRef(prop, in.UnitID), TenancyID: in.TenancyID, ScheduledFor: in.ScheduledFor,
+		Unit: unitRef(prop, in.UnitID), TenancyID: in.TenancyID, ScheduledFor: in.ScheduledFor, TimeZone: v.zone(prop.MarketCode),
 		Inspector: person(in.InspectorID, in.InspectorName), Template: TemplateRef{Code: in.TemplateCode, Label: in.TemplateLabel},
 		Progress: in.Checklist.Progress(), PhotoCount: in.PhotoCount, StartedAt: in.StartedAt, CompletedAt: in.CompletedAt,
 		CancelledAt: in.CancelledAt, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt}
@@ -176,4 +184,11 @@ func (s *Service) oneView(ctx context.Context, a access, id uuid.UUID) (Inspecti
 		return InspectionView{}, err
 	}
 	return v.view(ctx, in)
+}
+
+func (v *viewer) zone(marketCode string) string {
+	if z, ok := v.zones[marketCode]; ok {
+		return z
+	}
+	return "UTC"
 }

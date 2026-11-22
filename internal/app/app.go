@@ -621,6 +621,8 @@ func NewRouter(d Deps) (http.Handler, error) {
 
 	secure := cfg.Env != config.EnvDevelopment
 	identityH := identity.NewHandler(identitySvc, logger, secure)
+	// The time_zone view names the viewer's market zone (API 0.62.0).
+	identityH.SetMarketZone(cachedZone(MarketZone(d.Markets), time.Minute, time.Now))
 	// Account security (API 0.50.0): the email-change emails.
 	if sm, ok := d.Mailer.(identity.SecurityMailer); ok {
 		identitySvc.SetSecurityMailer(sm)
@@ -1076,6 +1078,13 @@ func NewRouter(d Deps) (http.Handler, error) {
 			r.Use(httpx.PrivateNoStore, auth.RequireAuth)
 			r.Get("/", identityH.MarketingPreferences)
 			r.With(settingsLimiter.Middleware).Put("/", identityH.SetMarketingPreferences)
+		})
+		// Personal time zone (API 0.62.0), display only: MARKET (default),
+		// DEVICE or a named IANA zone. Writes share the settings bucket.
+		r.Route("/me/time-zone", func(r chi.Router) {
+			r.Use(httpx.PrivateNoStore, auth.RequireAuth)
+			r.Get("/", identityH.TimeZone)
+			r.With(settingsLimiter.Middleware).Put("/", identityH.SetTimeZone)
 		})
 		// Legal acceptances (API 0.43.0): the person's own, and accepting a
 		// published version (re-acceptance). Writes share the settings bucket.

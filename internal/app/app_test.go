@@ -1142,7 +1142,7 @@ func TestSeedUsersAndMeShape(t *testing.T) {
 	t.Run("consumer", func(t *testing.T) {
 		rec := e.get("/v1/me", withCookie(e.loginCookie(identity.SeedConsumerEmail, seedPassword)))
 		wantStatus(t, rec, http.StatusOK)
-		want := `{"user":{"id":"` + identity.SeedConsumerUserID.String() + `","name":"Casey Consumer","email":"consumer@example.test","email_verified":true,"platform_roles":[],"memberships":[],"account_roles":[{"role":"CONSUMER","status":"ACTIVE","onboarding_status":null}]},"session":{"scope":"customer","expires_at":"2026-12-01T09:00:00Z"},"pending_legal_acceptances":[]}`
+		want := `{"user":{"id":"` + identity.SeedConsumerUserID.String() + `","name":"Casey Consumer","email":"consumer@example.test","email_verified":true,"platform_roles":[],"memberships":[],"account_roles":[{"role":"CONSUMER","status":"ACTIVE","onboarding_status":null}],"time_zone":{"mode":"MARKET","zone":null,"market_code":"ZW","market_zone":"Africa/Harare"}},"session":{"scope":"customer","expires_at":"2026-12-01T09:00:00Z"},"pending_legal_acceptances":[]}`
 		if got := strings.TrimSpace(rec.Body.String()); got != want {
 			t.Fatalf("body = %s\nwant   %s", got, want)
 		}

@@ -504,6 +504,26 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 seeker saved searches and alerts. (Conversion funnels and response-time KPIs: API 0.38.0; replies
 to the customer: API 0.46.0, below.)
 
+## Personal time zone, display only (API 0.62.0)
+
+The user asked: "can a user have an option of setting their timezone to view their data with this time. But originally
+everything is set as Harare time". The full rules, with every time field classified for the clients, are in the
+contract `contract-0.62-personal-time-zone.md` (handover notes); in short:
+
+- `users.time_zone_mode` (`MARKET` default, `DEVICE`, `ZONE`) and `users.time_zone` (the IANA name, only with `ZONE`),
+  migration `0063_user_time_zone`. Nothing else is migrated or converted.
+- `GET` and `PUT /v1/me/time-zone`; `user.time_zone {mode, zone, market_code, market_zone}` in `/v1/me` and the
+  sign-in answers. The viewer's market is their first active membership's, else `ZW` (`identity.HomeMarketCode`); its
+  zone comes from the countries table (cached for a minute). Zones are checked against Go's embedded tz database
+  (`identity.ValidTimeZone`); there is no zone-list endpoint: clients use their platform's list.
+- **The server never uses the setting**: "today", report periods, analytics days, emails and `.ics` stay in the market
+  zone (0.61.1). Clients apply it: instants in the chosen zone with the zone named; place-bound times (appointments,
+  venue bookings, inspections) in the place's zone first; calendar dates and listing expiry days never shifted;
+  organisation figures in the market zone.
+- Inspections gain `time_zone` (the property market's zone), the one place-bound time that had no zone.
+- Tests: `TestPersonalTimeZone` (app), `TestMemoryTimeZoneStoreContract`, `TestPostgresTimeZoneStoreContract`,
+  `TestValidTimeZone`, `TestSetTimeZoneValidation` (identity), `TestZoneName` (marketday).
+
 ## A stale search index waits instead of dead-lettering (API 0.61.2)
 
 On staging 47 `LISTING_PUBLISHED` events were dead-lettered on 2026-11-14: the seed ran while the index mapping was

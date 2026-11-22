@@ -42,6 +42,9 @@ type Handler struct {
 	// pendingLegal lists the legal documents awaiting the person's
 	// re-acceptance for /v1/me (API 0.43.0); nil: none.
 	pendingLegal func(r *http.Request, userID uuid.UUID) (any, error)
+	// marketZone finds a market's IANA zone for the time_zone view (API
+	// 0.62.0); nil: UTC.
+	marketZone func(ctx context.Context, marketCode string) string
 }
 
 // SetPendingLegalHook sets what /v1/me reports as pending_legal_acceptances
@@ -166,8 +169,8 @@ func (h *Handler) clearSessionCookie(w http.ResponseWriter) {
 
 // writeAuth answers a successful login/verification: the token goes either
 // into the HttpOnly cookie or into the body, never both.
-func (h *Handler) writeAuth(w http.ResponseWriter, res AuthResult) {
-	body := authResponse{User: res.User.View()}
+func (h *Handler) writeAuth(w http.ResponseWriter, r *http.Request, res AuthResult) {
+	body := authResponse{User: h.view(r.Context(), res.User)}
 	if !res.NoSession {
 		body.Session = &sessionView{Scope: res.Scope, ExpiresAt: res.ExpiresAt.UTC()}
 		if res.Delivery == DeliveryBearer {
@@ -219,7 +222,7 @@ func (h *Handler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
-	h.writeAuth(w, res)
+	h.writeAuth(w, r, res)
 }
 
 // ResendVerification handles POST /v1/auth/resend-verification.
@@ -303,7 +306,7 @@ func (h *Handler) LoginVerify(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
-	h.writeAuth(w, res)
+	h.writeAuth(w, r, res)
 }
 
 // AdminLoginVerify handles POST /v1/admin/auth/login/verify: on the right
@@ -326,14 +329,14 @@ func (h *Handler) AdminLoginVerify(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, http.StatusOK, mfa)
 		return
 	}
-	h.writeAdminSession(w, res)
+	h.writeAdminSession(w, r, res)
 }
 
 // writeAdminSession answers a started administrator session (cookie only).
-func (h *Handler) writeAdminSession(w http.ResponseWriter, res AuthResult) {
+func (h *Handler) writeAdminSession(w http.ResponseWriter, r *http.Request, res AuthResult) {
 	h.setSessionCookie(w, res.Token, res.ExpiresAt, res.TTL)
 	httpx.WriteJSON(w, http.StatusOK, authResponse{
-		User:    res.User.View(),
+		User:    h.view(r.Context(), res.User),
 		Session: &sessionView{Scope: res.Scope, ExpiresAt: res.ExpiresAt.UTC(), MFAEnrolmentRequired: res.MFAEnrolmentRequired},
 	})
 }
@@ -441,7 +444,7 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	httpx.WriteJSON(w, http.StatusOK, meResponse{
-		User:                    user.View(),
+		User:                    h.view(r.Context(), user),
 		Session:                 sessionView{Scope: p.SessionScope, ExpiresAt: p.SessionExpiresAt.UTC()},
 		PendingLegalAcceptances: pending,
 	})

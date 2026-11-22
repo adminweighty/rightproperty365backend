@@ -45,7 +45,8 @@ func (s *Service) myInspection(ctx context.Context, t tenancies.Tenancy, id uuid
 
 func (s *Service) myView(ctx context.Context, t tenancies.Tenancy, in Inspection, prop tenancies.Property) (MyInspection, error) {
 	out := MyInspection{ID: in.ID, Reference: in.Reference, Type: in.Type, TypeLabel: TypeLabel(in.Type), Status: in.Status,
-		StatusLabel: StatusLabel(in.Status), Property: NameOnly{Name: prop.Name}, ScheduledFor: in.ScheduledFor, CompletedAt: in.CompletedAt,
+		StatusLabel: StatusLabel(in.Status), Property: NameOnly{Name: prop.Name}, ScheduledFor: in.ScheduledFor,
+		TimeZone: s.tenancies.MarketZone(ctx, prop.MarketCode), CompletedAt: in.CompletedAt,
 		Inspector: NameOnly{Name: in.InspectorName}, Template: LabelOnly{Label: in.TemplateLabel}, Progress: in.Checklist.Progress(),
 		Areas: []MyArea{}, Summary: in.Summary, SignOff: SignOff{TenantName: strPtr(in.TenantSignOff), AgentName: strPtr(in.AgentSignOff)},
 		ReportURL: MyReportPath(t.ID, in.ID)}

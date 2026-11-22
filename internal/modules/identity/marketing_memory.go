@@ -126,3 +126,15 @@ func (s *MemoryStore) MarketingConsentText(_ context.Context, version string) (M
 	}
 	return MarketingConsentText{}, ErrConsentTextNotFound
 }
+
+// SetTimeZone implements TimeZoneStore (API 0.62.0).
+func (s *MemoryStore) SetTimeZone(_ context.Context, userID uuid.UUID, mode, zone string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.users[userID]
+	if !ok {
+		return ErrNotFound
+	}
+	u.TimeZoneMode, u.TimeZone = mode, zone
+	return nil
+}

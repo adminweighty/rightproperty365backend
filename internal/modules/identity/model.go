@@ -245,6 +245,11 @@ type User struct {
 	Memberships     []auth.Membership
 	// AccountRoles are self-declared and informational only (see AccountRole*).
 	AccountRoles []AccountRole
+	// TimeZoneMode and TimeZone are the personal display zone (API 0.62.0):
+	// TimeZoneMarket (also when ""), TimeZoneDevice or TimeZoneNamed with the
+	// IANA name in TimeZone.
+	TimeZoneMode string
+	TimeZone     string
 }
 
 // Verified reports whether the email address has been verified.
@@ -316,6 +321,8 @@ type UserView struct {
 	PlatformRoles []PlatformRoleView `json:"platform_roles"`
 	Memberships   []MembershipView   `json:"memberships"`
 	AccountRoles  []AccountRoleView  `json:"account_roles"`
+	// TimeZone is the personal display zone (API 0.62.0).
+	TimeZone TimeZoneView `json:"time_zone"`
 }
 
 // AccountRoleView is one self-declared account role. It conveys no access.
@@ -358,6 +365,7 @@ func (u User) View() UserView {
 		Memberships:   make([]MembershipView, 0, len(u.Memberships)),
 		AccountRoles:  make([]AccountRoleView, 0, len(u.AccountRoles)),
 	}
+	v.TimeZone = u.timeZoneView()
 	roles := slices.Clone(u.AccountRoles)
 	sortAccountRoles(roles)
 	for _, r := range roles {

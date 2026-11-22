@@ -94,6 +94,8 @@ type Store interface {
 
 	// MarketingStore records marketing consent (see marketing.go).
 	MarketingStore
+	// TimeZoneStore is the personal display zone (API 0.62.0, timezone.go).
+	TimeZoneStore
 
 	// PeopleStore lists the members of an organisation and counts accounts
 	// (see people.go).

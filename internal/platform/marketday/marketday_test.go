@@ -43,3 +43,17 @@ func TestToday(t *testing.T) {
 		t.Errorf("no market = %s", got)
 	}
 }
+
+func TestZoneName(t *testing.T) {
+	zones := Zone(func(_ context.Context, code string) string {
+		return map[string]string{"ZW": "Africa/Harare", "XX": "Mars/Olympus", "LO": "Local"}[code]
+	})
+	for code, want := range map[string]string{"ZW": "Africa/Harare", "XX": "UTC", "LO": "UTC", "GB": "UTC", "": "UTC"} {
+		if got := ZoneName(context.Background(), zones, code); got != want {
+			t.Errorf("ZoneName(%q) = %q, want %q", code, got, want)
+		}
+	}
+	if got := ZoneName(context.Background(), nil, "ZW"); got != "UTC" {
+		t.Errorf("nil zone: %q", got)
+	}
+}

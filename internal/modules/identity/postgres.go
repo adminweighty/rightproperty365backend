@@ -193,12 +193,12 @@ func (s *PostgresStore) UpdatePendingRegistration(ctx context.Context, u NewUser
 	})
 }
 
-const userColumns = `id, email, full_name, status, COALESCE(password_hash, ''), email_verified_at, created_at`
+const userColumns = `id, email, full_name, status, COALESCE(password_hash, ''), email_verified_at, created_at, time_zone_mode, COALESCE(time_zone, '')`
 
 func (s *PostgresStore) loadUser(ctx context.Context, where string, arg any) (User, error) {
 	var u User
 	err := s.pool.QueryRow(ctx, `SELECT `+userColumns+` FROM users WHERE `+where, arg).
-		Scan(&u.ID, &u.Email, &u.Name, &u.Status, &u.PasswordHash, &u.EmailVerifiedAt, &u.CreatedAt)
+		Scan(&u.ID, &u.Email, &u.Name, &u.Status, &u.PasswordHash, &u.EmailVerifiedAt, &u.CreatedAt, &u.TimeZoneMode, &u.TimeZone)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, ErrNotFound
 	}

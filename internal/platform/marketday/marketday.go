@@ -47,3 +47,19 @@ func Today(ctx context.Context, zone Zone, marketCode string, now time.Time) str
 	}
 	return Day(now, zone(ctx, marketCode))
 }
+
+// ZoneName is the IANA name of a market's zone as clients should use it:
+// "UTC" when zone is nil, the code is empty or the zone unknown (API 0.62.0).
+func ZoneName(ctx context.Context, zone Zone, marketCode string) string {
+	if zone == nil || marketCode == "" {
+		return "UTC"
+	}
+	name := zone(ctx, marketCode)
+	if name == "" || name == "Local" {
+		return "UTC"
+	}
+	if _, err := time.LoadLocation(name); err != nil {
+		return "UTC"
+	}
+	return name
+}

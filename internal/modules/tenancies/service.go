@@ -96,6 +96,12 @@ func (s *Service) clock() time.Time { return s.now().UTC().Truncate(time.Microse
 func (s *Service) SetLedger(l *ledger.Service) { s.ledger = l }
 
 // todayIn is the calendar date in a market's time zone (UTC when unknown).
+// MarketZone is the IANA zone of a market ("UTC" when unknown); inspections
+// show their times in the property's zone (API 0.62.0).
+func (s *Service) MarketZone(ctx context.Context, marketCode string) string {
+	return marketday.ZoneName(ctx, s.zone, marketCode)
+}
+
 func (s *Service) todayIn(ctx context.Context, marketCode string) string {
 	return marketday.Today(ctx, s.zone, marketCode, s.clock())
 }

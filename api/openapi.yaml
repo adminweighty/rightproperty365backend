@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.61.2
+  version: 0.62.0
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,18 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Personal time zone (new in 0.62.0)
+    - Additive. `User` (in `GET /v1/me` and the sign-in answers) gains `time_zone`
+      `{mode, zone, market_code, market_zone}`. New `GET` and `PUT /v1/me/time-zone`. The modes are `MARKET` (the
+      default: the viewer's market zone, Harare time for Zimbabwe), `DEVICE` (the client uses its own zone) and
+      `ZONE` (a named IANA zone). It is **display only**: no stored value changes, and "today", report periods,
+      emails and `.ics` stay in the market zone. Inspections (`InspectionSummary`, `MyInspection`) gain `time_zone`,
+      the property market's zone for `scheduled_for`.
+    - Display classes for clients: instants are shown in the viewer's zone with the zone named; place-bound times
+      (appointments, venue bookings, inspections) in the place's zone first, with the viewer's alongside when it
+      differs; calendar dates (`YYYY-MM-DD`) and listing expiry days are never shifted; organisation reports stay
+      in the market zone.
 
     Search index and dead letters (0.61.2)
     - No shape change. Operations only: a listing event refused by a stale search index (its strict mapping is older
@@ -16370,6 +16382,40 @@ paths:
         "404": { description: "`LEGAL_DOCUMENT_NOT_FOUND`: no such published version (a DRAFT counts as none).", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
         "409": { description: "`LEGAL_VERSION_NOT_ACCEPTABLE`: retired or not yet in effect.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
         "429": { $ref: "#/components/responses/RateLimited" }
+  /v1/me/time-zone:
+    get:
+      tags: [account]
+      operationId: getTimeZone
+      summary: The caller's display time zone (new in 0.62.0)
+      description: "The same object as `user.time_zone` in `GET /v1/me`. Answers are `Cache-Control: private, no-store`."
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      responses:
+        "200": { description: The setting., content: { application/json: { schema: { $ref: "#/components/schemas/TimeZoneSetting" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+    put:
+      tags: [account]
+      operationId: setTimeZone
+      summary: Choose market time, the device's zone, or a named zone (new in 0.62.0)
+      description: |
+        Display only: nothing stored is converted. `mode` is required (`400 VALIDATION_FAILED`, `fields.mode`).
+        `ZONE` needs `zone`, a zone of the IANA tz database (`UTC` and `Etc/*` allowed, `Local` not); otherwise
+        `fields.zone` "Choose a time zone from the list.". `MARKET` and `DEVICE` take no zone (`fields.zone`).
+        The same value again is a no-op. Writes share the settings rate limit (`429`).
+      security: [{ cookieSession: [] }, { bearerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TimeZoneSettingInput" }
+            examples:
+              named: { value: { mode: ZONE, zone: Europe/London } }
+              device: { value: { mode: DEVICE } }
+              market: { value: { mode: MARKET } }
+      responses:
+        "200": { description: The stored setting., content: { application/json: { schema: { $ref: "#/components/schemas/TimeZoneSetting" } } } }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "429": { $ref: "#/components/responses/RateLimited" }
   /v1/me/marketing-preferences:
     get:
       tags: [marketing]
@@ -21393,7 +21439,7 @@ components:
         The signed-in user. Capabilities come only from `memberships` (organisation-scoped) and
         `platform_roles`. `account_roles` are self-declared at registration and grant nothing.
         All three arrays are always present (empty, never null).
-      required: [id, name, email, email_verified, platform_roles, memberships, account_roles]
+      required: [id, name, email, email_verified, platform_roles, memberships, account_roles, time_zone]
       additionalProperties: false
       properties:
         id:
@@ -21421,6 +21467,33 @@ components:
           description: Self-declared account roles, in allowlist order. Informational only.
           items:
             $ref: "#/components/schemas/AccountRole"
+        time_zone:
+          $ref: "#/components/schemas/TimeZoneSetting"
+
+    TimeZoneSetting:
+      type: object
+      description: |
+        New in 0.62.0. How the person wants times shown (display only). `MARKET`: the viewer's market zone (the
+        default). `DEVICE`: the client's own zone, read by the client at display time. `ZONE`: the named IANA
+        `zone`. `market_code` and `market_zone` are the viewer's market (first active membership, else `ZW`) and its
+        zone (`UTC` only when the market has none).
+      required: [mode, zone, market_code, market_zone]
+      additionalProperties: false
+      properties:
+        mode: { type: string, enum: [MARKET, DEVICE, ZONE] }
+        zone: { type: [string, "null"], example: Europe/London, description: The IANA zone when `mode` is `ZONE`; otherwise null. }
+        market_code: { type: string, example: ZW }
+        market_zone: { type: string, example: Africa/Harare }
+    TimeZoneSettingInput:
+      type: object
+      required: [mode]
+      additionalProperties: false
+      properties:
+        mode: { type: string, enum: [MARKET, DEVICE, ZONE] }
+        zone:
+          type: [string, "null"]
+          maxLength: 64
+          description: Required with `ZONE` (a zone of the IANA tz database; not `Local`); absent or null otherwise.
 
     SelectableAccountRole:
       type: string
@@ -28286,7 +28359,7 @@ components:
         note: { type: string }
     InspectionSummary:
       type: object
-      required: [id, reference, type, type_label, status, status_label, property, unit, tenancy_id, scheduled_for, inspector, template,
+      required: [id, reference, type, type_label, status, status_label, property, unit, tenancy_id, scheduled_for, time_zone, inspector, template,
         progress, photo_count, started_at, completed_at, cancelled_at, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
@@ -28305,6 +28378,7 @@ components:
           properties: { id: { type: string, format: uuid }, label: { type: string }, archived: { type: boolean } }
         tenancy_id: { type: [string, "null"], format: uuid }
         scheduled_for: { type: string, format: date-time }
+        time_zone: { type: string, example: Africa/Harare, description: "New in 0.62.0. The property market's IANA zone: show scheduled_for in it first." }
         inspector: { $ref: "#/components/schemas/LedgerPersonRef" }
         template: { $ref: "#/components/schemas/CodeLabel" }
         progress: { $ref: "#/components/schemas/InspectionProgress" }
@@ -28393,7 +28467,7 @@ components:
         status_counts: { type: object, additionalProperties: { type: integer } }
     MyInspection:
       type: object
-      required: [id, reference, type, type_label, status, status_label, property, unit, scheduled_for, completed_at, inspector, template,
+      required: [id, reference, type, type_label, status, status_label, property, unit, scheduled_for, time_zone, completed_at, inspector, template,
         progress, areas, summary, sign_off, baseline, report_url]
       properties:
         id: { type: string, format: uuid }
@@ -28405,6 +28479,7 @@ components:
         property: { type: object, required: [name], properties: { name: { type: string } } }
         unit: { type: [object, "null"], required: [label], properties: { label: { type: string } } }
         scheduled_for: { type: string, format: date-time }
+        time_zone: { type: string, example: Africa/Harare, description: "New in 0.62.0. The property market's IANA zone: show scheduled_for in it first." }
         completed_at: { type: [string, "null"], format: date-time }
         inspector: { type: object, required: [name], properties: { name: { type: string } } }
         template: { type: object, required: [label], properties: { label: { type: string } } }

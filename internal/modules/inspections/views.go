@@ -100,25 +100,28 @@ type UnitRef struct {
 
 // Summary is an inspection in a list.
 type Summary struct {
-	ID           uuid.UUID           `json:"id"`
-	Reference    string              `json:"reference"`
-	Type         string              `json:"type"`
-	TypeLabel    string              `json:"type_label"`
-	Status       string              `json:"status"`
-	StatusLabel  string              `json:"status_label"`
-	Property     any                 `json:"property"`
-	Unit         *UnitRef            `json:"unit"`
-	TenancyID    *uuid.UUID          `json:"tenancy_id"`
-	ScheduledFor time.Time           `json:"scheduled_for"`
-	Inspector    tenancies.PersonRef `json:"inspector"`
-	Template     TemplateRef         `json:"template"`
-	Progress     Progress            `json:"progress"`
-	PhotoCount   int                 `json:"photo_count"`
-	StartedAt    *time.Time          `json:"started_at"`
-	CompletedAt  *time.Time          `json:"completed_at"`
-	CancelledAt  *time.Time          `json:"cancelled_at"`
-	CreatedAt    time.Time           `json:"created_at"`
-	UpdatedAt    time.Time           `json:"updated_at"`
+	ID           uuid.UUID  `json:"id"`
+	Reference    string     `json:"reference"`
+	Type         string     `json:"type"`
+	TypeLabel    string     `json:"type_label"`
+	Status       string     `json:"status"`
+	StatusLabel  string     `json:"status_label"`
+	Property     any        `json:"property"`
+	Unit         *UnitRef   `json:"unit"`
+	TenancyID    *uuid.UUID `json:"tenancy_id"`
+	ScheduledFor time.Time  `json:"scheduled_for"`
+	// TimeZone is the property market's IANA zone: scheduled_for is shown
+	// in it first (API 0.62.0).
+	TimeZone    string              `json:"time_zone"`
+	Inspector   tenancies.PersonRef `json:"inspector"`
+	Template    TemplateRef         `json:"template"`
+	Progress    Progress            `json:"progress"`
+	PhotoCount  int                 `json:"photo_count"`
+	StartedAt   *time.Time          `json:"started_at"`
+	CompletedAt *time.Time          `json:"completed_at"`
+	CancelledAt *time.Time          `json:"cancelled_at"`
+	CreatedAt   time.Time           `json:"created_at"`
+	UpdatedAt   time.Time           `json:"updated_at"`
 }
 
 // SignOff is the typed sign-off names.
@@ -256,6 +259,7 @@ type MyInspection struct {
 	Property     NameOnly       `json:"property"`
 	Unit         *LabelOnly     `json:"unit"`
 	ScheduledFor time.Time      `json:"scheduled_for"`
+	TimeZone     string         `json:"time_zone"`
 	CompletedAt  *time.Time     `json:"completed_at"`
 	Inspector    NameOnly       `json:"inspector"`
 	Template     LabelOnly      `json:"template"`

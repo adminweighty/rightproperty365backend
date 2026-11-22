@@ -57,7 +57,7 @@ func (h *Handler) AdminLoginMFA(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
-	h.writeAdminSession(w, res)
+	h.writeAdminSession(w, r, res)
 }
 
 func writeNoStore(w http.ResponseWriter, v any) {

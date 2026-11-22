@@ -123,3 +123,21 @@ func (s *PostgresStore) MarketingConsentText(ctx context.Context, version string
 	t.CreatedAt = t.CreatedAt.UTC()
 	return t, nil
 }
+
+// SetTimeZone implements TimeZoneStore (API 0.62.0).
+func (s *PostgresStore) SetTimeZone(ctx context.Context, userID uuid.UUID, mode, zone string) error {
+	var name *string
+	if zone != "" {
+		name = &zone
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE users SET time_zone_mode = $2, time_zone = $3,
+		updated_at = CASE WHEN time_zone_mode = $2 AND time_zone IS NOT DISTINCT FROM $3 THEN updated_at ELSE now() END
+		WHERE id = $1`, userID, mode, name)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
