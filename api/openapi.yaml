@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.61.0
+  version: 0.61.1
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,14 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    "Today" is the market's date (fixed in 0.61.1)
+    - No shape change. Date checks and date defaults of the property books use the calendar date of the market (the
+      country's time zone), not the UTC date: `received_on` of a rent receipt and `incurred_on` of a maintenance cost
+      may be today in the property's market ("may not be in the future" only after that), and the defaults of
+      arrears `as_of`, rent statements `to`, the ledger reports' `to` and receivables `as_of` are the market's
+      date (the organisation's market; for a direct owner, the market of their first property). Before, between local
+      midnight and UTC midnight (00:00-02:00 in Zimbabwe) a receipt or cost dated today was refused.
 
     Metrics (new in 0.61.0, FR-056, FR-065)
     - No new public endpoint. The API and the worker serve Prometheus metrics on their own listener (`METRICS_ADDR`,

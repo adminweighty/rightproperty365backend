@@ -95,6 +95,16 @@ func (s *Service) clock() time.Time { return s.now().UTC().Truncate(time.Microse
 
 func (s *Service) today() string { return s.clock().Format(time.DateOnly) }
 
+// requestToday is "today" for a request: the calendar date in its property's
+// market (UTC without the tenancies service), so a cost incurred today in
+// Harare is not refused as future between 00:00 and 02:00.
+func (s *Service) requestToday(ctx context.Context, r Request) string {
+	if s.tenancies == nil {
+		return s.today()
+	}
+	return s.tenancies.PropertyToday(ctx, r.PropertyID)
+}
+
 // ---------------------------------------------------------------------------
 // Access
 // ---------------------------------------------------------------------------

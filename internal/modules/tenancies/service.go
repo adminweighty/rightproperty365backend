@@ -18,6 +18,7 @@ import (
 	"rightproperty365.com/backend/internal/modules/ledger"
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/logging"
+	"rightproperty365.com/backend/internal/platform/marketday"
 	"rightproperty365.com/backend/internal/platform/money"
 	"rightproperty365.com/backend/internal/platform/orgaudit"
 )
@@ -54,6 +55,9 @@ type Deps struct {
 	// Ledger posts the RENT_RECEIVED entry of a rent receipt (part b); it may
 	// also be set later with SetLedger.
 	Ledger *ledger.Service
+	// Zone returns the IANA time zone of a market code: "today" for a
+	// tenancy is the date in its property's market (nil: UTC).
+	Zone   marketday.Zone
 	Logger *slog.Logger
 	Now    func() time.Time
 }
@@ -66,6 +70,7 @@ type Service struct {
 	markets    func(ctx context.Context) ([]string, error)
 	account    func(ctx context.Context, userID uuid.UUID) (string, bool, error)
 	ledger     *ledger.Service
+	zone       marketday.Zone
 	logger     *slog.Logger
 	now        func() time.Time
 }
@@ -73,7 +78,7 @@ type Service struct {
 // NewService builds the service.
 func NewService(d Deps) *Service {
 	s := &Service{store: d.Store, links: d.Links, currencies: d.Currencies, markets: d.Markets, account: d.Account, ledger: d.Ledger,
-		logger: d.Logger, now: d.Now}
+		zone: d.Zone, logger: d.Logger, now: d.Now}
 	if s.now == nil {
 		s.now = time.Now
 	}
@@ -90,7 +95,42 @@ func (s *Service) clock() time.Time { return s.now().UTC().Truncate(time.Microse
 // are built one after the other).
 func (s *Service) SetLedger(l *ledger.Service) { s.ledger = l }
 
-func (s *Service) today() string { return s.clock().Format(time.DateOnly) }
+// todayIn is the calendar date in a market's time zone (UTC when unknown).
+func (s *Service) todayIn(ctx context.Context, marketCode string) string {
+	return marketday.Today(ctx, s.zone, marketCode, s.clock())
+}
+
+// tenancyToday is "today" for a tenancy: the date in its property's market.
+func (s *Service) tenancyToday(ctx context.Context, t Tenancy) string {
+	return s.PropertyToday(ctx, t.PropertyID)
+}
+
+// PropertyToday is the calendar date in the property's market (UTC when the
+// property or its market's zone is unknown). Maintenance uses it for the date
+// checks of a request's costs.
+func (s *Service) PropertyToday(ctx context.Context, propertyID uuid.UUID) string {
+	code := ""
+	if p, err := s.store.Property(ctx, propertyID); err == nil {
+		code = p.MarketCode
+	}
+	return s.todayIn(ctx, code)
+}
+
+// bookToday is "today" for a whole book: the organisation's market for an
+// organisation's book, else the market of the book's first property.
+func (s *Service) bookToday(ctx context.Context, a access) string {
+	if id := a.book.OrganisationID; id != nil {
+		for _, m := range a.p.Memberships {
+			if m.OrganisationID == *id && m.MarketCode != "" {
+				return s.todayIn(ctx, m.MarketCode)
+			}
+		}
+	}
+	if list, _, err := s.store.Properties(ctx, a.book, PropertyFilter{Limit: 1}); err == nil && len(list) > 0 {
+		return s.todayIn(ctx, list[0].MarketCode)
+	}
+	return s.todayIn(ctx, "")
+}
 
 // access is what the caller may do in one book.
 type access struct {
@@ -1378,7 +1418,7 @@ func (s *Service) Activate(ctx context.Context, p *auth.Principal, bookID, id uu
 	now := s.clock()
 	t.Status, t.ActivatedAt, t.ActivatedBy, t.ActivatedByName, t.UpdatedAt = StatusActive, &now, a.actor(), a.p.Name, now
 	// The rent schedule is generated in the activation's transaction.
-	dues, _ := planSchedule(t, nil, s.today(), now)
+	dues, _ := planSchedule(t, nil, s.todayIn(ctx, prop.MarketCode), now)
 	ch := Change{ExpectStatus: map[uuid.UUID]string{id: StatusDraft}, Tenancies: []Tenancy{t}, Dues: dues,
 		Audit: s.event(ctx, a, orgaudit.ActionTenancyActivated, id, Label(prop, t), before, tenancyAudit(t))}
 	if err := s.store.Apply(ctx, ch); err != nil {

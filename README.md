@@ -504,6 +504,21 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 seeker saved searches and alerts. (Conversion funnels and response-time KPIs: API 0.38.0; replies
 to the customer: API 0.46.0, below.)
 
+## "Today" is the market's date (API 0.61.1)
+
+Found by the mobile live tests against staging: at 00:06 in Harare (22:06 UTC the day before) a rent receipt and a
+maintenance cost dated today were refused as "may not be in the future", because the server compared them with the
+UTC date. Package `internal/platform/marketday` gives the calendar date in a market's IANA zone (UTC when the zone is
+unknown); the tenancies and ledger services get the zone from the countries table (`app.MarketZone`).
+
+- Per tenancy, "today" is the date in its **property's** market: receipts (`received_on`), the rent schedule and due
+  statuses, waivers, statements (`to` default), the tenant's own dues.
+- Maintenance costs (`incurred_on`) use the request's property market, through the tenancies service.
+- Book-wide defaults (arrears `as_of`, the ledger reports' `to` and receivables `as_of`) use the organisation's
+  market; a direct owner's book uses the market of its first property.
+- Tests: `internal/platform/marketday`, `TestMarketDateAfterLocalMidnight` in `internal/modules/tenancies` and in
+  `internal/app` (22:30 UTC: the next day is today in Harare, the day after is still the future).
+
 ## Metrics and alerts (API 0.61.0)
 
 FR-056/FR-065 ("measure … email bounce … dead-letter backlog"). Package `internal/platform/metrics` writes the Prometheus

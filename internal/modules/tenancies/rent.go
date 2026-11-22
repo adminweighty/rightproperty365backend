@@ -30,7 +30,7 @@ func (s *Service) resync(ctx context.Context, ch *Change, t Tenancy) error {
 	if err != nil {
 		return err
 	}
-	add, remove := planSchedule(t, dues, s.today(), s.clock())
+	add, remove := planSchedule(t, dues, s.tenancyToday(ctx, t), s.clock())
 	ch.Dues, ch.DeleteDues = append(ch.Dues, add...), append(ch.DeleteDues, remove...)
 	return nil
 }
@@ -252,8 +252,8 @@ func dueDates(dues []Due) map[uuid.UUID]string {
 // Dues
 // ---------------------------------------------------------------------------
 
-func (s *Service) duesPage(a access, t Tenancy, dues []Due, f DueFilter) DuesPage {
-	today := s.today()
+func (s *Service) duesPage(ctx context.Context, a access, t Tenancy, dues []Due, f DueFilter) DuesPage {
+	today := s.tenancyToday(ctx, t)
 	core, next := summary(t, dues, today)
 	out := DuesPage{Items: []DueView{}, Summary: DueSummary{SummaryCore: core}, Schedule: scheduleView(t, dues, today)}
 	for i, d := range dues {
@@ -283,7 +283,7 @@ func (s *Service) ListDues(ctx context.Context, p *auth.Principal, bookID, tenan
 	if err != nil {
 		return DuesPage{}, err
 	}
-	return s.duesPage(a, t, dues, f), nil
+	return s.duesPage(ctx, a, t, dues, f), nil
 }
 
 // WaiveInput is the body of POST .../dues/{dueId}/waive.
@@ -335,7 +335,7 @@ func (s *Service) WaiveDue(ctx context.Context, p *auth.Principal, bookID, dueID
 	if err != nil {
 		return DueView{}, err
 	}
-	return dueView(a, t, got, s.today()), nil
+	return dueView(a, t, got, s.tenancyToday(ctx, t)), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -492,7 +492,7 @@ func (s *Service) RecordReceipt(ctx context.Context, p *auth.Principal, bookID, 
 	if !slices.Contains(ledger.Methods(), method) {
 		f["method"] = "must be CASH, BANK, MOBILE_MONEY or OTHER"
 	}
-	today := s.today()
+	today := s.tenancyToday(ctx, t)
 	received := strings.TrimSpace(in.ReceivedOn)
 	switch {
 	case !validDate(received):
@@ -608,7 +608,7 @@ func (s *Service) receiptResult(ctx context.Context, a access, t Tenancy, v *vie
 		return ReceiptResult{}, err
 	}
 	out := ReceiptResult{Receipt: rv, Dues: []DueView{}}
-	today := s.today()
+	today := s.tenancyToday(ctx, t)
 	for _, d := range dues {
 		if slices.ContainsFunc(recs[i].Allocations, func(x Allocation) bool { return x.DueID == d.ID }) {
 			out.Dues = append(out.Dues, dueView(a, t, d, today))
@@ -783,7 +783,7 @@ func (s *Service) Arrears(ctx context.Context, p *auth.Principal, bookID uuid.UU
 	}
 	f := map[string]string{}
 	if q.AsOf == "" {
-		q.AsOf = s.today()
+		q.AsOf = s.bookToday(ctx, a)
 	} else if !validDate(q.AsOf) {
 		f["as_of"] = "must be a date (YYYY-MM-DD)"
 	}
@@ -910,7 +910,7 @@ func (s *Service) MyDues(ctx context.Context, p *auth.Principal, id uuid.UUID, f
 	if err != nil {
 		return MyDuesPage{}, err
 	}
-	today := s.today()
+	today := s.tenancyToday(ctx, t)
 	core, next := summary(t, dues, today)
 	out := MyDuesPage{Items: []MyDueView{}, Summary: MyDueSummary{SummaryCore: core}, Schedule: scheduleView(t, dues, today)}
 	for i, d := range dues {

@@ -148,7 +148,7 @@ func (s *Service) statementTenancy(ctx context.Context, t Tenancy) (StatementTen
 }
 
 // statementRange validates from and to (defaults: the start date, today).
-func (s *Service) statementRange(t Tenancy, from, to string) (string, string, error) {
+func (s *Service) statementRange(ctx context.Context, t Tenancy, from, to string) (string, string, error) {
 	f := map[string]string{}
 	from, to = strings.TrimSpace(from), strings.TrimSpace(to)
 	if from == "" {
@@ -157,7 +157,7 @@ func (s *Service) statementRange(t Tenancy, from, to string) (string, string, er
 		f["from"] = "must be a date (YYYY-MM-DD)"
 	}
 	if to == "" {
-		to = s.today()
+		to = s.tenancyToday(ctx, t)
 	} else if !validDate(to) {
 		f["to"] = "must be a date (YYYY-MM-DD)"
 	}
@@ -168,7 +168,7 @@ func (s *Service) statementRange(t Tenancy, from, to string) (string, string, er
 }
 
 func (s *Service) statementOf(ctx context.Context, t Tenancy, from, to string) (Statement, error) {
-	from, to, err := s.statementRange(t, from, to)
+	from, to, err := s.statementRange(ctx, t, from, to)
 	if err != nil {
 		return Statement{}, err
 	}

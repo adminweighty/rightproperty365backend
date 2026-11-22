@@ -645,3 +645,40 @@ func TestForgetUserRent(t *testing.T) {
 		t.Fatalf("not unlinked: %+v %+v", list[0].RecordedBy, got)
 	}
 }
+
+// TestMarketDateAfterLocalMidnight: at 22:30 UTC it is already the next day
+// in Harare, so a receipt dated that day is not "in the future", the day
+// after still is, and the arrears default to the market's date.
+func TestMarketDateAfterLocalMidnight(t *testing.T) {
+	f := newRentFixture(t)
+	f.svc.zone = func(_ context.Context, code string) string {
+		if code == "ZW" {
+			return "Africa/Harare"
+		}
+		return ""
+	}
+	ten := f.active("2026-09-01", monthly950)
+	f.now = time.Date(2026, 11, 21, 22, 30, 0, 0, time.UTC)
+	res := f.receipt(ten.ID, `{"amount":"10.00","currency":"USD","method":"CASH","received_on":"2026-11-22"}`)
+	if res.Receipt.ReceivedOn != "2026-11-22" {
+		t.Fatalf("received_on: %+v", res.Receipt)
+	}
+	_, err := f.svc.RecordReceipt(f.ctx, f.agent, f.org, ten.ID,
+		body[ReceiptInput](t, `{"amount":"10.00","currency":"USD","method":"CASH","received_on":"2026-11-23"}`))
+	var v *ValidationError
+	if !errors.As(err, &v) || v.Fields["received_on"] != "may not be in the future" {
+		t.Fatalf("day after: %v", err)
+	}
+	if got := f.svc.PropertyToday(f.ctx, ten.Property.ID); got != "2026-11-22" {
+		t.Fatalf("PropertyToday = %s", got)
+	}
+	ar, err := f.svc.Arrears(f.ctx, f.agent, f.org, ArrearsQuery{})
+	if err != nil || ar.AsOf != "2026-11-22" {
+		t.Fatalf("arrears as_of %q: %v", ar.AsOf, err)
+	}
+	// Without a zone lookup the UTC date still applies.
+	f.svc.zone = nil
+	if got := f.svc.PropertyToday(f.ctx, ten.Property.ID); got != "2026-11-21" {
+		t.Fatalf("UTC fallback = %s", got)
+	}
+}

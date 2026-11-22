@@ -276,17 +276,18 @@ func byCurrency(list []Entry) ([]string, map[string][]Entry) {
 // Queries
 // ---------------------------------------------------------------------------
 
-func (s *Service) period(q *ReportQuery, f map[string]string) {
-	today := s.clock()
+// period defaults and checks a report's range: to defaults to today (the
+// book's market date), from to the first of to's month.
+func (s *Service) period(q *ReportQuery, f map[string]string, today string) {
 	if q.To == "" {
-		q.To = today.Format(time.DateOnly)
+		q.To = today
 	} else if !validDate(q.To) {
 		f["to"] = "must be a date (YYYY-MM-DD)"
 	}
 	if q.From == "" {
 		t, err := time.Parse(time.DateOnly, q.To)
 		if err != nil {
-			t = today
+			t, _ = time.Parse(time.DateOnly, today)
 		}
 		q.From = time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC).Format(time.DateOnly)
 	} else if !validDate(q.From) {
@@ -343,7 +344,7 @@ func (s *Service) Cashbook(ctx context.Context, p *auth.Principal, bookID uuid.U
 
 func (s *Service) cashbook(ctx context.Context, a access, q ReportQuery) (Cashbook, error) {
 	f := map[string]string{}
-	s.period(&q, f)
+	s.period(&q, f, s.bookToday(ctx, a))
 	if err := s.checkCurrency(ctx, &q, f); err != nil {
 		return Cashbook{}, err
 	}
@@ -494,7 +495,7 @@ func (s *Service) CategoriesReport(ctx context.Context, p *auth.Principal, bookI
 
 func (s *Service) categoriesReport(ctx context.Context, a access, q ReportQuery) (CategoriesReport, error) {
 	f := map[string]string{}
-	s.period(&q, f)
+	s.period(&q, f, s.bookToday(ctx, a))
 	if err := s.checkCurrency(ctx, &q, f); err != nil {
 		return CategoriesReport{}, err
 	}
@@ -598,7 +599,7 @@ func (s *Service) Statement(ctx context.Context, p *auth.Principal, bookID uuid.
 
 func (s *Service) statement(ctx context.Context, a access, q ReportQuery) (Statement, error) {
 	f := map[string]string{}
-	s.period(&q, f)
+	s.period(&q, f, s.bookToday(ctx, a))
 	if err := s.checkCurrency(ctx, &q, f); err != nil {
 		return Statement{}, err
 	}
@@ -684,7 +685,7 @@ func (s *Service) Receivables(ctx context.Context, p *auth.Principal, bookID uui
 	}
 	f := map[string]string{}
 	if q.AsOf == "" {
-		q.AsOf = s.today()
+		q.AsOf = s.bookToday(ctx, a)
 	} else if !validDate(q.AsOf) {
 		f["as_of"] = "must be a date (YYYY-MM-DD)"
 	}

@@ -22,7 +22,7 @@ import (
 func LedgerService(store ledger.Store, files storage.Storage, contacts crm.Store, listingStore listings.Store, leaseStore leases.Store,
 	marketStore markets.Store, logger *slog.Logger, now func() time.Time) *ledger.Service {
 	return ledger.NewService(ledger.Deps{
-		Store: store, Files: files, Logger: logger, Now: now,
+		Store: store, Files: files, Logger: logger, Now: now, Zone: MarketZone(marketStore),
 		Links: ledgerLinks{contacts: contacts, listings: listingStore, leases: leaseStore},
 		Currencies: func(ctx context.Context) ([]string, error) {
 			all, err := marketStore.List(ctx)

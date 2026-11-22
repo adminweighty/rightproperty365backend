@@ -105,7 +105,7 @@ func (s *Service) AddCost(ctx context.Context, p *auth.Principal, bookID, id uui
 			f["method"] = "must be CASH, BANK, MOBILE_MONEY or OTHER"
 		}
 	}
-	today := s.today()
+	today := s.requestToday(ctx, r)
 	incurred := today
 	if in.IncurredOn != nil && strings.TrimSpace(*in.IncurredOn) != "" {
 		incurred = strings.TrimSpace(*in.IncurredOn)

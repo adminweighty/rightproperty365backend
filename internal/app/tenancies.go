@@ -35,7 +35,7 @@ func TenanciesService(store tenancies.Store, contacts crm.Store, listingStore li
 		return out, nil
 	}
 	return tenancies.NewService(tenancies.Deps{
-		Store: store, Logger: logger, Now: now,
+		Store: store, Logger: logger, Now: now, Zone: MarketZone(marketStore),
 		Links: tenancyLinks{contacts: contacts, ledger: ledgerLinks{contacts: contacts, listings: listingStore, leases: leaseStore}},
 		Currencies: func(ctx context.Context) ([]string, error) {
 			// The main currency and the extra permitted ones (API 0.56.0).

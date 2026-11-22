@@ -15,6 +15,7 @@ import (
 
 	"rightproperty365.com/backend/internal/platform/auth"
 	"rightproperty365.com/backend/internal/platform/logging"
+	"rightproperty365.com/backend/internal/platform/marketday"
 	"rightproperty365.com/backend/internal/platform/money"
 	"rightproperty365.com/backend/internal/platform/orgaudit"
 	"rightproperty365.com/backend/internal/platform/storage"
@@ -39,8 +40,11 @@ type Deps struct {
 	// RentArrears returns the overdue rent dues of a book as of a date (the
 	// tenancies module): the receivables report includes them. nil: none.
 	RentArrears func(ctx context.Context, book Book, asOf string) ([]RentArrear, error)
-	Logger      *slog.Logger
-	Now         func() time.Time
+	// Zone returns the IANA time zone of a market code: report defaults use
+	// the organisation's market date (nil: UTC).
+	Zone   marketday.Zone
+	Logger *slog.Logger
+	Now    func() time.Time
 }
 
 // Service is the agent ledger.
@@ -50,13 +54,15 @@ type Service struct {
 	links      Links
 	currencies func(ctx context.Context) ([]string, error)
 	arrears    func(ctx context.Context, book Book, asOf string) ([]RentArrear, error)
+	zone       marketday.Zone
 	logger     *slog.Logger
 	now        func() time.Time
 }
 
 // NewService builds the service.
 func NewService(d Deps) *Service {
-	s := &Service{store: d.Store, files: d.Files, links: d.Links, currencies: d.Currencies, arrears: d.RentArrears, logger: d.Logger, now: d.Now}
+	s := &Service{store: d.Store, files: d.Files, links: d.Links, currencies: d.Currencies, arrears: d.RentArrears, zone: d.Zone, logger: d.Logger,
+		now: d.Now}
 	if s.now == nil {
 		s.now = time.Now
 	}
@@ -1427,4 +1433,19 @@ func (s *Service) AddNote(ctx context.Context, p *auth.Principal, bookID, id uui
 		return NoteView{}, err
 	}
 	return noteView(n), nil
+}
+
+// bookToday is "today" for a book: the calendar date in the organisation's
+// market (UTC for a personal book or an unknown zone).
+func (s *Service) bookToday(ctx context.Context, a access) string {
+	code := ""
+	if id := a.book.OrganisationID; id != nil && a.p != nil {
+		for _, m := range a.p.Memberships {
+			if m.OrganisationID == *id {
+				code = m.MarketCode
+				break
+			}
+		}
+	}
+	return marketday.Today(ctx, s.zone, code, s.clock())
 }
