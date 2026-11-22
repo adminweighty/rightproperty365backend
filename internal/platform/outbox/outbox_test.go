@@ -143,3 +143,39 @@ func TestAlsoChainsHandlers(t *testing.T) {
 		t.Fatalf("only permanent failures: %v", err)
 	}
 }
+
+// A deferred failure (an operator must act, API 0.61.2) is retried with the
+// usual backoff past MaxAttempts and never dead-lettered; in a chain a plain
+// transient failure still wins, so a broken consumer runs out of attempts.
+func TestDeferredFailureIsNeverDeadLettered(t *testing.T) {
+	now := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+	waiting, broken := uuid.New(), uuid.New()
+	q := &fakeQueue{events: []Event{
+		{ID: waiting, Type: "STALE", Attempts: 40},
+		{ID: broken, Type: "MIXED", Attempts: 8},
+	}}
+	d := NewDispatcher(q, slog.New(slog.NewJSONHandler(io.Discard, nil)), Config{MaxAttempts: 8, BaseBackoff: 30 * time.Second, MaxBackoff: time.Hour})
+	d.now = func() time.Time { return now }
+	stale := HandlerFunc(func(context.Context, Event) error { return Defer(errors.New("index must be rebuilt")) })
+	d.Register("STALE", stale)
+	d.Register("MIXED", stale)
+	d.Also("MIXED", HandlerFunc(func(context.Context, Event) error { return errors.New("smtp down") }))
+	if _, err := d.ProcessBatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := q.retried[waiting]; !got.Equal(now.Add(time.Hour)) {
+		t.Fatalf("deferred retry at %v, want %v (capped backoff)", got, now.Add(time.Hour))
+	}
+	if len(q.deadLetter) != 1 || q.deadLetter[0] != broken {
+		t.Fatalf("deadLetter = %v, want only the event whose other consumer is broken", q.deadLetter)
+	}
+	if !IsDeferred(Defer(errors.New("x"))) || IsDeferred(errors.New("x")) || Defer(nil) != nil ||
+		IsDeferred(Permanent(Defer(errors.New("x")))) || IsPermanent(Defer(errors.New("x"))) {
+		t.Fatal("Defer/IsDeferred misbehave")
+	}
+	// Deferred beats permanent in a chain.
+	if err := Chain(HandlerFunc(func(context.Context, Event) error { return Permanent(errors.New("gone")) }), stale).
+		Handle(context.Background(), Event{}); !IsDeferred(err) {
+		t.Fatalf("chain: %v", err)
+	}
+}

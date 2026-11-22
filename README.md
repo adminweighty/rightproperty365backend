@@ -504,6 +504,28 @@ module that owns it, with that module's own scoping (the `dashboard` module owns
 seeker saved searches and alerts. (Conversion funnels and response-time KPIs: API 0.38.0; replies
 to the customer: API 0.46.0, below.)
 
+## A stale search index waits instead of dead-lettering (API 0.61.2)
+
+On staging 47 `LISTING_PUBLISHED` events were dead-lettered on 2026-11-14: the seed ran while the index mapping was
+older than the code, Elasticsearch answered 400 `strict_dynamic_mapping_exception`, and the indexer treated every 400
+as permanent. Nothing told an operator that the index needed rebuilding.
+
+- **Retry, not give up.** `strict_dynamic_mapping_exception` is now `outbox.Defer`: the event is retried with the usual
+  backoff (capped at an hour) however many attempts it has had, and is never dead-lettered for running out of them.
+  Every other 400 is still permanent. In a chain, a plain transient failure of another consumer still wins, so a
+  broken mailer still runs out of attempts.
+- **Detect.** The worker reads `_meta.mapping_version` of the index behind the alias at start and every 5 minutes
+  (`Indexer.WatchMapping`). Older than `listings.MappingVersion`, or no index: one ERROR log line ("search index is
+  stale: rebuild it with /app/reindex") and `rp365_search_index_stale 1`; it returns to 0 (with an INFO line) at the
+  first check after the reindex. A refused write marks the index stale too.
+- **Not automatic.** The worker does **not** reindex by itself: two worker replicas would build and swap two indices
+  at once, a crash-looping worker would rebuild on every start, and a reindex is an operator action with a backup and
+  a runbook (`deploy-and-rollback.md` step 8). The alert `RP365SearchIndexStale` (gitops `monitoring/`) covers it.
+- `rp365_outbox_dead_letters` counts dead letters that are not retired (`processed_at IS NULL`), so retiring
+  superseded dead letters, as `outbox-dead-letters.md` describes, brings it back to 0.
+- Tests: `TestDeferredFailureIsNeverDeadLettered` (outbox), `TestIndexingIsIdempotentAndOrderIndependent` and
+  `TestCheckMappingDetectsAStaleIndex` (listings), `TestSearchIndexGauge` and `TestQueueGaugesOnPostgres` (app).
+
 ## "Today" is the market's date (API 0.61.1)
 
 Found by the mobile live tests against staging: at 00:06 in Harare (22:06 UTC the day before) a rent receipt and a

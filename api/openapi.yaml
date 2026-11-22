@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RightProperty365 API
-  version: 0.61.1
+  version: 0.61.2
   summary: Global property marketplace API (every country; Zimbabwe and the United Kingdom first).
   description: |
     Versioned REST API for RightProperty365.
@@ -93,6 +93,12 @@ info:
         `error.fields.captcha`. A captcha can be presented once: after **any** refused
         registration, ask for a new question. See the two operations for the details. No
         third-party service is involved and there is nothing to configure.
+
+    Search index and dead letters (0.61.2)
+    - No shape change. Operations only: a listing event refused by a stale search index (its strict mapping is older
+      than the release) now waits and is retried until the index is rebuilt, instead of being given up on; the worker
+      reports a stale index in its log and in the metric `rp365_search_index_stale`. `rp365_outbox_dead_letters` no
+      longer counts dead letters an operator has retired.
 
     "Today" is the market's date (fixed in 0.61.1)
     - No shape change. Date checks and date defaults of the property books use the calendar date of the market (the

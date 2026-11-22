@@ -294,6 +294,11 @@ func run() error {
 		// A document's region is the region of its city (reference data).
 		indexer.SetPlaces(app.Places(reference.NewPostgresStore(pool), markets.NewPostgresStore(pool)))
 		indexer.Register(dispatcher)
+		// A stale index (API 0.61.2): checked at start and every few minutes;
+		// while stale an ERROR is logged, rp365_search_index_stale is 1 and
+		// listing events wait (deferred) instead of being dead-lettered.
+		app.RegisterSearchIndexGauge(metricsProc, indexer.State)
+		go indexer.WatchMapping(ctx, listings.MappingCheckInterval)
 		logger.Info("search driver selected: elasticsearch (listing events update the search index)",
 			slog.String("search_driver", config.SearchDriverElasticsearch), slog.String("search_alias", listings.IndexAlias(cfg.SearchIndexPrefix)))
 	} else {

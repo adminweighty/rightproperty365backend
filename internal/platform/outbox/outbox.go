@@ -64,6 +64,31 @@ func IsPermanent(err error) bool {
 	return errors.As(err, &p)
 }
 
+// deferredError marks a failure that will clear only after an operator acts
+// (for example a search index that must be rebuilt), so the event waits
+// instead of being given up on.
+type deferredError struct{ err error }
+
+func (e *deferredError) Error() string { return e.err.Error() }
+func (e *deferredError) Unwrap() error { return e.err }
+
+// Defer wraps err so the dispatcher keeps retrying the event, with the usual
+// backoff, however many attempts it has had: it is never dead-lettered for
+// running out of attempts. Use it only for a failure an operator is told
+// about by other means (a log line and a metric), never for a bug.
+func Defer(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &deferredError{err: err}
+}
+
+// IsDeferred reports whether err was wrapped with Defer (and not Permanent).
+func IsDeferred(err error) bool {
+	var d *deferredError
+	return errors.As(err, &d) && !IsPermanent(err)
+}
+
 // Sink receives events as they are written by an in-memory store. It exists
 // for development without a database, where there is no outbox table for the
 // worker to poll; see cmd/api.
@@ -152,10 +177,12 @@ func (d *Dispatcher) Also(eventType string, h Handler) {
 // one consumer failing never starves another. The event is retried when any
 // of them failed transiently (each handler is idempotent, so the ones that
 // succeeded do nothing the second time), and dead-lettered only when every
-// failure was permanent.
+// failure was permanent. A plain transient failure wins over a deferred one,
+// so a consumer that keeps failing still runs out of attempts; a deferred
+// one wins over a permanent one, so the waiting consumer is not given up on.
 func Chain(handlers ...Handler) Handler {
 	return HandlerFunc(func(ctx context.Context, ev Event) error {
-		var transient, permanent error
+		var transient, deferred, permanent error
 		for _, h := range handlers {
 			err := h.Handle(ctx, ev)
 			switch {
@@ -163,6 +190,10 @@ func Chain(handlers ...Handler) Handler {
 			case IsPermanent(err):
 				if permanent == nil {
 					permanent = err
+				}
+			case IsDeferred(err):
+				if deferred == nil {
+					deferred = err
 				}
 			default:
 				if transient == nil {
@@ -172,6 +203,9 @@ func Chain(handlers ...Handler) Handler {
 		}
 		if transient != nil {
 			return transient
+		}
+		if deferred != nil {
+			return deferred
 		}
 		return permanent
 	})
@@ -234,7 +268,7 @@ func (d *Dispatcher) process(ctx context.Context, ev Event) {
 		return
 	}
 
-	if ev.Attempts >= d.cfg.MaxAttempts || IsPermanent(err) {
+	if IsPermanent(err) || (ev.Attempts >= d.cfg.MaxAttempts && !IsDeferred(err)) {
 		log.Error("outbox event dead-lettered", slog.String("error", err.Error()), slog.Bool("permanent", IsPermanent(err)))
 		if mErr := d.queue.MarkDeadLetter(bookkeeping, ev.ID, d.cfg.WorkerID, truncate(err.Error())); mErr != nil {
 			log.Error("mark outbox event dead-lettered failed", slog.String("error", mErr.Error()))
@@ -243,7 +277,7 @@ func (d *Dispatcher) process(ctx context.Context, ev Event) {
 	}
 
 	retryAt := d.now().Add(Backoff(ev.Attempts, d.cfg.BaseBackoff, d.cfg.MaxBackoff))
-	log.Warn("outbox event failed, will retry", slog.String("error", err.Error()), slog.Time("retry_at", retryAt))
+	log.Warn("outbox event failed, will retry", slog.String("error", err.Error()), slog.Time("retry_at", retryAt), slog.Bool("deferred", IsDeferred(err)))
 	if mErr := d.queue.MarkRetry(bookkeeping, ev.ID, d.cfg.WorkerID, truncate(err.Error()), retryAt); mErr != nil {
 		log.Error("mark outbox event for retry failed", slog.String("error", mErr.Error()))
 	}

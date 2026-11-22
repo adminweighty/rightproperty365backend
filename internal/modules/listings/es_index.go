@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -49,7 +50,8 @@ type ESTransport interface {
 // MappingVersion counts the changes of the index mapping. It is recorded in
 // the mapping's _meta. The mapping is strict, so after a release that raises
 // it the index must be rebuilt with cmd/reindex: until then a document with
-// the new fields is refused by the old index.
+// the new fields is refused by the old index (the event waits, deferred, and
+// the worker reports the stale index: see CheckMapping).
 //
 //	1  the first mapping
 //	2  region, advertiser_type, has_photos (country / region and advanced filters)
@@ -279,6 +281,9 @@ type Indexer struct {
 	places Places
 	logger *slog.Logger
 	now    func() time.Time
+
+	mu    sync.Mutex
+	state IndexState
 }
 
 // NewIndexer builds an Indexer for the index prefix (for example "rp365-production").
@@ -336,17 +341,132 @@ func (ix *Indexer) Sync(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
+// reasonStrictMapping is what Elasticsearch answers (HTTP 400) when a
+// document has a field the strict mapping of the index does not know: the
+// index is older than the code and must be rebuilt (cmd/reindex).
+const reasonStrictMapping = "strict_dynamic_mapping_exception"
+
 // Handle is the outbox handler for listing events.
 func (ix *Indexer) Handle(ctx context.Context, ev outbox.Event) error {
 	if err := ix.Sync(ctx, ev.AggregateID); err != nil {
 		var esErr *ESError
-		// A request Elasticsearch rejects as malformed will never succeed.
 		if errors.As(err, &esErr) && esErr.Status == http.StatusBadRequest {
+			// A stale index (API 0.61.2): the write succeeds once the index
+			// is rebuilt, so the event waits instead of being given up on.
+			if esErr.Reason == reasonStrictMapping {
+				ix.markStale(ctx, -1, "a document was refused by the index mapping")
+				return outbox.Defer(err)
+			}
+			// Any other request Elasticsearch rejects as malformed will never succeed.
 			return outbox.Permanent(err)
 		}
 		return err
 	}
 	return nil
+}
+
+// IndexState is what the worker knows about the index mapping (API 0.61.2).
+type IndexState struct {
+	// Known is false until a check (or a refused write) has told.
+	Known bool
+	// Stale says the index mapping is older than MappingVersion: documents
+	// with the newer fields are refused, or lack data search needs, until
+	// the index is rebuilt with cmd/reindex.
+	Stale bool
+	// IndexVersion is the mapping_version in the index's _meta (0 when the
+	// alias has no index or the version is missing or unknown).
+	IndexVersion int
+}
+
+// State returns the last known state of the index mapping.
+func (ix *Indexer) State() IndexState {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	return ix.state
+}
+
+// markStale records a stale index, logging an ERROR when it was not yet known
+// to be stale (once per change, not once per event). indexVersion is -1 when
+// unknown (a refused write), which keeps the last version read.
+func (ix *Indexer) markStale(ctx context.Context, indexVersion int, why string) {
+	ix.mu.Lock()
+	was := ix.state
+	ix.state = IndexState{Known: true, Stale: true, IndexVersion: indexVersion}
+	if indexVersion < 0 { // a refused write does not tell the version
+		ix.state.IndexVersion = max(was.IndexVersion, 0)
+	}
+	ix.mu.Unlock()
+	if !was.Known || !was.Stale {
+		ix.logger.ErrorContext(ctx, "search index is stale: rebuild it with /app/reindex; listing events wait until then",
+			slog.String("search_alias", ix.alias), slog.Int("index_mapping_version", ix.State().IndexVersion),
+			slog.Int("code_mapping_version", MappingVersion), slog.String("reason", why))
+	}
+}
+
+// CheckMapping reads the mapping version of the index behind the alias and
+// records whether it is stale. An index whose version is NEWER than the code
+// (a rolled-back release) is not stale: the old code writes fewer fields.
+func (ix *Indexer) CheckMapping(ctx context.Context) (IndexState, error) {
+	status, raw, err := esDo(ctx, ix.es, http.MethodGet, "/"+url.PathEscape(ix.alias)+"/_mapping", nil, "", http.StatusNotFound)
+	if err != nil {
+		return ix.State(), fmt.Errorf("read index mapping: %w", err)
+	}
+	version := 0
+	if status == http.StatusOK {
+		var indices map[string]struct {
+			Mappings struct {
+				Meta struct {
+					MappingVersion int `json:"mapping_version"`
+				} `json:"_meta"`
+			} `json:"mappings"`
+		}
+		if json.Unmarshal(raw, &indices) != nil {
+			return ix.State(), &ESError{Reason: "unreadable mapping response"}
+		}
+		// The alias points to one index; during a swap take the oldest.
+		first := true
+		for _, m := range indices {
+			if first || m.Mappings.Meta.MappingVersion < version {
+				version, first = m.Mappings.Meta.MappingVersion, false
+			}
+		}
+	}
+	if version < MappingVersion {
+		why := "the index mapping is older than the code"
+		if status == http.StatusNotFound {
+			why = "the search alias has no index"
+		}
+		ix.markStale(ctx, version, why)
+		return ix.State(), nil
+	}
+	ix.mu.Lock()
+	was := ix.state
+	ix.state = IndexState{Known: true, IndexVersion: version}
+	ix.mu.Unlock()
+	if was.Stale {
+		ix.logger.InfoContext(ctx, "search index is current again", slog.String("search_alias", ix.alias), slog.Int("index_mapping_version", version))
+	}
+	return ix.State(), nil
+}
+
+// MappingCheckInterval is how often the worker re-reads the index mapping, so
+// the stale state clears soon after a reindex.
+const MappingCheckInterval = 5 * time.Minute
+
+// WatchMapping checks the mapping at once and then every interval until ctx
+// ends. A failed check (Elasticsearch unreachable) is logged and keeps the
+// last known state.
+func (ix *Indexer) WatchMapping(ctx context.Context, interval time.Duration) {
+	for {
+		if _, err := ix.CheckMapping(ctx); err != nil && ctx.Err() == nil {
+			ix.logger.WarnContext(ctx, "search index mapping check failed", slog.String("error", err.Error()))
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(interval):
+		}
+	}
 }
 
 // Register attaches the handler to a dispatcher for every listing event,

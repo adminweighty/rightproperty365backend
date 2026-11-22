@@ -49,11 +49,12 @@ curl -s localhost:19091/metrics | grep ^rp365_
 | `rp365_http_request_duration_seconds` | Latency histogram per route | p95 up: look for slow queries (`pg_stat_activity`), search fallbacks, scanner timeouts. |
 | `rp365_outbox_pending{event_type}` | Events waiting | Growing: are the workers running? `kubectl get pods`, worker logs. |
 | `rp365_outbox_oldest_pending_age_seconds` | Age of the oldest waiting event | Over 300 s: the workers are stuck or a handler keeps failing transiently (email provider down?). |
-| `rp365_outbox_dead_letters{event_type}` | Events given up on | New ones: see `outbox-dead-letters.md`. |
+| `rp365_outbox_dead_letters{event_type}` | Events given up on and not yet retired (0.61.2: a retired dead letter, `processed_at` set, no longer counts) | New ones: see `outbox-dead-letters.md`. |
 | `rp365_push_deliveries{status}` | Push and in-app deliveries waiting or dead | DEAD rising: FCM credentials or tokens; see `enabling-switched-off-features.md`. |
 | `rp365_routing_exceptions_open` | Requests nobody could receive | Above 0 for 30 min: Administration → Requests nobody could receive; reassign. |
 | `rp365_email_delivery_events_last_hour{event_type}`, `rp365_email_accepted_last_hour` | Bounces and complaints against email sent | See `email-bounce-spike.md`. |
 | `rp365_upload_intents_open` | Upload intents waiting | Large and growing: the sweep is failing, or a client is not completing uploads. |
+| `rp365_search_index_stale` | 1 while the search index mapping is older than the code (worker only; checked at start and every 5 min; no sample before the first check). API 0.61.2 | Run `/app/reindex` (`deploy-and-rollback.md` step 8). Listing events wait (deferred) until then; it returns to 0 within 5 min. |
 | `rp365_sweep_runs_total{sweep,result}` | Sweep runs, ok or error | Errors: the worker log has the error text for that sweep. |
 | `rp365_sweep_last_success_timestamp_seconds{sweep}` | Last good run | Older than 3 h: the sweep is failing or the worker is down. |
 | `rp365_sweep_last_run_duration_seconds{sweep}` | How long the last run took | Approaching the interval: the sweep cannot keep up. |
@@ -72,6 +73,7 @@ scrape config, review the thresholds, then reference the rules from an environme
 | RP365ApiDown / RP365WorkerDown | A pod cannot be scraped for 5 min | `kubectl get pods`, events, last deploy. |
 | RP365OutboxBacklog | Oldest event waiting over 5 min | Workers running? Email provider up? |
 | RP365DeadLetters | New dead letters in the hour | `outbox-dead-letters.md`. |
+| RP365SearchIndexStale | `rp365_search_index_stale` is 1 for 15 min | Reindex; see `outbox-dead-letters.md`, known case. |
 | RP365PushDeadDeliveries | Over 10 dead pushes in an hour | FCM credentials, expired tokens. |
 | RP365RoutingExceptionsOpen | Unrouted requests for 30 min | Reassign them in the admin area. |
 | RP365EmailBounceSpike / RP365EmailComplaintSpike | Bounces ≥ 5 and ≥ 5% / complaints ≥ 3 in an hour | `email-bounce-spike.md`. |

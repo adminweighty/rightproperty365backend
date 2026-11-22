@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"log/slog"
 	"math/big"
@@ -603,8 +604,20 @@ func TestIndexingIsIdempotentAndOrderIndependent(t *testing.T) {
 	if err := ix.Handle(ctx, event(EventListingUpdated, r.ID)); err == nil || outbox.IsPermanent(err) {
 		t.Fatalf("503: err = %v, want a retryable error", err)
 	}
+	// A stale strict mapping (API 0.61.2) waits for the reindex: deferred, not
+	// dead-lettered, and the indexer now knows the index is stale.
 	es.respond = func(string, string, []byte) (int, string) {
 		return 400, `{"error":{"type":"strict_dynamic_mapping_exception"}}`
+	}
+	if err := ix.Handle(ctx, event(EventListingUpdated, r.ID)); !outbox.IsDeferred(err) || outbox.IsPermanent(err) {
+		t.Fatalf("stale mapping: err = %v, want a deferred error", err)
+	}
+	if s := ix.State(); !s.Known || !s.Stale {
+		t.Fatalf("state after a refused write: %+v", s)
+	}
+	// Any other 400 is a malformed request: permanent.
+	es.respond = func(string, string, []byte) (int, string) {
+		return 400, `{"error":{"type":"mapper_parsing_exception"}}`
 	}
 	if err := ix.Handle(ctx, event(EventListingUpdated, r.ID)); !outbox.IsPermanent(err) {
 		t.Fatalf("400: err = %v, want a permanent error", err)
@@ -787,5 +800,66 @@ func TestESErrorsAreSafeToLog(t *testing.T) {
 	var esErr *ESError
 	if !errors.As(err, &esErr) || esErr.Status != 401 || err.Error() != "elasticsearch: HTTP 401 security_exception" {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// The worker compares the index's _meta mapping_version with MappingVersion
+// (API 0.61.2): older or missing is stale (an ERROR is logged once), current
+// or newer is not, and an unreachable cluster keeps the last known state.
+func TestCheckMappingDetectsAStaleIndex(t *testing.T) {
+	var logs bytes.Buffer
+	es := &fakeES{}
+	ix := NewIndexer(es, "rp365-test", NewMemoryStore(noLabels{}), labelsFor(testLabels), slog.New(slog.NewJSONHandler(&logs, nil)))
+	ctx := context.Background()
+	if s := ix.State(); s.Known {
+		t.Fatalf("state before any check: %+v", s)
+	}
+	mapping := func(version int) func(string, string, []byte) (int, string) {
+		return func(method, path string, _ []byte) (int, string) {
+			if method != http.MethodGet || path != "/rp365-test-listings-current/_mapping" {
+				t.Fatalf("unexpected call %s %s", method, path)
+			}
+			return 200, fmt.Sprintf(`{"rp365-test-listings-20261114":{"mappings":{"_meta":{"mapping_version":%d},"dynamic":"strict"}}}`, version)
+		}
+	}
+	es.respond = mapping(MappingVersion - 3)
+	for range 2 {
+		if s, err := ix.CheckMapping(ctx); err != nil || !s.Known || !s.Stale || s.IndexVersion != MappingVersion-3 {
+			t.Fatalf("old mapping: %+v, %v", s, err)
+		}
+	}
+	if n := strings.Count(logs.String(), "search index is stale"); n != 1 {
+		t.Fatalf("%d stale ERROR lines, want 1 (once per change): %s", n, logs.String())
+	}
+	if !strings.Contains(logs.String(), `"level":"ERROR"`) {
+		t.Fatalf("the stale line is not an ERROR: %s", logs.String())
+	}
+
+	es.err = errors.New("dial tcp 10.0.0.1:9200: connection refused")
+	if s, err := ix.CheckMapping(ctx); err == nil || !s.Stale || strings.Contains(err.Error(), "10.0.0.1") {
+		t.Fatalf("unreachable: %+v, %v", s, err)
+	}
+	es.err = nil
+
+	es.respond = mapping(MappingVersion)
+	if s, err := ix.CheckMapping(ctx); err != nil || s.Stale || s.IndexVersion != MappingVersion {
+		t.Fatalf("rebuilt: %+v, %v", s, err)
+	}
+	if !strings.Contains(logs.String(), "search index is current again") {
+		t.Fatal("no recovery line")
+	}
+	es.respond = mapping(MappingVersion + 1) // a rolled-back release
+	if s, _ := ix.CheckMapping(ctx); s.Stale {
+		t.Fatalf("a newer index is not stale: %+v", s)
+	}
+	es.respond = func(string, string, []byte) (int, string) {
+		return 404, `{"error":{"type":"index_not_found_exception"},"status":404}`
+	}
+	if s, err := ix.CheckMapping(ctx); err != nil || !s.Stale || s.IndexVersion != 0 {
+		t.Fatalf("no index: %+v, %v", s, err)
+	}
+	es.respond = func(string, string, []byte) (int, string) { return 200, `not json` }
+	if _, err := ix.CheckMapping(ctx); err == nil {
+		t.Fatal("an unreadable answer must be an error")
 	}
 }
